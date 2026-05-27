@@ -33,6 +33,7 @@ import logging
 import os
 import posixpath
 import shutil
+import signal
 import stat
 import threading
 import time
@@ -423,7 +424,7 @@ class SandboxSpec:
     mode: str = "chroot"  # "pivot_root" | "chroot"
 
 
-def _workspace_mirror_required(spec: SandboxSpec, caps: SandboxCapabilities) -> bool:
+def workspace_mirror_required(spec: SandboxSpec, caps: SandboxCapabilities) -> bool:
     if caps.can_mount:
         return False
     return True
@@ -602,7 +603,7 @@ def provision_rootfs(spec: SandboxSpec) -> None:
     # Chroot fallback without mounts still needs a copied workspace tree.
     caps = detect_capabilities()
     workspace_src = spec.workspace_files_path
-    if _workspace_mirror_required(spec, caps) and workspace_src.is_dir():
+    if workspace_mirror_required(spec, caps) and workspace_src.is_dir():
         try:
             shutil.copytree(
                 str(workspace_src),
@@ -750,6 +751,15 @@ def materialize_mounts(
                 )
                 continue
             raise PermissionError("Live workspace mounts require runtime mount authority. Enable SYS_ADMIN or privileged mode for the runtime container.")
+
+        live_dest = resolve_workspace_bind_target(str(target))
+        if caps.can_mount and live_dest is not None:
+            bind_mount_source(
+                source_path,
+                live_dest,
+                read_only=bool(mount.get("read_only", True)),
+            )
+            continue
 
         try:
             copy_mount_source(source_path, dest)
@@ -1092,6 +1102,67 @@ def _assign_current_process_to_sandbox_cgroup(spec: SandboxSpec, caps: SandboxCa
         (cgroup_path / "cgroup.procs").write_text(str(os.getpid()), encoding="utf-8")
     except OSError as exc:
         logger.warning("Failed to assign sandbox process to pids cgroup for %s: %s", spec.workspace_id, exc)
+
+
+def _read_cgroup_process_ids(cgroup_path: Path) -> list[int]:
+    try:
+        raw = (cgroup_path / "cgroup.procs").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    current_pid = os.getpid()
+    process_ids: list[int] = []
+    for line in raw.splitlines():
+        try:
+            process_id = int(line.strip())
+        except ValueError:
+            continue
+        if process_id > 0 and process_id != current_pid:
+            process_ids.append(process_id)
+    return sorted(set(process_ids))
+
+
+def _terminate_sandbox_cgroup_processes(
+    spec: SandboxSpec,
+    caps: SandboxCapabilities,
+    *,
+    timeout: float = 1.0,
+) -> None:
+    cgroup_path = _sandbox_cgroup_path(spec, caps)
+    if cgroup_path is None or not cgroup_path.exists():
+        return
+
+    process_ids = _read_cgroup_process_ids(cgroup_path)
+    if not process_ids:
+        return
+
+    logger.info(
+        "Terminating %s lingering sandbox process(es) for workspace %s",
+        len(process_ids),
+        spec.workspace_id,
+    )
+    for process_id in process_ids:
+        try:
+            os.kill(process_id, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            logger.debug("Failed to terminate sandbox process %s: %s", process_id, exc)
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        remaining = _read_cgroup_process_ids(cgroup_path)
+        if not remaining:
+            return
+        time.sleep(0.05)
+
+    remaining = _read_cgroup_process_ids(cgroup_path)
+    for process_id in remaining:
+        try:
+            os.kill(process_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            logger.debug("Failed to kill sandbox process %s: %s", process_id, exc)
 
 
 class _CapHeader(ctypes.Structure):
@@ -1640,8 +1711,10 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
         return
 
     caps = detect_capabilities()
-    if _workspace_mirror_required(spec, caps):
+    if workspace_mirror_required(spec, caps):
         _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup")
+
+    _terminate_sandbox_cgroup_processes(spec, caps)
 
     # Unmount any lingering bind mounts (best effort)
     try:

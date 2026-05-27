@@ -1,17 +1,15 @@
 import sys
+import tempfile
 import time as _time
 import types
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-
-from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceWorkspace
-from ragtime.userspace.runtime_service import UserSpaceRuntimeService
-from ragtime.userspace.service import UserSpaceService
 
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
@@ -20,6 +18,10 @@ if "ragtime.rag.prompts" not in sys.modules:
     setattr(fake_rag_package, "prompts", fake_prompts_module)
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
+
+from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceWorkspace
+from ragtime.userspace.runtime_service import UserSpaceRuntimeService
+from ragtime.userspace.service import UserSpaceService
 
 _NOW = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
@@ -420,6 +422,41 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(mounts[0].source_available)
         self.assertFalse(mounts[1].source_available)
         self.assertEqual(service.availability_checks, ["mount-pending"])
+
+    async def test_workspace_tree_file_path_prefers_mount_source_over_stale_rootfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_id = "workspace-1"
+            source_dir = tmp / "source"
+            source_dir.mkdir()
+            source_file = source_dir / "note.txt"
+            source_file.write_text("source\n", encoding="utf-8")
+            rootfs_file = tmp / "workspaces" / workspace_id / "rootfs" / "workspace" / "mounted" / "note.txt"
+            rootfs_file.parent.mkdir(parents=True)
+            rootfs_file.write_text("stale-rootfs\n", encoding="utf-8")
+
+            service = UserSpaceService()
+            service._workspaces_dir = tmp / "workspaces"
+            service._base_dir = tmp
+
+            with patch.object(
+                service,
+                "resolve_workspace_mounts_for_runtime",
+                AsyncMock(
+                    return_value=[
+                        {
+                            "target_path": "/workspace/mounted",
+                            "source_local_path": str(source_dir),
+                        }
+                    ]
+                ),
+            ):
+                resolved = await service._resolve_workspace_tree_file_path(
+                    workspace_id,
+                    "mounted/note.txt",
+                )
+
+            self.assertEqual(resolved.resolve(), source_file.resolve())
 
     async def test_cleanup_interrupted_workspace_mount_syncs_marks_syncing_rows_error(self) -> None:
         table = _FakeWorkspaceMountTable([])

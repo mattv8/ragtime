@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import unittest
@@ -167,6 +168,175 @@ class SandboxProvisioningTests(unittest.TestCase):
             archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-cleanup-*"))
             self.assertEqual(len(archives), 1)
             self.assertEqual(list((rootfs / "workspace").iterdir()), [])
+
+    def test_terminate_sandbox_cgroup_processes_sends_sigterm_to_lingering_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            cgroup_parent = tmp / "cgroups"
+            cgroup_path = cgroup_parent / "workspace-1"
+            cgroup_path.mkdir(parents=True)
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=tmp / "files",
+                rootfs_path=tmp / "rootfs",
+                mode="pivot_root",
+            )
+            caps = sandbox.SandboxCapabilities(
+                cgroup_pids_available=True,
+                cgroup_pids_parent=str(cgroup_parent),
+                cgroup_pids_max=1024,
+                mode="pivot_root",
+            )
+
+            with (
+                mock.patch.object(
+                    sandbox,
+                    "_read_cgroup_process_ids",
+                    side_effect=[[123, 456], []],
+                ),
+                mock.patch.object(sandbox.os, "kill") as kill_process,
+            ):
+                sandbox._terminate_sandbox_cgroup_processes(spec, caps)
+
+            self.assertEqual(
+                kill_process.mock_calls,
+                [
+                    mock.call(123, sandbox.signal.SIGTERM),
+                    mock.call(456, sandbox.signal.SIGTERM),
+                ],
+            )
+
+    def test_list_workspace_files_uses_canonical_files_for_active_pivot_root_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_root = tmp / "workspaces" / "workspace-1"
+            files = workspace_root / "files"
+            rootfs = workspace_root / "rootfs"
+            files.mkdir(parents=True)
+            (files / "dashboard").mkdir()
+            (files / "dashboard" / "main.ts").write_text("export const value = 1;\n", encoding="utf-8")
+            (rootfs / "workspace").mkdir(parents=True)
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="pivot_root",
+            )
+            service = WorkerService()
+            service._root = tmp
+            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=True,
+                can_pivot_root=True,
+                can_mount=True,
+                mode="pivot_root",
+            )
+
+            with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
+                response = asyncio.run(service.list_workspace_files("workspace-1", include_dirs=True))
+
+            paths = {entry.path for entry in response.files}
+            self.assertIn("dashboard", paths)
+            self.assertIn("dashboard/main.ts", paths)
+
+    def test_list_workspace_files_uses_active_chroot_mirror_without_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_root = tmp / "workspaces" / "workspace-1"
+            files = workspace_root / "files"
+            rootfs = workspace_root / "rootfs"
+            files.mkdir(parents=True)
+            (files / "canonical.txt").write_text("canonical\n", encoding="utf-8")
+            rootfs_workspace = rootfs / "workspace"
+            rootfs_workspace.mkdir(parents=True)
+            (rootfs_workspace / "active-chroot.txt").write_text("active\n", encoding="utf-8")
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+            service = WorkerService()
+            service._root = tmp
+            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=False,
+                can_user_ns=False,
+                can_mount=False,
+                mode="chroot",
+            )
+
+            with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
+                response = asyncio.run(service.list_workspace_files("workspace-1", include_dirs=True))
+
+            paths = {entry.path for entry in response.files}
+            self.assertIn("active-chroot.txt", paths)
+            self.assertNotIn("canonical.txt", paths)
+
+    def test_runtime_file_read_uses_canonical_files_for_active_pivot_root_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_root = tmp / "workspaces" / "workspace-1"
+            files = workspace_root / "files"
+            rootfs = workspace_root / "rootfs"
+            files.mkdir(parents=True)
+            (files / "note.txt").write_text("canonical\n", encoding="utf-8")
+            rootfs_workspace = rootfs / "workspace"
+            rootfs_workspace.mkdir(parents=True)
+            (rootfs_workspace / "note.txt").write_text("stale-rootfs\n", encoding="utf-8")
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="pivot_root",
+            )
+            service = WorkerService()
+            service._root = tmp
+            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=True,
+                can_pivot_root=True,
+                can_mount=True,
+                mode="pivot_root",
+            )
+
+            with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
+                response = asyncio.run(service.read_file("session-1", "note.txt"))
+
+            self.assertTrue(response.exists)
+            self.assertEqual(response.content, "canonical\n")
+
+    def test_runtime_file_write_uses_active_chroot_mirror_without_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_root = tmp / "workspaces" / "workspace-1"
+            files = workspace_root / "files"
+            rootfs = workspace_root / "rootfs"
+            files.mkdir(parents=True)
+            rootfs_workspace = rootfs / "workspace"
+            rootfs_workspace.mkdir(parents=True)
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+            service = WorkerService()
+            service._root = tmp
+            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=False,
+                can_user_ns=False,
+                can_mount=False,
+                mode="chroot",
+            )
+
+            with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
+                response = asyncio.run(service.write_file("session-1", "note.txt", "active\n"))
+
+            self.assertTrue(response.exists)
+            self.assertEqual((rootfs_workspace / "note.txt").read_text(encoding="utf-8"), "active\n")
+            self.assertFalse((files / "note.txt").exists())
 
     def test_ensure_sandbox_ready_syncs_chroot_system_dirs_before_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -400,6 +570,48 @@ class SandboxProvisioningTests(unittest.TestCase):
             copytree.assert_not_called()
             self.assertTrue((files / "reconciliations").is_dir())
             self.assertEqual(mount_call.call_args_list[0].args[:2], (str(source), str(files / "reconciliations")))
+
+    def test_materialize_mounts_uses_canonical_files_for_mount_capable_sync_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            source = tmp / "source"
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            source.mkdir()
+            files.mkdir()
+            (source / "ledger.txt").write_text("synced\n", encoding="utf-8")
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="pivot_root",
+            )
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=True,
+                can_pivot_root=True,
+                can_mount=True,
+                mode="pivot_root",
+            )
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_syscall_mount") as mount_call,
+                mock.patch.object(sandbox.shutil, "copytree") as copytree,
+            ):
+                sandbox.materialize_mounts(
+                    spec,
+                    [
+                        {
+                            "source_local_path": str(source),
+                            "target_path": "/workspace/reconciliations",
+                            "read_only": True,
+                        }
+                    ],
+                )
+
+            copytree.assert_not_called()
+            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(source), str(files / "reconciliations")))
+            self.assertFalse((rootfs / "workspace" / "reconciliations").exists())
 
     def test_materialize_mounts_live_bind_missing_source_fails_loudly(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

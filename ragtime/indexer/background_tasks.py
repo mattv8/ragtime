@@ -16,8 +16,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ragtime.core.app_settings import SettingsCache
-from ragtime.core.datetimes import coerce_utc_datetime
-from ragtime.core.datetimes import utc_now
+from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import strip_table_metadata

@@ -7216,14 +7216,6 @@ class UserSpaceService:
             return self._resolve_workspace_file_path(workspace_id, normalized_path)
 
         suffix = normalized_path[len(best_prefix) :].lstrip("/")
-        runtime_workspace_dir = self._workspaces_dir / workspace_id / "rootfs" / "workspace"
-        runtime_target = runtime_workspace_dir / normalized_path
-        if runtime_workspace_dir.is_dir() and runtime_target.exists():
-            resolved_runtime_workspace = runtime_workspace_dir.resolve()
-            resolved_runtime_target = runtime_target.resolve()
-            if resolved_runtime_target == resolved_runtime_workspace or resolved_runtime_workspace in resolved_runtime_target.parents:
-                return resolved_runtime_target
-
         target = best_source_dir if not suffix else best_source_dir / suffix
         resolved_source_dir = best_source_dir.resolve()
         resolved_target = target.resolve()

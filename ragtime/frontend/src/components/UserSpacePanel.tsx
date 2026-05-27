@@ -36,6 +36,7 @@ import {
   resolveSourceDisplayPath,
   sourcePathToBrowserPath,
   browserPathToSourcePath,
+  browserPathToWorkspaceMountTargetPath,
   type BrowserPathDisplayMap,
 } from '@/utils/mountPaths';
 import {
@@ -236,9 +237,41 @@ function normalizeWorkspacePath(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
 }
 
-function browserPathToWorkspaceMountTargetPath(browserPath: string): string {
-  const normalized = normalizeMountBrowserPath(browserPath);
-  return normalized === '/' ? '/workspace' : `/workspace${normalized}`;
+function normalizeWorkspaceFileListPath(value: string, workspaceId: string | null | undefined): string {
+  const normalized = normalizeWorkspacePath(value);
+  if (!normalized) return '';
+  if (normalized === 'workspace') return '';
+  if (normalized.startsWith('workspace/')) return normalized.slice('workspace/'.length);
+
+  if (workspaceId) {
+    const workspaceFilesMarker = `workspaces/${workspaceId}/files/`;
+    const workspaceFilesIndex = normalized.indexOf(workspaceFilesMarker);
+    if (workspaceFilesIndex >= 0) {
+      return normalized.slice(workspaceFilesIndex + workspaceFilesMarker.length);
+    }
+    if (normalized.endsWith(`workspaces/${workspaceId}/files`)) {
+      return '';
+    }
+    const rootfsMarker = `workspaces/${workspaceId}/rootfs/workspace/`;
+    const rootfsIndex = normalized.indexOf(rootfsMarker);
+    if (rootfsIndex >= 0) {
+      return normalized.slice(rootfsIndex + rootfsMarker.length);
+    }
+    if (normalized.endsWith(`workspaces/${workspaceId}/rootfs/workspace`)) {
+      return '';
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeWorkspaceFileListEntries(entries: UserSpaceFileInfo[], workspaceId: string | null | undefined): UserSpaceFileInfo[] {
+  return entries
+    .map((entry) => ({
+      ...entry,
+      path: normalizeWorkspaceFileListPath(entry.path, workspaceId),
+    }))
+    .filter((entry) => entry.path.length > 0);
 }
 
 const WORKSPACE_MOUNT_SYNC_MODE_OPTIONS: Array<{
@@ -1940,8 +1973,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     };
   }, [workspaces, activeWorkspaceId, currentUser.id, isPageVisible]);
 
-  const reconcileWorkspaceFileTree = useCallback((nextEntries: UserSpaceFileInfo[]) => {
-    const nextFiles = nextEntries.filter((entry) => entry.entry_type !== 'directory');
+  const reconcileWorkspaceFileTree = useCallback((nextEntries: UserSpaceFileInfo[], workspaceId: string) => {
+    const normalizedEntries = normalizeWorkspaceFileListEntries(nextEntries, workspaceId);
+    const nextFiles = normalizedEntries.filter((entry) => entry.entry_type !== 'directory');
     const currentSelectedPath = selectedFilePathRef.current;
     const selectedExists = nextFiles.some((file) => file.path === currentSelectedPath);
     const preferredPath = selectedExists
@@ -1949,10 +1983,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       : nextFiles.some((file) => file.path === previewEntryPath)
         ? previewEntryPath
         : nextFiles[0]?.path ?? previewEntryPath;
-    const treeChanged = fileEntriesFingerprint(nextEntries) !== fileEntriesFingerprint(fileBrowserEntriesRef.current);
+    const treeChanged = fileEntriesFingerprint(normalizedEntries) !== fileEntriesFingerprint(fileBrowserEntriesRef.current);
 
     if (treeChanged) {
-      setFileBrowserEntries(nextEntries);
+      setFileBrowserEntries(normalizedEntries);
       setFiles(nextFiles);
 
       const validPaths = new Set(nextFiles.map((file) => file.path));
@@ -2041,7 +2075,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       includeDirs: true,
     });
 
-    const { changed } = reconcileWorkspaceFileTree(nextEntries);
+    const { changed } = reconcileWorkspaceFileTree(nextEntries, workspaceId);
     setError(null);
     return changed;
   }, [reconcileWorkspaceFileTree]);
@@ -2063,7 +2097,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         return;
       }
 
-      const { changed, nextFiles, preferredPath } = reconcileWorkspaceFileTree(nextEntries);
+      const { changed, nextFiles, preferredPath } = reconcileWorkspaceFileTree(nextEntries, workspaceId);
 
       if (!changed) {
         return;
@@ -4249,8 +4283,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               return;
             }
             if (payload.type === 'output') {
-              const workspaceRoot = `/data/_userspace/workspaces/${activeWorkspaceId}/files`;
-              const output = (payload.data ?? '').split(workspaceRoot).join('<workspace>');
+              const workspaceRoots = [
+                `/data/_userspace/workspaces/${activeWorkspaceId}/files`,
+                `/data/_userspace/workspaces/${activeWorkspaceId}/rootfs/workspace`,
+              ];
+              const output = workspaceRoots.reduce(
+                (current, workspaceRoot) => current.split(workspaceRoot).join('<workspace>'),
+                payload.data ?? '',
+              );
               terminal.write(output);
               return;
             }
@@ -5561,15 +5601,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const relativePath = normalizedBrowserPath === '/' ? '' : normalizedBrowserPath.slice(1);
 
     const entries: DirectoryEntry[] = fileBrowserEntries
-      .filter((entry) => {
-        const normalizedEntryPath = normalizeWorkspacePath(entry.path);
+      .map((entry) => ({
+        entry,
+        normalizedEntryPath: normalizeWorkspaceFileListPath(entry.path, activeWorkspaceId),
+      }))
+      .filter(({ normalizedEntryPath }) => {
+        if (!normalizedEntryPath) {
+          return false;
+        }
         const entryParentPath = normalizedEntryPath.includes('/')
           ? normalizedEntryPath.slice(0, normalizedEntryPath.lastIndexOf('/'))
           : '';
         return entryParentPath === relativePath;
       })
-      .map((entry) => {
-        const normalizedEntryPath = normalizeWorkspacePath(entry.path);
+      .map(({ entry, normalizedEntryPath }) => {
         const entryName = normalizedEntryPath.split('/').pop() || normalizedEntryPath;
         return {
           name: entryName,
@@ -5590,7 +5635,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       entries,
       error: undefined,
     };
-  }, [fileBrowserEntries]);
+  }, [activeWorkspaceId, fileBrowserEntries]);
 
   const handleStartWorkspaceRename = useCallback((workspace: UserSpaceWorkspace) => {
     setDeleteConfirmWorkspaceId(null);

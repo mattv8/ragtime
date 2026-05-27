@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pty as pty_module
+import signal
 import struct
 import termios
 from collections.abc import AsyncIterator
@@ -507,16 +508,36 @@ _pty_master_fds: dict[str, int] = {}
 _pty_lock = asyncio.Lock()
 
 
+async def _terminate_pty_process(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 2,
+) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        pgid = os.getpgid(process.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+    except Exception:
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            process.kill()
+        with contextlib.suppress(Exception):
+            await process.wait()
+
+
 async def _evict_pty(session_id: str) -> None:
     """Terminate any existing PTY process for *session_id*."""
     process = _pty_processes.pop(session_id, None)
     master_fd = _pty_master_fds.pop(session_id, None)
     if process is not None and process.returncode is None:
-        process.terminate()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(process.wait(), timeout=2)
-        if process.returncode is None:
-            process.kill()
+        await _terminate_pty_process(process)
     if master_fd is not None:
         with contextlib.suppress(Exception):
             os.close(master_fd)
@@ -769,9 +790,7 @@ async def pty(worker_session_id: str, websocket: WebSocket):
                 with contextlib.suppress(Exception):
                     await websocket.send_text(json.dumps({"type": "output", "data": output_text}))
         if process.returncode is None:
-            process.terminate()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(process.wait(), timeout=2)
+            await _terminate_pty_process(process)
         with contextlib.suppress(Exception):
             os.close(master_fd)
 

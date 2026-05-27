@@ -49,12 +49,14 @@ from runtime.worker.sandbox import (
     SANDBOX_WORKSPACE_MOUNT,
     SandboxSpec,
     cleanup_sandbox,
+    detect_capabilities,
     ensure_sandbox_ready,
     get_sandbox_spec,
     materialize_mounts,
     recommended_startup_concurrency,
     sandbox_diagnostics,
     spawn_sandboxed,
+    workspace_mirror_required,
 )
 
 from ..core.shared import (
@@ -299,11 +301,12 @@ class WorkerService:
         env: dict[str, str] | None = None,
     ) -> tuple[int, bytes, bytes]:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+        workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
                 *args,
-                cwd=str(workspace_files_path),
+                cwd=str(workspace_tree_root),
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -329,8 +332,7 @@ class WorkerService:
     ) -> RuntimeWorkspaceFileListResponse:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
         mount_specs = list(workspace_mounts or [])
-        active_workspace_path = await self._active_runtime_workspace_path(workspace_id)
-        tree_root = active_workspace_path or workspace_files_path
+        tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
 
         base_entries = await asyncio.to_thread(
             list_workspace_tree_entries,
@@ -340,7 +342,7 @@ class WorkerService:
         mount_prefixes = deduplicate_ancestor_paths(
             [repo_rel for spec in mount_specs if (repo_rel := workspace_mount_target_repo_relative_path(str(spec.get("target_path", "") or "")))]
         )
-        if mount_prefixes and active_workspace_path is None:
+        if mount_prefixes and tree_root == workspace_files_path:
             base_entries = [entry for entry in base_entries if not any(workspace_path_matches_mount_prefix(entry.path, prefix) for prefix in mount_prefixes)]
 
         mount_entries = await asyncio.to_thread(
@@ -356,16 +358,22 @@ class WorkerService:
             files=[self._workspace_file_info(entry) for entry in sorted(entries_by_path.values(), key=lambda item: item.path)]
         )
 
-    async def _active_runtime_workspace_path(self, workspace_id: str) -> Path | None:
+    async def _active_workspace_tree_root(self, workspace_id: str, workspace_files_path: Path) -> Path:
         async with self._lock:
             active_sessions = [
                 session for session in self._sessions.values() if session.workspace_id == workspace_id and session.state in {"running", "starting"}
             ]
         if not active_sessions:
-            return None
+            return workspace_files_path
         session = max(active_sessions, key=lambda item: item.updated_at)
+        return self._workspace_tree_root_for_session(session, workspace_files_path)
+
+    def _workspace_tree_root_for_session(self, session: WorkerSession, fallback_workspace_files_path: Path | None = None) -> Path:
+        workspace_files_path = fallback_workspace_files_path if fallback_workspace_files_path is not None else session.workspace_files_path
+        if not workspace_mirror_required(session.sandbox_spec, detect_capabilities()):
+            return workspace_files_path
         workspace_path = session.sandbox_spec.rootfs_path / session.sandbox_spec.sandbox_workspace.lstrip("/")
-        return workspace_path if workspace_path.is_dir() else None
+        return workspace_path if workspace_path.is_dir() else workspace_files_path
 
     async def run_workspace_git_command(
         self,
@@ -390,9 +398,10 @@ class WorkerService:
         workspace_id: str,
     ) -> RuntimeWorkspaceScmStatusResponse:
         _, workspace_files_path, _ = self._resolve_workspace_root(workspace_id)
+        workspace_tree_root = await self._active_workspace_tree_root(workspace_id, workspace_files_path)
         sync_scope_paths = await asyncio.to_thread(
             sync_scope_relative_paths,
-            workspace_files_path,
+            workspace_tree_root,
             ignored_relative_paths=PLATFORM_MANAGED_GITIGNORE_PATTERNS,
         )
         commit_result = await self._run_git_in_workspace_raw(
@@ -2273,7 +2282,8 @@ class WorkerService:
                 enforce_sqlite_managed=True,
             )
             mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
-            target = mounted_target[0] if mounted_target else session.workspace_files_path / rel_path
+            workspace_tree_root = self._workspace_tree_root_for_session(session)
+            target = mounted_target[0] if mounted_target else workspace_tree_root / rel_path
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
             content = await asyncio.to_thread(target.read_text, encoding="utf-8")
@@ -2297,7 +2307,8 @@ class WorkerService:
             mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
             if mounted_target and mounted_target[1]:
                 raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
-            target = mounted_target[0] if mounted_target else session.workspace_files_path / rel_path
+            workspace_tree_root = self._workspace_tree_root_for_session(session)
+            target = mounted_target[0] if mounted_target else workspace_tree_root / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(target.write_text, content, encoding="utf-8")
             session.updated_at = utc_now()
@@ -2315,7 +2326,8 @@ class WorkerService:
             mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
             if mounted_target and mounted_target[1]:
                 raise HTTPException(status_code=403, detail="Mounted workspace paths are read-only")
-            target = mounted_target[0] if mounted_target else session.workspace_files_path / rel_path
+            workspace_tree_root = self._workspace_tree_root_for_session(session)
+            target = mounted_target[0] if mounted_target else workspace_tree_root / rel_path
             if target.exists() and target.is_file():
                 target.unlink()
             session.updated_at = utc_now()
