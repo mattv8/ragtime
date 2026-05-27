@@ -56,12 +56,27 @@ class SandboxProvisioningTests(unittest.TestCase):
             rootfs = tmp / "rootfs"
             legacy_workspace = rootfs / "workspace"
             files.mkdir()
-            (legacy_workspace / ".ragtime" / "db").mkdir(parents=True)
+            (legacy_workspace / ".ragtime" / "db" / "app.sqlite3").parent.mkdir(parents=True)
             (legacy_workspace / ".ragtime" / "db" / "app.sqlite3").write_bytes(b"sqlite-data")
-            (legacy_workspace / "dashboard").mkdir()
-            (legacy_workspace / "dashboard" / "main.ts").write_text("export const value = 1;\n", encoding="utf-8")
-            (legacy_workspace / "node_modules" / "left-pad").mkdir(parents=True)
-            (legacy_workspace / "node_modules" / "left-pad" / "index.js").write_text("module.exports = null;\n", encoding="utf-8")
+
+            preserved_paths = [
+                "dashboard/main.ts",
+                "node_modules/left-pad/index.js",
+                ".venv/lib/python3.12/site-packages/flask/__init__.py",
+                "vendor/package/index.js",
+                "dist/main.js",
+                "build/asset.txt",
+                ".next/server/app.js",
+                ".nuxt/dist/server.js",
+            ]
+            skipped_paths = [
+                ".git/objects/sentinel",
+                ".pytest_cache/sentinel",
+            ]
+            for relative_path in preserved_paths + skipped_paths:
+                path = legacy_workspace / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"{relative_path}\n", encoding="utf-8")
             spec = sandbox.SandboxSpec(
                 workspace_id="workspace-1",
                 workspace_files_path=files,
@@ -84,8 +99,10 @@ class SandboxProvisioningTests(unittest.TestCase):
                 sandbox.provision_rootfs(spec)
 
             self.assertEqual((files / ".ragtime" / "db" / "app.sqlite3").read_bytes(), b"sqlite-data")
-            self.assertEqual((files / "dashboard" / "main.ts").read_text(encoding="utf-8"), "export const value = 1;\n")
-            self.assertFalse((files / "node_modules" / "left-pad" / "index.js").exists())
+            for relative_path in preserved_paths:
+                self.assertEqual((files / relative_path).read_text(encoding="utf-8"), f"{relative_path}\n")
+            for relative_path in skipped_paths:
+                self.assertFalse((files / relative_path).exists())
             archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-*"))
             self.assertEqual(len(archives), 1)
             self.assertTrue((archives[0] / "node_modules" / "left-pad" / "index.js").exists())

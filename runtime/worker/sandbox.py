@@ -113,7 +113,26 @@ SANDBOX_WORKSPACE_MOUNT = "/workspace"
 # Path inside sandbox where /proc is mounted
 SANDBOX_PROC_MOUNT = "/proc"
 _WORKSPACE_LEGACY_RECOVERY_DIR = "_legacy_workspace_recoveries"
+# Indexing/search exclusions used when mirroring or scanning a workspace for
+# discovery; intentionally broad to keep search indexes lean.
 _WORKSPACE_SYNC_SKIP_DIRS = DEFAULT_EXCLUDE_DIR_NAMES
+# Recovery migrates files that were previously written only into the legacy
+# rootfs workspace copy back into canonical workspace files.  Default to
+# preserving everything (runtime dependencies, build outputs, framework caches,
+# config dirs) and only skip directories that are unsafe or wasteful to
+# migrate: VCS metadata and pure tool caches that re-generate on demand.
+# This policy is intentionally independent of indexing excludes.
+_WORKSPACE_RECOVERY_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".tox",
+        ".cache",
+        "coverage",
+    }
+)
 _WORKSPACE_SYNC_SKIP_SUFFIXES = GENERATED_BYTECODE_EXTENSIONS
 
 # Minimal /usr payload required for chroot fallback operation when mounts are
@@ -480,7 +499,12 @@ def _copy_workspace_file_if_needed(src: Path, dst: Path) -> str:
     return "copied"
 
 
-def _sync_workspace_copy_to_canonical(spec: SandboxSpec, source_workspace: Path) -> dict[str, int]:
+def _sync_workspace_copy_to_canonical(
+    spec: SandboxSpec,
+    source_workspace: Path,
+    *,
+    skip_dirs: frozenset[str] = _WORKSPACE_SYNC_SKIP_DIRS,
+) -> dict[str, int]:
     canonical = spec.workspace_files_path
     stats = {
         "copied": 0,
@@ -495,7 +519,7 @@ def _sync_workspace_copy_to_canonical(spec: SandboxSpec, source_workspace: Path)
     for root, dirs, files in os.walk(source_workspace, topdown=True, followlinks=False):
         kept_dirs = []
         for dirname in dirs:
-            if dirname in _WORKSPACE_SYNC_SKIP_DIRS:
+            if dirname in skip_dirs:
                 stats["skipped"] += 1
                 continue
             kept_dirs.append(dirname)
@@ -541,7 +565,11 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str) -> None:
     if not has_content:
         return
 
-    stats = _sync_workspace_copy_to_canonical(spec, source_workspace)
+    stats = _sync_workspace_copy_to_canonical(
+        spec,
+        source_workspace,
+        skip_dirs=_WORKSPACE_RECOVERY_SKIP_DIRS,
+    )
     archive = _safe_legacy_archive_path(spec.rootfs_path.parent, label)
     try:
         source_workspace.rename(archive)
