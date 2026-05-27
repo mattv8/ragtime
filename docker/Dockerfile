@@ -172,6 +172,9 @@ RUN mkdir -p "$INDEX_DATA_PATH" && \
 FROM python:3.12-slim-trixie AS production
 
 ARG APP_VERSION=dev
+# Propagated from the builder stage so the runtime entrypoint can warn or
+# fail fast on hosts whose CPUs cannot run the selected build variant.
+ARG LEGACY_CPU=0
 
 # Labels
 LABEL maintainer="elastropy.com"
@@ -183,6 +186,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/ragtime \
     RAGTIME_VERSION=${APP_VERSION} \
+    RAGTIME_LEGACY_CPU=${LEGACY_CPU} \
     PATH="/opt/venv/bin:$PATH"
 
 # Install runtime dependencies

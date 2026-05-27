@@ -30,6 +30,76 @@ if [ -z "$PYTHON_BIN" ]; then
     fi
 fi
 
+# CPU baseline preflight.
+#
+# NumPy 2.x and other wheels in the default ("main") image are built with the
+# x86_64-v2 baseline (SSE3 + SSSE3 + SSE4.1 + SSE4.2 + POPCNT). On hosts that
+# lack any of those flags, `import numpy` aborts deep in the FastAPI startup
+# and the operator sees an opaque traceback. Detect the mismatch up front and
+# fail fast with an actionable message pointing at the `legacy` image tag.
+cpu_baseline_preflight() {
+    # Only meaningful on x86_64 Linux hosts that expose /proc/cpuinfo flags.
+    local arch
+    arch="$(uname -m 2>/dev/null || echo unknown)"
+    if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then
+        return 0
+    fi
+    if [ ! -r /proc/cpuinfo ]; then
+        return 0
+    fi
+
+    local flags
+    flags="$(awk -F': ' '/^flags[[:space:]]*:/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
+    if [ -z "$flags" ]; then
+        return 0
+    fi
+
+    # /proc/cpuinfo reports SSE4.1/SSE4.2 as `sse4_1`/`sse4_2`.
+    local required="sse3 ssse3 sse4_1 sse4_2 popcnt"
+    local missing=""
+    local flag
+    for flag in $required; do
+        case " $flags " in
+            *" $flag "*) ;;
+            *) missing="${missing}${missing:+ }${flag}" ;;
+        esac
+    done
+
+    if [ -z "$missing" ]; then
+        return 0
+    fi
+
+    local is_legacy="${RAGTIME_LEGACY_CPU:-0}"
+    if [ "$is_legacy" = "1" ]; then
+        # Legacy build ships numpy<2 wheels with SSE2 baseline; still warn so
+        # operators know they are on the legacy path.
+        log "WARNING" "Host CPU is missing X86_V2 features (${missing}); running legacy CPU build."
+        return 0
+    fi
+
+    log "ERROR" "Host CPU is missing X86_V2 features required by this image: ${missing}"
+    echo ""
+    echo "This image is built with the x86_64-v2 baseline (NumPy 2.x and other"
+    echo "wheels require SSE3, SSSE3, SSE4.1, SSE4.2, and POPCNT). Your host"
+    echo "CPU does not advertise these flags, so the API will crash during"
+    echo "startup with 'NumPy was built with baseline optimizations (X86_V2)'."
+    echo ""
+    echo "Use the legacy image instead, e.g. in docker-compose.yml:"
+    echo "  image: hub.docker.visnovsky.us/library/ragtime:legacy"
+    echo "or for a branch build: ragtime:legacy-<branch>"
+    echo ""
+    echo "If you must run an unsupported configuration, set"
+    echo "RAGTIME_SKIP_CPU_PREFLIGHT=1 (not recommended; startup will still"
+    echo "abort once NumPy is imported)."
+    if [ "${RAGTIME_SKIP_CPU_PREFLIGHT:-0}" = "1" ]; then
+        log "WARNING" "RAGTIME_SKIP_CPU_PREFLIGHT=1 set; continuing despite incompatible CPU."
+        return 0
+    fi
+    exit 1
+}
+
+cpu_baseline_preflight
+
 if [ "$DEBUG_MODE" = "true" ]; then
     log "WARNING" "Running in DEBUG mode"
 fi

@@ -59,6 +59,25 @@ class LegacyContainerDependencyTests(unittest.TestCase):
         self.assertIn("version('faiss-cpu') == '1.13.0'", self.dockerfile_text)
         self.assertIn("import faiss", self.dockerfile_text)
 
+    def test_production_stage_propagates_legacy_cpu_env(self) -> None:
+        # The production stage must reset the ARG so the build-arg flows in,
+        # and expose it to the entrypoint so the CPU preflight can branch.
+        production_marker = "FROM python:3.12-slim-trixie AS production"
+        self.assertIn(production_marker, self.dockerfile_text)
+        production_stage = self.dockerfile_text.split(production_marker, 1)[1]
+        self.assertIn("ARG LEGACY_CPU=0", production_stage)
+        self.assertIn("RAGTIME_LEGACY_CPU=${LEGACY_CPU}", production_stage)
+
+    def test_entrypoint_has_x86_v2_cpu_baseline_preflight(self) -> None:
+        entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        self.assertIn("cpu_baseline_preflight", entrypoint)
+        # The preflight must look for every flag implied by the x86_64-v2
+        # baseline so that NumPy 2.x wheels can't crash startup silently.
+        for flag in ("sse3", "ssse3", "sse4_1", "sse4_2", "popcnt"):
+            self.assertIn(flag, entrypoint)
+        self.assertIn("RAGTIME_LEGACY_CPU", entrypoint)
+        self.assertIn("ragtime:legacy", entrypoint)
+
 
 if __name__ == "__main__":
     unittest.main()
