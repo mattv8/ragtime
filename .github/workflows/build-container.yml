@@ -316,6 +316,11 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
 
+          ENVIRONMENT="main"
+          if [ "${GITHUB_REF}" = "refs/heads/beta" ]; then
+            ENVIRONMENT="beta"
+          fi
+
           if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
             LEGACY_TAG="legacy"
           else
@@ -327,6 +332,7 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "image-name=${IMAGE}:${LEGACY_TAG}" >> "$GITHUB_OUTPUT"
           echo "short-sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
           echo "Legacy tags to be pushed: ${TAGS}"
 
       - name: Log in to Harbor Registry
@@ -347,6 +353,7 @@ jobs:
           build-args: |
             LEGACY_CPU=1
             APP_VERSION=${{ steps.meta.outputs.short-sha }}
+            ENVIRONMENT=${{ steps.meta.outputs.environment }}
           # Don't use cache for legacy build to ensure clean numpy compilation
           no-cache: true
 
