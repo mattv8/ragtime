@@ -71,6 +71,10 @@ RUN --mount=type=cache,id=ragtime-pip-cache,target=/root/.cache/pip,sharing=lock
     curl -fsSL https://bun.sh/install | bash
 
 COPY runtime/ /runtime/runtime/
+RUN mkdir -p /runtime/ragtime/core
+COPY ragtime/__init__.py /runtime/ragtime/__init__.py
+COPY ragtime/core/__init__.py /runtime/ragtime/core/__init__.py
+COPY ragtime/core/file_constants.py /runtime/ragtime/core/file_constants.py
 COPY docker/entrypoint.runtime.sh /entrypoint.runtime.sh
 
 RUN dos2unix /entrypoint.runtime.sh \

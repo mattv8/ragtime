@@ -48,6 +48,49 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertTrue((rootfs / "workspace").is_dir())
             copytree.assert_not_called()
 
+    def test_provision_rootfs_reconciles_legacy_workspace_copy_before_bind_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            legacy_workspace = rootfs / "workspace"
+            files.mkdir()
+            (legacy_workspace / ".ragtime" / "db").mkdir(parents=True)
+            (legacy_workspace / ".ragtime" / "db" / "app.sqlite3").write_bytes(b"sqlite-data")
+            (legacy_workspace / "dashboard").mkdir()
+            (legacy_workspace / "dashboard" / "main.ts").write_text("export const value = 1;\n", encoding="utf-8")
+            (legacy_workspace / "node_modules" / "left-pad").mkdir(parents=True)
+            (legacy_workspace / "node_modules" / "left-pad" / "index.js").write_text("module.exports = null;\n", encoding="utf-8")
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="pivot_root",
+            )
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=True,
+                can_pivot_root=True,
+                can_mount=True,
+                mode="pivot_root",
+            )
+
+            with (
+                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "_provision_etc"),
+                mock.patch.object(sandbox, "_provision_dev"),
+                mock.patch.object(sandbox.shutil, "copytree") as copytree,
+            ):
+                sandbox.provision_rootfs(spec)
+
+            self.assertEqual((files / ".ragtime" / "db" / "app.sqlite3").read_bytes(), b"sqlite-data")
+            self.assertEqual((files / "dashboard" / "main.ts").read_text(encoding="utf-8"), "export const value = 1;\n")
+            self.assertFalse((files / "node_modules" / "left-pad" / "index.js").exists())
+            archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-*"))
+            self.assertEqual(len(archives), 1)
+            self.assertTrue((archives[0] / "node_modules" / "left-pad" / "index.js").exists())
+            self.assertEqual(list((rootfs / "workspace").iterdir()), [])
+            copytree.assert_not_called()
+
     def test_provision_rootfs_mirrors_workspace_for_no_mount_chroot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
@@ -84,6 +127,46 @@ class SandboxProvisioningTests(unittest.TestCase):
                 copytree.call_args.args[:2],
                 (str(files), str(rootfs / "workspace")),
             )
+
+    def test_cleanup_sandbox_reconciles_no_mount_chroot_workspace_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            legacy_workspace = rootfs / "workspace"
+            files.mkdir()
+            legacy_workspace.mkdir(parents=True)
+            canonical_file = files / "dashboard" / "main.ts"
+            canonical_file.parent.mkdir()
+            canonical_file.write_text("old\n", encoding="utf-8")
+            legacy_file = legacy_workspace / "dashboard" / "main.ts"
+            legacy_file.parent.mkdir()
+            legacy_file.write_text("new\n", encoding="utf-8")
+            os.utime(canonical_file, (1000, 1000))
+            os.utime(legacy_file, (2000, 2000))
+            (legacy_workspace / ".ragtime" / "db").mkdir(parents=True)
+            (legacy_workspace / ".ragtime" / "db" / "app.sqlite3").write_bytes(b"sqlite-data")
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+            caps = sandbox.SandboxCapabilities(
+                has_cap_sys_admin=False,
+                can_user_ns=False,
+                can_mount=False,
+                mode="chroot",
+            )
+
+            with mock.patch.object(sandbox, "detect_capabilities", return_value=caps):
+                sandbox.cleanup_sandbox(spec)
+
+            self.assertEqual(canonical_file.read_text(encoding="utf-8"), "new\n")
+            self.assertEqual((files / ".ragtime" / "db" / "app.sqlite3").read_bytes(), b"sqlite-data")
+            archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-cleanup-*"))
+            self.assertEqual(len(archives), 1)
+            self.assertEqual(list((rootfs / "workspace").iterdir()), [])
 
     def test_ensure_sandbox_ready_syncs_chroot_system_dirs_before_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

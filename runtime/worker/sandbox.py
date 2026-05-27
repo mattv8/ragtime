@@ -28,6 +28,7 @@ import asyncio
 import ctypes
 import ctypes.util
 import errno
+import filecmp
 import logging
 import os
 import posixpath
@@ -38,6 +39,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Sequence
+
+from ragtime.core.file_constants import DEFAULT_EXCLUDE_DIR_NAMES, GENERATED_BYTECODE_EXTENSIONS
 
 from ..core.shared import has_cap_sys_admin
 
@@ -108,6 +111,9 @@ _SANDBOX_WRITABLE_DIRS = [
 SANDBOX_WORKSPACE_MOUNT = "/workspace"
 # Path inside sandbox where /proc is mounted
 SANDBOX_PROC_MOUNT = "/proc"
+_WORKSPACE_LEGACY_RECOVERY_DIR = "_legacy_workspace_recoveries"
+_WORKSPACE_SYNC_SKIP_DIRS = DEFAULT_EXCLUDE_DIR_NAMES
+_WORKSPACE_SYNC_SKIP_SUFFIXES = GENERATED_BYTECODE_EXTENSIONS
 
 # Minimal /usr payload required for chroot fallback operation when mounts are
 # unavailable (non-CAP_SYS_ADMIN mode without mount namespace).
@@ -427,6 +433,138 @@ def _chroot_system_sync_required(spec: SandboxSpec, caps: SandboxCapabilities) -
     return spec.mode == "chroot" and caps.mode == "chroot" and not caps.can_mount
 
 
+def _safe_legacy_archive_path(workspace_root: Path, label: str) -> Path:
+    archive_root = workspace_root / _WORKSPACE_LEGACY_RECOVERY_DIR
+    archive_root.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    base = archive_root / f"{label}-{timestamp}"
+    candidate = base
+    suffix = 1
+    while candidate.exists():
+        suffix += 1
+        candidate = Path(f"{base}-{suffix}")
+    return candidate
+
+
+def _copy_workspace_symlink(src: Path, dst: Path) -> str:
+    target = os.readlink(src)
+    if dst.is_symlink() and os.readlink(dst) == target:
+        return "same"
+    if dst.exists() and not dst.is_symlink():
+        return "preserved_canonical"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink():
+        dst.unlink()
+    os.symlink(target, dst)
+    shutil.copystat(src, dst, follow_symlinks=False)
+    return "copied"
+
+
+def _copy_workspace_file_if_needed(src: Path, dst: Path) -> str:
+    src_stat = src.stat()
+    if dst.exists():
+        if dst.is_file():
+            dst_stat = dst.stat()
+            if src_stat.st_size == dst_stat.st_size and filecmp.cmp(src, dst, shallow=False):
+                return "same"
+            if src_stat.st_mtime <= dst_stat.st_mtime:
+                return "preserved_canonical"
+        else:
+            return "preserved_canonical"
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.syncing-{os.getpid()}")
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+    return "copied"
+
+
+def _sync_workspace_copy_to_canonical(spec: SandboxSpec, source_workspace: Path) -> dict[str, int]:
+    canonical = spec.workspace_files_path
+    stats = {
+        "copied": 0,
+        "same": 0,
+        "preserved_canonical": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
+    if not source_workspace.is_dir() or not canonical.is_dir():
+        return stats
+
+    for root, dirs, files in os.walk(source_workspace, topdown=True, followlinks=False):
+        kept_dirs = []
+        for dirname in dirs:
+            if dirname in _WORKSPACE_SYNC_SKIP_DIRS:
+                stats["skipped"] += 1
+                continue
+            kept_dirs.append(dirname)
+        dirs[:] = kept_dirs
+
+        root_path = Path(root)
+        relative_root = root_path.relative_to(source_workspace)
+        for filename in files:
+            src = root_path / filename
+            if src.suffix in _WORKSPACE_SYNC_SKIP_SUFFIXES:
+                stats["skipped"] += 1
+                continue
+            dst = canonical / relative_root / filename
+            try:
+                if src.is_symlink():
+                    result = _copy_workspace_symlink(src, dst)
+                elif src.is_file():
+                    result = _copy_workspace_file_if_needed(src, dst)
+                else:
+                    stats["skipped"] += 1
+                    continue
+                stats[result] = stats.get(result, 0) + 1
+            except Exception as exc:
+                stats["errors"] += 1
+                logger.warning(
+                    "workspace sync failed for %s -> %s in %s: %s",
+                    src,
+                    dst,
+                    spec.workspace_id,
+                    exc,
+                )
+    return stats
+
+
+def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str) -> None:
+    source_workspace = spec.rootfs_path / spec.sandbox_workspace.lstrip("/")
+    if not source_workspace.is_dir() or not spec.workspace_files_path.is_dir():
+        return
+    try:
+        has_content = any(source_workspace.iterdir())
+    except OSError:
+        return
+    if not has_content:
+        return
+
+    stats = _sync_workspace_copy_to_canonical(spec, source_workspace)
+    archive = _safe_legacy_archive_path(spec.rootfs_path.parent, label)
+    try:
+        source_workspace.rename(archive)
+    except OSError as exc:
+        logger.warning(
+            "Failed to archive legacy workspace copy for %s at %s: %s",
+            spec.workspace_id,
+            source_workspace,
+            exc,
+        )
+        return
+    _ensure_real_directory(source_workspace)
+    logger.info(
+        "Reconciled legacy sandbox workspace for %s: copied=%s same=%s preserved_canonical=%s skipped=%s errors=%s archive=%s",
+        spec.workspace_id,
+        stats.get("copied", 0),
+        stats.get("same", 0),
+        stats.get("preserved_canonical", 0),
+        stats.get("skipped", 0),
+        stats.get("errors", 0),
+        archive,
+    )
+
+
 def provision_rootfs(spec: SandboxSpec) -> None:
     """Create the rootfs directory tree for a workspace sandbox.
 
@@ -452,8 +590,11 @@ def provision_rootfs(spec: SandboxSpec) -> None:
     proc_dir = rootfs / "proc"
     proc_dir.mkdir(parents=True, exist_ok=True)
 
-    # /workspace mount point (project files)
+    # /workspace mount point (project files). Older chroot-only runtimes
+    # wrote directly into this rootfs copy; reconcile it before the mount
+    # capable path shadows it with the canonical files/ bind mount.
     ws_dir = rootfs / spec.sandbox_workspace.lstrip("/")
+    _reconcile_workspace_copy(spec, label="chroot-workspace")
     _ensure_real_directory(ws_dir)
 
     # In mount-capable sandbox modes the child bind-mounts the real
@@ -1498,6 +1639,10 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
     if not rootfs.exists():
         return
 
+    caps = detect_capabilities()
+    if _workspace_mirror_required(spec, caps):
+        _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup")
+
     # Unmount any lingering bind mounts (best effort)
     try:
         mounts_data = Path("/proc/mounts").read_text(encoding="utf-8")
@@ -1513,7 +1658,7 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
     except Exception:
         pass
 
-    cgroup_path = _sandbox_cgroup_path(spec, detect_capabilities())
+    cgroup_path = _sandbox_cgroup_path(spec, caps)
     if cgroup_path is not None:
         try:
             cgroup_path.rmdir()

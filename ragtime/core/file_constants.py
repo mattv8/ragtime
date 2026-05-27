@@ -9,6 +9,8 @@ These constants are shared between:
 
 import fnmatch
 
+GENERATED_BYTECODE_EXTENSIONS: frozenset[str] = frozenset({".pyc", ".pyo"})
+
 # =============================================================================
 # UNPARSEABLE BINARY EXTENSIONS
 # =============================================================================
@@ -63,8 +65,7 @@ UNPARSEABLE_BINARY_EXTENSIONS: set[str] = {
     ".dmg",
     ".app",
     # Compiled bytecode
-    ".pyc",
-    ".pyo",
+    *GENERATED_BYTECODE_EXTENSIONS,
     ".class",
     ".o",
     ".obj",
@@ -242,6 +243,10 @@ DEFAULT_EXCLUDE_DIRS: list[str] = [
     "**/vendor/**",
     "**/.cache/**",
 ]
+
+DEFAULT_EXCLUDE_DIR_NAMES: frozenset[str] = frozenset(
+    pattern.removeprefix("**/").removesuffix("/**").rstrip("/").split("/")[-1] for pattern in DEFAULT_EXCLUDE_DIRS
+)
 
 # Default file patterns for indexing (common source/doc files)
 DEFAULT_FILE_PATTERNS: list[str] = [
