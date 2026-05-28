@@ -9787,6 +9787,36 @@ class WorkspaceConversationSearchResponse(BaseModel):
     )
 
 
+class ConversationBranchSearchRequest(BaseModel):
+    conversation_ids: List[str] = Field(
+        default_factory=list,
+        description="Conversation IDs to search branch-preserved messages within.",
+    )
+    query: str = Field(
+        default="",
+        max_length=200,
+        description="Search query to match against branch-preserved visible text.",
+    )
+
+
+class ConversationBranchSearchMatch(BaseModel):
+    conversation_id: str = Field(description="Conversation ID containing a branch-origin match.")
+    branch_id: str = Field(description="Branch ID containing the matching preserved message.")
+    branch_kind: Optional[Literal["edit", "delete", "replay"]] = Field(
+        default=None,
+        description="Branch operation kind when available.",
+    )
+    branch_point_index: int = Field(description="0-based branch point index.")
+    snippet: Optional[str] = Field(default=None, description="Short visible-text snippet around the branch match.")
+
+
+class ConversationBranchSearchResponse(BaseModel):
+    matches: List[ConversationBranchSearchMatch] = Field(
+        default_factory=list,
+        description="Branch-origin conversation matches grouped client-side by conversation.",
+    )
+
+
 def _message_content_visible_text(content: object) -> str:
     parsed = parse_message_content(content) if isinstance(content, str) else content
     if isinstance(parsed, str):
@@ -10269,6 +10299,63 @@ async def search_workspaces_conversations(
         )
 
     return WorkspaceConversationSearchResponse(matches=matches)
+
+
+@router.post(
+    "/conversations/branches/search",
+    response_model=ConversationBranchSearchResponse,
+)
+async def search_conversation_branches(
+    request: ConversationBranchSearchRequest,
+    user: User = Depends(get_current_user),
+):
+    """Search branch-preserved chat text across explicit conversation IDs."""
+    query = request.query.strip()
+    conversation_ids = [conversation_id.strip() for conversation_id in request.conversation_ids if conversation_id and conversation_id.strip()]
+    if not query or not conversation_ids:
+        return ConversationBranchSearchResponse(matches=[])
+
+    deduped_conversation_ids = list(dict.fromkeys(conversation_ids))[:500]
+    rows = await repository.search_conversation_branch_rows(
+        conversation_ids=deduped_conversation_ids,
+        query=query,
+        user_id=user.id,
+        include_all=user.role == "admin",
+    )
+
+    matches: list[ConversationBranchSearchMatch] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        conversation_id = str(row.get("conversation_id") or "")
+        branch_id = str(row.get("branch_id") or "")
+        if not conversation_id or not branch_id or (conversation_id, branch_id) in seen:
+            continue
+        seen.add((conversation_id, branch_id))
+
+        branch_kind_raw = row.get("branch_kind")
+        branch_kind = str(branch_kind_raw) if branch_kind_raw else None
+        if branch_kind not in {"edit", "delete", "replay", None}:
+            branch_kind = None
+
+        branch_point_raw = row.get("branch_point_index")
+        branch_point_index = int(branch_point_raw) if branch_point_raw is not None else 0
+
+        visible_text = _conversation_visible_search_text(row.get("preserved_messages"))
+        snippet = _search_snippet(visible_text, query)
+        if snippet is None:
+            continue
+
+        matches.append(
+            ConversationBranchSearchMatch(
+                conversation_id=conversation_id,
+                branch_id=branch_id,
+                branch_kind=cast(Optional[Literal["edit", "delete", "replay"]], branch_kind),
+                branch_point_index=max(0, branch_point_index),
+                snippet=snippet,
+            )
+        )
+
+    return ConversationBranchSearchResponse(matches=matches)
 
 
 @router.post("/conversations", response_model=ConversationResponse)

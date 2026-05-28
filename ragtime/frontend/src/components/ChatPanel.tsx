@@ -8,9 +8,9 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2 } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
+import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -115,6 +115,76 @@ interface BranchRenderGroup {
   selectionKey: string;
   sourceBranchPointIndex: number;
   branches: ConversationBranchSummary[];
+}
+
+interface BranchSearchAnchorHint {
+  conversationId: string;
+  branchId: string;
+  branchPointIndex: number;
+}
+
+interface ChatKeywordFocusHint {
+  conversationId: string;
+  query: string;
+  preferBranchAnchor: boolean;
+  token: number;
+}
+
+function wrapFirstMatchingText(
+  containers: HTMLElement[],
+  query: string,
+): { highlight: HTMLElement; unwrap: () => void } | null {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return null;
+
+  for (const container of containers) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => {
+        const text = node.textContent || '';
+        if (!text.trim()) return NodeFilter.FILTER_SKIP;
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_SKIP;
+        if (parent.closest('.chat-search-focus-highlight, .chat-search-highlight, script, style')) {
+          return NodeFilter.FILTER_SKIP;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    let currentNode = walker.nextNode();
+    while (currentNode) {
+      const textNode = currentNode as Text;
+      const text = textNode.textContent || '';
+      const matchIndex = text.toLowerCase().indexOf(needle);
+      if (matchIndex >= 0) {
+        const range = document.createRange();
+        range.setStart(textNode, matchIndex);
+        range.setEnd(textNode, matchIndex + needle.length);
+        const highlight = document.createElement('span');
+        highlight.className = 'chat-search-focus-highlight';
+        try {
+          range.surroundContents(highlight);
+          return {
+            highlight,
+            unwrap: () => {
+              const parent = highlight.parentNode;
+              if (!parent) return;
+              while (highlight.firstChild) {
+                parent.insertBefore(highlight.firstChild, highlight);
+              }
+              parent.removeChild(highlight);
+              parent.normalize();
+            },
+          };
+        } catch {
+          return null;
+        }
+      }
+      currentNode = walker.nextNode();
+    }
+  }
+
+  return null;
 }
 
 function getConversationBranchAnchorIndex(
@@ -5443,6 +5513,99 @@ function buildConversationSnippet(conversation: Conversation, query: string, rad
   return null;
 }
 
+function mapBranchSearchMatchesByConversation(
+  matches: ConversationBranchSearchMatch[],
+): Record<string, ConversationBranchSearchMatch> {
+  const byConversation: Record<string, ConversationBranchSearchMatch> = {};
+  for (const match of matches) {
+    if (!match.conversation_id || byConversation[match.conversation_id]) continue;
+    byConversation[match.conversation_id] = match;
+  }
+  return byConversation;
+}
+
+function getBranchSearchTooltip(match: ConversationBranchSearchMatch): string {
+  const branchKindLabel = match.branch_kind ? `${match.branch_kind} branch` : 'branch';
+  return `Match found in ${branchKindLabel} anchored near message ${match.branch_point_index + 1}.`;
+}
+
+function getBranchSearchLabel(match: ConversationBranchSearchMatch): string {
+  const branchKindLabel = match.branch_kind ? `${match.branch_kind} branch` : 'Branch';
+  return `${branchKindLabel} at msg ${match.branch_point_index + 1}`;
+}
+
+function branchSearchMatchTargetsGroup(
+  match: BranchSearchAnchorHint | null,
+  group: BranchRenderGroup,
+): boolean {
+  if (!match) return false;
+  return group.sourceBranchPointIndex === match.branchPointIndex
+    || group.branches.some((branch) => branch.id === match.branchId);
+}
+
+function useConversationBranchSearchMatches({
+  enabled,
+  query,
+  conversationIds,
+}: {
+  enabled: boolean;
+  query: string;
+  conversationIds: string[];
+}): Record<string, ConversationBranchSearchMatch> {
+  const conversationIdsKey = useMemo(() => conversationIds.join('\u0000'), [conversationIds]);
+  const [matchesByConversationId, setMatchesByConversationId] = useState<Record<string, ConversationBranchSearchMatch>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const trimmedQuery = query.trim();
+    const ids = conversationIdsKey.split('\u0000').filter(Boolean);
+    if (!enabled || !trimmedQuery || ids.length === 0) {
+      setMatchesByConversationId({});
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void api.searchConversationBranches(ids, trimmedQuery)
+      .then((response) => {
+        if (cancelled) return;
+        setMatchesByConversationId(mapBranchSearchMatchesByConversation(response.matches));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMatchesByConversationId({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, query, conversationIdsKey]);
+
+  return matchesByConversationId;
+}
+
+function BranchSearchToggle({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: () => void;
+}) {
+  const title = enabled ? 'Search includes chat branches' : 'Search chat branches';
+  return (
+    <button
+      type="button"
+      className={`chat-search-branch-toggle${enabled ? ' active' : ''}`}
+      onClick={onToggle}
+      title={title}
+      aria-label={title}
+      aria-pressed={enabled}
+    >
+      <GitBranch size={12} />
+    </button>
+  );
+}
+
 const HighlightedText = memo(function HighlightedText({ text, query }: { text: string; query: string }) {
   if (!text) return null;
   const needle = query.trim();
@@ -5586,6 +5749,8 @@ export function ChatPanel({
   const [branchPoints, setBranchPoints] = useState<ConversationBranchPointInfo[]>([]);
   const [branchSwitching, setBranchSwitching] = useState(false);
   const [branchSelections, setBranchSelections] = useState<Record<string, string>>({});
+  const [branchSearchAnchorHint, setBranchSearchAnchorHint] = useState<BranchSearchAnchorHint | null>(null);
+  const [chatKeywordFocusHint, setChatKeywordFocusHint] = useState<ChatKeywordFocusHint | null>(null);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
@@ -5641,6 +5806,97 @@ export function ChatPanel({
     () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
     [branchPoints],
   );
+
+  useEffect(() => {
+    if (!branchSearchAnchorHint || activeConversationId !== branchSearchAnchorHint.conversationId) return;
+    const anchor = document.querySelector<HTMLElement>('.chat-branch-nav-search-highlight');
+    if (!anchor) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      anchor.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    const timeoutId = window.setTimeout(() => {
+      setBranchSearchAnchorHint((current) => (
+        current?.conversationId === branchSearchAnchorHint.conversationId
+        && current.branchId === branchSearchAnchorHint.branchId
+          ? null
+          : current
+      ));
+    }, 5000);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeConversationId, branchGroupsByIndex, branchSearchAnchorHint]);
+
+  useEffect(() => {
+    if (!chatKeywordFocusHint || activeConversationId !== chatKeywordFocusHint.conversationId) return;
+    const messagesRoot = chatMessagesRef.current;
+    if (!messagesRoot) return;
+
+    let cancelled = false;
+    let retryTimeoutId: number | null = null;
+    let clearTimeoutId: number | null = null;
+    let cleanupHighlight: (() => void) | null = null;
+
+    const tryHighlight = (attempt = 0) => {
+      if (cancelled) return;
+
+      const messageWrappers = Array.from(messagesRoot.querySelectorAll<HTMLElement>('.chat-branch-wrapper'));
+      const branchAnchor = chatKeywordFocusHint.preferBranchAnchor
+        ? messagesRoot.querySelector<HTMLElement>('.chat-branch-nav-search-highlight')
+        : null;
+
+      if (chatKeywordFocusHint.preferBranchAnchor && !branchAnchor) {
+        if (attempt < 20) {
+          retryTimeoutId = window.setTimeout(() => tryHighlight(attempt + 1), 120);
+        }
+        return;
+      }
+
+      let candidateContainers = messageWrappers;
+      if (branchAnchor) {
+        const branchWrapper = branchAnchor.closest<HTMLElement>('.chat-branch-wrapper');
+        const branchWrapperIndex = branchWrapper ? messageWrappers.indexOf(branchWrapper) : -1;
+        if (branchWrapperIndex >= 0) {
+          candidateContainers = messageWrappers.slice(branchWrapperIndex);
+        }
+      }
+
+      const wrapped = wrapFirstMatchingText(candidateContainers, chatKeywordFocusHint.query)
+        || (branchAnchor ? wrapFirstMatchingText(messageWrappers, chatKeywordFocusHint.query) : null);
+
+      if (!wrapped) {
+        if (attempt < 20) {
+          retryTimeoutId = window.setTimeout(() => tryHighlight(attempt + 1), 120);
+        }
+        return;
+      }
+
+      cleanupHighlight = wrapped.unwrap;
+      wrapped.highlight.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      clearTimeoutId = window.setTimeout(() => {
+        cleanupHighlight?.();
+        cleanupHighlight = null;
+        setChatKeywordFocusHint((current) => (current?.token === chatKeywordFocusHint.token ? null : current));
+      }, 5000);
+    };
+
+    retryTimeoutId = window.setTimeout(() => tryHighlight(), 0);
+
+    return () => {
+      cancelled = true;
+      if (retryTimeoutId !== null) {
+        window.clearTimeout(retryTimeoutId);
+      }
+      if (clearTimeoutId !== null) {
+        window.clearTimeout(clearTimeoutId);
+      }
+      cleanupHighlight?.();
+    };
+  }, [activeConversationId, chatKeywordFocusHint]);
+
   const [showToolCalls, setShowToolCalls] = useState(() => {
     const saved = localStorage.getItem('chat-show-tool-calls');
     return saved !== null ? saved === 'true' : true;
@@ -5778,6 +6034,9 @@ export function ChatPanel({
   const deferredConversationSearchQuery = useDeferredValue(conversationSearchQuery);
   const deferredWorkspaceConversationSearchQuery = useDeferredValue(workspaceConversationSearchQuery);
   const deferredArchiveSearchQuery = useDeferredValue(archiveSearchQuery);
+  const [sidebarBranchSearchEnabled, setSidebarBranchSearchEnabled] = useState(false);
+  const [workspaceBranchSearchEnabled, setWorkspaceBranchSearchEnabled] = useState(false);
+  const [archiveBranchSearchEnabled, setArchiveBranchSearchEnabled] = useState(false);
   const workspaceConversationSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
@@ -5823,6 +6082,36 @@ export function ChatPanel({
   const initialConversationIdRef = useRef<string | null>(
     initialConversationId && initialConversationId.trim() ? initialConversationId.trim() : null,
   );
+
+  const sidebarBranchSearchConversationIds = useMemo(() => {
+    if (workspaceId) return [];
+    return Array.from(new Set([...conversations, ...archivedConversations].map((conversation) => conversation.id)));
+  }, [workspaceId, conversations, archivedConversations]);
+
+  const workspaceBranchSearchConversationIds = useMemo(() => {
+    if (!workspaceId) return [];
+    return Array.from(new Set([...conversations, ...workspaceArchivedConversations].map((conversation) => conversation.id)));
+  }, [workspaceId, conversations, workspaceArchivedConversations]);
+
+  const archiveBranchSearchConversationIds = useMemo(() => {
+    if (workspaceId) return [];
+    return Array.from(new Set(archivedConversations.map((conversation) => conversation.id)));
+  }, [workspaceId, archivedConversations]);
+  const sidebarBranchSearchMatches = useConversationBranchSearchMatches({
+    enabled: sidebarBranchSearchEnabled && !workspaceId,
+    query: deferredConversationSearchQuery,
+    conversationIds: sidebarBranchSearchConversationIds,
+  });
+  const workspaceBranchSearchMatches = useConversationBranchSearchMatches({
+    enabled: workspaceBranchSearchEnabled && Boolean(workspaceId),
+    query: deferredWorkspaceConversationSearchQuery,
+    conversationIds: workspaceBranchSearchConversationIds,
+  });
+  const archiveBranchSearchMatches = useConversationBranchSearchMatches({
+    enabled: archiveBranchSearchEnabled && !workspaceId && showArchiveModal,
+    query: deferredArchiveSearchQuery,
+    conversationIds: archiveBranchSearchConversationIds,
+  });
 
   useEffect(() => {
     if (initialConversationId && initialConversationId.trim()) {
@@ -7732,7 +8021,7 @@ export function ChatPanel({
     };
   }, [stopTaskStreaming]);
 
-  const selectConversation = async (conversation: Conversation) => {
+  const selectConversation = async (conversation: Conversation): Promise<Conversation | null> => {
     const isSwitchingConversation = activeConversation?.id !== conversation.id;
     const requestId = ++selectConversationRequestIdRef.current;
     try {
@@ -7749,7 +8038,7 @@ export function ChatPanel({
       // Refresh the conversation to get latest messages
       const fresh = await api.getConversation(conversation.id, workspaceId);
       if (requestId !== selectConversationRequestIdRef.current) {
-        return;
+        return null;
       }
       setActiveConversation(fresh);
       // Sync sidebar title in case it was updated while another conversation was active
@@ -7757,17 +8046,63 @@ export function ChatPanel({
         setConversations(prev => prev.map(c => c.id === fresh.id ? { ...c, title: fresh.title } : c));
       }
       setError(null);
+      return fresh;
     } catch (err) {
       if (requestId !== selectConversationRequestIdRef.current) {
-        return;
+        return null;
       }
       setError(err instanceof Error ? err.message : 'Failed to load conversation');
+      return null;
     } finally {
       if (requestId === selectConversationRequestIdRef.current && isSwitchingConversation) {
         setIsConversationSwitchLoading(false);
       }
     }
   };
+
+  const selectConversationFromSearchResult = useCallback(async (
+    conversation: Conversation,
+    branchSearchMatch?: ConversationBranchSearchMatch,
+    keywordQuery?: string,
+  ) => {
+    const selectedConversation = await selectConversation(conversation);
+    if (!selectedConversation) {
+      return;
+    }
+    const trimmedKeywordQuery = keywordQuery?.trim() || '';
+    if (trimmedKeywordQuery) {
+      setChatKeywordFocusHint({
+        conversationId: conversation.id,
+        query: trimmedKeywordQuery,
+        preferBranchAnchor: Boolean(branchSearchMatch?.branch_id),
+        token: Date.now(),
+      });
+    } else {
+      setChatKeywordFocusHint(null);
+    }
+    if (!branchSearchMatch?.branch_id) {
+      setBranchSearchAnchorHint(null);
+      return;
+    }
+
+    setBranchSearchAnchorHint({
+      conversationId: conversation.id,
+      branchId: branchSearchMatch.branch_id,
+      branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
+    });
+    void refreshBranchPoints(conversation.id);
+  }, [refreshBranchPoints, selectConversation]);
+
+  const jumpToBranchSearchResult = useCallback(async (
+    conversation: Conversation,
+    branchSearchMatch?: ConversationBranchSearchMatch,
+    keywordQuery?: string,
+  ) => {
+    if (!branchSearchMatch) {
+      return;
+    }
+    await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
+  }, [selectConversationFromSearchResult]);
 
   const deleteConversation = async (conversationId: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -8652,20 +8987,35 @@ export function ChatPanel({
   }, [memberPickerUsers, conversationOwnerId, conversationShareableUserIds]);
   const showInlineToolSelector = canUseConversationTools;
 
-  const renderConversationItem = (conv: Conversation, options?: { searchQuery?: string; onClickOverride?: () => void }) => {
+  const renderConversationItem = (conv: Conversation, options?: {
+    searchQuery?: string;
+    onClickOverride?: () => void | Promise<void>;
+    branchSearchMatch?: ConversationBranchSearchMatch;
+  }) => {
     const searchQuery = options?.searchQuery ?? '';
     const messageCount = getConversationMessageCount(conv);
     const metaMessageCount = `${messageCount} msg${messageCount === 1 ? '' : 's'}`;
     const metaTimestamp = formatChatTimestamp(conv.updated_at);
     const isActive = activeConversation?.id === conv.id;
-    const snippet = searchQuery.trim() ? buildConversationSnippet(conv, searchQuery) : null;
-    const handleItemClick = options?.onClickOverride ?? (() => selectConversation(conv));
+    const branchSearchMatch = searchQuery.trim() ? options?.branchSearchMatch : undefined;
+    const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
+    const snippet = searchQuery.trim()
+      ? buildConversationSnippet(conv, searchQuery)
+      : null;
+    const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
+    const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
+    const handleItemClick = options?.onClickOverride
+      ?? (() => selectConversationFromSearchResult(conv, undefined, searchQuery));
+    const handleBranchResultClick = (event: React.MouseEvent | React.KeyboardEvent) => {
+      event.stopPropagation();
+      void jumpToBranchSearchResult(conv, branchSearchMatch, searchQuery);
+    };
 
     return (
       <div
         key={conv.id}
-        className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}`}
-        onClick={handleItemClick}
+        className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
+        onClick={() => { void handleItemClick(); }}
       >
         {editingTitle === conv.id ? (
           <textarea
@@ -8701,11 +9051,54 @@ export function ChatPanel({
             </div>
             <div className="chat-conversation-meta">
               <span className="chat-meta-count">{metaMessageCount}</span>
+              {branchSearchLabel && (
+                <span
+                  className="chat-branch-search-chip chat-branch-search-jump-target"
+                  title={branchSearchTooltip ?? undefined}
+                  role="button"
+                  tabIndex={0}
+                  onClick={handleBranchResultClick}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      handleBranchResultClick(event);
+                    }
+                  }}
+                >
+                  <GitBranch size={11} />
+                  {branchSearchLabel}
+                </span>
+              )}
               <span className="chat-meta-time">{metaTimestamp}</span>
             </div>
             {snippet && (
               <div className="chat-conversation-snippet" title={snippet}>
                 <HighlightedText text={snippet} query={searchQuery} />
+              </div>
+            )}
+            {branchSearchMatch && (
+              <div
+                className="chat-conversation-snippet chat-conversation-branch-snippet chat-branch-search-jump-target"
+                title={branchSnippet || branchSearchTooltip || undefined}
+                role="button"
+                tabIndex={0}
+                onClick={handleBranchResultClick}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    handleBranchResultClick(event);
+                  }
+                }}
+              >
+                <span className="chat-branch-search-snippet-label">
+                  <GitBranch size={11} />
+                  Branch
+                </span>
+                {branchSnippet ? (
+                  <HighlightedText text={branchSnippet} query={searchQuery} />
+                ) : (
+                  <span>{branchSearchTooltip}</span>
+                )}
               </div>
             )}
           </>
@@ -8813,7 +9206,7 @@ export function ChatPanel({
       {/* Conversations Sidebar */}
       {!embedded && showSidebar && <div className="chat-sidebar open">
         {!workspaceId && (
-          <div className="chat-conversation-search">
+          <div className="chat-conversation-search chat-search-with-branches">
             <input
               type="text"
               className="chat-conversation-search-input"
@@ -8833,6 +9226,10 @@ export function ChatPanel({
                 <X size={12} />
               </button>
             )}
+            <BranchSearchToggle
+              enabled={sidebarBranchSearchEnabled}
+              onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
+            />
             {(archiveLoading && conversationSearchQuery) || conversations.some(c => c.active_task_id) ? (
               <span className="chat-conversation-search-spinner" title={archiveLoading && conversationSearchQuery ? 'Loading older chats' : 'Processing in background'}>
                 <MiniLoadingSpinner variant="icon" size={12} />
@@ -8862,7 +9259,10 @@ export function ChatPanel({
                 ]
               : conversations;
             const filteredConversations = trimmedQuery
-              ? baseConversations.filter((c) => conversationMatchesCachedQuery(c, trimmedQuery))
+              ? baseConversations.filter((c) => (
+                  conversationMatchesCachedQuery(c, trimmedQuery)
+                  || Boolean(sidebarBranchSearchMatches[c.id])
+                ))
               : baseConversations;
 
             if (filteredConversations.length === 0) {
@@ -8888,7 +9288,10 @@ export function ChatPanel({
               );
             }
 
-            const renderItem = (conv: Conversation) => renderConversationItem(conv, { searchQuery: trimmedQuery });
+            const renderItem = (conv: Conversation) => renderConversationItem(conv, {
+              searchQuery: trimmedQuery,
+              branchSearchMatch: sidebarBranchSearchMatches[conv.id],
+            });
 
             if (isAdmin) {
               // Re-group filtered list so admin grouping still works while searching.
@@ -9034,7 +9437,7 @@ export function ChatPanel({
                     {isWorkspaceConversationMenuOpen && (
                       <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
                         {workspaceConversationOptions.length > 1 && (
-                        <div className="model-selector-search">
+                        <div className="model-selector-search chat-search-with-branches">
                           <input
                             ref={workspaceConversationSearchInputRef}
                             type="text"
@@ -9068,6 +9471,10 @@ export function ChatPanel({
                               <X size={12} />
                             </button>
                           )}
+                          <BranchSearchToggle
+                            enabled={workspaceBranchSearchEnabled}
+                            onToggle={() => setWorkspaceBranchSearchEnabled((enabled) => !enabled)}
+                          />
                         </div>
                         )}
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
@@ -9091,7 +9498,10 @@ export function ChatPanel({
                                 ]
                               : workspaceConversationOptions;
                             const filtered = needle
-                              ? searchBase.filter((c) => conversationMatchesCachedQuery(c, needle))
+                              ? searchBase.filter((c) => (
+                                  conversationMatchesCachedQuery(c, needle)
+                                  || Boolean(workspaceBranchSearchMatches[c.id])
+                                ))
                               : searchBase;
                             if (filtered.length === 0) {
                               return (
@@ -9107,6 +9517,12 @@ export function ChatPanel({
                             const isInterruptedTask = !isLive && (isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id));
                             const isRawInterrupted = isInterruptedTask;
                             const isInterrupted = isRawInterrupted && !interruptDismissed;
+                            const branchSearchMatch = deferredWorkspaceConversationSearchQuery.trim()
+                              ? workspaceBranchSearchMatches[conversation.id]
+                              : undefined;
+                            const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
+                            const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
+                            const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
 
                             return (
                               <div
@@ -9114,10 +9530,10 @@ export function ChatPanel({
                                 role="option"
                                 tabIndex={0}
                                 aria-selected={isSelected}
-                                className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}`}
+                                className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
                                 onClick={() => {
                                   setIsWorkspaceConversationMenuOpen(false);
-                                  void selectConversation(conversation);
+                                  void selectConversationFromSearchResult(conversation, undefined, workspaceConversationSearchQuery);
                                 }}
                                 onKeyDown={(event) => {
                                   if (isEditing) {
@@ -9126,7 +9542,7 @@ export function ChatPanel({
                                   if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault();
                                     setIsWorkspaceConversationMenuOpen(false);
-                                    void selectConversation(conversation);
+                                    void selectConversationFromSearchResult(conversation, undefined, workspaceConversationSearchQuery);
                                   }
                                 }}
                               >
@@ -9164,15 +9580,74 @@ export function ChatPanel({
                                           ? <HighlightedText text={conversation.title || 'Untitled Chat'} query={workspaceConversationSearchQuery} />
                                           : (conversation.title || 'Untitled Chat')}
                                       </span>
+                                      {branchSearchLabel && (
+                                        <span
+                                          className="chat-branch-search-chip chat-workspace-branch-search-chip chat-branch-search-jump-target"
+                                          title={branchSearchTooltip ?? undefined}
+                                          role="button"
+                                          tabIndex={0}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            setIsWorkspaceConversationMenuOpen(false);
+                                            void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                          }}
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Enter' || event.key === ' ') {
+                                              event.preventDefault();
+                                              event.stopPropagation();
+                                              setIsWorkspaceConversationMenuOpen(false);
+                                              void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                            }
+                                          }}
+                                        >
+                                          <GitBranch size={11} />
+                                          {branchSearchLabel}
+                                        </span>
+                                      )}
                                       {(() => {
                                         const snippet = deferredWorkspaceConversationSearchQuery.trim()
                                           ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
                                           : null;
-                                        if (!snippet) return null;
+                                        if (!snippet && !branchSearchMatch) return null;
                                         return (
-                                          <div className="chat-conversation-snippet chat-workspace-conversation-snippet" title={snippet}>
-                                            <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
-                                          </div>
+                                          <>
+                                            {snippet && (
+                                              <div className="chat-conversation-snippet chat-workspace-conversation-snippet" title={snippet}>
+                                                <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
+                                              </div>
+                                            )}
+                                            {branchSearchMatch && (
+                                              <div
+                                                className="chat-conversation-snippet chat-conversation-branch-snippet chat-workspace-conversation-snippet chat-branch-search-jump-target"
+                                                title={branchSnippet || branchSearchTooltip || undefined}
+                                                role="button"
+                                                tabIndex={0}
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  setIsWorkspaceConversationMenuOpen(false);
+                                                  void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                                }}
+                                                onKeyDown={(event) => {
+                                                  if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    setIsWorkspaceConversationMenuOpen(false);
+                                                    void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                                  }
+                                                }}
+                                              >
+                                                <span className="chat-branch-search-snippet-label">
+                                                  <GitBranch size={11} />
+                                                  Branch
+                                                </span>
+                                                {branchSnippet ? (
+                                                  <HighlightedText text={branchSnippet} query={workspaceConversationSearchQuery} />
+                                                ) : (
+                                                  <span>{branchSearchTooltip}</span>
+                                                )}
+                                              </div>
+                                            )}
+                                          </>
                                         );
                                       })()}
                                     </>
@@ -9656,9 +10131,15 @@ export function ChatPanel({
                               matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
                             }
                             const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+                            const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === activeConversation.id
+                              && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
 
                             return (
-                              <span key={group.selectionKey} className="chat-branch-nav">
+                              <span
+                                key={group.selectionKey}
+                                className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
+                                title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
+                              >
                                 <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
                                   <ChevronLeft size={12} />
                                 </button>
@@ -10297,7 +10778,7 @@ export function ChatPanel({
         >
           <div className="modal chat-archive-modal" onClick={(e) => e.stopPropagation()}>
             <div className="chat-archive-modal-toolbar">
-              <div className="chat-conversation-search chat-conversation-search-modal">
+              <div className="chat-conversation-search chat-conversation-search-modal chat-search-with-branches">
                 <input
                   type="text"
                   className="chat-conversation-search-input"
@@ -10318,6 +10799,10 @@ export function ChatPanel({
                     <X size={12} />
                   </button>
                 )}
+                <BranchSearchToggle
+                  enabled={archiveBranchSearchEnabled}
+                  onToggle={() => setArchiveBranchSearchEnabled((enabled) => !enabled)}
+                />
               </div>
               <div className="chat-archive-settings">
                 <div className="chat-archive-settings-form">
@@ -10350,7 +10835,10 @@ export function ChatPanel({
               ) : (() => {
                 const trimmed = deferredArchiveSearchQuery.trim();
                 const list = trimmed
-                  ? archivedConversations.filter((c) => conversationMatchesCachedQuery(c, trimmed))
+                  ? archivedConversations.filter((c) => (
+                      conversationMatchesCachedQuery(c, trimmed)
+                      || Boolean(archiveBranchSearchMatches[c.id])
+                    ))
                   : archivedConversations;
                 if (list.length === 0) {
                   return (
@@ -10367,13 +10855,14 @@ export function ChatPanel({
                   <div className="chat-conversation-list chat-conversation-list-non-admin chat-archive-conversation-list">
                     {list.map((conv) => renderConversationItem(conv, {
                       searchQuery: trimmed,
-                      onClickOverride: () => {
+                      branchSearchMatch: archiveBranchSearchMatches[conv.id],
+                      onClickOverride: async () => {
                         setShowArchiveModal(false);
                         // Pull the older chat into the visible list so the
                         // chat panel can render it immediately without a
                         // refetch loop.
                         setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
-                        void selectConversation(conv);
+                        await selectConversationFromSearchResult(conv, archiveBranchSearchMatches[conv.id]);
                       },
                     }))}
                     {archiveLoading && archivedConversations.length > 0 && (

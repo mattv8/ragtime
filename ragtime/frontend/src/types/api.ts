@@ -2022,6 +2022,23 @@ export interface WorkspaceConversationSearchResponse {
   matches: WorkspaceConversationSearchMatch[];
 }
 
+export interface ConversationBranchSearchRequest {
+  conversation_ids: string[];
+  query: string;
+}
+
+export interface ConversationBranchSearchMatch {
+  conversation_id: string;
+  branch_id: string;
+  branch_kind?: ConversationBranchKind | null;
+  branch_point_index: number;
+  snippet?: string | null;
+}
+
+export interface ConversationBranchSearchResponse {
+  matches: ConversationBranchSearchMatch[];
+}
+
 export interface WorkspaceChatStateResponse {
   conversations: Conversation[];
   interrupted_conversation_ids: string[];

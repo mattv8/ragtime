@@ -2202,6 +2202,86 @@ class IndexerRepository:
             """)
         return [dict(row) for row in rows]
 
+    async def search_conversation_branch_rows(
+        self,
+        conversation_ids: list[str],
+        query: str,
+        user_id: Optional[str] = None,
+        include_all: bool = False,
+        limit_per_conversation: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Return branch-preserved message rows matching a conversation search query."""
+        deduped_conversation_ids = [conversation_id for conversation_id in dict.fromkeys(conversation_ids) if conversation_id]
+        needle = query.strip()
+        if not deduped_conversation_ids or not needle:
+            return []
+
+        db = await self._get_db()
+        conversation_id_clause = ", ".join(_sql_quote_literal(conversation_id) for conversation_id in deduped_conversation_ids)
+        pattern = _sql_quote_literal(f"%{needle}%")
+
+        access_clause = ""
+        if not include_all:
+            if not user_id:
+                return []
+            quoted_user_id = _sql_quote_literal(user_id)
+            access_clause = f"""
+                AND (
+                    (
+                        c.workspace_id IS NULL
+                        AND (
+                            c.user_id = {quoted_user_id}
+                            OR EXISTS (
+                                SELECT 1
+                                FROM conversation_members cm
+                                WHERE cm.conversation_id = c.id
+                                AND cm.user_id = {quoted_user_id}
+                            )
+                        )
+                    )
+                    OR (
+                        c.workspace_id IS NOT NULL
+                        AND (
+                            w.owner_user_id = {quoted_user_id}
+                            OR EXISTS (
+                                SELECT 1
+                                FROM workspace_members wm
+                                WHERE wm.workspace_id = c.workspace_id
+                                AND wm.user_id = {quoted_user_id}
+                            )
+                        )
+                    )
+                )
+            """
+
+        per_conversation_limit = max(1, min(int(limit_per_conversation), 5))
+        rows = await db.query_raw(f"""
+            WITH ranked_matches AS (
+                SELECT
+                    cb.conversation_id,
+                    cb.id AS branch_id,
+                    cb.branch_kind,
+                    cb.branch_point_index,
+                    cb.preserved_messages,
+                    cb.updated_at,
+                    row_number() OVER (
+                        PARTITION BY cb.conversation_id
+                        ORDER BY cb.updated_at DESC, cb.id DESC
+                    ) AS rn
+                FROM conversation_branches cb
+                JOIN conversations c ON c.id = cb.conversation_id
+                LEFT JOIN workspaces w ON w.id = c.workspace_id
+                WHERE cb.conversation_id IN ({conversation_id_clause})
+                {access_clause}
+                AND cb.preserved_messages::text ILIKE {pattern}
+            )
+            SELECT conversation_id, branch_id, branch_kind, branch_point_index, preserved_messages, updated_at
+            FROM ranked_matches
+            WHERE rn <= {per_conversation_limit}
+            ORDER BY updated_at DESC, branch_id DESC
+            """)
+        return [dict(row) for row in rows]
+
     async def list_conversations_by_ids(self, conversation_ids: list[str]) -> list[Conversation]:
         """List conversations by explicit IDs, newest first."""
         if not conversation_ids:
