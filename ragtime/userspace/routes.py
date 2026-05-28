@@ -20,7 +20,8 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
@@ -42,6 +43,7 @@ from ragtime.indexer.models import (
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.tool_health import tool_health_monitor
+from ragtime.userspace import sqlite_inspector as sqlite_inspector_helpers
 from ragtime.userspace.cloud_mounts import microsoft_tenant_endpoint_error_message
 from ragtime.userspace.models import (
     BrowseCloudMountSourceRequest,
@@ -73,6 +75,33 @@ from ragtime.userspace.models import (
     PaginatedWorkspacesResponse,
     PromoteBranchToMainRequest,
     RestoreSnapshotResponse,
+    SqliteInspectorAlterTableRequest,
+    SqliteInspectorAlterTableResponse,
+    SqliteInspectorColumnInfo,
+    SqliteInspectorCreateTableRequest,
+    SqliteInspectorCreateTableResponse,
+    SqliteInspectorDatabaseListResponse,
+    SqliteInspectorDatabaseSummary,
+    SqliteInspectorDeleteDatabaseResponse,
+    SqliteInspectorDropTableResponse,
+    SqliteInspectorForeignKeyInfo,
+    SqliteInspectorImportDatabaseResponse,
+    SqliteInspectorImportTableResponse,
+    SqliteInspectorIndexInfo,
+    SqliteInspectorInitializeRequest,
+    SqliteInspectorInitializeResponse,
+    SqliteInspectorRowDeleteRequest,
+    SqliteInspectorRowDeleteResponse,
+    SqliteInspectorRowMutationRequest,
+    SqliteInspectorRowMutationResponse,
+    SqliteInspectorRowPage,
+    SqliteInspectorRowUpdateRequest,
+    SqliteInspectorSqlQueryRequest,
+    SqliteInspectorSqlQueryResponse,
+    SqliteInspectorTableListResponse,
+    SqliteInspectorTableSchema,
+    SqliteInspectorTableSchemaResponse,
+    SqliteInspectorTableSummary,
     SwitchSnapshotBranchRequest,
     UpdateSnapshotRequest,
     UpdateUserspaceMountSourceRequest,
@@ -2313,4 +2342,655 @@ async def get_latest_workspace_sqlite_import_task(
         workspace_id,
         user.id,
         is_admin=is_admin,
+    )
+
+
+# ---------------------------------------------------------------------------
+# SQLite Inspector endpoints
+# ---------------------------------------------------------------------------
+
+
+def _serialize_inspector_database(
+    summary: sqlite_inspector_helpers.DatabaseSummary,
+) -> SqliteInspectorDatabaseSummary:
+    return SqliteInspectorDatabaseSummary(
+        name=summary.name,
+        relative_path=summary.relative_path,
+        size_bytes=summary.size_bytes,
+        table_count=summary.table_count,
+        last_modified_ms=summary.last_modified_ms,
+    )
+
+
+def _serialize_inspector_table(
+    summary: sqlite_inspector_helpers.TableSummary,
+) -> SqliteInspectorTableSummary:
+    return SqliteInspectorTableSummary(
+        name=summary.name,
+        type=summary.type,
+        row_count=summary.row_count,
+    )
+
+
+def _serialize_inspector_column(
+    column: sqlite_inspector_helpers.ColumnInfo,
+) -> SqliteInspectorColumnInfo:
+    return SqliteInspectorColumnInfo(
+        name=column.name,
+        type=column.type,
+        not_null=column.not_null,
+        primary_key=column.primary_key,
+        primary_key_position=column.primary_key_position,
+        default_value=column.default_value,
+    )
+
+
+def _serialize_inspector_schema(
+    schema: sqlite_inspector_helpers.TableSchema,
+) -> SqliteInspectorTableSchema:
+    return SqliteInspectorTableSchema(
+        name=schema.name,
+        type=schema.type,
+        columns=[_serialize_inspector_column(c) for c in schema.columns],
+        indexes=[
+            SqliteInspectorIndexInfo(
+                name=idx.name,
+                unique=idx.unique,
+                origin=idx.origin,
+                columns=list(idx.columns),
+            )
+            for idx in schema.indexes
+        ],
+        foreign_keys=[
+            SqliteInspectorForeignKeyInfo(
+                id=fk.id,
+                seq=fk.seq,
+                from_column=fk.from_column,
+                to_table=fk.to_table,
+                to_column=fk.to_column,
+                on_update=fk.on_update,
+                on_delete=fk.on_delete,
+            )
+            for fk in schema.foreign_keys
+        ],
+        sql=schema.sql,
+    )
+
+
+def _column_specs_to_definitions(
+    column_specs: list[Any],
+) -> list[sqlite_inspector_helpers.ColumnDefinition]:
+    return [_column_spec_to_definition(spec) for spec in column_specs]
+
+
+def _column_spec_to_definition(
+    spec: Any,
+) -> sqlite_inspector_helpers.ColumnDefinition:
+    return sqlite_inspector_helpers.ColumnDefinition(
+        name=spec.name,
+        type=spec.type,
+        not_null=spec.not_null,
+        primary_key=spec.primary_key,
+        default_value=spec.default_value,
+    )
+
+
+def _alteration_specs_to_definitions(
+    alterations: list[Any],
+) -> list[sqlite_inspector_helpers.TableAlteration]:
+    return [
+        sqlite_inspector_helpers.TableAlteration(
+            op=step.op,
+            new_table_name=step.new_table_name,
+            column=_column_spec_to_definition(step.column) if step.column is not None else None,
+            column_name=step.column_name,
+            new_column_name=step.new_column_name,
+        )
+        for step in alterations
+    ]
+
+
+async def _snapshot_after_sqlite_mutation(
+    workspace_id: str,
+    user_id: str,
+    label: str,
+) -> None:
+    snapshot = await userspace_service.create_snapshot(
+        workspace_id,
+        user_id,
+        f"SQLite: {label}",
+        auto_sync_to_scm=False,
+    )
+    await userspace_runtime_service.bump_workspace_generation(workspace_id, "sqlite-snapshot")
+    logger.info(
+        "Created SQLite inspector mutation snapshot %s for workspace %s (%s)",
+        snapshot.id,
+        workspace_id,
+        label,
+    )
+
+
+async def _sqlite_database_list_payload(
+    workspace_id: str,
+    user_id: str,
+    *,
+    is_admin: bool = False,
+) -> SqliteInspectorDatabaseListResponse:
+    databases, total_bytes, mode = await userspace_service.list_sqlite_databases(
+        workspace_id,
+        user_id,
+        is_admin=is_admin,
+    )
+    return SqliteInspectorDatabaseListResponse(
+        workspace_id=workspace_id,
+        databases=[_serialize_inspector_database(d) for d in databases],
+        total_bytes=total_bytes,
+        default_database_name=sqlite_inspector_helpers.DEFAULT_DATABASE_NAME,
+        persistence_mode=("exclude" if mode == "exclude" else "include"),
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/sqlite/databases",
+    response_model=SqliteInspectorDatabaseListResponse,
+)
+async def list_workspace_sqlite_databases(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await _sqlite_database_list_payload(
+        workspace_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.get("/workspaces/{workspace_id}/sqlite/databases/events")
+async def stream_workspace_sqlite_database_events(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+
+    async def event_stream():
+        last_payload: str | None = None
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                payload = await _sqlite_database_list_payload(
+                    workspace_id,
+                    user.id,
+                    is_admin=is_admin,
+                )
+                payload_json = json.dumps(payload.model_dump(mode="json"))
+                if payload_json != last_payload:
+                    last_payload = payload_json
+                    yield f"event: databases\ndata: {payload_json}\n\n"
+                else:
+                    yield ": keepalive\n\n"
+            except Exception as exc:
+                yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+            await asyncio.sleep(8)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite/databases",
+    response_model=SqliteInspectorInitializeResponse,
+    status_code=201,
+)
+async def initialize_workspace_sqlite_database(
+    workspace_id: str,
+    request: SqliteInspectorInitializeRequest = Body(default_factory=SqliteInspectorInitializeRequest),
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    summary, promoted = await userspace_service.initialize_sqlite_database(
+        workspace_id,
+        user.id,
+        database_name=request.database_name,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"initialize database {summary.name}")
+    return SqliteInspectorInitializeResponse(
+        workspace_id=workspace_id,
+        database=_serialize_inspector_database(summary),
+        mode_promoted=promoted,
+        persistence_mode="include",
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}",
+    response_model=SqliteInspectorDeleteDatabaseResponse,
+)
+async def delete_workspace_sqlite_database(
+    workspace_id: str,
+    database_name: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    await userspace_service.delete_sqlite_database(
+        workspace_id,
+        user.id,
+        database_name,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"delete database {database_name}")
+    return SqliteInspectorDeleteDatabaseResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+    )
+
+
+@router.get("/workspaces/{workspace_id}/sqlite/databases/{database_name}/export")
+async def export_workspace_sqlite_database(
+    workspace_id: str,
+    database_name: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    copy_path = await userspace_service.export_sqlite_database(
+        workspace_id,
+        user.id,
+        database_name,
+        is_admin=is_admin,
+    )
+    return FileResponse(
+        path=copy_path,
+        filename=database_name,
+        media_type="application/vnd.sqlite3",
+        background=BackgroundTask(lambda: Path(copy_path).unlink(missing_ok=True)),
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/import",
+    response_model=SqliteInspectorImportDatabaseResponse,
+)
+async def import_workspace_sqlite_database(
+    workspace_id: str,
+    database_name: str,
+    database_file: UploadFile = File(...),
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(database_file.filename or database_name).suffix or ".sqlite3") as tmp:
+        shutil.copyfileobj(database_file.file, tmp)
+        tmp_path = Path(tmp.name)
+    try:
+        summary, promoted = await userspace_service.import_sqlite_database(
+            workspace_id,
+            user.id,
+            database_name,
+            tmp_path,
+            is_admin=is_admin,
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"import database {summary.name}")
+    return SqliteInspectorImportDatabaseResponse(
+        workspace_id=workspace_id,
+        database=_serialize_inspector_database(summary),
+        mode_promoted=promoted,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables",
+    response_model=SqliteInspectorTableListResponse,
+)
+async def list_workspace_sqlite_tables(
+    workspace_id: str,
+    database_name: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    summary, tables = await userspace_service.list_sqlite_tables(
+        workspace_id,
+        user.id,
+        database_name,
+        is_admin=is_admin,
+    )
+    workspace = await userspace_service.get_workspace(workspace_id, user.id)
+    return SqliteInspectorTableListResponse(
+        workspace_id=workspace_id,
+        database=_serialize_inspector_database(summary),
+        tables=[_serialize_inspector_table(t) for t in tables],
+        persistence_mode=workspace.sqlite_persistence_mode,
+        mode_promoted=False,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables",
+    response_model=SqliteInspectorCreateTableResponse,
+    status_code=201,
+)
+async def create_workspace_sqlite_table(
+    workspace_id: str,
+    database_name: str,
+    request: SqliteInspectorCreateTableRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    summary, promoted = await userspace_service.create_sqlite_table(
+        workspace_id,
+        user.id,
+        database_name,
+        request.name,
+        _column_specs_to_definitions(request.columns),
+        without_rowid=request.without_rowid,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"create table {request.name}")
+    return SqliteInspectorCreateTableResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table=_serialize_inspector_table(summary),
+        mode_promoted=promoted,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/schema",
+    response_model=SqliteInspectorTableSchemaResponse,
+)
+async def get_workspace_sqlite_table_schema(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    schema = await userspace_service.get_sqlite_table_schema(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        is_admin=is_admin,
+    )
+    return SqliteInspectorTableSchemaResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        schema=_serialize_inspector_schema(schema),
+    )
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/schema",
+    response_model=SqliteInspectorAlterTableResponse,
+)
+async def alter_workspace_sqlite_table(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    request: SqliteInspectorAlterTableRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    alterations = _alteration_specs_to_definitions(request.alterations)
+    schema, promoted = await userspace_service.alter_sqlite_table(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        alterations,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"alter table {table_name}")
+    return SqliteInspectorAlterTableResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        schema=_serialize_inspector_schema(schema),
+        mode_promoted=promoted,
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}",
+    response_model=SqliteInspectorDropTableResponse,
+)
+async def drop_workspace_sqlite_table(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    promoted = await userspace_service.drop_sqlite_table(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"drop table {table_name}")
+    return SqliteInspectorDropTableResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table_name=table_name,
+        mode_promoted=promoted,
+    )
+
+
+@router.get("/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/export")
+async def export_workspace_sqlite_table(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    csv_text = await userspace_service.export_sqlite_table_csv(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        is_admin=is_admin,
+    )
+    safe_name = sqlite_inspector_helpers.validate_identifier(table_name, kind="Table name")
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'},
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/import",
+    response_model=SqliteInspectorImportTableResponse,
+)
+async def import_workspace_sqlite_table(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    csv_file: UploadFile = File(...),
+    replace: bool = Form(default=False),
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    csv_bytes = await csv_file.read()
+    try:
+        csv_text = csv_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV file must be UTF-8 encoded") from exc
+    summary, promoted = await userspace_service.import_sqlite_table_csv(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        csv_text,
+        replace=replace,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"import table {table_name}")
+    return SqliteInspectorImportTableResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table=_serialize_inspector_table(summary),
+        mode_promoted=promoted,
+    )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/rows",
+    response_model=SqliteInspectorRowPage,
+)
+async def list_workspace_sqlite_rows(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    limit: int = Query(default=sqlite_inspector_helpers.DEFAULT_ROW_PAGE_SIZE, ge=1, le=sqlite_inspector_helpers.MAX_ROW_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
+    order_by: str | None = Query(default=None, max_length=64),
+    order_direction: str = Query(default="asc"),
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    page = await userspace_service.list_sqlite_rows(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        limit=limit,
+        offset=offset,
+        order_by=order_by,
+        order_direction=order_direction,
+        is_admin=is_admin,
+    )
+    return SqliteInspectorRowPage(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table_name=table_name,
+        columns=[_serialize_inspector_column(c) for c in page.columns],
+        rows=page.rows,
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+        elapsed_ms=page.elapsed_ms,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/rows",
+    response_model=SqliteInspectorRowMutationResponse,
+    status_code=201,
+)
+async def insert_workspace_sqlite_row(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    request: SqliteInspectorRowMutationRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    row, promoted = await userspace_service.insert_sqlite_row(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        request.values,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"insert row in {table_name}")
+    return SqliteInspectorRowMutationResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table_name=table_name,
+        row=row,
+        mode_promoted=promoted,
+    )
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/rows",
+    response_model=SqliteInspectorRowMutationResponse,
+)
+async def update_workspace_sqlite_row(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    request: SqliteInspectorRowUpdateRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    row, promoted = await userspace_service.update_sqlite_row(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        request.row_key,
+        request.values,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"update row in {table_name}")
+    return SqliteInspectorRowMutationResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table_name=table_name,
+        row=row,
+        mode_promoted=promoted,
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/tables/{table_name}/rows",
+    response_model=SqliteInspectorRowDeleteResponse,
+)
+async def delete_workspace_sqlite_row(
+    workspace_id: str,
+    database_name: str,
+    table_name: str,
+    request: SqliteInspectorRowDeleteRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    promoted = await userspace_service.delete_sqlite_row(
+        workspace_id,
+        user.id,
+        database_name,
+        table_name,
+        request.row_key,
+        is_admin=is_admin,
+    )
+    await _snapshot_after_sqlite_mutation(workspace_id, user.id, f"delete row from {table_name}")
+    return SqliteInspectorRowDeleteResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        table_name=table_name,
+        mode_promoted=promoted,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/sqlite/databases/{database_name}/query",
+    response_model=SqliteInspectorSqlQueryResponse,
+)
+async def query_workspace_sqlite_database(
+    workspace_id: str,
+    database_name: str,
+    request: SqliteInspectorSqlQueryRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    result = await userspace_service.execute_sqlite_readonly_query(
+        workspace_id,
+        user.id,
+        database_name,
+        request.sql,
+        max_rows=request.max_rows,
+        is_admin=is_admin,
+    )
+    return SqliteInspectorSqlQueryResponse(
+        workspace_id=workspace_id,
+        database_name=database_name,
+        columns=result.columns,
+        rows=result.rows,
+        row_count=result.row_count,
+        truncated=result.truncated,
     )

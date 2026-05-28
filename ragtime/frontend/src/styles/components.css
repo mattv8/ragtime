@@ -1640,10 +1640,6 @@ textarea:focus {
   font-style: italic;
 }
 
-/* Tool group sections in ToolsPanel */
-.tool-group-section-panel {
-}
-
 /* Drag-and-drop feedback */
 .tool-card-drag-wrap {
   position: relative;
@@ -7115,4 +7111,611 @@ fieldset legend.legend-with-status .legend-divider {
 
 .memory-status-error {
   color: var(--color-warning);
+}
+/* --- SQLite Inspector Modal --- */
+.userspace-sqlite-modal {
+  transition: max-width var(--transition-fast), width var(--transition-fast);
+}
+.userspace-sqlite-modal-compact {
+  width: min(720px, calc(100vw - 32px));
+  max-width: 720px;
+}
+.userspace-sqlite-modal-medium {
+  width: min(920px, calc(100vw - 32px));
+  max-width: 920px;
+}
+.userspace-sqlite-modal-large {
+  width: min(1180px, calc(100vw - 32px));
+  max-width: 1180px;
+}
+.userspace-sqlite-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.userspace-sqlite-title h3 {
+  margin: 0;
+}
+.userspace-sqlite-workspace-name {
+  display: inline-flex;
+  align-items: center;
+  margin-left: var(--space-sm);
+  padding: 2px 8px;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  line-height: 1.2;
+  vertical-align: middle;
+}
+.userspace-sqlite-breadcrumb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-subtle, transparent);
+  gap: var(--space-md);
+}
+.userspace-sqlite-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+}
+.userspace-sqlite-breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.userspace-sqlite-breadcrumb-sep {
+  opacity: 0.6;
+}
+.userspace-sqlite-breadcrumb-link {
+  background: none;
+  border: none;
+  color: var(--color-accent, var(--color-text-primary));
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.userspace-sqlite-breadcrumb-link:hover {
+  text-decoration: underline;
+}
+.userspace-sqlite-breadcrumb-current {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.userspace-sqlite-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.userspace-sqlite-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: rgba(255, 200, 0, 0.08);
+  border: 1px solid rgba(255, 200, 0, 0.3);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.userspace-sqlite-step-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+.userspace-sqlite-step-header h4 {
+  margin: 0 0 4px 0;
+  font-size: var(--text-md);
+}
+.userspace-sqlite-step-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.userspace-sqlite-step-header-inline {
+  align-items: center;
+}
+.userspace-sqlite-step-header-inline .userspace-sqlite-step-actions {
+  margin-left: auto;
+  flex-wrap: nowrap;
+}
+.userspace-sqlite-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-sm);
+}
+.userspace-sqlite-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.userspace-sqlite-card:hover {
+  border-color: var(--color-accent, var(--color-border));
+  background: var(--color-surface-hover);
+}
+.userspace-sqlite-card-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.userspace-sqlite-card-main .userspace-sqlite-card-title > span,
+.userspace-sqlite-card-main .userspace-sqlite-card-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.userspace-sqlite-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.userspace-sqlite-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 600;
+}
+.userspace-sqlite-card-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-hover);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.userspace-sqlite-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+}
+/* Inline metadata row used inside step headers (not cards) */
+.userspace-sqlite-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  flex-wrap: wrap;
+}
+.userspace-sqlite-meta-path {
+  font-size: var(--text-xs);
+  background: none;
+  padding: 0;
+  color: var(--color-text-muted);
+  opacity: 0.75;
+}
+.userspace-sqlite-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl);
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+}
+.userspace-sqlite-empty-row {
+  text-align: center;
+  color: var(--color-text-muted);
+  padding: var(--space-md);
+}
+.userspace-sqlite-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle, var(--color-surface));
+}
+.userspace-sqlite-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+}
+.userspace-sqlite-column-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.userspace-sqlite-column-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-column-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.userspace-sqlite-column-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr auto auto 1.2fr auto;
+  gap: var(--space-xs);
+  align-items: center;
+}
+.userspace-sqlite-column-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+.userspace-sqlite-rows-pane,
+.userspace-sqlite-schema-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.userspace-sqlite-rows-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+.userspace-sqlite-rows-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+.userspace-sqlite-rows-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.userspace-sqlite-rows-toolbar .btn.btn-sm {
+  min-height: 30px;
+}
+.userspace-sqlite-rows-pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.userspace-sqlite-rows-page-label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  min-width: 26px;
+  text-align: center;
+  padding: 0 4px;
+}
+.userspace-sqlite-rows-count {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+.userspace-sqlite-rows-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+/* Filter bar */
+.userspace-sqlite-filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-sm);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-filter-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+  min-height: 30px;
+}
+.userspace-sqlite-filter-keyword {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  min-width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+  text-transform: lowercase;
+}
+.userspace-sqlite-filter-select {
+  width: auto;
+  min-width: 110px;
+  max-width: 180px;
+  padding: 4px 8px;
+  font-size: var(--text-sm);
+  height: 30px;
+}
+.userspace-sqlite-filter-value {
+  width: auto;
+  min-width: 160px;
+  max-width: 280px;
+  padding: 4px 8px;
+  font-size: var(--text-sm);
+  height: 30px;
+}
+.userspace-sqlite-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--color-border);
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+.userspace-sqlite-filter-empty {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.userspace-sqlite-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--color-accent, #4a90e2);
+  color: #fff;
+  margin-left: 2px;
+  vertical-align: middle;
+}
+/* Checkbox column */
+.userspace-sqlite-checkbox-col {
+  width: 32px;
+  padding: 4px 8px !important;
+  text-align: center !important;
+}
+.userspace-sqlite-checkbox-col .userspace-sqlite-row-checkbox {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border-color: color-mix(in srgb, var(--color-border) 80%, var(--color-text-muted));
+  background: var(--color-bg-secondary);
+}
+.userspace-sqlite-checkbox-col .userspace-sqlite-row-checkbox:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+.userspace-sqlite-checkbox-col .userspace-sqlite-row-checkbox:checked,
+.userspace-sqlite-checkbox-col .userspace-sqlite-row-checkbox:indeterminate {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+}
+/* Selected row highlight */
+.userspace-sqlite-table tbody tr.is-selected {
+  background: rgba(74, 144, 226, 0.12);
+}
+.userspace-sqlite-table tbody tr.is-selected:hover {
+  background: rgba(74, 144, 226, 0.18);
+}
+/* Active filter button indicator */
+.userspace-sqlite-rows-toolbar .btn.btn-active {
+  background: var(--color-surface-active, rgba(74, 144, 226, 0.15));
+  border-color: var(--color-accent, #4a90e2);
+  color: var(--color-accent, #4a90e2);
+}
+.userspace-sqlite-filter-row .btn.btn-sm.btn-icon {
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+.userspace-sqlite-table-wrapper {
+  overflow: auto;
+  max-height: 50vh;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.userspace-sqlite-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-table th,
+.userspace-sqlite-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+  text-align: left;
+  white-space: nowrap;
+}
+.userspace-sqlite-table thead th {
+  background: var(--color-surface-hover);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.userspace-sqlite-table tbody tr:hover {
+  background: var(--color-surface-hover);
+}
+.userspace-sqlite-editable-cell {
+  cursor: text;
+  position: relative;
+}
+.userspace-sqlite-editable-cell:hover {
+  background: rgba(100, 150, 255, 0.08);
+}
+.userspace-sqlite-table tr.is-editing {
+  background: rgba(100, 150, 255, 0.06);
+}
+.userspace-sqlite-cell-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  /* Negate cell padding so the input occupies exactly the same vertical space as
+     a plain text span — no border, no extra padding, matching font. */
+  margin: -6px -10px;
+  padding: 6px 10px;
+  width: calc(100% + 20px);
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  color: inherit;
+  line-height: inherit;
+  outline: none;
+}
+.userspace-sqlite-cell-input:focus {
+  outline: 2px solid var(--color-accent, #4a90e2);
+  outline-offset: -2px;
+  border-radius: 2px;
+}
+/* Select variant for schema type editing — same flush sizing */
+.userspace-sqlite-cell-select {
+  appearance: auto;
+  cursor: pointer;
+}
+.userspace-sqlite-col-badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 4px;
+  margin-left: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-hover);
+  color: var(--color-text-muted);
+}
+.userspace-sqlite-cell-null {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+.userspace-sqlite-actions-col {
+  width: 1%;
+  white-space: nowrap;
+}
+.userspace-sqlite-actions-col .btn + .btn {
+  margin-left: 4px;
+}
+.userspace-sqlite-row-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-sm);
+}
+.userspace-sqlite-row-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.userspace-sqlite-col-type {
+  font-weight: 400;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+.userspace-sqlite-subsection {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-sm);
+}
+.userspace-sqlite-subsection h5 {
+  margin: 0 0 4px 0;
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-list {
+  margin: 0;
+  padding-left: var(--space-lg);
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-sql-details summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+.userspace-sqlite-sql {
+  background: var(--color-surface-hover);
+  padding: var(--space-sm);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+  font-size: var(--text-xs);
+}
+.userspace-sqlite-console-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 54vh;
+}
+.userspace-sqlite-console-editor-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.userspace-sqlite-console-results {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+}
+.userspace-sqlite-console-results .userspace-sqlite-table-wrapper {
+  flex: 1 1 auto;
+  max-height: none;
+}
+.userspace-sqlite-console-placeholder {
+  flex: 1 1 auto;
+}
+.userspace-sqlite-console-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 6px var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-subtle, var(--color-surface));
+}
+.userspace-sqlite-console-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.userspace-sqlite-console-textarea {
+  width: 100%;
+  min-height: 160px;
+  resize: vertical;
+  border: 0;
+  background: transparent;
+  padding: var(--space-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  color: inherit;
+  outline: none;
+}
+
+@media (max-width: 900px) {
+  .userspace-sqlite-column-row {
+    grid-template-columns: 1fr;
+  }
 }

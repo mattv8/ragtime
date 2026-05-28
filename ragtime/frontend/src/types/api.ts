@@ -3801,3 +3801,226 @@ export interface ApiUsageResponse {
   daily: ApiDailyTrend[];
   days: number;
 }
+
+// ---------------------------------------------------------------------------
+// SQLite Inspector (workspace-managed databases)
+// ---------------------------------------------------------------------------
+
+export type SqliteInspectorColumnType = 'TEXT' | 'INTEGER' | 'REAL' | 'NUMERIC' | 'BLOB';
+export type SqliteInspectorAlterationOp =
+  | 'rename_table'
+  | 'add_column'
+  | 'rename_column'
+  | 'drop_column'
+  | 'change_column_type';
+
+export interface SqliteInspectorColumnSpec {
+  name: string;
+  type: SqliteInspectorColumnType;
+  not_null?: boolean;
+  primary_key?: boolean;
+  default_value?: string | null;
+}
+
+export interface SqliteInspectorColumnInfo {
+  name: string;
+  type: string;
+  not_null: boolean;
+  primary_key: boolean;
+  primary_key_position?: number;
+  default_value?: string | null;
+}
+
+export interface SqliteInspectorIndexInfo {
+  name: string;
+  unique: boolean;
+  origin: string;
+  columns: string[];
+}
+
+export interface SqliteInspectorForeignKeyInfo {
+  id: number;
+  seq: number;
+  from_column: string;
+  to_table: string;
+  to_column: string;
+  on_update: string;
+  on_delete: string;
+}
+
+export interface SqliteInspectorDatabaseSummary {
+  name: string;
+  relative_path: string;
+  size_bytes: number;
+  table_count: number;
+  last_modified_ms: number;
+}
+
+export interface SqliteInspectorDatabaseListResponse {
+  workspace_id: string;
+  databases: SqliteInspectorDatabaseSummary[];
+  total_bytes: number;
+  default_database_name: string;
+  persistence_mode: 'include' | 'exclude';
+}
+
+export interface SqliteInspectorTableSummary {
+  name: string;
+  type: string;
+  row_count: number;
+}
+
+export interface SqliteInspectorTableListResponse {
+  workspace_id: string;
+  database: SqliteInspectorDatabaseSummary;
+  tables: SqliteInspectorTableSummary[];
+  persistence_mode: 'include' | 'exclude';
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorTableSchema {
+  name: string;
+  type: string;
+  columns: SqliteInspectorColumnInfo[];
+  indexes: SqliteInspectorIndexInfo[];
+  foreign_keys: SqliteInspectorForeignKeyInfo[];
+  sql?: string | null;
+}
+
+export interface SqliteInspectorTableSchemaResponse {
+  workspace_id: string;
+  database_name: string;
+  schema: SqliteInspectorTableSchema;
+}
+
+export interface SqliteInspectorRowPage {
+  workspace_id: string;
+  database_name: string;
+  table_name: string;
+  columns: SqliteInspectorColumnInfo[];
+  rows: Array<Record<string, unknown>>;
+  total: number;
+  limit: number;
+  offset: number;
+  elapsed_ms?: number | null;
+}
+
+export interface SqliteInspectorInitializeRequest {
+  database_name?: string;
+}
+
+export interface SqliteInspectorInitializeResponse {
+  workspace_id: string;
+  database: SqliteInspectorDatabaseSummary;
+  mode_promoted: boolean;
+  persistence_mode: 'include' | 'exclude';
+}
+
+export interface SqliteInspectorDeleteDatabaseResponse {
+  workspace_id: string;
+  database_name: string;
+  deleted: boolean;
+}
+
+export interface SqliteInspectorCreateTableRequest {
+  name: string;
+  columns: SqliteInspectorColumnSpec[];
+  without_rowid?: boolean;
+}
+
+export interface SqliteInspectorCreateTableResponse {
+  workspace_id: string;
+  database_name: string;
+  table: SqliteInspectorTableSummary;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorAlterationStep {
+  op: SqliteInspectorAlterationOp;
+  new_table_name?: string | null;
+  column?: SqliteInspectorColumnSpec | null;
+  column_name?: string | null;
+  new_column_name?: string | null;
+}
+
+export interface SqliteInspectorAlterTableRequest {
+  alterations: SqliteInspectorAlterationStep[];
+}
+
+export interface SqliteInspectorAlterTableResponse {
+  workspace_id: string;
+  database_name: string;
+  schema: SqliteInspectorTableSchema;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorDropTableResponse {
+  workspace_id: string;
+  database_name: string;
+  table_name: string;
+  dropped: boolean;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorImportDatabaseResponse {
+  workspace_id: string;
+  database: SqliteInspectorDatabaseSummary;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorImportTableResponse {
+  workspace_id: string;
+  database_name: string;
+  table: SqliteInspectorTableSummary;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorSqlQueryRequest {
+  sql: string;
+  max_rows?: number;
+}
+
+export interface SqliteInspectorSqlQueryResponse {
+  workspace_id: string;
+  database_name: string;
+  columns: string[];
+  rows: Array<Record<string, unknown>>;
+  row_count: number;
+  truncated: boolean;
+}
+
+export interface SqliteInspectorRowMutationRequest {
+  values: Record<string, unknown>;
+}
+
+export interface SqliteInspectorRowUpdateRequest {
+  row_key: Record<string, unknown>;
+  values: Record<string, unknown>;
+}
+
+export interface SqliteInspectorRowDeleteRequest {
+  row_key: Record<string, unknown>;
+}
+
+export interface SqliteInspectorRowMutationResponse {
+  workspace_id: string;
+  database_name: string;
+  table_name: string;
+  row: Record<string, unknown>;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorRowDeleteResponse {
+  workspace_id: string;
+  database_name: string;
+  table_name: string;
+  deleted: boolean;
+  mode_promoted: boolean;
+}
+
+export interface SqliteInspectorRowListParams {
+  limit?: number;
+  offset?: number;
+  order_by?: string;
+  order_direction?: 'asc' | 'desc';
+}

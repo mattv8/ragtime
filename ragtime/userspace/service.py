@@ -97,6 +97,7 @@ from ragtime.indexer.models import (
 from ragtime.indexer.repository import _resolve_default_conversation_model, repository
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
+from ragtime.userspace import sqlite_inspector as sqlite_inspector_helpers
 from ragtime.userspace.cloud_mounts import (
     CloudProviderAuthError,
     browser_path_for_cloud,
@@ -19786,6 +19787,453 @@ SELECT json_build_object(
             )
 
         return workspace_files
+
+    # ------------------------------------------------------------------
+    # SQLite inspector wrappers
+    # ------------------------------------------------------------------
+
+    async def _ensure_sqlite_mode_included(self, workspace_id: str) -> bool:
+        """Promote a workspace from 'exclude' to 'include' SQLite persistence.
+
+        Returns True if the persistence mode was changed by this call, so the
+        caller can surface a one-time UI notice.
+        """
+
+        db = await get_db()
+        record = await db.workspace.find_unique(where={"id": workspace_id})
+        if record is None:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        current_mode = _normalize_sqlite_persistence_mode(str(getattr(record, "sqlitePersistenceMode", "include") or "include"))
+        if current_mode == "include":
+            return False
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data=cast(Any, {"sqlitePersistenceMode": "include", "updatedAt": utc_now()}),
+        )
+        logger.info(
+            "Auto-promoted workspace %s SQLite persistence mode from exclude to include",
+            workspace_id,
+        )
+        return True
+
+    async def _prepare_sqlite_workspace(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+        required_role: WorkspaceRole | None = None,
+        promote_mode: bool = False,
+        ensure_files_dir: bool = False,
+    ) -> tuple[Path, bool]:
+        await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role=required_role,
+            is_admin=is_admin,
+        )
+        promoted = False
+        if promote_mode:
+            promoted = await self._ensure_sqlite_mode_included(workspace_id)
+        files_dir = self._workspace_files_dir(workspace_id)
+        if ensure_files_dir:
+            files_dir.mkdir(parents=True, exist_ok=True)
+        return files_dir, promoted
+
+    async def list_sqlite_databases(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> tuple[list[sqlite_inspector_helpers.DatabaseSummary], int, str]:
+        workspace = await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
+        files_dir = self._workspace_files_dir(workspace_id)
+        databases, total_bytes = await asyncio.to_thread(sqlite_inspector_helpers.list_databases, files_dir)
+        mode = _normalize_sqlite_persistence_mode(workspace.sqlite_persistence_mode)
+        return databases, total_bytes, mode
+
+    async def initialize_sqlite_database(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        database_name: str | None = None,
+        is_admin: bool = False,
+    ) -> tuple[sqlite_inspector_helpers.DatabaseSummary, bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+            ensure_files_dir=True,
+        )
+        summary = await asyncio.to_thread(
+            sqlite_inspector_helpers.initialize_database,
+            files_dir,
+            database_name or sqlite_inspector_helpers.DEFAULT_DATABASE_NAME,
+        )
+        return summary, promoted
+
+    async def delete_sqlite_database(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> None:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+        )
+        await asyncio.to_thread(sqlite_inspector_helpers.delete_database, files_dir, database_name)
+
+    async def export_sqlite_database(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> Path:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        return await asyncio.to_thread(sqlite_inspector_helpers.export_database_copy, files_dir, database_name)
+
+    async def import_sqlite_database(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        source_path: Path,
+        *,
+        is_admin: bool = False,
+    ) -> tuple[sqlite_inspector_helpers.DatabaseSummary, bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        summary = await asyncio.to_thread(
+            sqlite_inspector_helpers.import_database_file,
+            files_dir,
+            database_name,
+            source_path,
+        )
+        return summary, promoted
+
+    async def list_sqlite_tables(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> tuple[
+        sqlite_inspector_helpers.DatabaseSummary,
+        list[sqlite_inspector_helpers.TableSummary],
+    ]:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        databases, _ = await asyncio.to_thread(sqlite_inspector_helpers.list_databases, files_dir)
+        summary = next((d for d in databases if d.name == database_name), None)
+        if summary is None:
+            raise HTTPException(status_code=404, detail="Database not found")
+        tables = await asyncio.to_thread(sqlite_inspector_helpers.list_tables, files_dir, database_name)
+        return summary, tables
+
+    async def create_sqlite_table(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        columns: list[sqlite_inspector_helpers.ColumnDefinition],
+        *,
+        without_rowid: bool = False,
+        is_admin: bool = False,
+    ) -> tuple[sqlite_inspector_helpers.TableSummary, bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+            ensure_files_dir=True,
+        )
+        summary = await asyncio.to_thread(
+            sqlite_inspector_helpers.create_table,
+            files_dir,
+            database_name,
+            table_name,
+            columns,
+            without_rowid=without_rowid,
+        )
+        return summary, promoted
+
+    async def get_sqlite_table_schema(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> sqlite_inspector_helpers.TableSchema:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        return await asyncio.to_thread(
+            sqlite_inspector_helpers.get_table_schema,
+            files_dir,
+            database_name,
+            table_name,
+        )
+
+    async def alter_sqlite_table(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        alterations: list[sqlite_inspector_helpers.TableAlteration],
+        *,
+        is_admin: bool = False,
+    ) -> tuple[sqlite_inspector_helpers.TableSchema, bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        schema = await asyncio.to_thread(
+            sqlite_inspector_helpers.apply_table_alterations,
+            files_dir,
+            database_name,
+            table_name,
+            alterations,
+        )
+        return schema, promoted
+
+    async def drop_sqlite_table(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> bool:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        await asyncio.to_thread(
+            sqlite_inspector_helpers.drop_table,
+            files_dir,
+            database_name,
+            table_name,
+        )
+        return promoted
+
+    async def export_sqlite_table_csv(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        *,
+        is_admin: bool = False,
+    ) -> str:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        return await asyncio.to_thread(
+            sqlite_inspector_helpers.export_table_csv,
+            files_dir,
+            database_name,
+            table_name,
+        )
+
+    async def import_sqlite_table_csv(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        csv_text: str,
+        *,
+        replace: bool = False,
+        is_admin: bool = False,
+    ) -> tuple[sqlite_inspector_helpers.TableSummary, bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        summary = await asyncio.to_thread(
+            sqlite_inspector_helpers.import_table_csv,
+            files_dir,
+            database_name,
+            table_name,
+            csv_text,
+            replace=replace,
+        )
+        return summary, promoted
+
+    async def list_sqlite_rows(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        *,
+        limit: int = sqlite_inspector_helpers.DEFAULT_ROW_PAGE_SIZE,
+        offset: int = 0,
+        order_by: str | None = None,
+        order_direction: str = "asc",
+        is_admin: bool = False,
+    ) -> sqlite_inspector_helpers.RowPage:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        return await asyncio.to_thread(
+            sqlite_inspector_helpers.list_rows,
+            files_dir,
+            database_name,
+            table_name,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            order_direction=order_direction,
+        )
+
+    async def insert_sqlite_row(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        values: dict[str, Any],
+        *,
+        is_admin: bool = False,
+    ) -> tuple[dict[str, Any], bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        row = await asyncio.to_thread(
+            sqlite_inspector_helpers.insert_row,
+            files_dir,
+            database_name,
+            table_name,
+            values,
+        )
+        return row, promoted
+
+    async def update_sqlite_row(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        row_key: dict[str, Any],
+        values: dict[str, Any],
+        *,
+        is_admin: bool = False,
+    ) -> tuple[dict[str, Any], bool]:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        row = await asyncio.to_thread(
+            sqlite_inspector_helpers.update_row,
+            files_dir,
+            database_name,
+            table_name,
+            row_key,
+            values,
+        )
+        return row, promoted
+
+    async def delete_sqlite_row(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        table_name: str,
+        row_key: dict[str, Any],
+        *,
+        is_admin: bool = False,
+    ) -> bool:
+        files_dir, promoted = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+            required_role="editor",
+            promote_mode=True,
+        )
+        await asyncio.to_thread(
+            sqlite_inspector_helpers.delete_row,
+            files_dir,
+            database_name,
+            table_name,
+            row_key,
+        )
+        return promoted
+
+    async def execute_sqlite_readonly_query(
+        self,
+        workspace_id: str,
+        user_id: str,
+        database_name: str,
+        sql: str,
+        *,
+        max_rows: int = 200,
+        is_admin: bool = False,
+    ) -> sqlite_inspector_helpers.QueryResult:
+        files_dir, _ = await self._prepare_sqlite_workspace(
+            workspace_id,
+            user_id,
+            is_admin=is_admin,
+        )
+        return await asyncio.to_thread(
+            sqlite_inspector_helpers.execute_readonly_query,
+            files_dir,
+            database_name,
+            sql,
+            max_rows=max_rows,
+        )
 
 
 userspace_service = UserSpaceService()

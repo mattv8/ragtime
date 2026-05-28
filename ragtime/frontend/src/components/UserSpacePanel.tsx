@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Slash, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { keymap } from '@codemirror/view';
 import { openSearchPanel } from '@codemirror/search';
@@ -53,6 +53,7 @@ import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { FileDiffOverlay } from './shared/FileDiffOverlay';
 import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
+import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import { Popover } from './Popover';
 import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
@@ -3406,18 +3407,49 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspace, availableTools, canEditWorkspace, resolvedSelectedToolIds]);
 
-  const handleToggleSqlitePersistence = useCallback(async () => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    const nextMode = activeWorkspace.sqlite_persistence_mode === 'include' ? 'exclude' : 'include';
+  const [sqliteInspectorOpen, setSqliteInspectorOpen] = useState(false);
+  const [sqliteHasTables, setSqliteHasTables] = useState(false);
+
+  const refreshSqliteHasTables = useCallback(async (workspaceId: string) => {
     try {
-      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
-        sqlite_persistence_mode: nextMode,
-      });
-      setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update SQLite persistence mode');
+      const result = await api.listUserSpaceSqliteDatabases(workspaceId);
+      const appDb = result.databases.find((d) => d.name === result.default_database_name);
+      setSqliteHasTables(!!appDb && appDb.table_count > 0);
+    } catch {
+      setSqliteHasTables(false);
     }
-  }, [activeWorkspace, canEditWorkspace]);
+  }, []);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      setSqliteHasTables(false);
+      return;
+    }
+    void refreshSqliteHasTables(activeWorkspaceId);
+  }, [activeWorkspaceId, refreshSqliteHasTables]);
+
+  const handleOpenSqliteInspector = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    setSqliteInspectorOpen(true);
+  }, [activeWorkspaceId]);
+
+  const handleCloseSqliteInspector = useCallback(() => {
+    setSqliteInspectorOpen(false);
+    if (activeWorkspaceId) {
+      void refreshSqliteHasTables(activeWorkspaceId);
+    }
+  }, [activeWorkspaceId, refreshSqliteHasTables]);
+
+  const handleSqlitePersistencePromoted = useCallback(() => {
+    if (!activeWorkspaceId) return;
+    setWorkspaces((current) =>
+      current.map((ws) =>
+        ws.id === activeWorkspaceId
+          ? { ...ws, sqlite_persistence_mode: 'include' }
+          : ws,
+      ),
+    );
+  }, [activeWorkspaceId]);
 
   const handleWorkspaceScmSyncComplete = useCallback(async (response: UserSpaceWorkspaceScmSyncResponse) => {
     setWorkspaces((current) => current.map((ws) => (
@@ -6393,10 +6425,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     });
   }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
 
-  const sqliteLiveDataOnlyMode = activeWorkspace?.sqlite_persistence_mode === 'exclude';
-  const sqlitePersistenceModeTitle = sqliteLiveDataOnlyMode
-    ? 'Live data only mode. SQLite local files are excluded from snapshots. Click to enable two-lane persistence (live data + SQLite local state with migrations).'
-    : 'Two-lane persistence mode. Live data wiring is primary for dashboards; SQLite local state is persisted with snapshots. Click to switch to live data only mode.';
+  const sqliteInspectorButtonTitle = sqliteHasTables
+    ? 'Open SQLite Inspector'
+    : 'SQLite database is empty — open the inspector to initialize tables';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const hasStatusOverlayContent = Boolean(
     loading || creatingWorkspace || duplicatingWorkspaceSourceId || deletingWorkspaceId || runtimeOverlayStatus || (formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId)
@@ -7001,16 +7032,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               title="Workspace Tools"
             />
             <button
-              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteLiveDataOnlyMode ? 'btn-secondary userspace-sqlite-mode-excluded' : 'btn-primary'}`}
-              onClick={handleToggleSqlitePersistence}
-              disabled={!activeWorkspaceId || !canEditWorkspace}
-              title={sqlitePersistenceModeTitle}
-              aria-label={sqliteLiveDataOnlyMode ? 'Live data only mode' : 'Two-lane persistence mode'}
+              className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={handleOpenSqliteInspector}
+              disabled={!activeWorkspaceId}
+              title={sqliteInspectorButtonTitle}
+              aria-label="Open SQLite inspector"
             >
-              <span className="userspace-sqlite-mode-icon" aria-hidden="true">
-                <Database size={14} />
-                {sqliteLiveDataOnlyMode && <Slash size={12} className="userspace-sqlite-mode-slash" />}
-              </span>
+              <Database size={14} />
             </button>
             <button
               className="btn btn-primary btn-sm btn-icon userspace-toolbar-action-btn userspace-snapshot-btn"
@@ -7678,6 +7706,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         onOverlayClick={diffHover.overlayClick}
         onOverlayMouseEnter={diffHover.overlayMouseEnter}
         onOverlayMouseLeave={diffHover.overlayMouseLeave}
+      />
+
+      <WorkspaceSqliteInspectorModal
+        isOpen={sqliteInspectorOpen && Boolean(activeWorkspaceId)}
+        workspaceId={activeWorkspaceId}
+        workspaceName={activeWorkspace?.name}
+        canEdit={canEditWorkspace}
+        onClose={handleCloseSqliteInspector}
+        onPersistencePromoted={handleSqlitePersistencePromoted}
       />
 
       <UserSpaceEnvVarsModal

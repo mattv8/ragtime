@@ -1428,3 +1428,236 @@ class WorkspaceMountSyncResponse(BaseModel):
     sync_progress_message: str | None = None
     sync_started_at: datetime | None = None
     last_sync_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# SQLite Inspector models
+# ---------------------------------------------------------------------------
+
+
+SqliteInspectorColumnType = Literal["TEXT", "INTEGER", "REAL", "NUMERIC", "BLOB"]
+SqliteInspectorAlterationOp = Literal[
+    "rename_table",
+    "add_column",
+    "rename_column",
+    "drop_column",
+    "change_column_type",
+]
+
+
+class SqliteInspectorColumnSpec(BaseModel):
+    name: str = Field(min_length=1, max_length=64, description="Column identifier")
+    type: SqliteInspectorColumnType = Field(description="Column SQLite affinity")
+    not_null: bool = Field(default=False)
+    primary_key: bool = Field(default=False)
+    default_value: str | None = Field(
+        default=None,
+        description=("Optional default literal: NULL, a number, a single-quoted string, or CURRENT_TIMESTAMP/CURRENT_TIME/CURRENT_DATE."),
+    )
+
+
+class SqliteInspectorColumnInfo(BaseModel):
+    name: str
+    type: str
+    not_null: bool
+    primary_key: bool
+    primary_key_position: int = 0
+    default_value: str | None = None
+
+
+class SqliteInspectorIndexInfo(BaseModel):
+    name: str
+    unique: bool
+    origin: str
+    columns: list[str] = Field(default_factory=list)
+
+
+class SqliteInspectorForeignKeyInfo(BaseModel):
+    id: int
+    seq: int
+    from_column: str
+    to_table: str
+    to_column: str
+    on_update: str
+    on_delete: str
+
+
+class SqliteInspectorDatabaseSummary(BaseModel):
+    name: str
+    relative_path: str
+    size_bytes: int
+    table_count: int
+    last_modified_ms: int
+
+
+class SqliteInspectorDatabaseListResponse(BaseModel):
+    workspace_id: str
+    databases: list[SqliteInspectorDatabaseSummary] = Field(default_factory=list)
+    total_bytes: int = 0
+    default_database_name: str
+    persistence_mode: SqlitePersistenceMode
+
+
+class SqliteInspectorTableSummary(BaseModel):
+    name: str
+    type: str
+    row_count: int
+
+
+class SqliteInspectorTableListResponse(BaseModel):
+    workspace_id: str
+    database: SqliteInspectorDatabaseSummary
+    tables: list[SqliteInspectorTableSummary] = Field(default_factory=list)
+    persistence_mode: SqlitePersistenceMode
+    mode_promoted: bool = False
+
+
+class SqliteInspectorTableSchema(BaseModel):
+    name: str
+    type: str
+    columns: list[SqliteInspectorColumnInfo] = Field(default_factory=list)
+    indexes: list[SqliteInspectorIndexInfo] = Field(default_factory=list)
+    foreign_keys: list[SqliteInspectorForeignKeyInfo] = Field(default_factory=list)
+    sql: str | None = None
+
+
+class SqliteInspectorTableSchemaResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    schema_: SqliteInspectorTableSchema = Field(alias="schema")
+
+    model_config = {"populate_by_name": True}
+
+
+class SqliteInspectorRowPage(BaseModel):
+    workspace_id: str
+    database_name: str
+    table_name: str
+    columns: list[SqliteInspectorColumnInfo] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int
+    elapsed_ms: int | None = None
+
+
+class SqliteInspectorInitializeRequest(BaseModel):
+    database_name: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional database file name. Defaults to app.sqlite3.",
+    )
+
+
+class SqliteInspectorInitializeResponse(BaseModel):
+    workspace_id: str
+    database: SqliteInspectorDatabaseSummary
+    mode_promoted: bool = False
+    persistence_mode: SqlitePersistenceMode
+
+
+class SqliteInspectorDeleteDatabaseResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    deleted: bool = True
+
+
+class SqliteInspectorCreateTableRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    columns: list[SqliteInspectorColumnSpec] = Field(min_length=1)
+    without_rowid: bool = False
+
+
+class SqliteInspectorCreateTableResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    table: SqliteInspectorTableSummary
+    mode_promoted: bool = False
+
+
+class SqliteInspectorAlterationStep(BaseModel):
+    op: SqliteInspectorAlterationOp
+    new_table_name: str | None = Field(default=None, max_length=64)
+    column: SqliteInspectorColumnSpec | None = None
+    column_name: str | None = Field(default=None, max_length=64)
+    new_column_name: str | None = Field(default=None, max_length=64)
+
+
+class SqliteInspectorAlterTableRequest(BaseModel):
+    alterations: list[SqliteInspectorAlterationStep] = Field(min_length=1)
+
+
+class SqliteInspectorAlterTableResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    schema_: SqliteInspectorTableSchema = Field(alias="schema")
+    mode_promoted: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class SqliteInspectorDropTableResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    table_name: str
+    dropped: bool = True
+    mode_promoted: bool = False
+
+
+class SqliteInspectorImportDatabaseResponse(BaseModel):
+    workspace_id: str
+    database: SqliteInspectorDatabaseSummary
+    mode_promoted: bool = False
+
+
+class SqliteInspectorImportTableResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    table: SqliteInspectorTableSummary
+    mode_promoted: bool = False
+
+
+class SqliteInspectorSqlQueryRequest(BaseModel):
+    sql: str = Field(min_length=1, max_length=20000, description="Read-only SQL statement to run")
+    max_rows: int = Field(default=200, ge=1, le=500)
+
+
+class SqliteInspectorSqlQueryResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
+
+
+class SqliteInspectorRowMutationRequest(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class SqliteInspectorRowUpdateRequest(BaseModel):
+    row_key: dict[str, Any] = Field(
+        default_factory=dict,
+        description=("Primary key values keyed by column name, or {'_rowid': <int>} when the table has no primary key."),
+    )
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class SqliteInspectorRowDeleteRequest(BaseModel):
+    row_key: dict[str, Any] = Field(default_factory=dict)
+
+
+class SqliteInspectorRowMutationResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    table_name: str
+    row: dict[str, Any]
+    mode_promoted: bool = False
+
+
+class SqliteInspectorRowDeleteResponse(BaseModel):
+    workspace_id: str
+    database_name: str
+    table_name: str
+    deleted: bool = True
+    mode_promoted: bool = False
