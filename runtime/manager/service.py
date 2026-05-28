@@ -416,6 +416,8 @@ class SessionManager:
         self,
         provider_session_id: str,
         workspace_mounts: list[dict[str, Any]],
+        *,
+        replace: bool = False,
     ) -> RuntimeSessionResponse:
         async with self._provider_lock(provider_session_id):
             async with self._lock:
@@ -427,6 +429,7 @@ class SessionManager:
                 self._worker_service.refresh_mounts(
                     worker_session_id,
                     workspace_mounts=workspace_mounts,
+                    replace=replace,
                 ),
                 timeout=self._worker_call_timeout,
             )

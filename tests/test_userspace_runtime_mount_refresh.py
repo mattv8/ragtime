@@ -19,9 +19,11 @@ if "ragtime.rag.prompts" not in sys.modules:
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
-from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceWorkspace
+from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceRuntimeSession, UserSpaceWorkspace
 from ragtime.userspace.runtime_service import UserSpaceRuntimeService
 from ragtime.userspace.service import UserSpaceService
+from runtime.worker.sandbox import SandboxSpec
+from runtime.worker.service import WorkerService, WorkerSession
 
 _NOW = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
@@ -58,6 +60,8 @@ class _RuntimeRefreshService(UserSpaceRuntimeService):
         self,
         provider_session_id: str | None,
         workspace_mounts: list[dict[str, Any]],
+        *,
+        replace: bool = False,
     ) -> dict[str, Any] | None:
         raise HTTPException(
             status_code=502,
@@ -204,6 +208,134 @@ class _MountListService(UserSpaceService):
 
 
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_mount_signature_refresh_skips_unchanged_specs(self) -> None:
+        workspace_id = "workspace-1"
+        session = UserSpaceRuntimeSession(
+            id="session-1",
+            workspace_id=workspace_id,
+            leased_by_user_id="user-1",
+            state="running",
+            provider_session_id="mgr-1",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        mount_specs = [
+            {
+                "target_path": "/workspace/reconciliations",
+                "source_local_path": "/data/reconciliations",
+                "runtime_mount_mode": "live_bind",
+            }
+        ]
+        service = UserSpaceRuntimeService()
+        await service._cache_runtime_mount_spec_signature("mgr-1", mount_specs)
+
+        with (
+            patch(
+                "ragtime.userspace.runtime_service.userspace_service.resolve_workspace_mounts_for_runtime",
+                AsyncMock(return_value=list(mount_specs)),
+            ),
+            patch.object(service, "_runtime_provider_refresh_mounts", AsyncMock(return_value=None)) as refresh,
+        ):
+            await service._refresh_runtime_mounts_if_specs_changed(session)
+
+        refresh.assert_not_called()
+
+    async def test_runtime_mount_signature_refresh_replaces_changed_specs(self) -> None:
+        workspace_id = "workspace-1"
+        session = UserSpaceRuntimeSession(
+            id="session-1",
+            workspace_id=workspace_id,
+            leased_by_user_id="user-1",
+            state="running",
+            provider_session_id="mgr-1",
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+        old_specs = [
+            {
+                "target_path": "/workspace/reconciliations",
+                "source_local_path": "/data/accounting",
+                "runtime_mount_mode": "live_bind",
+            }
+        ]
+        new_specs = [
+            {
+                "target_path": "/workspace/reconciliations",
+                "source_local_path": "/data/accounting/Reconciliations",
+                "runtime_mount_mode": "live_bind",
+            }
+        ]
+        service = UserSpaceRuntimeService()
+        await service._cache_runtime_mount_spec_signature("mgr-1", old_specs)
+
+        with (
+            patch(
+                "ragtime.userspace.runtime_service.userspace_service.resolve_workspace_mounts_for_runtime",
+                AsyncMock(return_value=list(new_specs)),
+            ),
+            patch.object(service, "_runtime_provider_refresh_mounts", AsyncMock(return_value=None)) as refresh,
+        ):
+            await service._refresh_runtime_mounts_if_specs_changed(session)
+
+        refresh.assert_awaited_once_with("mgr-1", new_specs, replace=True)
+
+    async def test_worker_replace_mount_refresh_clears_removed_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_id = "workspace-1"
+            sandbox_spec = SandboxSpec(
+                workspace_id=workspace_id,
+                workspace_files_path=tmp / "files",
+                rootfs_path=tmp / "rootfs",
+            )
+            old_mount = {
+                "target_path": "/workspace/reconciliations",
+                "source_local_path": "/data/accounting",
+            }
+            new_mount = {
+                "target_path": "/workspace/reconciliations",
+                "source_local_path": "/data/accounting/Reconciliations",
+            }
+            service = WorkerService()
+            service._sessions["wkr-1"] = WorkerSession(
+                id="wkr-1",
+                workspace_id=workspace_id,
+                provider_session_id="mgr-1",
+                workspace_root=tmp,
+                workspace_files_path=tmp / "files",
+                sandbox_spec=sandbox_spec,
+                pty_access_token="token",
+                workspace_env={},
+                workspace_env_visibility={},
+                workspace_mounts=[old_mount],
+                mount_targets_to_clear=set(),
+                state="running",
+                devserver_running=False,
+                devserver_port=None,
+                devserver_command=None,
+                launch_framework=None,
+                launch_cwd=None,
+                last_error=None,
+                runtime_operation_id=None,
+                runtime_operation_phase=None,
+                runtime_operation_started_at=None,
+                runtime_operation_updated_at=None,
+                updated_at=_NOW,
+            )
+
+            with patch("runtime.worker.service.materialize_mounts") as materialize:
+                await service.refresh_mounts("wkr-1", [new_mount], replace=True)
+
+            materialize.assert_called_once()
+            _spec_arg, mounts_arg = materialize.call_args.args
+            self.assertEqual(mounts_arg, [new_mount])
+            self.assertEqual(
+                sorted(materialize.call_args.kwargs["clear_targets"]),
+                ["/workspace/reconciliations"],
+            )
+            self.assertEqual(service._sessions["wkr-1"].workspace_mounts, [new_mount])
+            self.assertEqual(service._sessions["wkr-1"].mount_targets_to_clear, set())
+
     async def test_disabling_mount_source_force_unmounts_enabled_workspace_mounts(self) -> None:
         mount_source_id = "source-1"
         rows = [

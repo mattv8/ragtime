@@ -239,6 +239,10 @@ class RuntimeMountRefreshRequest(BaseModel):
         default_factory=list,
         description="Workspace mount specs to rematerialize into the active sandbox",
     )
+    replace: bool = Field(
+        default=False,
+        description="Replace the active runtime mount set instead of merging the provided specs by target path",
+    )
 
 
 class RuntimeExecRequest(BaseModel):

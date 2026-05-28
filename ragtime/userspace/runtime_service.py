@@ -125,6 +125,7 @@ class UserSpaceRuntimeService:
         self._preview_base_domains: set[str] = set()
         self._preview_upstream_cache: dict[str, _PreviewUpstreamCacheEntry] = {}
         self._provider_status_cache: dict[str, _ProviderStatusCacheEntry] = {}
+        self._runtime_mount_spec_signatures: dict[str, str] = {}
         self._preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
         self._public_preview_dns_cache: dict[str, _PreviewProbeCacheEntry] = {}
         self._public_preview_probe_cache: dict[str, _PreviewProbeCacheEntry] = {}
@@ -776,6 +777,7 @@ class UserSpaceRuntimeService:
             return
         async with self._runtime_cache_lock:
             self._provider_status_cache.pop(provider_session_id, None)
+            self._runtime_mount_spec_signatures.pop(provider_session_id, None)
 
     async def _mark_provider_session_missing(
         self,
@@ -1062,6 +1064,53 @@ class UserSpaceRuntimeService:
     def _runtime_manager_enabled(self) -> bool:
         return runtime_manager_enabled(self._runtime_manager_request_config())
 
+    @staticmethod
+    def _runtime_mount_spec_signature(workspace_mounts: list[dict[str, Any]]) -> str:
+        canonical_specs = [json.dumps(dict(mount), sort_keys=True, separators=(",", ":"), default=str) for mount in workspace_mounts]
+        canonical_specs.sort()
+        payload = json.dumps(canonical_specs, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    async def _cache_runtime_mount_spec_signature(
+        self,
+        provider_session_id: str | None,
+        workspace_mounts: list[dict[str, Any]],
+    ) -> None:
+        if not provider_session_id:
+            return
+        signature = self._runtime_mount_spec_signature(workspace_mounts)
+        async with self._runtime_cache_lock:
+            self._runtime_mount_spec_signatures[provider_session_id] = signature
+
+    async def _refresh_runtime_mounts_if_specs_changed(
+        self,
+        session: UserSpaceRuntimeSession,
+    ) -> None:
+        provider_session_id = session.provider_session_id
+        if not provider_session_id or session.state not in {"running", "starting"}:
+            return
+
+        workspace_mounts = await userspace_service.resolve_workspace_mounts_for_runtime(session.workspace_id)
+        signature = self._runtime_mount_spec_signature(workspace_mounts)
+        async with self._runtime_cache_lock:
+            cached_signature = self._runtime_mount_spec_signatures.get(provider_session_id)
+        if cached_signature == signature:
+            return
+
+        try:
+            provider_status = await self._runtime_provider_refresh_mounts(
+                provider_session_id,
+                workspace_mounts,
+                replace=True,
+            )
+            await self._persist_runtime_mount_refresh_result(session, provider_status)
+            await self._cache_runtime_mount_spec_signature(provider_session_id, workspace_mounts)
+        except HTTPException as exc:
+            if self._is_runtime_manager_not_found(exc):
+                detail = str(exc.detail).strip() or "Runtime session not found"
+                await self._mark_provider_session_missing(session, detail)
+            raise
+
     def _require_runtime_manager(self) -> None:
         if self._runtime_manager_enabled():
             return
@@ -1106,11 +1155,16 @@ class UserSpaceRuntimeService:
         if existing_provider_session_id:
             payload["provider_session_id"] = existing_provider_session_id
 
-        return await self._runtime_manager_request(
+        response = await self._runtime_manager_request(
             "POST",
             "/sessions/start",
             json_payload=payload,
         )
+        await self._cache_runtime_mount_spec_signature(
+            str(response.get("provider_session_id") or existing_provider_session_id or ""),
+            workspace_mounts,
+        )
+        return response
 
     async def _runtime_provider_stop_session(
         self,
@@ -1119,10 +1173,13 @@ class UserSpaceRuntimeService:
         if not provider_session_id:
             return
         self._require_runtime_manager()
-        await self._runtime_manager_request(
-            "POST",
-            f"/sessions/{provider_session_id}/stop",
-        )
+        try:
+            await self._runtime_manager_request(
+                "POST",
+                f"/sessions/{provider_session_id}/stop",
+            )
+        finally:
+            await self._drop_provider_status_cache(provider_session_id)
 
     async def _runtime_provider_get_status(
         self,
@@ -1190,14 +1247,19 @@ class UserSpaceRuntimeService:
         self,
         provider_session_id: str | None,
         workspace_mounts: list[dict[str, Any]],
+        *,
+        replace: bool = False,
     ) -> dict[str, Any] | None:
         if not provider_session_id:
             return None
         self._require_runtime_manager()
+        payload: dict[str, Any] = {"workspace_mounts": workspace_mounts}
+        if replace:
+            payload["replace"] = True
         return await self._runtime_manager_request(
             "POST",
             f"/sessions/{provider_session_id}/mounts/refresh",
-            json_payload={"workspace_mounts": workspace_mounts},
+            json_payload=payload,
         )
 
     async def _runtime_provider_get_pty_ws_url(
@@ -1658,6 +1720,7 @@ class UserSpaceRuntimeService:
     ) -> str:
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._refresh_runtime_mounts_if_specs_changed(session)
         return await self._runtime_provider_get_pty_ws_url(session.provider_session_id)
 
     async def build_shared_preview_upstream_url(
@@ -3169,6 +3232,7 @@ class UserSpaceRuntimeService:
         """Execute a shell command in the workspace runtime container."""
         await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        await self._refresh_runtime_mounts_if_specs_changed(session)
         return await self._runtime_provider_exec_command(
             session.provider_session_id,
             command,

@@ -2237,6 +2237,8 @@ class WorkerService:
         self,
         worker_session_id: str,
         workspace_mounts: list[dict[str, Any]],
+        *,
+        replace: bool = False,
     ) -> WorkerSessionResponse:
         mount_specs = []
         target_paths: set[str] = set()
@@ -2246,7 +2248,7 @@ class WorkerService:
                 continue
             mount_specs.append(dict(mount))
             target_paths.add(target_path)
-        if not mount_specs:
+        if not mount_specs and not replace:
             raise HTTPException(
                 status_code=400,
                 detail="No workspace mounts were provided for refresh",
@@ -2262,15 +2264,21 @@ class WorkerService:
                     detail="Runtime session is not active",
                 )
             workspace_id = session.workspace_id
-            mounts_by_target: dict[str, dict[str, Any]] = {}
-            for existing_mount in session.workspace_mounts:
-                existing_target = str(existing_mount.get("target_path") or "").strip()
-                if existing_target:
-                    mounts_by_target[existing_target] = dict(existing_mount)
-            for mount in mount_specs:
-                mounts_by_target[str(mount.get("target_path") or "").strip()] = mount
-            session.workspace_mounts = list(mounts_by_target.values())
-            session.mount_targets_to_clear |= target_paths
+            if replace:
+                previous_targets = self._mount_target_paths(session.workspace_mounts)
+                clear_target_paths = previous_targets | target_paths
+                session.workspace_mounts = mount_specs
+            else:
+                clear_target_paths = set(target_paths)
+                mounts_by_target: dict[str, dict[str, Any]] = {}
+                for existing_mount in session.workspace_mounts:
+                    existing_target = str(existing_mount.get("target_path") or "").strip()
+                    if existing_target:
+                        mounts_by_target[existing_target] = dict(existing_mount)
+                for mount in mount_specs:
+                    mounts_by_target[str(mount.get("target_path") or "").strip()] = mount
+                session.workspace_mounts = list(mounts_by_target.values())
+            session.mount_targets_to_clear |= clear_target_paths
             session.updated_at = utc_now()
 
         workspace_lock = self._workspace_startup_lock(workspace_id)
@@ -2294,7 +2302,7 @@ class WorkerService:
                 current = self._sessions.get(worker_session_id)
                 if not current:
                     raise HTTPException(status_code=404, detail="Worker session not found")
-                current.mount_targets_to_clear.difference_update(target_paths)
+                current.mount_targets_to_clear.difference_update(clear_target_paths)
                 current.last_error = None
                 current.updated_at = utc_now()
                 return self._session_response(current)

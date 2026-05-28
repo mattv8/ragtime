@@ -131,6 +131,7 @@ def create_app() -> FastAPI:
         return await manager.refresh_mounts(
             provider_session_id,
             workspace_mounts=payload.workspace_mounts,
+            replace=payload.replace,
         )
 
     @application.get(
