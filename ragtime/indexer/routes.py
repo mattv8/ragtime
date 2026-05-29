@@ -9808,6 +9808,10 @@ class ConversationBranchSearchMatch(BaseModel):
     )
     branch_point_index: int = Field(description="0-based branch point index.")
     snippet: Optional[str] = Field(default=None, description="Short visible-text snippet around the branch match.")
+    preserved_messages: List[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Preserved branch messages for local, non-persistent search preview.",
+    )
 
 
 class ConversationBranchSearchResponse(BaseModel):
@@ -9832,12 +9836,31 @@ def _message_content_visible_text(content: object) -> str:
     return ""
 
 
+def _coerce_visible_search_messages(messages: object) -> list[object]:
+    if isinstance(messages, list):
+        return messages
+    if isinstance(messages, tuple):
+        return list(messages)
+    if isinstance(messages, str):
+        stripped = messages.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
 def _conversation_visible_search_text(messages: object) -> str:
-    if not isinstance(messages, list):
+    normalized_messages = _coerce_visible_search_messages(messages)
+    if not normalized_messages:
         return ""
 
     parts: list[str] = []
-    for message in messages:
+    for message in normalized_messages:
         if not isinstance(message, dict):
             continue
         content_text = _message_content_visible_text(message.get("content"))
@@ -10340,7 +10363,8 @@ async def search_conversation_branches(
         branch_point_raw = row.get("branch_point_index")
         branch_point_index = int(branch_point_raw) if branch_point_raw is not None else 0
 
-        visible_text = _conversation_visible_search_text(row.get("preserved_messages"))
+        preserved_messages = [message for message in _coerce_visible_search_messages(row.get("preserved_messages")) if isinstance(message, dict)]
+        visible_text = _conversation_visible_search_text(preserved_messages)
         snippet = _search_snippet(visible_text, query)
         if snippet is None:
             continue
@@ -10352,6 +10376,7 @@ async def search_conversation_branches(
                 branch_kind=cast(Optional[Literal["edit", "delete", "replay"]], branch_kind),
                 branch_point_index=max(0, branch_point_index),
                 snippet=snippet,
+                preserved_messages=preserved_messages,
             )
         )
 

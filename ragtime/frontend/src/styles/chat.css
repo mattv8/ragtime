@@ -4060,9 +4060,13 @@ mark.chat-in-chat-search-match.chat-in-chat-search-match-active {
   font-size: 11px;
   color: var(--color-text-muted);
   min-width: 0;
+  max-width: 62px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   padding-right: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .chat-in-chat-search-nav,
 .chat-in-chat-search-toggle,

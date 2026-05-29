@@ -2033,6 +2033,7 @@ export interface ConversationBranchSearchMatch {
   branch_kind?: ConversationBranchKind | null;
   branch_point_index: number;
   snippet?: string | null;
+  preserved_messages?: ChatMessage[];
 }
 
 export interface ConversationBranchSearchResponse {
