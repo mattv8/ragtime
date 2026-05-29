@@ -13,9 +13,11 @@ from typing import Any, Dict, List, Mapping, Optional
 from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 
+from ragtime.core import openrouter
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import resolve_provider_api_key
 
 logger = get_logger(__name__)
 
@@ -361,6 +363,24 @@ async def get_embeddings_model(
             kwargs["dimensions"] = dimensions
             log.info(f"Using OpenAI embeddings with {dimensions} dimensions")
         return OpenAIEmbeddings(**kwargs)
+
+    if provider == "openrouter":
+        from langchain_openai import OpenAIEmbeddings
+
+        api_key = resolve_provider_api_key(settings, "openrouter", "embedding")
+        if not api_key:
+            message = "OpenRouter embeddings selected but no API key configured in Settings"
+            if allow_missing_api_key or return_none_on_error:
+                log.warning(message)
+                return None
+            raise ValueError(message)
+
+        return OpenAIEmbeddings(
+            model=model,
+            api_key=SecretStr(str(api_key)),
+            base_url=openrouter.DEFAULT_BASE_URL,
+            check_embedding_ctx_length=False,
+        )
 
     if provider == "llama_cpp":
         from langchain_openai import OpenAIEmbeddings

@@ -158,8 +158,12 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         label="OpenRouter",
         aliases=("or",),
         llm_api_key_field="openrouter_api_key",
+        embedding_api_key_field="openrouter_api_key",
         supports_llm=True,
+        supports_embeddings=True,
+        supports_vision_ocr=True,
         openai_compatible_chat=True,
+        openai_compatible_embeddings=True,
         model_family_tokenizer_labels=(
             ("Claude", "Claude"),
             ("GPT", "GPT"),
@@ -361,6 +365,22 @@ def resolve_provider_base_url(
             return fallback
 
     return base_url or connection.default_base_url
+
+
+def resolve_provider_api_key(
+    settings: Any,
+    provider: str | None,
+    role: ProviderRole,
+) -> str | None:
+    """Resolve the configured API key for a provider role."""
+    descriptor = get_provider(provider)
+    if descriptor is None:
+        return None
+    field = descriptor.llm_api_key_field if role == "llm" else descriptor.embedding_api_key_field
+    if not field:
+        return None
+    value = str(_read_setting(settings, field, "") or "").strip()
+    return value or None
 
 
 def build_base_url_from_parts(

@@ -65,6 +65,7 @@ class OcrProvider(str, Enum):
 
     OLLAMA = "ollama"
     OPENAI = "openai"
+    OPENROUTER = "openrouter"
     OMLX = "omlx"
     LMSTUDIO = "lmstudio"
     LLAMA_CPP = "llama_cpp"

@@ -67,7 +67,7 @@ from ragtime.chat_runtime.presets import (
     CHAT_WEB_SEARCH_TOOL_ID,
 )
 from ragtime.config import settings
-from ragtime.core import llama_cpp, lmstudio, omlx
+from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
@@ -99,6 +99,7 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
     providers_equivalent,
     providers_same,
+    resolve_provider_api_key,
     resolve_provider_base_url,
 )
 from ragtime.core.ollama import (
@@ -2868,13 +2869,13 @@ class RAGComponents:
                 return None
 
         if provider_normalized == "openrouter":
-            api_key = self._app_settings.get("openrouter_api_key", "")
+            api_key = resolve_provider_api_key(self._app_settings, provider_normalized, "llm")
             if not api_key:
                 logger.warning("OpenRouter selected but no API key configured")
                 return None
 
             await _hydrate_openai_compatible_capabilities(
-                metadata_urls=["https://openrouter.ai/api/v1/models"],
+                metadata_urls=[openrouter.OPENROUTER_MODELS_URL],
                 headers={"Authorization": f"Bearer {api_key}"},
                 requested_model=model,
             )
@@ -2884,7 +2885,7 @@ class RAGComponents:
                 "temperature": 0,
                 "streaming": True,
                 "api_key": api_key,
-                "base_url": "https://openrouter.ai/api/v1",
+                "base_url": openrouter.DEFAULT_BASE_URL,
                 "max_tokens": max_tokens,
                 "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
             }
@@ -3089,6 +3090,17 @@ class RAGComponents:
                 logger.warning("OpenAI embeddings selected but no API key configured")
             logger.info(f"Using OpenAI embeddings: {model}")
             return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
+        elif provider == "openrouter":
+            api_key = resolve_provider_api_key(self._app_settings, provider, "embedding")
+            if not api_key:
+                logger.warning("OpenRouter embeddings selected but no API key configured")
+            logger.info(f"Using OpenRouter embeddings: {model}")
+            return OpenAIEmbeddings(
+                model=model,
+                api_key=SecretStr(str(api_key or "")),
+                base_url=openrouter.DEFAULT_BASE_URL,
+                check_embedding_ctx_length=False,
+            )
         elif provider in {"llama_cpp", "lmstudio", "omlx"}:
             return self._build_local_openai_embedding_model(provider, model)
         else:

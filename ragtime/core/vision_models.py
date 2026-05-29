@@ -24,7 +24,7 @@ from typing import Any, Optional
 import httpx
 from PIL import Image
 
-from ragtime.core import llama_cpp, lmstudio, omlx
+from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.file_constants import RAW_CAMERA_EXTENSIONS
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import register_model_image_input_capability
@@ -44,7 +44,7 @@ DEFAULT_MAX_IMAGE_DIMENSION = 2048
 # JPEG quality for resized images (balance between size and quality)
 DEFAULT_JPEG_QUALITY = 85
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
-OPENAI_COMPATIBLE_VISION_PROVIDERS = {"openai", "omlx", "lmstudio", "llama_cpp"}
+OPENAI_COMPATIBLE_VISION_PROVIDERS = {"openai", "openrouter", "omlx", "lmstudio", "llama_cpp"}
 MODELS_DEV_API_URL = "https://models.dev/api.json"
 MODELS_DEV_VISION_CACHE_TTL_SECONDS = 3600.0
 VISION_CAPABILITY_TOKENS = {"vision", "image", "images", "image_input", "multimodal"}
@@ -522,6 +522,8 @@ def _openai_compatible_base_url(provider: str, base_url: str | None = None) -> s
     normalized_provider = normalize_provider_name(provider)
     if normalized_provider == "openai":
         return (base_url or OPENAI_DEFAULT_BASE_URL).rstrip("/")
+    if normalized_provider == "openrouter":
+        return (base_url or openrouter.DEFAULT_BASE_URL).rstrip("/")
     return str(base_url or "").strip().rstrip("/")
 
 
@@ -762,6 +764,29 @@ async def list_provider_vision_models(
             normalized_provider,
             available_model_ids=available_model_ids,
         )
+
+    if normalized_provider == "openrouter":
+        _ = base_url
+        if not api_key:
+            return []
+        candidate_set = {str(model).strip() for model in candidate_models or [] if str(model).strip()}
+        models: list[VisionModelInfo] = []
+        for row in await openrouter.list_models(api_key, timeout=timeout):
+            if not openrouter.supports_vision(row):
+                continue
+            model_id = openrouter.model_id(row)
+            if not model_id or (candidate_set and model_id not in candidate_set):
+                continue
+            register_model_image_input_capability(model_id, True)
+            models.append(
+                VisionModelInfo(
+                    name=model_id,
+                    provider=normalized_provider,
+                    capabilities=openrouter.capabilities(row),
+                    context_limit=openrouter.context_limit(row),
+                )
+            )
+        return models
 
     return []
 

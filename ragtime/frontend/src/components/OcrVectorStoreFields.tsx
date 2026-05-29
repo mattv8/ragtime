@@ -4,12 +4,13 @@ import type { OcrMode, OcrProvider, VectorStoreType, VisionModel } from '@/types
 export const OCR_PROVIDER_LABELS: Record<OcrProvider, string> = {
   ollama: 'Ollama',
   openai: 'OpenAI',
+  openrouter: 'OpenRouter',
   omlx: 'oMLX',
   lmstudio: 'LM Studio',
   llama_cpp: 'llama.cpp',
 };
 
-const OCR_PROVIDERS: OcrProvider[] = ['ollama', 'openai', 'omlx', 'lmstudio', 'llama_cpp'];
+const OCR_PROVIDERS: OcrProvider[] = ['ollama', 'openai', 'openrouter', 'omlx', 'lmstudio', 'llama_cpp'];
 
 interface OcrVectorStoreFieldsProps {
   isLoading: boolean;
