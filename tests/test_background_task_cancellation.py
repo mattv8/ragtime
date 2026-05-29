@@ -58,6 +58,49 @@ class _ActiveToolTimeoutExecutor:
         }
 
 
+class _ProviderFailureAfterToolExecutor:
+    def __init__(self) -> None:
+        self.closed = asyncio.Event()
+        self.tools: list[object] = []
+
+    def astream_events(self, *_args, **_kwargs):
+        return self._stream()
+
+    async def _stream(self):
+        try:
+            yield {
+                "event": "on_tool_start",
+                "run_id": "run-1",
+                "name": "read_userspace_file",
+                "data": {"input": {"path": "dashboard/main.ts"}},
+            }
+            yield {
+                "event": "on_tool_end",
+                "run_id": "run-1",
+                "name": "read_userspace_file",
+                "data": {"output": "export default function Dashboard() { return null; }"},
+            }
+            raise RuntimeError("Upstream idle timeout exceeded")
+        finally:
+            self.closed.set()
+
+
+class _SynthesisLLM:
+    async def astream(self, _messages):
+        yield SimpleNamespace(content="Recovered final answer.")
+
+
+class _FirstChunkRetryLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def astream(self, _messages):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("Upstream idle timeout exceeded")
+        yield SimpleNamespace(content="Retried answer.")
+
+
 class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_task_closes_stream_iterator(self) -> None:
         service = background_tasks.BackgroundTaskService()
@@ -159,6 +202,16 @@ class BackgroundTaskStreamActivityTests(unittest.TestCase):
         )
         self.assertEqual(running_tool_indices, {})
 
+    def test_contextual_provider_error_is_wrapped_processing_error(self) -> None:
+        detail = background_tasks._extract_wrapped_processing_error(
+            "I encountered an error processing your request while using OpenRouter for model 'deepseek/deepseek-v4-pro': Upstream idle timeout exceeded"
+        )
+
+        self.assertEqual(
+            detail,
+            "while using OpenRouter for model 'deepseek/deepseek-v4-pro': Upstream idle timeout exceeded",
+        )
+
 
 class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
     """Verify the in-component post-tool inactivity guard cancels stalled streams.
@@ -223,6 +276,7 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
             mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
+            mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))),
             mock.patch.object(rag_components, "_build_runtime_executor", return_value=executor),
             mock.patch.object(
                 rag_components,
@@ -246,6 +300,110 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("took too long and timed out", tool_end["output"])
         self.assertIn("The query tool timed out.", outputs)
         self.assertTrue(request_tool_state["active_tool_stream_timed_out"])
+
+    async def test_process_query_stream_recovers_openrouter_idle_timeout_after_tool_result(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        executor = _ProviderFailureAfterToolExecutor()
+        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
+        request_tool_state: dict[str, object] = {}
+        request_context = {
+            "prompt_is_ui": True,
+            "mode": "chat",
+            "allowed_tool_config_ids": set(),
+            "runtime_tools": [],
+            "request_tool_state": request_tool_state,
+            "prompt_additions": "",
+            "user_identity_turn_line": "",
+            "include_sqlite_persistence": False,
+            "userspace_env_var_turn_hint": "",
+            "userspace_runtime_status_turn_hint": "",
+            "workspace_id": None,
+        }
+        llm_resolution = components.RequestLLMResolution(
+            llm=_SynthesisLLM(),
+            provider="openrouter",
+            model="deepseek/deepseek-v4-pro",
+            attempted_providers=("openrouter",),
+        )
+
+        async def collect_outputs() -> list[object]:
+            outputs: list[object] = []
+            async for item in rag_components.process_query_stream("hello", is_ui=True):
+                outputs.append(item)
+            return outputs
+
+        with (
+            mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")),
+            mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)),
+            mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)),
+            mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
+            mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
+            mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
+            mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))),
+            mock.patch.object(rag_components, "_build_runtime_executor", return_value=executor),
+            mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()),
+        ):
+            outputs = await asyncio.wait_for(collect_outputs(), timeout=1.0)
+
+        self.assertTrue(executor.closed.is_set())
+        tool_start = outputs[0]
+        tool_end = outputs[1]
+        assert isinstance(tool_start, dict)
+        assert isinstance(tool_end, dict)
+        self.assertEqual(tool_start["type"], "tool_start")
+        self.assertEqual(tool_end["type"], "tool_end")
+        self.assertIn("Recovered final answer.", outputs)
+        self.assertTrue(request_tool_state["provider_stream_failed"])
+        self.assertEqual(request_tool_state["internal_continue_stop_reason"], "provider_stream_failed")
+
+    async def test_direct_stream_retries_first_chunk_openrouter_idle_timeout(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        request_llm = _FirstChunkRetryLLM()
+        request_tool_state: dict[str, object] = {}
+        request_context = {
+            "prompt_is_ui": False,
+            "mode": "chat",
+            "allowed_tool_config_ids": set(),
+            "runtime_tools": [],
+            "request_tool_state": request_tool_state,
+            "prompt_additions": "",
+            "user_identity_turn_line": "",
+            "include_sqlite_persistence": False,
+            "userspace_env_var_turn_hint": "",
+            "userspace_runtime_status_turn_hint": "",
+            "workspace_id": None,
+        }
+        llm_resolution = components.RequestLLMResolution(
+            llm=request_llm,
+            provider="openrouter",
+            model="deepseek/deepseek-v4-pro",
+            attempted_providers=("openrouter",),
+        )
+
+        async def collect_outputs() -> list[object]:
+            outputs: list[object] = []
+            async for item in rag_components.process_query_stream("hello", is_ui=False):
+                outputs.append(item)
+            return outputs
+
+        with (
+            mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")),
+            mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)),
+            mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)),
+            mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
+            mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
+            mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
+            mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))),
+            mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()),
+        ):
+            outputs = await asyncio.wait_for(collect_outputs(), timeout=1.0)
+
+        self.assertEqual(request_llm.calls, 2)
+        self.assertEqual(outputs, ["Retried answer."])
 
     async def test_wait_for_aborts_and_closes_stalled_agent_stream(self) -> None:
         stall_event = asyncio.Event()

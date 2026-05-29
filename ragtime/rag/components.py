@@ -299,6 +299,25 @@ MMR_MIN_FETCH_K = 20
 # NOT as a total request duration.  During streaming, "read=300" means we timeout only
 # if 300 s pass with zero data — safe for long reasoning/thinking phases.
 LLM_REQUEST_TIMEOUT_SECONDS: float = 300
+LLM_TRANSIENT_STREAM_RETRY_ATTEMPTS = 1
+TRANSIENT_PROVIDER_ERROR_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}
+TRANSIENT_PROVIDER_ERROR_PHRASES = (
+    "upstream idle timeout",
+    "idle timeout",
+    "timed out",
+    "timeout exceeded",
+    "read timeout",
+    "stream timeout",
+    "connection reset",
+    "connection aborted",
+    "server disconnected",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "rate limit",
+    "overloaded",
+)
 
 # Shared image payload caps for all vision-related message content.
 # Keep a single source of truth to avoid drift between userspace and chat paths.
@@ -12115,6 +12134,71 @@ except Exception as e:
         text = f"{body_message} {_format_exception_message(exc)}".lower()
         return "maximum context length" in text or "context window" in text and "exceed" in text or "please reduce the length" in text
 
+    @staticmethod
+    def _provider_error_text(exc: BaseException) -> str:
+        parts = [_format_exception_message(exc)]
+        body = getattr(exc, "body", None)
+        if not isinstance(body, dict):
+            response = getattr(exc, "response", None)
+            if response is not None:
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        body = payload
+                except Exception:
+                    body = None
+
+        if isinstance(body, dict):
+            try:
+                parts.append(json.dumps(body, default=str))
+            except Exception:
+                parts.append(str(body))
+
+        return " ".join(part for part in parts if part).lower()
+
+    @classmethod
+    def _is_transient_provider_runtime_error(cls, exc: BaseException) -> bool:
+        if cls._is_context_window_provider_error(exc):
+            return False
+
+        status_code = _exception_status_code(exc)
+        if status_code is not None:
+            if 400 <= status_code < 500 and status_code not in TRANSIENT_PROVIDER_ERROR_STATUS_CODES:
+                return False
+            if status_code in TRANSIENT_PROVIDER_ERROR_STATUS_CODES or status_code >= 500:
+                return True
+
+        text = cls._provider_error_text(exc)
+        if any(phrase in text for phrase in TRANSIENT_PROVIDER_ERROR_PHRASES):
+            return True
+
+        return isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, httpx.TransportError))
+
+    async def _stream_llm_chunks_with_transient_retries(
+        self,
+        llm: Any,
+        messages: list[BaseMessage],
+        *,
+        label: str,
+    ):
+        for attempt in range(LLM_TRANSIENT_STREAM_RETRY_ATTEMPTS + 1):
+            emitted_chunk = False
+            try:
+                async for chunk in llm.astream(messages):
+                    emitted_chunk = True
+                    yield chunk
+                return
+            except Exception as exc:
+                if emitted_chunk or attempt >= LLM_TRANSIENT_STREAM_RETRY_ATTEMPTS or not self._is_transient_provider_runtime_error(exc):
+                    raise
+                logger.warning(
+                    "Retrying %s LLM stream after transient provider error (%d/%d): %s",
+                    label,
+                    attempt + 1,
+                    LLM_TRANSIENT_STREAM_RETRY_ATTEMPTS,
+                    _format_exception_message(exc),
+                )
+
     def _context_window_provider_error_message(
         self,
         exc: BaseException,
@@ -13130,6 +13214,7 @@ except Exception as e:
                         attempt_intermediate_steps: list[Any] = []
                         attempt_replayed_tool_messages: list[BaseMessage] = []
                         attempt_provider_stalled_after_tool = False
+                        attempt_provider_stream_failed = False
 
                         def _record_synthetic_tool_failure(failed_run_id: str, failure_output: str) -> dict[str, Any]:
                             active_tool_runs.discard(failed_run_id)
@@ -13263,6 +13348,18 @@ except Exception as e:
                                         failed_run_id,
                                         _format_active_tool_stream_error_output(tool_name, stream_err),
                                     )
+                                    break
+                                if self._is_transient_provider_runtime_error(stream_err):
+                                    logger.warning(
+                                        "Agent provider stream failed with a transient error; closing the stream and falling through to tool-free synthesis (attempt=%d, tool_activity=%s): %s",
+                                        attempt_number,
+                                        attempt_had_tool_activity,
+                                        _format_exception_message(stream_err),
+                                    )
+                                    request_tool_state["provider_stream_failed"] = True
+                                    request_tool_state["provider_stream_error"] = _format_exception_message(stream_err)[:500]
+                                    attempt_provider_stream_failed = True
+                                    await _close_agent_stream_iter()
                                     break
                                 raise
                             kind = event.get("event", "")
@@ -13585,6 +13682,7 @@ except Exception as e:
                             and bool(attempt_intermediate_steps or attempt_replayed_tool_messages)
                             and attempt_number < MAX_INTERNAL_AGENT_CONTINUATIONS
                             and not attempt_provider_stalled_after_tool
+                            and not attempt_provider_stream_failed
                         )
                         if not should_internal_continue:
                             stop_reason = ""
@@ -13594,6 +13692,8 @@ except Exception as e:
                                 stop_reason = "content_emitted"
                             elif attempt_provider_stalled_after_tool:
                                 stop_reason = "provider_stalled_after_tool"
+                            elif attempt_provider_stream_failed:
+                                stop_reason = "provider_stream_failed"
                             elif not attempt_had_tool_activity:
                                 stop_reason = "no_tool_activity_this_attempt"
                             elif not (attempt_intermediate_steps or attempt_replayed_tool_messages):
@@ -13675,7 +13775,11 @@ except Exception as e:
                             streamed_synthesis_text = ""
                             streamed_synthesis_reasoning = ""
                             synthesis_channel_header_buffer = ""
-                            async for chunk in request_llm.astream(synthesis_messages):
+                            async for chunk in self._stream_llm_chunks_with_transient_retries(
+                                request_llm,
+                                synthesis_messages,
+                                label="internal final synthesis",
+                            ):
                                 synthesis_chunk_count += 1
                                 reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
                                 if reasoning_text:
@@ -13841,7 +13945,11 @@ except Exception as e:
                 effective_model = request_model_id
                 try:
                     direct_channel_header_buffer = ""
-                    async for chunk in request_llm.astream(messages):
+                    async for chunk in self._stream_llm_chunks_with_transient_retries(
+                        request_llm,
+                        messages,
+                        label="direct chat",
+                    ):
                         reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
                         if reasoning_text:
                             yield {"type": "reasoning", "content": reasoning_text}
