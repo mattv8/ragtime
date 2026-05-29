@@ -17,7 +17,7 @@ import shlex
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, List, Literal, Optional, Union, cast
 from urllib.parse import quote
@@ -85,6 +85,7 @@ from ragtime.core.model_limits import (
     get_output_limit,
     register_model_reasoning_capabilities,
     register_model_supported_endpoints,
+    register_openrouter_model_limits,
     requires_responses_api,
     supports_reasoning,
     supports_reasoning_effort,
@@ -131,7 +132,7 @@ from ragtime.core.ssh import (
     expand_env_vars_via_ssh,
     ssh_tunnel_config_from_dict,
 )
-from ragtime.core.tokenization import truncate_to_token_budget
+from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
@@ -198,6 +199,11 @@ from ragtime.userspace.service import userspace_service
 
 logger = get_logger(__name__)
 
+CHAT_CONTEXT_SAFETY_MARGIN_TOKENS = 1024
+CHAT_CONTEXT_PREFERRED_MIN_COMPLETION_TOKENS = 512
+CHAT_CONTEXT_ABSOLUTE_MIN_COMPLETION_TOKENS = 128
+DEFAULT_THINKING_BUDGET_TOKENS = 16384
+
 
 @dataclass(frozen=True)
 class RequestLLMResolution:
@@ -208,6 +214,23 @@ class RequestLLMResolution:
     model: str
     attempted_providers: tuple[str, ...] = ()
     error_message: str = ""
+    max_tokens: Optional[int] = None
+
+
+class ChatContextWindowExceededError(RuntimeError):
+    """Raised when a chat request cannot fit the selected model context window."""
+
+
+@dataclass(frozen=True)
+class ChatContextWindowFit:
+    """Request adjustments required to fit a provider context window."""
+
+    chat_history: list[Any]
+    max_tokens: int
+    context_limit: int
+    counted_input_tokens: int
+    omitted_history_messages: int = 0
+    notice: str = ""
 
 
 def _format_exception_message(exc: BaseException) -> str:
@@ -2709,6 +2732,8 @@ class RAGComponents:
                             if requested_variants.isdisjoint(row_variants):
                                 continue
 
+                            register_openrouter_model_limits(row)
+
                             supported_endpoints = row.get("supportedEndpoints")
                             if isinstance(supported_endpoints, list):
                                 register_model_supported_endpoints(normalized_row_id, supported_endpoints)
@@ -2852,7 +2877,7 @@ class RAGComponents:
                 openrouter_extra_body["include_reasoning"] = True
                 openrouter_extra_body["reasoning"] = {"enabled": True}
             if await supports_thinking_budget(model):
-                openrouter_extra_body["thinking_budget"] = 16384
+                openrouter_extra_body["thinking_budget"] = min(DEFAULT_THINKING_BUDGET_TOKENS, max_tokens)
             if openrouter_extra_body:
                 openrouter_kwargs["extra_body"] = openrouter_extra_body
 
@@ -2931,7 +2956,7 @@ class RAGComponents:
                 if model_supports_reasoning_effort:
                     copilot_kwargs["reasoning_effort"] = "high"
                 if await supports_thinking_budget(model):
-                    copilot_kwargs["extra_body"] = {"thinking_budget": 16384}
+                    copilot_kwargs["extra_body"] = {"thinking_budget": min(DEFAULT_THINKING_BUDGET_TOKENS, max_tokens)}
 
             return _CopilotChatOpenAI(
                 **copilot_kwargs,
@@ -12058,6 +12083,53 @@ except Exception as e:
             return base
         return f"{base} {resolution.error_message}"
 
+    @staticmethod
+    def _is_context_window_provider_error(exc: BaseException) -> bool:
+        if isinstance(exc, ChatContextWindowExceededError):
+            return True
+
+        code = getattr(exc, "code", None)
+        if code and str(code).lower() in {"context_length_exceeded", "context_window_exceeded"}:
+            return True
+
+        body = getattr(exc, "body", None)
+        if not isinstance(body, dict):
+            response = getattr(exc, "response", None)
+            if response is not None:
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        body = payload
+                except Exception:
+                    body = None
+
+        body_message = ""
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                error_code = str(error_obj.get("code", "") or "").lower()
+                if error_code in {"context_length_exceeded", "context_window_exceeded"}:
+                    return True
+                body_message = str(error_obj.get("message", "") or "")
+
+        text = f"{body_message} {_format_exception_message(exc)}".lower()
+        return "maximum context length" in text or "context window" in text and "exceed" in text or "please reduce the length" in text
+
+    def _context_window_provider_error_message(
+        self,
+        exc: BaseException,
+        resolution: object,
+    ) -> str:
+        if isinstance(exc, ChatContextWindowExceededError):
+            return str(exc)
+
+        context = self._llm_error_context(resolution)
+        return (
+            f"The selected model rejected this request{context} because the prompt plus reserved response space exceeded its context window. "
+            "Ragtime reduced the response budget when it could, but this request is still too large for the provider. "
+            "Please retry with fewer or smaller file attachments, a narrower file excerpt, or a shorter chat history."
+        )
+
     def _llm_error_context(self, resolution: object) -> str:
         """Return provider/model context for LLM runtime errors."""
         if not isinstance(resolution, RequestLLMResolution):
@@ -12081,6 +12153,9 @@ except Exception as e:
                 "or you no longer have access to it. Refresh the workspace list "
                 "and retry from an active workspace."
             )
+
+        if self._is_context_window_provider_error(exc):
+            return self._context_window_provider_error_message(exc, resolution)
 
         resolution_context = self._llm_error_context(resolution)
         return f"I encountered an error processing your request{resolution_context}: {_format_exception_message(exc)}"
@@ -12154,6 +12229,7 @@ except Exception as e:
                 llm=self.llm,
                 provider=provider_override,
                 model=model_id or "",
+                max_tokens=self._get_llm_output_token_limit(self.llm),
             )
 
         configured_model = str(self._app_settings.get("llm_model", "")).strip()
@@ -12167,6 +12243,7 @@ except Exception as e:
                     llm=self.llm,
                     provider=configured_provider,
                     model=model_id,
+                    max_tokens=self._get_llm_output_token_limit(self.llm),
                 )
 
         if not model_id:
@@ -12188,6 +12265,7 @@ except Exception as e:
                 llm=self.llm,
                 provider=configured_provider,
                 model=model_id,
+                max_tokens=self._get_llm_output_token_limit(self.llm),
             )
 
         provider = provider_override or configured_provider
@@ -12228,6 +12306,7 @@ except Exception as e:
                 provider=candidate_provider,
                 model=model_id,
                 attempted_providers=tuple(attempted),
+                max_tokens=max_tokens,
             )
 
         provider_list = ", ".join(self._provider_label(provider) for provider in attempted)
@@ -12243,8 +12322,309 @@ except Exception as e:
             error_message=error_message,
         )
 
-    def _content_to_text_for_token_estimate(self, content: Any) -> str:
-        """Convert message/tool content into plain text for token estimate math."""
+    @staticmethod
+    def _get_llm_output_token_limit(llm: Optional[Any]) -> Optional[int]:
+        """Return the configured output-token cap for a chat model when available."""
+        if llm is None:
+            return None
+        for attr in ("max_tokens", "num_predict"):
+            value = getattr(llm, attr, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return None
+
+    def _count_text_tokens_for_chat_budget(self, text: str) -> int:
+        if not text:
+            return 0
+        return count_tokens(text)
+
+    def _count_content_tokens_for_chat_budget(self, content: Any) -> int:
+        return self._count_text_tokens_for_chat_budget(self._content_to_text_for_token_count(content))
+
+    def _serialize_tool_schema_for_budget(self, tool: Any) -> str:
+        parts = [str(getattr(tool, "name", "") or ""), str(getattr(tool, "description", "") or "")]
+        args_schema = getattr(tool, "args_schema", None)
+        schema_payload: Any = None
+        if args_schema is not None:
+            try:
+                if hasattr(args_schema, "model_json_schema"):
+                    schema_payload = args_schema.model_json_schema()
+                elif hasattr(args_schema, "schema"):
+                    schema_payload = args_schema.schema()
+            except Exception:
+                schema_payload = str(args_schema)
+
+        if schema_payload is None:
+            try:
+                schema_payload = getattr(tool, "args", None)
+            except Exception:
+                schema_payload = None
+
+        if schema_payload:
+            try:
+                parts.append(json.dumps(schema_payload, sort_keys=True, default=str))
+            except Exception:
+                parts.append(str(schema_payload))
+
+        return "\n".join(part for part in parts if part)
+
+    def _count_tool_schema_tokens_for_chat_budget(self, tools: list[Any]) -> int:
+        if not tools:
+            return 0
+        serialized_tools = "\n\n".join(self._serialize_tool_schema_for_budget(tool) for tool in tools)
+        return self._count_text_tokens_for_chat_budget(serialized_tools)
+
+    def _count_chat_request_input_tokens(
+        self,
+        *,
+        system_prompt: str,
+        tool_scope_prompt: str,
+        turn_system_content: str,
+        chat_history: list[Any],
+        user_content: Any,
+        tools: list[Any],
+    ) -> int:
+        total = 0
+        total += self._count_text_tokens_for_chat_budget(f"system\n{system_prompt}")
+        total += self._count_text_tokens_for_chat_budget(tool_scope_prompt)
+        total += self._count_text_tokens_for_chat_budget(f"assistant\n{turn_system_content}")
+        total += self._count_content_tokens_for_chat_budget(user_content)
+        total += self._count_tool_schema_tokens_for_chat_budget(tools)
+        for message in chat_history:
+            role = "message"
+            if isinstance(message, HumanMessage):
+                role = "user"
+            elif isinstance(message, AIMessage):
+                role = "assistant"
+            elif isinstance(message, SystemMessage):
+                role = "system"
+            elif isinstance(message, ToolMessage):
+                role = "tool"
+            total += self._count_text_tokens_for_chat_budget(role)
+            total += self._count_content_tokens_for_chat_budget(getattr(message, "content", message))
+        return total
+
+    async def _resolve_chat_context_limit(self, provider: Optional[str], model: str) -> int:
+        normalized_provider = normalize_provider_name(provider)
+        if normalized_provider in LOCAL_LLM_PROVIDER_NAMES:
+            detected = await self._resolve_local_context_limit(normalized_provider, model)
+            if detected:
+                return max(1, detected)
+        try:
+            return max(1, int(await get_context_limit(model)))
+        except Exception:
+            return 8192
+
+    def _build_context_window_notice(
+        self,
+        *,
+        omitted_history_messages: int,
+        requested_max_tokens: int,
+        adjusted_max_tokens: int,
+        context_limit: int,
+        counted_input_tokens: int,
+    ) -> str:
+        lines: list[str] = []
+        if omitted_history_messages > 0:
+            lines.append(f"- Omitted {omitted_history_messages} oldest prior chat message(s) to fit this model's context window.")
+        if adjusted_max_tokens < requested_max_tokens:
+            lines.append(
+                f"- Capped this turn's response budget from {requested_max_tokens} to {adjusted_max_tokens} tokens to stay within the selected model's context window."
+            )
+        if not lines:
+            return ""
+        lines.append(f"- Counted request input after adjustment: {counted_input_tokens} / {context_limit} tokens.")
+        return "\n\n## CONTEXT WINDOW ADJUSTMENT\n" + "\n".join(lines) + "\n"
+
+    def _build_context_window_exceeded_message(
+        self,
+        *,
+        provider: Optional[str],
+        model: str,
+        context_limit: int,
+        counted_input_tokens: int,
+        requested_max_tokens: int,
+        omitted_history_messages: int,
+    ) -> str:
+        provider_label = self._provider_label(provider or "") if provider else "the selected provider"
+        omitted = f" I already omitted {omitted_history_messages} oldest prior chat message(s), but" if omitted_history_messages else ""
+        return (
+            f"The selected model could not process this request because it is too close to its context window."
+            f" {provider_label} model '{model}' allows about {context_limit} tokens;"
+            f"{omitted} the current request still needs {counted_input_tokens} input tokens before reserving response space. "
+            "Please retry with fewer or smaller file attachments, a narrower file excerpt, or a shorter chat history."
+        )
+
+    async def _fit_chat_request_context_window(
+        self,
+        *,
+        provider: Optional[str],
+        model: str,
+        requested_max_tokens: int,
+        system_prompt: str,
+        tool_scope_prompt: str,
+        turn_system_content: str,
+        chat_history: list[Any],
+        user_content: Any,
+        tools: list[Any],
+    ) -> ChatContextWindowFit:
+        context_limit = await self._resolve_chat_context_limit(provider, model)
+        requested_max_tokens = max(1, requested_max_tokens)
+        adjusted_history = list(chat_history)
+        omitted_history_messages = 0
+
+        counted_input_tokens = self._count_chat_request_input_tokens(
+            system_prompt=system_prompt,
+            tool_scope_prompt=tool_scope_prompt,
+            turn_system_content=turn_system_content,
+            chat_history=adjusted_history,
+            user_content=user_content,
+            tools=tools,
+        )
+        absolute_min_completion = min(CHAT_CONTEXT_ABSOLUTE_MIN_COMPLETION_TOKENS, requested_max_tokens)
+        preferred_min_completion = min(CHAT_CONTEXT_PREFERRED_MIN_COMPLETION_TOKENS, requested_max_tokens)
+
+        while adjusted_history and counted_input_tokens + absolute_min_completion > context_limit:
+            adjusted_history.pop(0)
+            omitted_history_messages += 1
+            counted_input_tokens = self._count_chat_request_input_tokens(
+                system_prompt=system_prompt,
+                tool_scope_prompt=tool_scope_prompt,
+                turn_system_content=turn_system_content,
+                chat_history=adjusted_history,
+                user_content=user_content,
+                tools=tools,
+            )
+
+        available_with_safety = context_limit - counted_input_tokens - CHAT_CONTEXT_SAFETY_MARGIN_TOKENS
+        available_without_safety = context_limit - counted_input_tokens
+        if available_with_safety >= preferred_min_completion:
+            adjusted_max_tokens = min(requested_max_tokens, available_with_safety)
+        elif available_without_safety >= absolute_min_completion:
+            adjusted_max_tokens = min(requested_max_tokens, available_without_safety)
+        else:
+            raise ChatContextWindowExceededError(
+                self._build_context_window_exceeded_message(
+                    provider=provider,
+                    model=model,
+                    context_limit=context_limit,
+                    counted_input_tokens=counted_input_tokens,
+                    requested_max_tokens=requested_max_tokens,
+                    omitted_history_messages=omitted_history_messages,
+                )
+            )
+
+        adjusted_max_tokens = max(1, int(adjusted_max_tokens))
+        notice = self._build_context_window_notice(
+            omitted_history_messages=omitted_history_messages,
+            requested_max_tokens=requested_max_tokens,
+            adjusted_max_tokens=adjusted_max_tokens,
+            context_limit=context_limit,
+            counted_input_tokens=counted_input_tokens,
+        )
+        return ChatContextWindowFit(
+            chat_history=adjusted_history,
+            max_tokens=adjusted_max_tokens,
+            context_limit=context_limit,
+            counted_input_tokens=counted_input_tokens,
+            omitted_history_messages=omitted_history_messages,
+            notice=notice,
+        )
+
+    def _clone_llm_with_output_token_limit(self, llm: Any, max_tokens: int) -> Any:
+        field_name = "num_predict" if isinstance(llm, ChatOllama) else "max_tokens"
+        if hasattr(llm, "model_copy"):
+            try:
+                return llm.model_copy(update={field_name: max_tokens})
+            except Exception:
+                logger.debug("Failed to clone LLM with capped output tokens via model_copy", exc_info=True)
+        if hasattr(llm, "copy"):
+            try:
+                return llm.copy(update={field_name: max_tokens})
+            except Exception:
+                logger.debug("Failed to clone LLM with capped output tokens via copy", exc_info=True)
+        if hasattr(llm, "bind"):
+            return llm.bind(**{field_name: max_tokens})
+        return llm
+
+    async def _cap_request_llm_output_tokens(
+        self,
+        resolution: RequestLLMResolution,
+        max_tokens: int,
+    ) -> RequestLLMResolution:
+        if resolution.max_tokens == max_tokens:
+            return resolution
+        capped_llm = None
+        if resolution.provider and resolution.model:
+            try:
+                capped_llm = await self._build_llm(resolution.provider, resolution.model, max_tokens)
+            except Exception:
+                logger.warning(
+                    "Failed to rebuild %s model %s with capped output tokens; falling back to local clone",
+                    self._provider_label(resolution.provider),
+                    resolution.model,
+                    exc_info=True,
+                )
+        if capped_llm is None and resolution.llm is not None:
+            capped_llm = self._clone_llm_with_output_token_limit(resolution.llm, max_tokens)
+        return replace(resolution, llm=capped_llm or resolution.llm, max_tokens=max_tokens)
+
+    async def _prepare_chat_context_window(
+        self,
+        *,
+        llm_resolution: RequestLLMResolution,
+        system_prompt: str,
+        tool_scope_prompt: str,
+        turn_system_content: str,
+        chat_history: list[Any],
+        user_content: Any,
+        tools: list[Any],
+    ) -> tuple[RequestLLMResolution, list[Any], str]:
+        if llm_resolution.llm is None or not llm_resolution.provider or not llm_resolution.model:
+            return llm_resolution, chat_history, turn_system_content
+
+        requested_max_tokens = llm_resolution.max_tokens or self._get_llm_output_token_limit(llm_resolution.llm)
+        if requested_max_tokens is None:
+            if self._app_settings is None:
+                requested_max_tokens = 4096
+            else:
+                requested_max_tokens = await self._resolve_chat_request_max_tokens(llm_resolution.provider, llm_resolution.model)
+        fit = await self._fit_chat_request_context_window(
+            provider=llm_resolution.provider,
+            model=llm_resolution.model,
+            requested_max_tokens=requested_max_tokens,
+            system_prompt=system_prompt,
+            tool_scope_prompt=tool_scope_prompt,
+            turn_system_content=turn_system_content,
+            chat_history=chat_history,
+            user_content=user_content,
+            tools=tools,
+        )
+        adjusted_resolution = llm_resolution
+        if fit.max_tokens < requested_max_tokens:
+            logger.info(
+                "Capping chat output tokens for %s model %s from %d to %d (counted input=%d, context=%d)",
+                self._provider_label(llm_resolution.provider),
+                llm_resolution.model,
+                requested_max_tokens,
+                fit.max_tokens,
+                fit.counted_input_tokens,
+                fit.context_limit,
+            )
+            adjusted_resolution = await self._cap_request_llm_output_tokens(llm_resolution, fit.max_tokens)
+
+        if fit.omitted_history_messages:
+            logger.info(
+                "Omitted %d oldest chat history message(s) for %s model %s context budget",
+                fit.omitted_history_messages,
+                self._provider_label(llm_resolution.provider),
+                llm_resolution.model,
+            )
+
+        return adjusted_resolution, fit.chat_history, turn_system_content + fit.notice
+
+    def _content_to_text_for_token_count(self, content: Any) -> str:
+        """Convert message/tool content into plain text for token counting."""
         if content is None:
             return ""
         if isinstance(content, str):
@@ -12277,13 +12657,14 @@ except Exception as e:
         chat_history: list[Any],
         user_content: Any,
         model_id: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> str:
         """Build a request-scoped context headroom advisory for the model."""
         effective_model_id = model_id or ((self._app_settings or {}).get("llm_model", "gpt-4-turbo") if self._app_settings else "gpt-4-turbo")
         try:
-            provider = normalize_provider_name((self._app_settings or {}).get("llm_provider", "openai"))
-            if provider in LOCAL_LLM_PROVIDER_NAMES:
-                detected = await self._resolve_local_context_limit(provider, effective_model_id)
+            effective_provider = normalize_provider_name(provider or (self._app_settings or {}).get("llm_provider", "openai"))
+            if effective_provider in LOCAL_LLM_PROVIDER_NAMES:
+                detected = await self._resolve_local_context_limit(effective_provider, effective_model_id)
                 context_limit = max(1, detected or 8192)
             else:
                 # OpenAI/Anthropic: use LiteLLM dataset
@@ -12291,21 +12672,21 @@ except Exception as e:
         except Exception:
             context_limit = 8192
 
-        estimated_tokens = 0
+        counted_tokens = 0
         for message in chat_history:
             content = getattr(message, "content", message)
-            estimated_tokens += len(self._content_to_text_for_token_estimate(content)) // 4
+            counted_tokens += self._count_content_tokens_for_chat_budget(content)
 
-        estimated_tokens += len(self._content_to_text_for_token_estimate(user_content)) // 4
+        counted_tokens += self._count_content_tokens_for_chat_budget(user_content)
 
-        usage_percent = int((estimated_tokens / context_limit) * 100)
-        headroom_tokens = max(0, context_limit - estimated_tokens)
+        usage_percent = int((counted_tokens / context_limit) * 100)
+        headroom_tokens = max(0, context_limit - counted_tokens)
         risk_level = "high" if usage_percent >= 85 else "medium" if usage_percent >= 70 else "low"
 
         return (
             "\n\n## CONTEXT HEADROOM ASSAY\n"
-            f"- Estimated conversation usage: {estimated_tokens} / {context_limit} tokens (~{usage_percent}%)\n"
-            f"- Estimated headroom: {headroom_tokens} tokens\n"
+            f"- Counted conversation usage: {counted_tokens} / {context_limit} tokens (~{usage_percent}%)\n"
+            f"- Counted headroom: {headroom_tokens} tokens\n"
             f"- Risk level: {risk_level}\n"
             "- Keep responses concise when risk is medium/high and avoid unnecessary tool churn.\n"
             "- For implementation tasks, prioritize minimal edits that complete the request in one loop.\n"
@@ -12381,6 +12762,7 @@ except Exception as e:
                 chat_history=chat_history,
                 user_content=langchain_content,
                 model_id=request_model_id,
+                provider=llm_resolution.provider,
             )
 
             if request_llm is None:
@@ -12391,6 +12773,20 @@ except Exception as e:
                     runtime_tools,
                     mode=request_context["mode"],
                 )
+
+            context_tools = runtime_tools if runtime_tools else (list(executor.tools) if executor else [])
+            llm_resolution, chat_history, turn_system_content = await self._prepare_chat_context_window(
+                llm_resolution=llm_resolution,
+                system_prompt=system_prompt,
+                tool_scope_prompt=tool_scope_prompt,
+                turn_system_content=turn_system_content,
+                chat_history=chat_history,
+                user_content=langchain_content,
+                tools=context_tools,
+            )
+            request_llm = llm_resolution.llm
+
+            if runtime_tools:
                 scoped_prompt = system_prompt + tool_scope_prompt
                 executor = self._build_runtime_executor(
                     runtime_tools,
@@ -12621,6 +13017,7 @@ except Exception as e:
             chat_history=chat_history,
             user_content=langchain_content,
             model_id=request_model_id,
+            provider=llm_resolution.provider,
         )
 
         if request_llm is None:
@@ -12631,6 +13028,25 @@ except Exception as e:
                 runtime_tools,
                 mode=request_context["mode"],
             )
+
+        context_tools = runtime_tools if runtime_tools else (list(executor.tools) if executor else [])
+        try:
+            llm_resolution, chat_history, turn_system_content = await self._prepare_chat_context_window(
+                llm_resolution=llm_resolution,
+                system_prompt=system_prompt,
+                tool_scope_prompt=tool_scope_prompt,
+                turn_system_content=turn_system_content,
+                chat_history=chat_history,
+                user_content=langchain_content,
+                tools=context_tools,
+            )
+        except Exception as e:
+            logger.exception("Error fitting streaming query to context window")
+            yield self._chat_runtime_error_message(e, llm_resolution)
+            return
+        request_llm = llm_resolution.llm
+
+        if runtime_tools:
             scoped_prompt = system_prompt + tool_scope_prompt
             executor = self._build_runtime_executor(
                 runtime_tools,
