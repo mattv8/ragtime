@@ -45,6 +45,7 @@ logger = get_logger(__name__)
 
 DEV_SERVER_INTERRUPT_MESSAGE = "Chat run interrupted by dev server reload or shutdown before it finished."
 WRAPPED_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request:"
+WRAPPED_CONTEXTUAL_PROCESSING_ERROR_PREFIX = "I encountered an error processing your request"
 
 
 # Throttle "task_progress" events published to per-conversation SSE channels.
@@ -76,7 +77,13 @@ def _extract_wrapped_processing_error(full_response: str) -> Optional[str]:
     """Return wrapped internal error detail if response is the generic error shell."""
     text = (full_response or "").strip()
     if not text.startswith(WRAPPED_PROCESSING_ERROR_PREFIX):
-        return None
+        if not text.startswith(WRAPPED_CONTEXTUAL_PROCESSING_ERROR_PREFIX):
+            return None
+
+        detail = text[len(WRAPPED_CONTEXTUAL_PROCESSING_ERROR_PREFIX) :].strip()
+        if detail.startswith(":"):
+            detail = detail[1:].strip()
+        return detail or "Internal processing error"
 
     detail = text[len(WRAPPED_PROCESSING_ERROR_PREFIX) :].strip()
     return detail or "Internal processing error"
