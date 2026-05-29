@@ -9914,6 +9914,7 @@ export function ChatPanel({
   const renderInChatSearchBar = (variant: 'inline' | 'floating') => {
     const hasQuery = inChatSearchTrimmedQuery.length > 0;
     const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
+    const hasAnyResults = inChatSearchTotal > 0 || branchCount > 0;
     const showCount = hasQuery && (inChatSearchTotal > 0 || branchCount > 0);
     const branchSuffix = branchCount > 0 ? ` +${branchCount}B` : '';
     const autoInlineWidthPx = Math.min(
@@ -9974,26 +9975,28 @@ export function ChatPanel({
           />
           <div className="chat-in-chat-search-controls">
             {showCount && <span className="chat-in-chat-search-count" title={counterTitle} aria-live="polite">{counterText}</span>}
-            <button
-              type="button"
-              className="chat-in-chat-search-nav"
-              onClick={goToPrevInChatMatch}
-              disabled={inChatSearchTotal === 0 && (!inChatSearchIncludeBranches || inChatSearchBranchMatches.length === 0)}
-              title="Previous match (Shift+Enter)"
-              aria-label="Previous match"
-            >
-              <ChevronUp size={12} />
-            </button>
-            <button
-              type="button"
-              className="chat-in-chat-search-nav"
-              onClick={goToNextInChatMatch}
-              disabled={inChatSearchTotal === 0 && (!inChatSearchIncludeBranches || inChatSearchBranchMatches.length === 0)}
-              title="Next match (Enter)"
-              aria-label="Next match"
-            >
-              <ChevronDown size={12} />
-            </button>
+            {hasAnyResults && (
+              <>
+                <button
+                  type="button"
+                  className="chat-in-chat-search-nav"
+                  onClick={goToPrevInChatMatch}
+                  title="Previous match (Shift+Enter)"
+                  aria-label="Previous match"
+                >
+                  <ChevronUp size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="chat-in-chat-search-nav"
+                  onClick={goToNextInChatMatch}
+                  title="Next match (Enter)"
+                  aria-label="Next match"
+                >
+                  <ChevronDown size={12} />
+                </button>
+              </>
+            )}
             <button
               type="button"
               className={`chat-in-chat-search-toggle${inChatSearchIncludeBranches ? ' active' : ''}`}
