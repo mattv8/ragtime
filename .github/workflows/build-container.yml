@@ -17,6 +17,9 @@ on:
       - 'tests/**'
       # Dependencies and build config
       - 'pyproject.toml'
+      - '.env.example'
+      - 'README.md'
+      - 'tests/check_readme_sync.sh'
       # Database schema (requires container rebuild for migrations)
       - 'prisma/**'
       # CI workflow itself
@@ -47,6 +50,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Check README with source files
+        uses: ./.github/actions/sync-readme
+        with:
+          fail-on-diff: 'true'
 
       - name: Validate docker compose manifests
         run: |
@@ -461,48 +469,10 @@ jobs:
           path: sbom.spdx.json
           retention-days: 90
 
-  sync-readme:
-    name: Sync README
-    runs-on: self-hosted
-    needs: [build-main, build-runtime]
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update docker-compose.yml with branch tag
-        run: |
-          BRANCH="${{ needs.build-main.outputs.branch }}"
-          echo "Updating docker-compose.yml image tags to: ${BRANCH}"
-          sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${BRANCH}|" docker-compose.yml
-          sed -i "/^[[:space:]]*#/!s|^\([[:space:]]*\)image: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:.*|\1image: ${{ env.REGISTRY }}/${{ env.IMAGE_RUNTIME_NAME }}:${BRANCH}|" docker-compose.yml
-          echo "Updated docker-compose.yml:"
-          grep "image:" docker-compose.yml
-
-      - name: Sync README with source files
-        id: sync
-        uses: ./.github/actions/sync-readme
-        with:
-          fail-on-diff: 'false'
-
-      - name: Commit and push changes
-        if: steps.sync.outputs.changed == 'true'
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add README.md docker-compose.yml
-          git commit -m "docs: auto-update README and docker-compose.yml for branch ${{ needs.build-main.outputs.branch }}"
-          git push
-
   summary:
     name: Build Summary
     runs-on: self-hosted
-    needs: [build-main, build-runtime, build-legacy, sign, sign-legacy, sbom, sync-readme]
+    needs: [build-main, build-runtime, build-legacy, sign, sign-legacy, sbom]
     if: always()
     permissions:
       contents: read
@@ -517,7 +487,6 @@ jobs:
           LEGACY_SIGN_STATUS="${{ needs.sign-legacy.result }}"
           SBOM_STATUS="${{ needs.sbom.result }}"
           RUNTIME_STATUS="${{ needs.build-runtime.result }}"
-          SYNC_STATUS="${{ needs.sync-readme.result }}"
 
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -555,15 +524,6 @@ jobs:
             echo "**SBOM:** Generated" >> $GITHUB_STEP_SUMMARY
           else
             echo "**SBOM:** Failed" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$SYNC_STATUS" = "success" ]; then
-            echo "**README Sync:** Completed" >> $GITHUB_STEP_SUMMARY
-          elif [ "$SYNC_STATUS" = "skipped" ]; then
-            echo "**README Sync:** Skipped (main branch only)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "**README Sync:** Failed" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 

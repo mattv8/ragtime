@@ -27,6 +27,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check README with source files
+        uses: ./.github/actions/sync-readme
+        with:
+          fail-on-diff: 'true'
+
       - name: Validate docker compose manifests
         run: |
           cp -n .env.example .env
@@ -44,6 +49,7 @@ jobs:
           Local equivalent:
 
           ```bash
+          bash tests/check_readme_sync.sh --check
           cp -n .env.example .env
           docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null

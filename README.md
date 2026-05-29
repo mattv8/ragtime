@@ -83,7 +83,7 @@ flowchart LR
 1. **Create `.env`:**
 
    Copy [.env.example](.env.example) to [.env](.env).
-   The expanded block below is CI-synced from [.env.example](.env.example), so future edits should go there instead of the README snippet:
+  The expanded block below is CI-checked against [.env.example](.env.example), so future edits should go there instead of the README snippet:
 
    <details>
    <summary>Click to expand .env template</summary>
@@ -190,10 +190,10 @@ flowchart LR
    # Maximum concurrent runtime sessions in running/starting state (default: 12)
    # RUNTIME_MAX_SESSIONS=12
 
-    # Optional override for concurrent workspace startup/bootstrap operations per
-    # runtime worker. By default, the worker sizes this automatically from runtime
-    # namespace isolation, CPU, memory, and session capacity.
-    # RUNTIME_STARTUP_CONCURRENCY=
+   # Optional override for concurrent workspace startup/bootstrap operations per
+   # runtime worker. By default, the worker sizes this automatically from runtime
+   # namespace isolation, CPU, memory, and session capacity.
+   # RUNTIME_STARTUP_CONCURRENCY=
 
    # Chat web search uses the bundled internal SearXNG service by default.
    # Set TAVILY_API_KEY to use Tavily instead (get a key at https://app.tavily.com/home).
@@ -338,8 +338,8 @@ flowchart LR
          RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
        volumes:
          - ./data:/data
-        # Uncomment below to enable full runtime sandbox isolation when the host
-        # permits mount and PID namespaces (otherwise runtime falls back to chroot).
+       # Uncomment below to enable full runtime sandbox isolation when the host
+       # permits mount and PID namespaces (otherwise runtime falls back to chroot).
        # privileged: true
        # cap_add:
        #   - SYS_ADMIN
