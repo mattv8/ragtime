@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from ragtime.core import llama_cpp, lmstudio, model_limits, omlx, vision_models
+from ragtime.core import llama_cpp, lmstudio, model_limits, omlx, openrouter, vision_models
+from ragtime.core.embedding_models import EmbeddingModelInfo
 from ragtime.indexer import routes as indexer_routes
 
 
@@ -191,6 +192,110 @@ class VisionOcrCapabilityTests(unittest.IsolatedAsyncioTestCase):
             models = await vision_models.list_provider_vision_models("openai", api_key="sk-test")
 
         self.assertEqual([model.name for model in models], ["gpt-4.1", "gpt-4o"])
+
+    async def test_openrouter_vision_discovery_uses_catalog_capabilities_without_live_probe(self) -> None:
+        async def fake_list_models(api_key: str, timeout: float = 20.0):
+            self.assertEqual(api_key, "sk-or-test")
+            self.assertEqual(timeout, 20.0)
+            return [
+                {
+                    "id": "provider/vision-model",
+                    "name": "Vision Model",
+                    "architecture": {
+                        "input_modalities": ["text", "image"],
+                        "output_modalities": ["text"],
+                    },
+                    "limit": {"context": 128000},
+                },
+                {
+                    "id": "provider/text-model",
+                    "name": "Text Model",
+                    "architecture": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                    },
+                },
+                {
+                    "id": "provider/image-generator",
+                    "name": "Image Generator",
+                    "architecture": {
+                        "input_modalities": ["text", "image"],
+                        "output_modalities": ["image"],
+                    },
+                },
+            ]
+
+        async def fail_probe(*args, **kwargs):
+            _ = (args, kwargs)
+            raise AssertionError("OpenRouter vision discovery should not issue image requests")
+
+        with (
+            patch.object(openrouter, "list_models", fake_list_models),
+            patch.object(
+                vision_models,
+                "probe_openai_compatible_vision_capability",
+                fail_probe,
+            ),
+        ):
+            models = await vision_models.list_provider_vision_models("openrouter", api_key="sk-or-test")
+
+        self.assertEqual([model.name for model in models], ["provider/vision-model"])
+        self.assertEqual(models[0].provider, "openrouter")
+        self.assertEqual(models[0].context_limit, 128000)
+        self.assertIn("image_input", models[0].capabilities or [])
+
+    async def test_openrouter_embedding_discovery_uses_catalog_capabilities(self) -> None:
+        async def fake_list_embedding_models(api_key: str, timeout: float = 20.0):
+            self.assertEqual(api_key, "sk-or-test")
+            self.assertEqual(timeout, 15.0)
+            return [
+                {
+                    "id": "openai/text-embedding-3-small",
+                    "name": "Text Embedding 3 Small",
+                    "architecture": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["embeddings"],
+                    },
+                },
+                {
+                    "id": "provider/embedding-endpoint-model",
+                    "name": "Endpoint Embedding Model",
+                    "supported_endpoints": ["/embeddings"],
+                    "limit": {"context": 4096, "output": 1024},
+                },
+                {
+                    "id": "provider/chat-model",
+                    "name": "Chat Model",
+                    "architecture": {
+                        "input_modalities": ["text"],
+                        "output_modalities": ["text"],
+                    },
+                },
+            ]
+
+        async def fake_get_embedding_models():
+            return {
+                "text-embedding-3-small": EmbeddingModelInfo(
+                    id="text-embedding-3-small",
+                    provider="openai",
+                    max_input_tokens=8191,
+                    output_vector_size=1536,
+                )
+            }
+
+        with (
+            patch.object(openrouter, "list_embedding_models", fake_list_embedding_models),
+            patch.object(indexer_routes, "get_embedding_models", fake_get_embedding_models),
+        ):
+            response = await indexer_routes._fetch_openrouter_embedding_models("sk-or-test")
+
+        self.assertTrue(response.success)
+        self.assertEqual(
+            [model.id for model in response.models],
+            ["provider/embedding-endpoint-model", "openai/text-embedding-3-small"],
+        )
+        self.assertEqual(response.models[0].dimensions, 1024)
+        self.assertEqual(response.models[1].context_limit, 8191)
 
     def test_models_dev_vision_catalog_uses_modalities_metadata(self) -> None:
         payload = {

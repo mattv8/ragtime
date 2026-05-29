@@ -11,11 +11,12 @@ from typing import Optional
 import httpx
 from fastapi import HTTPException
 
-from ragtime.core import llama_cpp, lmstudio, omlx
+from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import (
     EMBEDDING_PROVIDER_NAMES,
     normalize_provider_name,
+    resolve_provider_api_key,
     resolve_provider_base_url,
 )
 from ragtime.core.ollama import NUM_GPU, is_reachable, list_models
@@ -65,6 +66,7 @@ async def validate_embedding_provider() -> ValidationResult:
             "lmstudio": _validate_lmstudio_embeddings,
             "omlx": _validate_omlx_embeddings,
             "openai": _validate_openai_embeddings,
+            "openrouter": _validate_openrouter_embeddings,
         }
         validator = validators.get(provider)
         if validator is None:
@@ -151,7 +153,7 @@ async def _validate_ollama_embeddings(settings: object, model: str) -> Validatio
 
 async def _validate_openai_embeddings(settings: object, model: str) -> ValidationResult:
     """Validate OpenAI embedding provider has API key configured."""
-    api_key = getattr(settings, "openai_api_key", "")
+    api_key = resolve_provider_api_key(settings, "openai", "embedding")
 
     if not api_key:
         return ValidationResult(
@@ -211,6 +213,73 @@ async def _validate_openai_embeddings(settings: object, model: str) -> Validatio
         return ValidationResult(
             valid=False,
             error="OpenAI validation failed",
+            details=str(e),
+        )
+
+    return ValidationResult(valid=True)
+
+
+async def _validate_openrouter_embeddings(settings: object, model: str) -> ValidationResult:
+    """Validate OpenRouter embedding provider has API key configured."""
+    api_key = resolve_provider_api_key(settings, "openrouter", "embedding")
+
+    if not api_key:
+        return ValidationResult(
+            valid=False,
+            error="OpenRouter API key not configured",
+            details="Please add your OpenRouter API key in Settings to use OpenRouter embeddings.",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                openrouter.OPENROUTER_EMBEDDINGS_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": "test",
+                },
+            )
+
+            if response.status_code == 401:
+                return ValidationResult(
+                    valid=False,
+                    error="Invalid OpenRouter API key",
+                    details="The configured API key was rejected. Please check your OpenRouter API key in Settings.",
+                )
+            if response.status_code == 404:
+                return ValidationResult(
+                    valid=False,
+                    error=f"OpenRouter model '{model}' not found",
+                    details="The embedding model does not exist or is not available to your OpenRouter account.",
+                )
+            if response.status_code != 200:
+                error_msg = response.json().get("error", {}).get("message", response.text[:200])
+                return ValidationResult(
+                    valid=False,
+                    error="OpenRouter API error",
+                    details=f"API returned status {response.status_code}: {error_msg}",
+                )
+
+    except httpx.ConnectError:
+        return ValidationResult(
+            valid=False,
+            error="Cannot connect to OpenRouter API",
+            details="Failed to reach OpenRouter API. Check your internet connection.",
+        )
+    except httpx.TimeoutException:
+        return ValidationResult(
+            valid=False,
+            error="OpenRouter API timeout",
+            details="Connection to OpenRouter API timed out.",
+        )
+    except Exception as e:
+        return ValidationResult(
+            valid=False,
+            error="OpenRouter validation failed",
             details=str(e),
         )
 
