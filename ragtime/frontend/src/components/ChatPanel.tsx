@@ -130,6 +130,11 @@ interface ChatKeywordFocusHint {
   token: number;
 }
 
+interface BranchSearchPreviewRestore {
+  conversation: Conversation;
+  previewBranchId: string;
+}
+
 function wrapFirstMatchingText(
   containers: HTMLElement[],
   query: string,
@@ -5740,11 +5745,13 @@ function mapBranchSearchMatchesByConversation(
 
 function getBranchSearchTooltip(match: ConversationBranchSearchMatch): string {
   const branchKindLabel = match.branch_kind ? `${match.branch_kind} branch` : 'branch';
-  return `Match found in ${branchKindLabel} anchored near message ${match.branch_point_index + 1}.`;
+  return `Open match in ${branchKindLabel} anchored near message ${match.branch_point_index + 1}.`;
 }
 
 function getBranchSearchLabel(match: ConversationBranchSearchMatch): string {
-  const branchKindLabel = match.branch_kind ? `${match.branch_kind} branch` : 'Branch';
+  const branchKindLabel = match.branch_kind
+    ? `${match.branch_kind.charAt(0).toUpperCase()}${match.branch_kind.slice(1)} branch`
+    : 'Branch';
   return `${branchKindLabel} at msg ${match.branch_point_index + 1}`;
 }
 
@@ -5978,12 +5985,14 @@ export function ChatPanel({
   const [inChatSearchFloating, setInChatSearchFloating] = useState(false);
   const [inChatSearchBranchMatches, setInChatSearchBranchMatches] = useState<ConversationBranchSearchMatch[]>([]);
   const [inChatSearchBranchIndex, setInChatSearchBranchIndex] = useState(0);
+  const [inChatSearchActiveSource, setInChatSearchActiveSource] = useState<'visible' | 'branch'>('visible');
   const [inChatSearchInlineSize, setInChatSearchInlineSize] = useState<{ width: number; height: number } | null>(null);
   const inChatSearchInputRef = useRef<HTMLTextAreaElement | null>(null);
   const inChatSearchMarksRef = useRef<HTMLElement[]>([]);
   const inChatSearchActiveIndexRef = useRef(0);
   const previouslyActiveInChatMarkRef = useRef<HTMLElement | null>(null);
   const inChatSearchResizeCleanupRef = useRef<(() => void) | null>(null);
+  const branchSearchPreviewRestoreRef = useRef<BranchSearchPreviewRestore | null>(null);
   const deferredInChatSearchQuery = useDeferredValue(inChatSearchQuery);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
@@ -6179,7 +6188,9 @@ export function ChatPanel({
       // happen to be unchanged after a re-highlight.
       const nextActive = marks[clamped] ?? null;
       previouslyActiveInChatMarkRef.current = nextActive;
-      nextActive?.classList.add(IN_CHAT_SEARCH_ACTIVE_CLASS);
+      if (inChatSearchActiveSource === 'visible') {
+        nextActive?.classList.add(IN_CHAT_SEARCH_ACTIVE_CLASS);
+      }
     }, 200);
 
     return () => window.clearTimeout(timeoutId);
@@ -6188,7 +6199,9 @@ export function ChatPanel({
     inChatSearchTrimmedQuery,
     activeInChatSearchOptions,
     activeConversationId,
+    activeConversation?.active_branch_id,
     activeConversation?.messages.length,
+    inChatSearchActiveSource,
     streamingContent,
     streamingEvents.length,
   ]);
@@ -6202,8 +6215,12 @@ export function ChatPanel({
     const marks = inChatSearchMarksRef.current;
     const previous = previouslyActiveInChatMarkRef.current;
     const active = marks[inChatSearchActiveIndex] ?? null;
-    if (previous && previous !== active) {
+    if (previous && (previous !== active || inChatSearchActiveSource === 'branch')) {
       previous.classList.remove(IN_CHAT_SEARCH_ACTIVE_CLASS);
+    }
+    if (inChatSearchActiveSource === 'branch') {
+      previouslyActiveInChatMarkRef.current = null;
+      return;
     }
     previouslyActiveInChatMarkRef.current = active;
     if (!active) return;
@@ -6223,7 +6240,7 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [inChatSearchActiveIndex]);
+  }, [inChatSearchActiveIndex, inChatSearchActiveSource]);
 
   // Optional branch search mode for in-chat find. This fetches branch matches
   // for the active conversation and lets next/prev jump across branch results
@@ -6232,6 +6249,7 @@ export function ChatPanel({
     if (!inChatSearchOpen || !inChatSearchIncludeBranches || !inChatSearchTrimmedQuery || !activeConversationId) {
       setInChatSearchBranchMatches([]);
       setInChatSearchBranchIndex(0);
+      setInChatSearchActiveSource('visible');
       return;
     }
     let cancelled = false;
@@ -6241,11 +6259,13 @@ export function ChatPanel({
         const matches = response.matches.filter((match) => match.conversation_id === activeConversationId);
         setInChatSearchBranchMatches(matches);
         setInChatSearchBranchIndex(0);
+        setInChatSearchActiveSource('visible');
       })
       .catch(() => {
         if (cancelled) return;
         setInChatSearchBranchMatches([]);
         setInChatSearchBranchIndex(0);
+        setInChatSearchActiveSource('visible');
       });
     return () => {
       cancelled = true;
@@ -6261,7 +6281,34 @@ export function ChatPanel({
     setInChatSearchTotal(0);
     setInChatSearchBranchMatches([]);
     setInChatSearchBranchIndex(0);
+    setInChatSearchActiveSource('visible');
+    const restore = branchSearchPreviewRestoreRef.current;
+    if (restore && restore.conversation.id !== activeConversationId) {
+      setConversations((prev) => prev.map((conversation) => (
+        conversation.id === restore.conversation.id && conversation.active_branch_id === restore.previewBranchId
+          ? restore.conversation
+          : conversation
+      )));
+      branchSearchPreviewRestoreRef.current = null;
+    }
   }, [activeConversationId]);
+
+  const restoreBranchSearchPreview = useCallback(() => {
+    const restore = branchSearchPreviewRestoreRef.current;
+    if (!restore) return;
+    branchSearchPreviewRestoreRef.current = null;
+
+    setActiveConversation((current) => {
+      if (current?.id !== restore.conversation.id) return current;
+      if (current.active_branch_id !== restore.previewBranchId) return current;
+      return restore.conversation;
+    });
+    setConversations((prev) => prev.map((conversation) => (
+      conversation.id === restore.conversation.id && conversation.active_branch_id === restore.previewBranchId
+        ? restore.conversation
+        : conversation
+    )));
+  }, []);
 
   // Responsive placement: drop the find bar below the header when the main
   // chat area is too narrow to host it inline alongside the header actions.
@@ -6291,8 +6338,12 @@ export function ChatPanel({
   }, []);
 
   const closeInChatSearch = useCallback(() => {
+    restoreBranchSearchPreview();
     setInChatSearchOpen(false);
-  }, []);
+    setInChatSearchActiveSource('visible');
+    setBranchSearchAnchorHint(null);
+    setChatKeywordFocusHint(null);
+  }, [restoreBranchSearchPreview]);
 
   const startInChatSearchResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -6344,64 +6395,9 @@ export function ChatPanel({
     return () => {
       inChatSearchResizeCleanupRef.current?.();
       inChatSearchResizeCleanupRef.current = null;
+      branchSearchPreviewRestoreRef.current = null;
     };
   }, []);
-
-  const jumpToInChatBranchMatch = useCallback((matchIndex: number) => {
-    if (!activeConversation || !inChatSearchIncludeBranches || inChatSearchBranchMatches.length === 0) return;
-    const normalized = ((matchIndex % inChatSearchBranchMatches.length) + inChatSearchBranchMatches.length)
-      % inChatSearchBranchMatches.length;
-    const match = inChatSearchBranchMatches[normalized];
-    setInChatSearchBranchIndex(normalized);
-    setBranchSearchAnchorHint({
-      conversationId: activeConversation.id,
-      branchId: match.branch_id,
-      branchPointIndex: Math.max(0, match.branch_point_index),
-    });
-    setChatKeywordFocusHint({
-      conversationId: activeConversation.id,
-      query: inChatSearchTrimmedQuery,
-      preferBranchAnchor: true,
-      token: Date.now(),
-    });
-  }, [
-    activeConversation,
-    inChatSearchIncludeBranches,
-    inChatSearchBranchMatches,
-    inChatSearchTrimmedQuery,
-  ]);
-
-  const goToNextInChatMatch = useCallback(() => {
-    if (inChatSearchTotal > 0) {
-      setInChatSearchActiveIndex((current) => (current + 1) % inChatSearchTotal);
-      return;
-    }
-    if (inChatSearchIncludeBranches && inChatSearchBranchMatches.length > 0) {
-      void jumpToInChatBranchMatch(inChatSearchBranchIndex + 1);
-    }
-  }, [
-    inChatSearchTotal,
-    inChatSearchIncludeBranches,
-    inChatSearchBranchMatches.length,
-    inChatSearchBranchIndex,
-    jumpToInChatBranchMatch,
-  ]);
-
-  const goToPrevInChatMatch = useCallback(() => {
-    if (inChatSearchTotal > 0) {
-      setInChatSearchActiveIndex((current) => (current - 1 + inChatSearchTotal) % inChatSearchTotal);
-      return;
-    }
-    if (inChatSearchIncludeBranches && inChatSearchBranchMatches.length > 0) {
-      void jumpToInChatBranchMatch(inChatSearchBranchIndex - 1);
-    }
-  }, [
-    inChatSearchTotal,
-    inChatSearchIncludeBranches,
-    inChatSearchBranchMatches.length,
-    inChatSearchBranchIndex,
-    jumpToInChatBranchMatch,
-  ]);
 
   // Cmd/Ctrl+F intercept when focus is inside this chat panel. Lets users
   // discover the in-chat find without reaching for the magnifier button.
@@ -7494,6 +7490,19 @@ export function ChatPanel({
       }
       const matchingConversation = visibleConversations.find((conversation) => conversation.id === targetConversationId);
       if (current && matchingConversation && current.id === matchingConversation.id) {
+        const restore = branchSearchPreviewRestoreRef.current;
+        if (restore?.conversation.id === current.id && current.active_branch_id === restore.previewBranchId) {
+          branchSearchPreviewRestoreRef.current = {
+            ...restore,
+            conversation: mergeConversationFromWorkspaceSnapshot(restore.conversation, matchingConversation),
+          };
+          const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+          return {
+            ...merged,
+            active_branch_id: current.active_branch_id,
+            messages: current.messages,
+          };
+        }
         return mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
       }
       return matchingConversation ?? visibleConversations[0] ?? null;
@@ -7585,6 +7594,19 @@ export function ChatPanel({
           return visibleConversations[0] ?? null;
         }
         const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
+        const restore = branchSearchPreviewRestoreRef.current;
+        if (matchingConversation && restore?.conversation.id === current.id && current.active_branch_id === restore.previewBranchId) {
+          branchSearchPreviewRestoreRef.current = {
+            ...restore,
+            conversation: mergeConversationFromWorkspaceSnapshot(restore.conversation, matchingConversation),
+          };
+          const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+          return {
+            ...merged,
+            active_branch_id: current.active_branch_id,
+            messages: current.messages,
+          };
+        }
         return matchingConversation ?? visibleConversations[0] ?? null;
       });
 
@@ -8586,50 +8608,6 @@ export function ChatPanel({
     }
   };
 
-  const selectConversationFromSearchResult = useCallback(async (
-    conversation: Conversation,
-    branchSearchMatch?: ConversationBranchSearchMatch,
-    keywordQuery?: string,
-  ) => {
-    const selectedConversation = await selectConversation(conversation);
-    if (!selectedConversation) {
-      return;
-    }
-    const trimmedKeywordQuery = keywordQuery?.trim() || '';
-    if (trimmedKeywordQuery) {
-      setChatKeywordFocusHint({
-        conversationId: conversation.id,
-        query: trimmedKeywordQuery,
-        preferBranchAnchor: Boolean(branchSearchMatch?.branch_id),
-        token: Date.now(),
-      });
-    } else {
-      setChatKeywordFocusHint(null);
-    }
-    if (!branchSearchMatch?.branch_id) {
-      setBranchSearchAnchorHint(null);
-      return;
-    }
-
-    setBranchSearchAnchorHint({
-      conversationId: conversation.id,
-      branchId: branchSearchMatch.branch_id,
-      branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
-    });
-    void refreshBranchPoints(conversation.id);
-  }, [refreshBranchPoints, selectConversation]);
-
-  const jumpToBranchSearchResult = useCallback(async (
-    conversation: Conversation,
-    branchSearchMatch?: ConversationBranchSearchMatch,
-    keywordQuery?: string,
-  ) => {
-    if (!branchSearchMatch) {
-      return;
-    }
-    await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
-  }, [selectConversationFromSearchResult]);
-
   const deleteConversation = async (conversationId: string, e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -9136,21 +9114,22 @@ export function ChatPanel({
     return Math.max(messageIdx, 0);
   }, []);
 
-  const switchBranch = useCallback(async (branchId: string) => {
-    if (!activeConversation || branchSwitching) return;
-    const conversationId = activeConversation.id;
+  const switchBranch = useCallback(async (branchId: string, conversationOverride?: Conversation) => {
+    const targetConversation = conversationOverride ?? activeConversation;
+    if (!targetConversation || branchSwitching) return;
+    const conversationId = targetConversation.id;
     const isLiveTarget = branchId.startsWith('__current__:');
     setBranchSwitching(true);
     try {
       // Remember the old active branch's position before switching
-      const oldActiveBranchId = activeConversation.active_branch_id;
+      const oldActiveBranchId = targetConversation.active_branch_id;
       if (oldActiveBranchId) {
         const oldBranch = branchesById.get(oldActiveBranchId);
         if (oldBranch) {
           const anchorIndex = getConversationBranchAnchorIndex(
             oldBranch.branch_point_index,
             oldBranch.branch_kind,
-            activeConversation.messages.length,
+            targetConversation.messages.length,
           );
           const selectionKey = getConversationBranchSelectionKey(oldBranch.branch_point_index, anchorIndex);
           setBranchSelections(prev => ({ ...prev, [selectionKey]: oldActiveBranchId }));
@@ -9192,6 +9171,211 @@ export function ChatPanel({
       setBranchSwitching(false);
     }
   }, [activeConversation, branchSwitching, workspaceId, branchesById, refreshBranchPoints, onBranchSwitch]);
+
+  const applyBranchSearchPreview = useCallback((
+    conversation: Conversation,
+    branchSearchMatch: ConversationBranchSearchMatch,
+  ): boolean => {
+    const preservedMessages = branchSearchMatch.preserved_messages ?? [];
+    if (preservedMessages.length === 0) {
+      return false;
+    }
+
+    const existingRestore = branchSearchPreviewRestoreRef.current;
+    let originConversation = conversation;
+    if (existingRestore) {
+      if (existingRestore.conversation.id === conversation.id) {
+        originConversation = existingRestore.conversation;
+      } else {
+        restoreBranchSearchPreview();
+      }
+    }
+
+    const branchPointIndex = Math.max(
+      0,
+      Math.min(branchSearchMatch.branch_point_index, originConversation.messages.length),
+    );
+    const previewConversation: Conversation = {
+      ...originConversation,
+      active_branch_id: branchSearchMatch.branch_id,
+      messages: [
+        ...originConversation.messages.slice(0, branchPointIndex),
+        ...preservedMessages,
+      ],
+    };
+    branchSearchPreviewRestoreRef.current = {
+      conversation: originConversation,
+      previewBranchId: branchSearchMatch.branch_id,
+    };
+    setActiveConversation(previewConversation);
+    setConversations((prev) => prev.map((item) => (
+      item.id === previewConversation.id ? previewConversation : item
+    )));
+    return true;
+  }, [restoreBranchSearchPreview]);
+
+  const selectConversationFromSearchResult = useCallback(async (
+    conversation: Conversation,
+    branchSearchMatch?: ConversationBranchSearchMatch,
+    keywordQuery?: string,
+  ) => {
+    const selectedConversation = await selectConversation(conversation);
+    if (!selectedConversation) {
+      return;
+    }
+
+    const trimmedKeywordQuery = keywordQuery?.trim() || '';
+    if (!branchSearchMatch?.branch_id) {
+      setBranchSearchAnchorHint(null);
+      setChatKeywordFocusHint(trimmedKeywordQuery ? {
+        conversationId: conversation.id,
+        query: trimmedKeywordQuery,
+        preferBranchAnchor: false,
+        token: Date.now(),
+      } : null);
+      return;
+    }
+
+    setBranchSearchAnchorHint({
+      conversationId: conversation.id,
+      branchId: branchSearchMatch.branch_id,
+      branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
+    });
+
+    const didPreview = applyBranchSearchPreview(selectedConversation, branchSearchMatch);
+    if (!didPreview) {
+      void refreshBranchPoints(conversation.id);
+    }
+
+    setChatKeywordFocusHint(trimmedKeywordQuery ? {
+      conversationId: conversation.id,
+      query: trimmedKeywordQuery,
+      preferBranchAnchor: true,
+      token: Date.now(),
+    } : null);
+  }, [applyBranchSearchPreview, refreshBranchPoints, selectConversation]);
+
+  const jumpToBranchSearchResult = useCallback(async (
+    conversation: Conversation,
+    branchSearchMatch?: ConversationBranchSearchMatch,
+    keywordQuery?: string,
+  ) => {
+    if (!branchSearchMatch) {
+      return;
+    }
+    await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
+  }, [selectConversationFromSearchResult]);
+
+  const jumpToInChatBranchMatch = useCallback(async (matchIndex: number) => {
+    if (!activeConversation || !inChatSearchIncludeBranches || inChatSearchBranchMatches.length === 0) return;
+    const normalized = ((matchIndex % inChatSearchBranchMatches.length) + inChatSearchBranchMatches.length)
+      % inChatSearchBranchMatches.length;
+    const match = inChatSearchBranchMatches[normalized];
+    setInChatSearchBranchIndex(normalized);
+    setInChatSearchActiveSource('branch');
+    setBranchSearchAnchorHint({
+      conversationId: activeConversation.id,
+      branchId: match.branch_id,
+      branchPointIndex: Math.max(0, match.branch_point_index),
+    });
+    applyBranchSearchPreview(activeConversation, match);
+    setChatKeywordFocusHint({
+      conversationId: activeConversation.id,
+      query: inChatSearchTrimmedQuery,
+      preferBranchAnchor: true,
+      token: Date.now(),
+    });
+  }, [
+    activeConversation,
+    applyBranchSearchPreview,
+    inChatSearchIncludeBranches,
+    inChatSearchBranchMatches,
+    inChatSearchTrimmedQuery,
+  ]);
+
+  const goToNextInChatMatch = useCallback(() => {
+    const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
+    if (inChatSearchTotal === 0 && branchCount === 0) return;
+
+    if (inChatSearchActiveSource === 'branch') {
+      if (inChatSearchBranchIndex < branchCount - 1) {
+        void jumpToInChatBranchMatch(inChatSearchBranchIndex + 1);
+        return;
+      }
+      if (inChatSearchTotal > 0) {
+        setInChatSearchActiveSource('visible');
+        setInChatSearchActiveIndex(0);
+      }
+      return;
+    }
+
+    if (inChatSearchActiveIndex < inChatSearchTotal - 1) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex((current) => current + 1);
+      return;
+    }
+
+    if (branchCount > 0) {
+      void jumpToInChatBranchMatch(0);
+      return;
+    }
+
+    if (inChatSearchTotal > 0) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex(0);
+    }
+  }, [
+    inChatSearchActiveIndex,
+    inChatSearchActiveSource,
+    inChatSearchBranchIndex,
+    inChatSearchBranchMatches.length,
+    inChatSearchIncludeBranches,
+    inChatSearchTotal,
+    jumpToInChatBranchMatch,
+  ]);
+
+  const goToPrevInChatMatch = useCallback(() => {
+    const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
+    if (inChatSearchTotal === 0 && branchCount === 0) return;
+
+    if (inChatSearchActiveSource === 'branch') {
+      if (inChatSearchBranchIndex > 0) {
+        void jumpToInChatBranchMatch(inChatSearchBranchIndex - 1);
+        return;
+      }
+      if (inChatSearchTotal > 0) {
+        setInChatSearchActiveSource('visible');
+        setInChatSearchActiveIndex(inChatSearchTotal - 1);
+      } else if (branchCount > 0) {
+        void jumpToInChatBranchMatch(branchCount - 1);
+      }
+      return;
+    }
+
+    if (inChatSearchActiveIndex > 0) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex((current) => current - 1);
+      return;
+    }
+
+    if (branchCount > 0) {
+      void jumpToInChatBranchMatch(branchCount - 1);
+      return;
+    }
+
+    if (inChatSearchTotal > 0) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex(inChatSearchTotal - 1);
+    }
+  }, [
+    inChatSearchActiveIndex,
+    inChatSearchActiveSource,
+    inChatSearchBranchIndex,
+    inChatSearchBranchMatches.length,
+    inChatSearchIncludeBranches,
+    inChatSearchTotal,
+    jumpToInChatBranchMatch,
+  ]);
 
   const copyMessageText = useCallback(async (idx: number, content: string | ContentPart[]) => {
     const { text } = parseMessageContent(content);
@@ -9531,7 +9715,7 @@ export function ChatPanel({
     const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
     const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
     const handleItemClick = options?.onClickOverride
-      ?? (() => selectConversationFromSearchResult(conv, undefined, searchQuery));
+      ?? (() => selectConversationFromSearchResult(conv, branchSearchMatch, searchQuery));
     const handleBranchResultClick = (event: React.MouseEvent | React.KeyboardEvent) => {
       event.stopPropagation();
       void jumpToBranchSearchResult(conv, branchSearchMatch, searchQuery);
@@ -9618,7 +9802,7 @@ export function ChatPanel({
               >
                 <span className="chat-branch-search-snippet-label">
                   <GitBranch size={11} />
-                  Branch
+                  Branch match
                 </span>
                 {branchSnippet ? (
                   <HighlightedText text={branchSnippet} query={searchQuery} />
@@ -9731,6 +9915,7 @@ export function ChatPanel({
     const hasQuery = inChatSearchTrimmedQuery.length > 0;
     const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
     const showCount = hasQuery && (inChatSearchTotal > 0 || branchCount > 0);
+    const branchSuffix = branchCount > 0 ? ` +${branchCount}B` : '';
     const autoInlineWidthPx = Math.min(
       520,
       Math.max(220, 170 + Math.max(8, inChatSearchQuery.trim().length) * 7.5),
@@ -9738,10 +9923,15 @@ export function ChatPanel({
     const inlineWidthPx = inChatSearchInlineSize?.width ?? autoInlineWidthPx;
     const inlineHeightPx = inChatSearchInlineSize?.height ?? 30;
     const counterText = inChatSearchTotal > 0
-      ? `${inChatSearchActiveIndex + 1}/${inChatSearchTotal}`
+      ? inChatSearchActiveSource === 'branch' && branchCount > 0
+        ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
+        : `${inChatSearchActiveIndex + 1}/${inChatSearchTotal}${branchSuffix}`
       : branchCount > 0
         ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
         : '0/0';
+    const counterTitle = branchCount > 0
+      ? `${inChatSearchTotal} visible match${inChatSearchTotal === 1 ? '' : 'es'}, ${branchCount} branch match${branchCount === 1 ? '' : 'es'}`
+      : undefined;
     return (
       <div
         className={`chat-in-chat-search chat-in-chat-search-${variant}`}
@@ -9761,6 +9951,7 @@ export function ChatPanel({
               setInChatSearchQuery(event.target.value);
               setInChatSearchActiveIndex(0);
               setInChatSearchBranchIndex(0);
+              setInChatSearchActiveSource('visible');
             }}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
@@ -9773,6 +9964,7 @@ export function ChatPanel({
                   setInChatSearchQuery('');
                   setInChatSearchActiveIndex(0);
                   setInChatSearchBranchIndex(0);
+                  setInChatSearchActiveSource('visible');
                 } else {
                   closeInChatSearch();
                 }
@@ -9781,7 +9973,7 @@ export function ChatPanel({
             aria-label="Find in chat"
           />
           <div className="chat-in-chat-search-controls">
-            {showCount && <span className="chat-in-chat-search-count" aria-live="polite">{counterText}</span>}
+            {showCount && <span className="chat-in-chat-search-count" title={counterTitle} aria-live="polite">{counterText}</span>}
             <button
               type="button"
               className="chat-in-chat-search-nav"
@@ -10182,7 +10374,7 @@ export function ChatPanel({
                                 className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
                                 onClick={() => {
                                   setIsWorkspaceConversationMenuOpen(false);
-                                  void selectConversationFromSearchResult(conversation, undefined, workspaceConversationSearchQuery);
+                                  void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
                                 }}
                                 onKeyDown={(event) => {
                                   if (isEditing) {
@@ -10191,7 +10383,7 @@ export function ChatPanel({
                                   if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault();
                                     setIsWorkspaceConversationMenuOpen(false);
-                                    void selectConversationFromSearchResult(conversation, undefined, workspaceConversationSearchQuery);
+                                    void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
                                   }
                                 }}
                               >
@@ -10287,7 +10479,7 @@ export function ChatPanel({
                                               >
                                                 <span className="chat-branch-search-snippet-label">
                                                   <GitBranch size={11} />
-                                                  Branch
+                                                  Branch match
                                                 </span>
                                                 {branchSnippet ? (
                                                   <HighlightedText text={branchSnippet} query={workspaceConversationSearchQuery} />
@@ -11530,7 +11722,7 @@ export function ChatPanel({
                         // chat panel can render it immediately without a
                         // refetch loop.
                         setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
-                        await selectConversationFromSearchResult(conv, archiveBranchSearchMatches[conv.id]);
+                        await selectConversationFromSearchResult(conv, archiveBranchSearchMatches[conv.id], trimmed);
                       },
                     }))}
                     {archiveLoading && archivedConversations.length > 0 && (
