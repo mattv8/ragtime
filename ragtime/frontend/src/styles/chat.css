@@ -3981,15 +3981,23 @@ button.tool-call-userspace-write-path-link:hover {
    IN-CHAT FIND
    ============================================================================= */
 mark.chat-in-chat-search-match {
-  background: var(--color-warning, #fde68a);
-  color: inherit;
+  background: var(--color-accent, #3b82f6);
+  color: var(--color-on-accent, #ffffff);
   padding: 0 1px;
   border-radius: 2px;
 }
+::highlight(ragtime-chat-search-match) {
+  background: #3b82f6;
+  color: #ffffff;
+}
 mark.chat-in-chat-search-match.chat-in-chat-search-match-active {
-  background: var(--color-accent, #3b82f6);
-  color: var(--color-on-accent, #ffffff);
-  outline: 1px solid color-mix(in srgb, var(--color-accent, #3b82f6) 60%, transparent);
+  background: var(--color-warning, #fde68a);
+  color: inherit;
+  outline: 1px solid color-mix(in srgb, var(--color-warning, #fde68a) 70%, transparent);
+}
+::highlight(ragtime-chat-search-active) {
+  background: #fde68a;
+  color: currentColor;
 }
 .chat-in-chat-search-trigger.active {
   color: var(--color-primary);
