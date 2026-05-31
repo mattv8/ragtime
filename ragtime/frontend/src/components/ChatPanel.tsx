@@ -248,6 +248,25 @@ function expandCollapsedReasoningForTarget(target: HTMLElement): Promise<void> {
 
 const IN_CHAT_SEARCH_MATCH_CLASS = 'chat-in-chat-search-match';
 const IN_CHAT_SEARCH_ACTIVE_CLASS = 'chat-in-chat-search-match-active';
+const IN_CHAT_SEARCH_CSS_HIGHLIGHT_NAME = 'ragtime-chat-search-match';
+const IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME = 'ragtime-chat-search-active';
+const IN_CHAT_SEARCH_DEBOUNCE_MS = 200;
+const IN_CHAT_SEARCH_CHUNK_BUDGET_MS = 12;
+const IN_CHAT_SEARCH_PROGRESS_INTERVAL_MS = 100;
+
+type InChatSearchMatchTarget = {
+  mode: 'css' | 'dom';
+  element: HTMLElement | null;
+  range: Range | null;
+};
+
+interface CssHighlightApi {
+  HighlightCtor: new (...ranges: Range[]) => { add?: (range: Range) => void };
+  registry: {
+    set: (name: string, highlight: unknown) => void;
+    delete: (name: string) => void;
+  };
+}
 
 function buildInChatSearchRegex(query: string, options: InChatSearchOptions): RegExp | null {
   const trimmed = query;
@@ -267,6 +286,68 @@ function textMatchesInChatSearchQuery(text: string, query: string, options: InCh
   if (!regex) return false;
   regex.lastIndex = 0;
   return regex.test(text);
+}
+
+function getCssHighlightApi(): CssHighlightApi | null {
+  const browserWindow = window as Window & {
+    Highlight?: CssHighlightApi['HighlightCtor'];
+    CSS?: typeof CSS & { highlights?: CssHighlightApi['registry'] };
+  };
+  const HighlightCtor = browserWindow.Highlight;
+  const registry = browserWindow.CSS?.highlights;
+  if (typeof HighlightCtor !== 'function' || !registry) return null;
+  return { HighlightCtor, registry };
+}
+
+function deleteInChatSearchCssHighlights(): void {
+  const api = getCssHighlightApi();
+  api?.registry.delete(IN_CHAT_SEARCH_CSS_HIGHLIGHT_NAME);
+  api?.registry.delete(IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME);
+}
+
+function clearInChatSearchActiveHighlight(previous: InChatSearchMatchTarget | null): void {
+  if (previous?.mode === 'dom') {
+    previous.element?.classList.remove(IN_CHAT_SEARCH_ACTIVE_CLASS);
+  }
+  const api = getCssHighlightApi();
+  api?.registry.delete(IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME);
+}
+
+function applyInChatSearchActiveHighlight(target: InChatSearchMatchTarget | null): void {
+  if (!target) return;
+  if (target.mode === 'dom') {
+    target.element?.classList.add(IN_CHAT_SEARCH_ACTIVE_CLASS);
+    return;
+  }
+  if (!target.range) return;
+  const api = getCssHighlightApi();
+  if (!api) return;
+  api.registry.set(IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME, new api.HighlightCtor(target.range));
+}
+
+function getRangeParentElement(range: Range | null): HTMLElement | null {
+  if (!range) return null;
+  const node = range.commonAncestorContainer;
+  return node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : (node.parentElement ?? null);
+}
+
+function shouldYieldInChatSearchChunk(chunkStartedAt: number): boolean {
+  return performance.now() - chunkStartedAt >= IN_CHAT_SEARCH_CHUNK_BUDGET_MS;
+}
+
+function waitForNextInChatSearchChunk(): Promise<void> {
+  return new Promise((resolve) => {
+    const browserWindow = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+    };
+    if (typeof browserWindow.requestIdleCallback === 'function') {
+      browserWindow.requestIdleCallback(() => resolve(), { timeout: 80 });
+      return;
+    }
+    window.requestAnimationFrame(() => resolve());
+  });
 }
 
 function collectInChatSearchTextNodes(root: HTMLElement): Text[] {
@@ -292,6 +373,7 @@ function collectInChatSearchTextNodes(root: HTMLElement): Text[] {
 }
 
 function clearInChatSearchHighlights(root: HTMLElement): void {
+  deleteInChatSearchCssHighlights();
   const marks = root.querySelectorAll<HTMLElement>(`mark.${IN_CHAT_SEARCH_MATCH_CLASS}`);
   if (marks.length === 0) return;
   const parents = new Set<Node>();
@@ -311,48 +393,134 @@ function clearInChatSearchHighlights(root: HTMLElement): void {
   });
 }
 
-function applyInChatSearchHighlights(
+let lastInChatSearchProgressReportedAt = 0;
+
+function reportInChatSearchProgress(
+  matches: InChatSearchMatchTarget[],
+  onProgress?: (matches: InChatSearchMatchTarget[]) => void,
+  force = false,
+): number {
+  if (!onProgress) return performance.now();
+  const now = performance.now();
+  if (!force && now - lastInChatSearchProgressReportedAt < IN_CHAT_SEARCH_PROGRESS_INTERVAL_MS) {
+    return lastInChatSearchProgressReportedAt;
+  }
+  lastInChatSearchProgressReportedAt = now;
+  onProgress(matches.slice());
+  return now;
+}
+
+async function applyInChatSearchHighlights(
   root: HTMLElement,
   regex: RegExp,
-): HTMLElement[] {
-  const created: HTMLElement[] = [];
+  options: {
+    shouldCancel: () => boolean;
+    onProgress?: (matches: InChatSearchMatchTarget[]) => void;
+  },
+): Promise<InChatSearchMatchTarget[] | null> {
+  const created: InChatSearchMatchTarget[] = [];
   const textNodes = collectInChatSearchTextNodes(root);
   if (textNodes.length === 0) return created;
+  const cssApi = getCssHighlightApi();
 
-  for (let textNodeIndex = textNodes.length - 1; textNodeIndex >= 0; textNodeIndex -= 1) {
-    const node = textNodes[textNodeIndex];
+  if (cssApi) {
+    const highlight = new cssApi.HighlightCtor();
+    cssApi.registry.set(IN_CHAT_SEARCH_CSS_HIGHLIGHT_NAME, highlight);
+    let chunkStartedAt = performance.now();
+
+    for (const node of textNodes) {
+      if (options.shouldCancel()) return null;
+      if (!node.isConnected || !root.contains(node)) continue;
+      const text = node.textContent ?? '';
+
+      regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(text)) !== null) {
+        if (options.shouldCancel()) return null;
+        if (match[0].length === 0) {
+          regex.lastIndex += 1;
+          continue;
+        }
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        highlight.add?.(range);
+        created.push({
+          mode: 'css',
+          element: node.parentElement,
+          range,
+        });
+
+        reportInChatSearchProgress(created, options.onProgress);
+        if (shouldYieldInChatSearchChunk(chunkStartedAt)) {
+          await waitForNextInChatSearchChunk();
+          chunkStartedAt = performance.now();
+        }
+      }
+    }
+
+    reportInChatSearchProgress(created, options.onProgress, true);
+    return created;
+  }
+
+  let chunkStartedAt = performance.now();
+
+  for (const node of textNodes) {
+    if (options.shouldCancel()) return null;
+    if (!node.isConnected || !root.contains(node)) continue;
     const text = node.textContent ?? '';
     const matches: Array<{ start: number; end: number }> = [];
 
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text)) !== null) {
+      if (options.shouldCancel()) return null;
       if (match[0].length === 0) {
         regex.lastIndex += 1;
         continue;
       }
       matches.push({ start: match.index, end: match.index + match[0].length });
+      if (shouldYieldInChatSearchChunk(chunkStartedAt)) {
+        await waitForNextInChatSearchChunk();
+        chunkStartedAt = performance.now();
+      }
     }
 
-    for (let i = matches.length - 1; i >= 0; i -= 1) {
-      const rangeInfo = matches[i];
-      try {
-        const range = document.createRange();
-        range.setStart(node, rangeInfo.start);
-        range.setEnd(node, rangeInfo.end);
-        const mark = document.createElement('mark');
-        mark.className = IN_CHAT_SEARCH_MATCH_CLASS;
-        const fragment = range.extractContents();
-        mark.appendChild(fragment);
-        range.insertNode(mark);
-        created.push(mark);
-      } catch {
-        // best-effort: skip ranges that cannot be wrapped safely
+    if (matches.length === 0) continue;
+
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+
+    for (const rangeInfo of matches) {
+      if (rangeInfo.start > cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor, rangeInfo.start)));
       }
+      const mark = document.createElement('mark');
+      mark.className = IN_CHAT_SEARCH_MATCH_CLASS;
+      mark.textContent = text.slice(rangeInfo.start, rangeInfo.end);
+      fragment.appendChild(mark);
+      created.push({ mode: 'dom', element: mark, range: null });
+      cursor = rangeInfo.end;
+    }
+
+    if (cursor < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+
+    try {
+      node.parentNode?.replaceChild(fragment, node);
+    } catch {
+      // best-effort: skip text nodes that were detached by a concurrent render
+    }
+
+    reportInChatSearchProgress(created, options.onProgress);
+    if (shouldYieldInChatSearchChunk(chunkStartedAt)) {
+      await waitForNextInChatSearchChunk();
+      chunkStartedAt = performance.now();
     }
   }
 
-  created.reverse();
+  reportInChatSearchProgress(created, options.onProgress, true);
   return created;
 }
 
@@ -5977,23 +6145,24 @@ export function ChatPanel({
   // search above so the global search experience is unaffected.
   const [inChatSearchOpen, setInChatSearchOpen] = useState(false);
   const [inChatSearchQuery, setInChatSearchQuery] = useState('');
+  const [debouncedInChatSearchQuery, setDebouncedInChatSearchQuery] = useState('');
   const [inChatSearchMatchCase, setInChatSearchMatchCase] = useState(false);
   const [inChatSearchWholeWord, setInChatSearchWholeWord] = useState(false);
   const [inChatSearchIncludeBranches, setInChatSearchIncludeBranches] = useState(false);
   const [inChatSearchActiveIndex, setInChatSearchActiveIndex] = useState(0);
   const [inChatSearchTotal, setInChatSearchTotal] = useState(0);
+  const [inChatSearchRunning, setInChatSearchRunning] = useState(false);
   const [inChatSearchFloating, setInChatSearchFloating] = useState(false);
   const [inChatSearchBranchMatches, setInChatSearchBranchMatches] = useState<ConversationBranchSearchMatch[]>([]);
   const [inChatSearchBranchIndex, setInChatSearchBranchIndex] = useState(0);
   const [inChatSearchActiveSource, setInChatSearchActiveSource] = useState<'visible' | 'branch'>('visible');
   const [inChatSearchInlineSize, setInChatSearchInlineSize] = useState<{ width: number; height: number } | null>(null);
   const inChatSearchInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const inChatSearchMarksRef = useRef<HTMLElement[]>([]);
+  const inChatSearchMarksRef = useRef<InChatSearchMatchTarget[]>([]);
   const inChatSearchActiveIndexRef = useRef(0);
-  const previouslyActiveInChatMarkRef = useRef<HTMLElement | null>(null);
+  const previouslyActiveInChatMarkRef = useRef<InChatSearchMatchTarget | null>(null);
   const inChatSearchResizeCleanupRef = useRef<(() => void) | null>(null);
   const branchSearchPreviewRestoreRef = useRef<BranchSearchPreviewRestore | null>(null);
-  const deferredInChatSearchQuery = useDeferredValue(inChatSearchQuery);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
@@ -6140,9 +6309,21 @@ export function ChatPanel({
     };
   }, [activeConversationId, chatKeywordFocusHint]);
 
+  useEffect(() => {
+    if (!inChatSearchOpen || !inChatSearchQuery.trim()) {
+      setDebouncedInChatSearchQuery('');
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedInChatSearchQuery(inChatSearchQuery);
+    }, IN_CHAT_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [inChatSearchOpen, inChatSearchQuery]);
+
   // In-chat find: recompute highlights when query/options/active conversation
   // change, or when streaming/branch updates rerender the messages tree.
-  const inChatSearchTrimmedQuery = deferredInChatSearchQuery.trim();
+  const inChatSearchTrimmedQuery = debouncedInChatSearchQuery.trim();
   const activeInChatSearchOptions = useMemo<InChatSearchOptions>(() => ({
     matchCase: inChatSearchMatchCase,
     wholeWord: inChatSearchWholeWord,
@@ -6152,9 +6333,11 @@ export function ChatPanel({
     if (!root) return;
 
     const reset = () => {
+      clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
       clearInChatSearchHighlights(root);
       inChatSearchMarksRef.current = [];
       previouslyActiveInChatMarkRef.current = null;
+      setInChatSearchRunning(false);
       setInChatSearchTotal(0);
     };
 
@@ -6168,14 +6351,38 @@ export function ChatPanel({
       return;
     }
 
-    // Coalesce streaming-driven re-runs: tokens arrive far faster than the
-    // user can perceive, so a full DOM rescan per token wastes work. A short
-    // trailing-edge debounce keeps the UI responsive without flicker.
-    const timeoutId = window.setTimeout(() => {
+    let cancelled = false;
+    setInChatSearchRunning(true);
+
+    const run = async () => {
+      clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
       clearInChatSearchHighlights(root);
-      const marks = applyInChatSearchHighlights(root, regex);
+      inChatSearchMarksRef.current = [];
+      previouslyActiveInChatMarkRef.current = null;
+      setInChatSearchTotal(0);
+
+      const marks = await applyInChatSearchHighlights(root, regex, {
+        shouldCancel: () => cancelled,
+        onProgress: (partialMarks) => {
+          if (cancelled) return;
+          inChatSearchMarksRef.current = partialMarks;
+          setInChatSearchTotal(partialMarks.length);
+          const clamped = partialMarks.length === 0
+            ? 0
+            : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), partialMarks.length - 1);
+          clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
+          const nextActive = partialMarks[clamped] ?? null;
+          previouslyActiveInChatMarkRef.current = nextActive;
+          if (inChatSearchActiveSource === 'visible') {
+            applyInChatSearchActiveHighlight(nextActive);
+          }
+        },
+      });
+
+      if (cancelled || !marks) return;
       inChatSearchMarksRef.current = marks;
       setInChatSearchTotal(marks.length);
+      setInChatSearchRunning(false);
       const clamped = marks.length === 0
         ? 0
         : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), marks.length - 1);
@@ -6187,13 +6394,21 @@ export function ChatPanel({
       // the active-mark effect would not re-fire on its own when index/total
       // happen to be unchanged after a re-highlight.
       const nextActive = marks[clamped] ?? null;
+      clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
       previouslyActiveInChatMarkRef.current = nextActive;
       if (inChatSearchActiveSource === 'visible') {
-        nextActive?.classList.add(IN_CHAT_SEARCH_ACTIVE_CLASS);
+        applyInChatSearchActiveHighlight(nextActive);
       }
-    }, 200);
+    };
 
-    return () => window.clearTimeout(timeoutId);
+    void run().catch(() => {
+      if (cancelled) return;
+      setInChatSearchRunning(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     inChatSearchOpen,
     inChatSearchTrimmedQuery,
@@ -6216,7 +6431,7 @@ export function ChatPanel({
     const previous = previouslyActiveInChatMarkRef.current;
     const active = marks[inChatSearchActiveIndex] ?? null;
     if (previous && (previous !== active || inChatSearchActiveSource === 'branch')) {
-      previous.classList.remove(IN_CHAT_SEARCH_ACTIVE_CLASS);
+      clearInChatSearchActiveHighlight(previous);
     }
     if (inChatSearchActiveSource === 'branch') {
       previouslyActiveInChatMarkRef.current = null;
@@ -6224,14 +6439,31 @@ export function ChatPanel({
     }
     previouslyActiveInChatMarkRef.current = active;
     if (!active) return;
-    active.classList.add(IN_CHAT_SEARCH_ACTIVE_CLASS);
+    applyInChatSearchActiveHighlight(active);
 
     let cancelled = false;
     void (async () => {
       try {
-        await expandCollapsedReasoningForTarget(active);
+        const targetElement = active.element ?? getRangeParentElement(active.range);
+        if (targetElement) {
+          await expandCollapsedReasoningForTarget(targetElement);
+        }
         if (cancelled) return;
-        active.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (active.mode === 'dom' && active.element) {
+          active.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return;
+        }
+        const rangeRect = active.range?.getBoundingClientRect();
+        const messagesRoot = chatMessagesRef.current;
+        if (rangeRect && messagesRoot) {
+          const rootRect = messagesRoot.getBoundingClientRect();
+          messagesRoot.scrollTo({
+            top: messagesRoot.scrollTop + rangeRect.top - rootRect.top - (rootRect.height / 2) + (rangeRect.height / 2),
+            behavior: 'smooth',
+          });
+          return;
+        }
+        targetElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } catch {
         // ignore scroll/expansion failures (e.g. detached node)
       }
@@ -6277,8 +6509,10 @@ export function ChatPanel({
   useEffect(() => {
     setInChatSearchOpen(false);
     setInChatSearchQuery('');
+    setDebouncedInChatSearchQuery('');
     setInChatSearchActiveIndex(0);
     setInChatSearchTotal(0);
+    setInChatSearchRunning(false);
     setInChatSearchBranchMatches([]);
     setInChatSearchBranchIndex(0);
     setInChatSearchActiveSource('visible');
@@ -9915,7 +10149,7 @@ export function ChatPanel({
     const hasQuery = inChatSearchTrimmedQuery.length > 0;
     const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
     const hasAnyResults = inChatSearchTotal > 0 || branchCount > 0;
-    const showCount = hasQuery && (inChatSearchTotal > 0 || branchCount > 0);
+    const showCount = hasQuery && (inChatSearchRunning || inChatSearchTotal > 0 || branchCount > 0);
     const branchSuffix = branchCount > 0 ? ` +${branchCount}B` : '';
     const autoInlineWidthPx = Math.min(
       520,
@@ -9923,19 +10157,26 @@ export function ChatPanel({
     );
     const inlineWidthPx = inChatSearchInlineSize?.width ?? autoInlineWidthPx;
     const inlineHeightPx = inChatSearchInlineSize?.height ?? 30;
-    const counterText = inChatSearchTotal > 0
+    const counterText = inChatSearchRunning
+      ? inChatSearchTotal > 0
+        ? `${inChatSearchTotal}...`
+        : '...'
+      : inChatSearchTotal > 0
       ? inChatSearchActiveSource === 'branch' && branchCount > 0
         ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
         : `${inChatSearchActiveIndex + 1}/${inChatSearchTotal}${branchSuffix}`
       : branchCount > 0
         ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
         : '0/0';
-    const counterTitle = branchCount > 0
+    const counterTitle = inChatSearchRunning
+      ? 'Searching visible chat text'
+      : branchCount > 0
       ? `${inChatSearchTotal} visible match${inChatSearchTotal === 1 ? '' : 'es'}, ${branchCount} branch match${branchCount === 1 ? '' : 'es'}`
       : undefined;
     return (
       <div
         className={`chat-in-chat-search chat-in-chat-search-${variant}`}
+        aria-busy={inChatSearchRunning || undefined}
         style={({
           ['--chat-in-chat-search-inline-width' as '--chat-in-chat-search-inline-width']: `${inlineWidthPx}px`,
           ['--chat-in-chat-search-inline-height' as '--chat-in-chat-search-inline-height']: `${inlineHeightPx}px`,
