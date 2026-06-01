@@ -243,9 +243,7 @@ def _register_handlers(
         try:
             # If a route filter is active, validate the tool is allowed
             if route_filter is not None:
-                allowed_tools = await tool_adapter.get_available_tools(route_filter=route_filter)
-                allowed_names = {t.name for t in allowed_tools}
-                if name not in allowed_names:
+                if not await tool_adapter.is_tool_allowed_by_route_filter(name, route_filter):
                     logger.warning(f"Tool '{name}' not allowed by route filter")
                     return [
                         TextContent(
