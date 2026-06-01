@@ -46,7 +46,7 @@ from langchain_openai.chat_models.base import (
     _get_last_messages,
 )
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, create_model, field_validator
 
 from ragtime.chat_runtime import chat_runtime_service
 from ragtime.chat_runtime.payloads import (
@@ -3160,15 +3160,23 @@ class RAGComponents:
             if timeout_default == 0
             else f"{timeout_label} timeout in seconds (default and maximum: {timeout_default}). Use 0 or omit to use the configured maximum."
         )
-        timeout_field: Any = Field(
-            default=timeout_default,
-            ge=0,
-            le=86400,
-            description=timeout_description,
+        timeout_field: Any = (
+            int,
+            Field(
+                default=timeout_default,
+                ge=0,
+                le=86400,
+                description=timeout_description,
+            ),
         )
-        schema_class.model_fields["timeout"] = timeout_field
-        schema_class.model_rebuild()
-        return schema_class
+
+        derived_schema = create_model(
+            f"{schema_class.__name__}WithTimeout",
+            __base__=schema_class,
+            timeout=timeout_field,
+        )
+        derived_schema.model_rebuild()
+        return derived_schema
 
     def _search_faiss_databases(
         self,
@@ -4540,7 +4548,7 @@ class RAGComponents:
             )
             reason: str = Field(default="", description="Brief description of what this query retrieves")
 
-        self._add_timeout_field_to_schema(
+        postgres_args_schema = self._add_timeout_field_to_schema(
             PostgresInput,
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Query",
@@ -4678,24 +4686,21 @@ class RAGComponents:
                 return "Error: No connection configured"
 
             try:
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                )
+
                 if effective_timeout > 0:
-                    process = await asyncio.wait_for(
-                        asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            env=env,
-                        ),
-                        timeout=effective_timeout,
-                    )
+                    try:
+                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=effective_timeout)
+                    except asyncio.TimeoutError:
+                        await _terminate_subprocess_after_timeout(process)
+                        raise
                 else:
-                    process = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        env=env,
-                    )
-                stdout, stderr = await process.communicate()
+                    stdout, stderr = await process.communicate()
 
                 if process.returncode != 0:
                     return f"Error: {stderr.decode('utf-8', errors='replace').strip()}"
@@ -4729,7 +4734,7 @@ class RAGComponents:
             coroutine=execute_query,
             name=f"query_{tool_name}",
             description=tool_description,
-            args_schema=PostgresInput,
+            args_schema=postgres_args_schema,
         )
 
     async def _create_mssql_tool(
@@ -4880,7 +4885,7 @@ class RAGComponents:
             )
             reason: str = Field(default="", description="Brief description of what this code does")
 
-        self._add_timeout_field_to_schema(
+        odoo_args_schema = self._add_timeout_field_to_schema(
             OdooInput,
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Execution",
@@ -4937,24 +4942,21 @@ except Exception as e:
             async def _run_with_cmd(cmd: list) -> str:
                 """Execute command and return filtered output."""
                 try:
+                    process = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    )
+
                     if effective_timeout > 0:
-                        process = await asyncio.wait_for(
-                            asyncio.create_subprocess_exec(
-                                *cmd,
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                            ),
-                            timeout=effective_timeout,
-                        )
+                        try:
+                            stdout, _ = await asyncio.wait_for(process.communicate(input=full_input.encode()), timeout=effective_timeout)
+                        except asyncio.TimeoutError:
+                            await _terminate_subprocess_after_timeout(process)
+                            raise
                     else:
-                        process = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,  # Merge stderr into stdout
-                        )
-                    stdout, _ = await process.communicate(input=full_input.encode())
+                        stdout, _ = await process.communicate(input=full_input.encode())
                     output = stdout.decode("utf-8", errors="replace")
 
                     result = filter_odoo_output(output)
@@ -5059,7 +5061,7 @@ except Exception as e:
             coroutine=execute_odoo,
             name=f"odoo_{tool_name}",
             description=tool_description,
-            args_schema=OdooInput,
+            args_schema=odoo_args_schema,
         )
 
     async def _create_ssh_tool(self, config: dict, tool_name: str, _tool_id: str):
@@ -5077,7 +5079,7 @@ except Exception as e:
             command: str = Field(default="", description="Shell command to execute on the remote server")
             reason: str = Field(default="", description="Brief description of what this command does")
 
-        self._add_timeout_field_to_schema(
+        ssh_args_schema = self._add_timeout_field_to_schema(
             SSHInput,
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Command",
@@ -5224,7 +5226,7 @@ except Exception as e:
             coroutine=execute_ssh,
             name=f"ssh_{tool_name}",
             description=tool_description,
-            args_schema=SSHInput,
+            args_schema=ssh_args_schema,
         )
 
     async def _create_filesystem_tool(self, config: dict, tool_name: str, tool_id: str):
