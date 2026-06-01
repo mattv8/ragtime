@@ -4609,6 +4609,8 @@ class RAGComponents:
                             connect_timeout=db_connect_timeout,
                         )
                         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                        if effective_timeout > 0:
+                            cursor.execute("SET statement_timeout = %s", (effective_timeout * 1000,))
                         cursor.execute(query)
 
                         if cursor.description:
@@ -4657,6 +4659,9 @@ class RAGComponents:
             escaped_query = query.replace("'", "'\\''")
 
             if host:
+                env = {"PGPASSWORD": password}
+                if effective_timeout > 0:
+                    env["PGOPTIONS"] = f"-c statement_timeout={effective_timeout * 1000}"
                 cmd = [
                     "psql",
                     "-h",
@@ -4670,12 +4675,15 @@ class RAGComponents:
                     "-c",
                     query,
                 ]
-                env = {"PGPASSWORD": password}
             elif container:
+                docker_env_args = []
+                if effective_timeout > 0:
+                    docker_env_args = ["-e", f"PGOPTIONS=-c statement_timeout={effective_timeout * 1000}"]
                 cmd = [
                     "docker",
                     "exec",
                     "-i",
+                    *docker_env_args,
                     container,
                     "bash",
                     "-c",
