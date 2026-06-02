@@ -2,15 +2,13 @@
 
 Describe what changed and why.
 
-## Validation
+## Testing
 
-- [ ] Backend quality checks and pytest pass (`docker build --target python-test -f docker/Dockerfile .` or CI)
-- [ ] Frontend build passes when UI code changed (`docker build --target frontend-builder -f docker/Dockerfile .` or CI)
-- [ ] Duplication check passes or intentional duplication is explained
-- [ ] Relevant API/UI/runtime smoke checks completed
+Describe how have you tested and valdated these chages.
 
-## Release Notes
+## Due Dilligence
 
+- [ ] You have reviewed CONTRIBUTING.md
 - [ ] Database migrations are committed, if schema changed
 - [ ] Configuration or environment variable changes are documented
 - [ ] User-facing behavior changes are described
