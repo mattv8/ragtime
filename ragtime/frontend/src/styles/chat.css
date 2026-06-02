@@ -1317,6 +1317,10 @@ textarea.chat-header-title-input {
   background: var(--color-primary-light);
   border: 1px solid var(--color-primary-border);
 }
+.chat-message-queued .chat-message-content {
+  opacity: 0.55;
+  filter: grayscale(0.35);
+}
 .chat-message-text {
   color: var(--color-text-primary);
   line-height: var(--leading-normal);

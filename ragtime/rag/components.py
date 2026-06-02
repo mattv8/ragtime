@@ -137,6 +137,7 @@ from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
+from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
@@ -5756,6 +5757,17 @@ except Exception as e:
         """Persist a provider input debug row when DEBUG_MODE is enabled."""
         if not settings.debug_mode or not conversation_id:
             return
+
+        # Stamp compaction metadata when the first history message is a compaction SystemMessage.
+        _COMPACTION_PREFIX = "Earlier conversation history has been compacted."
+        if chat_history:
+            first = chat_history[0]
+            if isinstance(first, SystemMessage):
+                first_content = first.content if isinstance(first.content, str) else ""
+                if first_content.startswith(_COMPACTION_PREFIX):
+                    debug_metadata = dict(debug_metadata or {})
+                    debug_metadata["has_compaction_context"] = True
+                    debug_metadata["compaction_summary_chars"] = len(first_content)
 
         rendered_user_input_serialized = self._serialize_prompt_content(rendered_user_input)
         if isinstance(rendered_user_input_serialized, str):
@@ -12450,6 +12462,287 @@ except Exception as e:
             attempted_providers=tuple(attempted),
             error_message=error_message,
         )
+
+    def _parse_compaction_content_parts(self, content: Any) -> Any:
+        if not isinstance(content, str):
+            return content
+
+        trimmed = content.lstrip()
+        if not trimmed or trimmed[0] not in "[{":
+            return content
+
+        try:
+            parsed: Any = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return content
+
+        if isinstance(parsed, list):
+            if parsed and isinstance(parsed[0], dict) and "type" in parsed[0]:
+                return parsed
+            return content
+
+        if isinstance(parsed, dict):
+            if parsed.get("type"):
+                return [parsed]
+            inner = parsed.get("content")
+            if isinstance(inner, list):
+                return inner
+            if isinstance(inner, str) and inner != content:
+                return self._parse_compaction_content_parts(inner)
+
+        return content
+
+    @staticmethod
+    def _image_part_placeholder_for_compaction(part: dict[str, Any]) -> str:
+        image_url = part.get("image_url")
+        detail = ""
+        media_type = "image"
+        if isinstance(image_url, dict):
+            detail_value = image_url.get("detail")
+            if detail_value:
+                detail = f" detail={detail_value}"
+            url = image_url.get("url")
+        else:
+            url = image_url
+        if isinstance(url, str) and url.startswith("data:"):
+            media_type = url.split(";", 1)[0].removeprefix("data:") or "image"
+        return f"[Image attachment: {media_type}{detail}; image data omitted from compaction.]"
+
+    @staticmethod
+    def _decode_image_data_url_for_compaction(part: dict[str, Any]) -> tuple[bytes, str] | None:
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+        if not isinstance(url, str) or not url.lower().startswith("data:image/"):
+            return None
+
+        header, separator, payload = url.partition(",")
+        if not separator or not payload or ";base64" not in header.lower():
+            return None
+
+        media_type = header.split(";", 1)[0].removeprefix("data:").lower()
+        subtype = media_type.split("/", 1)[1] if "/" in media_type else "png"
+        suffix = ".jpg" if subtype == "jpeg" else f".{re.sub(r'[^a-z0-9]+', '', subtype) or 'png'}"
+        try:
+            return base64.b64decode(payload, validate=False), suffix
+        except Exception:
+            return None
+
+    async def _extract_image_text_for_compaction(self, part: dict[str, Any]) -> str:
+        decoded = self._decode_image_data_url_for_compaction(part)
+        if decoded is None:
+            return ""
+
+        image_bytes, suffix = decoded
+        app_settings = await get_app_settings()
+        ocr_mode = str(app_settings.get("default_ocr_mode") or app_settings.get("defaultOcrMode") or "disabled").strip().lower()
+        ocr_provider = str(app_settings.get("default_ocr_provider") or app_settings.get("defaultOcrProvider") or "").strip().lower() or None
+        ocr_vision_model = str(app_settings.get("default_ocr_vision_model") or app_settings.get("defaultOcrVisionModel") or "").strip() or None
+
+        if ocr_mode == "vision" and ocr_provider and ocr_vision_model:
+            try:
+                return (
+                    await extract_text_from_file_async(
+                        Path(f"compaction-image{suffix}"),
+                        content=image_bytes,
+                        ocr_mode="vision",
+                        ocr_provider=ocr_provider,
+                        ocr_vision_model=ocr_vision_model,
+                        vision_base_url=resolve_provider_base_url(app_settings, ocr_provider, "llm"),
+                        vision_api_key=resolve_provider_api_key(app_settings, ocr_provider, "llm"),
+                    )
+                ).strip()
+            except Exception as exc:
+                logger.info("Vision OCR fallback failed for compaction image via %s/%s: %s", ocr_provider, ocr_vision_model, exc)
+
+        try:
+            return (
+                await extract_text_from_file_async(
+                    Path(f"compaction-image{suffix}"),
+                    content=image_bytes,
+                    enable_ocr=True,
+                    ocr_mode="tesseract",
+                )
+            ).strip()
+        except Exception as exc:
+            logger.debug("Could not OCR image attachment for compaction: %s", exc)
+            return ""
+
+    async def _describe_image_part_for_compaction(self, part: dict[str, Any], request_llm: Optional[Any]) -> str:
+        fallback = self._image_part_placeholder_for_compaction(part)
+
+        if request_llm is not None:
+            try:
+                normalized_part = await self._normalize_image_part_async(part)
+                response = await request_llm.ainvoke(
+                    [
+                        HumanMessage(
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "For conversation compaction, analyze this attached image. "
+                                        "Extract any visible text exactly when it is legible and provide a concise, factual image description. "
+                                        "Do not infer facts beyond the image. Return plain text with these headings: "
+                                        "Image description; Visible text."
+                                    ),
+                                },
+                                normalized_part,
+                            ]
+                        )
+                    ]
+                )
+                content = response.content
+                text = content if isinstance(content, str) else str(content)
+                text = text.strip()
+                if text:
+                    return f"[Image attachment analyzed for compaction; image data omitted.]\n{text}"
+            except Exception as exc:
+                logger.info("Could not analyze image attachment for compaction; trying OCR fallback: %s", exc)
+
+        ocr_text = await self._extract_image_text_for_compaction(part)
+        if ocr_text:
+            return f"[Image attachment OCR text extracted for compaction; image data omitted.]\nVisible text:\n{ocr_text}"
+
+        return fallback
+
+    async def _content_to_text_for_compaction(
+        self,
+        content: Any,
+        request_llm: Optional[Any],
+        conversation_model: Optional[str],
+    ) -> str:
+        parsed_content = self._parse_compaction_content_parts(content)
+        if parsed_content is None:
+            return ""
+        if isinstance(parsed_content, str):
+            return parsed_content
+
+        if isinstance(parsed_content, list):
+            processed_content, attachment_stats = await self.preprocess_message_content_async(
+                parsed_content,
+                model_id=conversation_model,
+            )
+            if attachment_stats:
+                logger.debug(
+                    "Expanded chat attachments during compaction files=%d included_chunks=%d",
+                    attachment_stats.get("file_count", 0),
+                    attachment_stats.get("included_chunk_count", 0),
+                )
+            if not isinstance(processed_content, list):
+                return str(processed_content or "")
+
+            chunks: list[str] = []
+            for item in processed_content:
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type == "text":
+                        text = str(item.get("text") or "").strip()
+                        if text:
+                            chunks.append(text)
+                    elif item_type == "image_url":
+                        chunks.append(await self._describe_image_part_for_compaction(item, request_llm))
+                    elif item_type == "file":
+                        filename = str(item.get("filename") or "attachment")
+                        chunks.append(f'[Attached file "{filename}" was present but readable text was not available during compaction.]')
+                    else:
+                        chunks.append(self._content_to_text_for_token_count([item]))
+                else:
+                    chunks.append(str(item))
+            return "\n\n".join(chunk for chunk in chunks if chunk.strip())
+
+        return self._content_to_text_for_token_count(parsed_content)
+
+    async def _format_message_for_compaction(
+        self,
+        message: Any,
+        index: int,
+        request_llm: Optional[Any],
+        conversation_model: Optional[str],
+    ) -> str:
+        role = str(getattr(message, "role", "message") or "message")
+        content = getattr(message, "content", "")
+        content_text = await self._content_to_text_for_compaction(content, request_llm, conversation_model)
+
+        events = getattr(message, "events", None)
+        if role == "assistant" and events:
+            event_lines: list[str] = []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "content":
+                    event_lines.append(str(event.get("content", "")))
+                elif event.get("type") == "tool":
+                    tool_name = str(event.get("tool") or "unknown")
+                    tool_output = str(event.get("output") or "")
+                    if len(tool_output) > 1200:
+                        tool_output = tool_output[:900] + "\n...[truncated]...\n" + tool_output[-300:]
+                    event_lines.append(f"[tool:{tool_name}] {tool_output}")
+            if event_lines:
+                content_text = "\n".join(line for line in event_lines if line)
+
+        return f"[{index + 1}] {role.upper()}:\n{content_text}".strip()
+
+    async def summarize_for_compaction(self, messages: list[Any], conversation_model: Optional[str]) -> str:
+        """Summarize older conversation history for transparent context compaction."""
+        if not messages:
+            raise ValueError("No messages were provided for compaction")
+
+        llm_resolution = await self._get_request_scoped_llm(conversation_model)
+        if llm_resolution.llm is None:
+            raise RuntimeError(self._no_llm_configured_message(llm_resolution))
+
+        request_resolution = llm_resolution
+        requested_output_tokens = min(llm_resolution.max_tokens or 1200, 1200)
+        if requested_output_tokens > 0:
+            request_resolution = await self._cap_request_llm_output_tokens(llm_resolution, requested_output_tokens)
+
+        formatted_messages: list[str] = []
+        for idx, message in enumerate(messages):
+            formatted_messages.append(
+                await self._format_message_for_compaction(
+                    message,
+                    idx,
+                    request_resolution.llm,
+                    conversation_model,
+                )
+            )
+        transcript = "\n\n".join(formatted_messages)
+        provider = request_resolution.provider
+        model = request_resolution.model or conversation_model or ""
+        if provider and model:
+            context_limit = await self._resolve_chat_context_limit(provider, model)
+            max_input_tokens = max(1024, context_limit - requested_output_tokens - CHAT_CONTEXT_SAFETY_MARGIN_TOKENS)
+            transcript_tokens = self._count_text_tokens_for_chat_budget(transcript)
+            if transcript_tokens > max_input_tokens:
+                chars_per_token = 4
+                max_chars = max_input_tokens * chars_per_token
+                head_chars = int(max_chars * 0.6)
+                tail_chars = max_chars - head_chars
+                transcript = transcript[:head_chars] + "\n\n...[middle of transcript omitted for compaction budget]...\n\n" + transcript[-tail_chars:]
+
+        system_prompt = (
+            "You compact an ongoing assistant conversation. Produce a concise but complete continuity summary. "
+            "Preserve user goals, decisions, constraints, open tasks, important facts, files or systems mentioned, "
+            "tool results, errors, and the assistant's latest working assumptions. Do not add new facts. "
+            "When image attachments have extracted text or descriptions in the transcript, preserve the relevant details. "
+            "Do not include image data URLs, base64 payloads, or raw binary data. "
+            "Write in neutral third person, optimized for another assistant continuing the conversation."
+        )
+        user_prompt = (
+            "Compact this earlier conversation history. The visible chat transcript will remain available to the user, "
+            "but future model calls will receive your summary plus the recent uncompressed messages.\n\n"
+            f"{transcript}"
+        )
+        request_llm = request_resolution.llm
+        if request_llm is None:
+            raise RuntimeError(self._no_llm_configured_message(request_resolution))
+        response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        content = response.content
+        summary = content if isinstance(content, str) else str(content)
+        summary = summary.strip()
+        if not summary:
+            raise RuntimeError("Compaction summary was empty")
+        return summary
 
     @staticmethod
     def _get_llm_output_token_limit(llm: Optional[Any]) -> Optional[int]:

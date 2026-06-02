@@ -168,6 +168,7 @@ export interface AuthStatus {
   auth_methods?: AuthMethodStatus[];
   server_name?: string;
   authenticated_webgl_background_enabled?: boolean;
+  chat_compaction_threshold_percent?: number;
 }
 
 // =============================================================================
@@ -671,6 +672,7 @@ export interface AppSettings {
   allowed_openapi_models: string[];
   openapi_sync_chat_models: boolean;
   max_iterations: number;
+  chat_compaction_threshold_percent: number;
   // Token optimization settings
   max_tool_output_chars: number;
   scratchpad_window_size: number;
@@ -798,6 +800,7 @@ export interface UpdateSettingsRequest {
   allowed_openapi_models?: string[];
   openapi_sync_chat_models?: boolean;
   max_iterations?: number;
+  chat_compaction_threshold_percent?: number;
   // Token optimization settings
   max_tool_output_chars?: number;
   scratchpad_window_size?: number;
@@ -1884,7 +1887,7 @@ export interface MessageSnapshotRestore {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'compaction';
   content: string | ContentPart[];  // Support both simple string and multimodal array
   timestamp: string;
   message_id?: string;             // Stable per-message identifier (post-upgrade only)

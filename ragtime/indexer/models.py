@@ -52,6 +52,10 @@ class ConversationBranchKind(str, Enum):
     REPLAY = "replay"
 
 
+COMPACT_CONVERSATION_DEFAULT_KEEP_RECENT_PAIRS = 4
+COMPACT_CONVERSATION_MAX_KEEP_RECENT_PAIRS = 20
+
+
 class OcrMode(str, Enum):
     """OCR mode for extracting text from images."""
 
@@ -668,6 +672,12 @@ class AppSettings(BaseModel):
         le=100,
         description="Maximum agent iterations before stopping tool calls",
     )
+    chat_compaction_threshold_percent: int = Field(
+        default=80,
+        ge=1,
+        le=100,
+        description="Show the chat compact button once effective conversation context usage reaches this percentage.",
+    )
 
     # Token optimization settings
     max_tool_output_chars: int = Field(
@@ -1108,6 +1118,12 @@ class UpdateSettingsRequest(BaseModel):
     allowed_openapi_models: Optional[List[str]] = None
     openapi_sync_chat_models: Optional[bool] = None
     max_iterations: Optional[int] = Field(default=None, ge=1, le=100)
+    chat_compaction_threshold_percent: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description="Show the chat compact button once effective conversation context usage reaches this percentage.",
+    )
     # Token optimization settings
     max_tool_output_chars: Optional[int] = Field(default=None, ge=0, le=100000)
     scratchpad_window_size: Optional[int] = Field(default=None, ge=0, le=100)
@@ -2080,7 +2096,7 @@ class MessageSnapshotRestore(BaseModel):
 class ChatMessage(BaseModel):
     """A single message in a conversation."""
 
-    role: str = Field(description="Role: 'user', 'assistant', or 'system'")
+    role: str = Field(description="Role: 'user', 'assistant', 'system', or 'compaction'")
     content: str = Field(description="Message content")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     message_id: Optional[str] = Field(
@@ -2185,6 +2201,17 @@ class CreateConversationBranchRequest(BaseModel):
     auto_snapshot: bool = Field(
         default=True,
         description="Whether to auto-create a UserSpace snapshot before branching (workspace chats only)",
+    )
+
+
+class CompactConversationRequest(BaseModel):
+    """Request to compact a conversation's provider context."""
+
+    keep_recent_pairs: int = Field(
+        default=COMPACT_CONVERSATION_DEFAULT_KEEP_RECENT_PAIRS,
+        ge=1,
+        le=COMPACT_CONVERSATION_MAX_KEEP_RECENT_PAIRS,
+        description="Legacy client option. The compaction marker is inserted at the clicked conversation tail.",
     )
 
 

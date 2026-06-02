@@ -389,6 +389,16 @@ def _estimate_conversation_tokens(messages: list[dict[str, Any]]) -> int:
     return sum(_estimate_message_tokens(message) for message in messages)
 
 
+def _estimate_effective_conversation_tokens(messages: list[dict[str, Any]]) -> int:
+    last_compaction_index = -1
+    for idx, message in enumerate(messages):
+        if message.get("role") == "compaction":
+            last_compaction_index = idx
+    if last_compaction_index >= 0:
+        return _estimate_conversation_tokens(messages[last_compaction_index:])
+    return _estimate_conversation_tokens(messages)
+
+
 def _to_prisma_index_status(status: IndexStatus) -> PrismaIndexStatus:
     """Convert model IndexStatus to Prisma IndexStatus."""
     return PrismaIndexStatus(status.value)
@@ -1066,6 +1076,7 @@ class IndexerRepository:
             allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None) or [],
             openapi_sync_chat_models=getattr(settings, "openapiSyncChatModels", True),
             max_iterations=settings.maxIterations,
+            chat_compaction_threshold_percent=getattr(settings, "chatCompactionThresholdPercent", 80),
             # Tool settings
             enabled_tools=settings.enabledTools,
             odoo_container=settings.odooContainer,
@@ -1219,6 +1230,7 @@ class IndexerRepository:
             "allowed_openapi_models": "allowedOpenapiModels",
             "openapi_sync_chat_models": "openapiSyncChatModels",
             "max_iterations": "maxIterations",
+            "chat_compaction_threshold_percent": "chatCompactionThresholdPercent",
             # Token optimization settings
             "max_tool_output_chars": "maxToolOutputChars",
             "scratchpad_window_size": "scratchpadWindowSize",
@@ -2336,7 +2348,7 @@ class IndexerRepository:
         messages.append(new_message)
 
         # Recompute conversation token total from persisted messages (tiktoken-backed)
-        total_tokens = _estimate_conversation_tokens(messages)
+        total_tokens = _estimate_effective_conversation_tokens(messages)
 
         # Update conversation
         updated = await db.conversation.update(
@@ -2487,7 +2499,7 @@ class IndexerRepository:
             truncated = messages[:keep_count]
 
             # Recalculate tokens, including tool calls and events
-            total_tokens = _estimate_conversation_tokens(truncated)
+            total_tokens = _estimate_effective_conversation_tokens(truncated)
 
             updated = await db.conversation.update(
                 where={"id": conversation_id},
@@ -2501,6 +2513,88 @@ class IndexerRepository:
             return self._prisma_conversation_to_model(updated)
         except Exception as e:
             logger.warning(f"Failed to truncate conversation: {e}")
+            return None
+
+    async def compact_conversation(
+        self,
+        conversation_id: str,
+        compaction_index: int,
+        summary: str,
+        *,
+        expected_message_count: Optional[int] = None,
+        expected_tail_message_id: Optional[str] = None,
+        expected_active_task_id: Optional[str] = None,
+        snapshot_branch_kind: Optional[ConversationBranchKind] = None,
+        snapshot_user_id: Optional[str] = None,
+        snapshot_parent_branch_id: Optional[str] = None,
+    ) -> Optional[Conversation]:
+        """Insert a compaction marker at the clicked tail without removing visible history."""
+        db = await self._get_db()
+
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    if not prisma_conv:
+                        return None
+                    active_task_id = getattr(prisma_conv, "activeTaskId", None)
+                    if active_task_id and active_task_id != expected_active_task_id:
+                        return None
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    if expected_message_count is not None and len(messages) < expected_message_count:
+                        return None
+                    resolved_compaction_index = compaction_index
+                    if expected_tail_message_id is not None:
+                        expected_anchor_index = (expected_message_count - 1) if expected_message_count is not None else None
+                        anchor_index = next(
+                            (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == expected_tail_message_id),
+                            None,
+                        )
+                        if anchor_index is None:
+                            return None
+                        if expected_anchor_index is not None and anchor_index != expected_anchor_index:
+                            return None
+                        resolved_compaction_index = anchor_index + 1
+                    if resolved_compaction_index < 0 or resolved_compaction_index > len(messages):
+                        return None
+
+                    compacted_at = utc_now()
+                    marker: dict[str, Any] = {
+                        "role": "compaction",
+                        "content": _sanitize_for_postgres(summary),
+                        "timestamp": compacted_at.isoformat(),
+                        "message_id": str(uuid.uuid4()),
+                    }
+
+                    if snapshot_branch_kind is not None:
+                        await tx.conversationbranch.create(
+                            data={
+                                "id": str(uuid.uuid4()),
+                                "conversationId": conversation_id,
+                                "parentBranchId": snapshot_parent_branch_id,
+                                "branchPointIndex": 0,
+                                "branchKind": cast(Any, snapshot_branch_kind.value),
+                                "preservedMessages": Json(list(messages)),
+                                "createdByUserId": snapshot_user_id,
+                            }
+                        )
+
+                    updated_messages = messages[:resolved_compaction_index] + [marker] + messages[resolved_compaction_index:]
+                    total_tokens = _estimate_effective_conversation_tokens(updated_messages)
+
+                    updated = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(updated_messages),
+                            "totalTokens": total_tokens,
+                            "updatedAt": compacted_at,
+                        },
+                        include={"user": True},
+                    )
+                return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to compact conversation: {e}")
             return None
 
     # -------------------------------------------------------------------------
@@ -2552,7 +2646,7 @@ class IndexerRepository:
                     )
 
                     truncated = messages[:branch_point_index]
-                    total_tokens = _estimate_conversation_tokens(truncated)
+                    total_tokens = _estimate_effective_conversation_tokens(truncated)
                     await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -2571,6 +2665,45 @@ class IndexerRepository:
                 return self._prisma_branch_to_model(created_branch)
         except Exception as e:
             logger.warning(f"Failed to create conversation branch: {e}")
+            return None
+
+    async def create_conversation_snapshot_branch(
+        self,
+        conversation_id: str,
+        branch_point_index: int,
+        branch_kind: Optional[ConversationBranchKind] = None,
+        user_id: Optional[str] = None,
+        parent_branch_id: Optional[str] = None,
+        associated_snapshot_id: Optional[str] = None,
+    ) -> Optional[ConversationBranch]:
+        """Create a branch preserving messages from branch_point_index onward without truncating the live conversation."""
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
+                if not prisma_conv:
+                    return None
+
+                messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                if branch_point_index < 0 or branch_point_index > len(messages):
+                    return None
+
+                created = await db.conversationbranch.create(
+                    data={
+                        "id": str(uuid.uuid4()),
+                        "conversationId": conversation_id,
+                        "parentBranchId": parent_branch_id,
+                        "branchPointIndex": branch_point_index,
+                        "branchKind": cast(Any, branch_kind.value if branch_kind else None),
+                        "preservedMessages": Json(list(messages[branch_point_index:])),
+                        "associatedSnapshotId": associated_snapshot_id,
+                        "createdByUserId": user_id,
+                    },
+                    include={"createdByUser": True},
+                )
+                return self._prisma_branch_to_model(created)
+        except Exception as e:
+            logger.warning(f"Failed to create conversation snapshot branch: {e}")
             return None
 
     async def switch_conversation_branch(
@@ -2656,7 +2789,7 @@ class IndexerRepository:
                     base_messages = messages[:branch_point]
                     target_preserved: List[dict[str, Any]] = _normalize_message_payloads(target_branch.preservedMessages)
                     new_messages = base_messages + target_preserved
-                    total_tokens = _estimate_conversation_tokens(new_messages)
+                    total_tokens = _estimate_effective_conversation_tokens(new_messages)
 
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
@@ -2830,7 +2963,7 @@ class IndexerRepository:
                         return None, [], None
                     refreshed_event["output"] = new_output
 
-                    total_tokens = _estimate_conversation_tokens(refreshed_messages)
+                    total_tokens = _estimate_effective_conversation_tokens(refreshed_messages)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -2970,7 +3103,7 @@ class IndexerRepository:
                         data={"active": True},
                     )
 
-                    total_tokens = _estimate_conversation_tokens(refreshed_messages)
+                    total_tokens = _estimate_effective_conversation_tokens(refreshed_messages)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -3087,7 +3220,7 @@ class IndexerRepository:
                     if live_branch:
                         target_preserved = _normalize_message_payloads(live_branch.preservedMessages)
                         new_messages = messages[:branch_point] + target_preserved
-                        total_tokens = _estimate_conversation_tokens(new_messages)
+                        total_tokens = _estimate_effective_conversation_tokens(new_messages)
                         updated = await tx.conversation.update(
                             where={"id": conversation_id},
                             data={
@@ -3101,7 +3234,7 @@ class IndexerRepository:
                         return self._prisma_conversation_to_model(updated)
 
                     truncated = messages[:branch_point]
-                    total_tokens = _estimate_conversation_tokens(truncated)
+                    total_tokens = _estimate_effective_conversation_tokens(truncated)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
                         data={

@@ -203,6 +203,7 @@ export function App() {
         allowed_origins_open: true,
         server_name: serverName,
         authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
+        chat_compaction_threshold_percent: 80,
       };
     });
   }, [authenticatedWebglBackgroundEnabled, serverName]);
@@ -242,6 +243,14 @@ export function App() {
     const resolvedName = name.trim() || 'Ragtime';
     setServerName(resolvedName);
     document.title = resolvedName;
+  }, []);
+
+  const handleChatCompactionThresholdChange = useCallback((threshold: number) => {
+    const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
+    setAuthStatus((previous) => (previous ? {
+      ...previous,
+      chat_compaction_threshold_percent: normalizedThreshold,
+    } : previous));
   }, []);
 
   // Check authentication status on mount
@@ -827,6 +836,7 @@ export function App() {
             currentUser={currentUser}
             debugMode={Boolean(authStatus?.debug_mode)}
             initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
+            chatCompactionThresholdPercent={authStatus?.chat_compaction_threshold_percent ?? 80}
             onFullscreenChange={setChatFullscreen}
           />
         </div>
@@ -835,6 +845,7 @@ export function App() {
           currentUser={currentUser}
           onServerNameChange={handleServerNameChange}
           onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
+          onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
           highlightSetting={highlightSetting}
           onHighlightComplete={() => setHighlightSetting(null)}
           authStatus={authStatus}

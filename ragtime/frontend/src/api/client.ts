@@ -1997,6 +1997,19 @@ export const api = {
   },
 
   /**
+   * Compact older conversation history for future model calls while keeping
+   * the full visible chat transcript intact.
+   */
+  async compactConversation(conversationId: string, workspaceId?: string, keepRecentPairs = 4): Promise<import('@/types').ChatTask> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compact`, workspaceId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keep_recent_pairs: keepRecentPairs }),
+    });
+    return handleResponse<import('@/types').ChatTask>(response);
+  },
+
+  /**
    * Restore the workspace snapshot anchored to a chat message and rewind the
    * chat to the link's stored restore_message_count.
    */

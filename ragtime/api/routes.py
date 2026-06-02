@@ -12,7 +12,7 @@ from typing import Any, Optional
 import psutil
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ragtime import __version__
 from ragtime.config import settings
@@ -27,7 +27,7 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
 )
 from ragtime.core.security import get_current_user_optional
-from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
+from ragtime.indexer.background_tasks import compaction_system_content, rebuild_tool_messages_from_events
 from ragtime.indexer.routes import AvailableModel, get_available_chat_models
 from ragtime.models import (
     ChatChoice,
@@ -690,7 +690,9 @@ async def chat_completions(request: ChatCompletionRequest):
     # Build chat history for context (convert to LangChain format)
     chat_history: list[BaseMessage] = []
     for msg in request.messages[:-1]:  # Exclude the current message
-        if msg.role == "user":
+        if msg.role == "compaction":
+            chat_history = [SystemMessage(content=compaction_system_content(msg.get_text_content()))]
+        elif msg.role == "user":
             chat_history.append(HumanMessage(content=await rag._convert_message_to_langchain_async(msg)))
         elif msg.role == "assistant":
             message_events = getattr(msg, "events", None)

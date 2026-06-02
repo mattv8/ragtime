@@ -39,7 +39,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
 from pydantic import BaseModel, Field
@@ -154,6 +154,7 @@ from ragtime.core.userspace_preview_sandbox import (
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_provider_vision_models, list_vision_models
 from ragtime.indexer.background_tasks import (
+    _find_compaction_split_index,
     background_task_service,
     parse_message_content,
     rebuild_tool_messages_from_events,
@@ -174,8 +175,10 @@ from ragtime.indexer.models import (
     ChatTaskResponse,
     ChatTaskStatus,
     CheckRepoVisibilityRequest,
+    CompactConversationRequest,
     ConfigurationWarning,
     Conversation,
+    ConversationBranchKind,
     ConversationBranchPointInfo,
     ConversationBranchSummary,
     ConversationCountResponse,
@@ -9342,6 +9345,45 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
     )
 
 
+def _compaction_system_content(summary: str) -> str:
+    return (
+        "Earlier conversation history has been compacted. Use this continuity summary as the authoritative context "
+        "for messages before this point, then continue with the uncompressed messages that follow.\n\n"
+        f"{summary}"
+    )
+
+
+async def _build_chat_history_for_conversation(
+    messages: list[ChatMessage],
+    *,
+    conversation_id: str,
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+    model_id: str,
+) -> list[BaseMessage]:
+    chat_history: list[BaseMessage] = []
+    for msg_idx, msg in enumerate(messages):
+        if msg.role == "compaction":
+            chat_history = [SystemMessage(content=_compaction_system_content(msg.content))]
+        elif msg.role == "user":
+            parsed_content = parse_message_content(msg.content)
+            if not isinstance(parsed_content, str):
+                parsed_content, _ = await rag.preprocess_message_content_async(
+                    parsed_content,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    model_id=model_id,
+                )
+            chat_history.append(HumanMessage(content=parsed_content))
+        elif msg.role == "assistant":
+            if msg.events:
+                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
+            elif msg.content and msg.content.strip():
+                chat_history.append(AIMessage(content=msg.content))
+    return chat_history
+
+
 async def _to_shared_conversation_response(
     conv: Conversation,
     share_record: Any,
@@ -9537,24 +9579,13 @@ async def _send_message_to_loaded_conversation(
 
     await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
-    chat_history: list[BaseMessage] = []
-    for msg_idx, msg in enumerate(conv.messages[:-1]):
-        if msg.role == "user":
-            parsed_content = parse_message_content(msg.content)
-            if not isinstance(parsed_content, str):
-                parsed_content, _ = await rag.preprocess_message_content_async(
-                    parsed_content,
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    workspace_id=workspace_id,
-                    model_id=conv.model,
-                )
-            chat_history.append(HumanMessage(content=parsed_content))
-        elif msg.role == "assistant":
-            if msg.events:
-                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
-            else:
-                chat_history.append(AIMessage(content=msg.content))
+    chat_history = await _build_chat_history_for_conversation(
+        conv.messages[:-1],
+        conversation_id=conversation_id,
+        user_id=user.id,
+        workspace_id=workspace_id,
+        model_id=conv.model,
+    )
 
     current_user_message = parse_message_content(user_message)
     if not isinstance(current_user_message, str):
@@ -11142,6 +11173,53 @@ async def truncate_conversation(
     return _to_conversation_response(conv)
 
 
+@router.post("/conversations/{conversation_id}/compact", response_model=ChatTaskResponse)
+async def compact_conversation(
+    conversation_id: str,
+    request: CompactConversationRequest = Body(default_factory=CompactConversationRequest),
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+) -> ChatTaskResponse:
+    """Compact provider context in a linked background task."""
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.active_task_id:
+        raise HTTPException(status_code=409, detail="Conversation is currently processing")
+
+    snapshot_message_count = len(conv.messages)
+    snapshot_tail_message_id = conv.messages[-1].message_id if conv.messages else None
+
+    split_index, messages_to_summarize = _find_compaction_split_index(conv.messages, request.keep_recent_pairs)
+    if len(messages_to_summarize) < 2:
+        raise HTTPException(status_code=400, detail="Conversation does not have enough uncompacted history to compact")
+
+    task_id = await background_task_service.start_compaction_async(
+        conversation_id,
+        model=conv.model,
+        messages_to_summarize=messages_to_summarize,
+        compaction_index=split_index,
+        snapshot_message_count=snapshot_message_count,
+        snapshot_tail_message_id=snapshot_tail_message_id,
+        snapshot_user_id=user.id,
+        snapshot_parent_branch_id=conv.active_branch_id,
+    )
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=500, detail="Failed to start compaction task")
+    return _to_chat_task_response(task)
+
+
 @router.post(
     "/conversations/{conversation_id}/messages/{message_id}/restore-snapshot",
     response_model=MessageSnapshotRestoreResponse,
@@ -11572,24 +11650,13 @@ async def send_message_stream(
     await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
     # Build chat history for RAG
-    chat_history: list[BaseMessage] = []
-    for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude current message
-        if msg.role == "user":
-            parsed_content = parse_message_content(msg.content)
-            if not isinstance(parsed_content, str):
-                parsed_content, _ = await rag.preprocess_message_content_async(
-                    parsed_content,
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    workspace_id=workspace_id,
-                    model_id=conv.model,
-                )
-            chat_history.append(HumanMessage(content=parsed_content))
-        elif msg.role == "assistant":
-            if msg.events:
-                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
-            else:
-                chat_history.append(AIMessage(content=msg.content))
+    chat_history = await _build_chat_history_for_conversation(
+        conv.messages[:-1],
+        conversation_id=conversation_id,
+        user_id=user.id,
+        workspace_id=workspace_id,
+        model_id=conv.model,
+    )
 
     current_user_message = parse_message_content(user_message)
     if not isinstance(current_user_message, str):

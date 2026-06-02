@@ -50,6 +50,20 @@ export function calculateConversationTokens(messages: ChatMessage[]): number {
   return messages.reduce((total, message) => total + calculateMessageTokens(message), 0);
 }
 
+export function getEffectiveContextMessages(messages: ChatMessage[]): ChatMessage[] {
+  let lastCompactionIndex = -1;
+  messages.forEach((message, index) => {
+    if (message.role === 'compaction') {
+      lastCompactionIndex = index;
+    }
+  });
+  return lastCompactionIndex >= 0 ? messages.slice(lastCompactionIndex) : messages;
+}
+
+export function calculateEffectiveConversationTokens(messages: ChatMessage[]): number {
+  return calculateConversationTokens(getEffectiveContextMessages(messages));
+}
+
 export type StreamingRenderEvent =
   | { type: 'content'; content: string }
   | { type: 'tool'; toolCall: { input?: Record<string, unknown>; output?: string } }
@@ -83,9 +97,12 @@ export function calculateConversationContextUsage({
   streamingEvents = [],
   streamingContent = '',
 }: ConversationContextUsageParams): ConversationContextUsage {
-  const estimatedConversationTokens = calculateConversationTokens(messages);
+  const hasCompactionMarker = messages.some((message) => message.role === 'compaction');
+  const estimatedConversationTokens = hasCompactionMarker
+    ? calculateEffectiveConversationTokens(messages)
+    : calculateConversationTokens(messages);
   const persistedTokens = Math.max(0, persistedConversationTokens || 0);
-  const currentTokens = persistedTokens > 0
+  const currentTokens = persistedTokens > 0 && !hasCompactionMarker
     ? persistedTokens
     : estimatedConversationTokens;
   const streamingTokens = isStreaming

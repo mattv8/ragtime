@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
@@ -30,7 +30,9 @@ from ragtime.indexer.chat_attachments import cleanup_expired_chat_attachments
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
+    ChatMessage,
     ChatTaskStatus,
+    ConversationBranchKind,
     FilesystemConnectionConfig,
     SchemaIndexConfig,
 )
@@ -55,6 +57,17 @@ WRAPPED_CONTEXTUAL_PROCESSING_ERROR_PREFIX = "I encountered an error processing 
 # heartbeat to know when to refresh.
 _CONV_PROGRESS_THROTTLE_S = 0.5
 _LAST_CONV_PROGRESS_TS: Dict[str, float] = {}
+COMPACTION_TASK_USER_MESSAGE = "__ragtime_compaction__"
+
+
+def is_compaction_task_message(user_message: str | None) -> bool:
+    return (user_message or "").strip() == COMPACTION_TASK_USER_MESSAGE
+
+
+def _find_compaction_split_index(messages: list[ChatMessage], keep_recent_pairs: int) -> tuple[int, list[ChatMessage]]:
+    last_compaction_index = max((idx for idx, msg in enumerate(messages) if msg.role == "compaction"), default=-1)
+    search_start = last_compaction_index + 1
+    return len(messages), messages[search_start:]
 
 
 async def _notify_conversation_progress(conversation_id: str, task_id: str) -> None:
@@ -360,6 +373,14 @@ def rebuild_tool_messages_from_events(
         messages.append(AIMessage(content=pending_content))
 
     return messages
+
+
+def compaction_system_content(summary: str) -> str:
+    return (
+        "Earlier conversation history has been compacted. Use this continuity summary as the authoritative context "
+        "for messages before this point, then continue with the uncompressed messages that follow.\n\n"
+        f"{summary}"
+    )
 
 
 class BackgroundTaskService:
@@ -825,9 +846,11 @@ class BackgroundTaskService:
                 app_settings = await SettingsCache.get_instance().get_settings()
                 max_tool_output_chars = int(app_settings.get("max_tool_output_chars", 5000))
 
-                chat_history = []
+                chat_history: list[BaseMessage] = []
                 for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude last (current user) message
-                    if msg.role == "user":
+                    if msg.role == "compaction":
+                        chat_history = [SystemMessage(content=compaction_system_content(msg.content))]
+                    elif msg.role == "user":
                         # Parse content in case it's a JSON-encoded multimodal array
                         parsed_content = parse_message_content(msg.content)
                         if not isinstance(parsed_content, str):
@@ -1467,6 +1490,130 @@ class BackgroundTaskService:
         else:
             # Return placeholder - caller should create task first
             return ""
+
+    async def start_compaction_async(
+        self,
+        conversation_id: str,
+        *,
+        model: str,
+        messages_to_summarize: list[ChatMessage],
+        compaction_index: int,
+        snapshot_message_count: int,
+        snapshot_tail_message_id: Optional[str],
+        snapshot_user_id: str,
+        snapshot_parent_branch_id: Optional[str],
+    ) -> str:
+        """Start conversation compaction as a linked background task."""
+        task = await repository.create_chat_task(conversation_id, COMPACTION_TASK_USER_MESSAGE)
+
+        asyncio_task = asyncio.create_task(
+            self._run_compaction_task(
+                task.id,
+                conversation_id,
+                model=model,
+                messages_to_summarize=list(messages_to_summarize),
+                compaction_index=compaction_index,
+                snapshot_message_count=snapshot_message_count,
+                snapshot_tail_message_id=snapshot_tail_message_id,
+                snapshot_user_id=snapshot_user_id,
+                snapshot_parent_branch_id=snapshot_parent_branch_id,
+            )
+        )
+        self._running_tasks[task.id] = asyncio_task
+        return task.id
+
+    async def _run_compaction_task(
+        self,
+        task_id: str,
+        conversation_id: str,
+        *,
+        model: str,
+        messages_to_summarize: list[ChatMessage],
+        compaction_index: int,
+        snapshot_message_count: int,
+        snapshot_tail_message_id: Optional[str],
+        snapshot_user_id: str,
+        snapshot_parent_branch_id: Optional[str],
+    ) -> None:
+        try:
+            await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
+            await task_event_bus.publish(
+                f"conversation:{conversation_id}",
+                {
+                    "event": "task_started",
+                    "task_id": task_id,
+                    "conversation_id": conversation_id,
+                    "task_kind": "compaction",
+                },
+            )
+
+            summary = await rag.summarize_for_compaction(messages_to_summarize, model)
+            compacted = await repository.compact_conversation(
+                conversation_id,
+                compaction_index,
+                summary,
+                expected_message_count=snapshot_message_count,
+                expected_tail_message_id=snapshot_tail_message_id,
+                expected_active_task_id=task_id,
+                snapshot_branch_kind=ConversationBranchKind.REPLAY,
+                snapshot_user_id=snapshot_user_id,
+                snapshot_parent_branch_id=snapshot_parent_branch_id,
+            )
+            if not compacted:
+                latest = await repository.get_conversation(conversation_id)
+                if latest and latest.active_task_id and latest.active_task_id != task_id:
+                    raise RuntimeError("Conversation is currently processing")
+                if latest:
+                    latest_tail_anchor_index = next(
+                        (idx for idx, message in enumerate(latest.messages) if message.message_id == snapshot_tail_message_id),
+                        None,
+                    )
+                    if len(latest.messages) < snapshot_message_count or latest_tail_anchor_index != snapshot_message_count - 1:
+                        raise RuntimeError("Conversation changed while compaction was running. Please compact again.")
+                raise RuntimeError("Failed to store compaction marker")
+
+            await repository.complete_chat_task(task_id, "", [], [])
+            await task_event_bus.publish(
+                task_id,
+                {"completed": True, "status": "completed", "task_kind": "compaction"},
+            )
+            await task_event_bus.publish(
+                f"conversation:{conversation_id}",
+                {
+                    "event": "task_completed",
+                    "task_id": task_id,
+                    "conversation_id": conversation_id,
+                    "status": "completed",
+                    "task_kind": "compaction",
+                },
+            )
+        except asyncio.CancelledError:
+            await repository.update_chat_task_status(task_id, ChatTaskStatus.cancelled)
+            await task_event_bus.publish(
+                task_id,
+                {"completed": True, "status": "cancelled", "task_kind": "compaction"},
+            )
+            raise
+        except Exception as e:
+            logger.warning(f"Compaction task {task_id} failed: {e}")
+            await repository.update_chat_task_status(task_id, ChatTaskStatus.failed, str(e))
+            await task_event_bus.publish(
+                task_id,
+                {"completed": True, "status": "failed", "error": str(e), "task_kind": "compaction"},
+            )
+            await task_event_bus.publish(
+                f"conversation:{conversation_id}",
+                {
+                    "event": "task_completed",
+                    "task_id": task_id,
+                    "conversation_id": conversation_id,
+                    "status": "failed",
+                    "error": str(e),
+                    "task_kind": "compaction",
+                },
+            )
+        finally:
+            self._running_tasks.pop(task_id, None)
 
     async def start_task_async(
         self,

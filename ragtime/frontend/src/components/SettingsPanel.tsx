@@ -427,6 +427,7 @@ interface SettingsPanelProps {
   currentUser?: User | null;
   onServerNameChange?: (name: string) => void;
   onAuthenticatedWebglBackgroundChange?: (enabled: boolean) => void;
+  onChatCompactionThresholdChange?: (threshold: number) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
   highlightSetting?: string | null;
   /** Called after highlight animation completes to clear the param */
@@ -435,7 +436,7 @@ interface SettingsPanelProps {
   authStatus?: AuthStatus | null;
 }
 
-export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
+export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, onChatCompactionThresholdChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const initialSettingsFilterState = useMemo(() => readSettingsFilterStateFromUrl(), []);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -1367,6 +1368,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         default_chat_model: data.default_chat_model ?? null,
         max_iterations: data.max_iterations,
+        chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
         // Token optimization settings
         max_tool_output_chars: data.max_tool_output_chars,
         scratchpad_window_size: data.scratchpad_window_size,
@@ -1924,6 +1926,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         default_chat_model: formData.default_chat_model,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
+        chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
         // OpenAPI model settings
         openapi_sync_chat_models: formData.openapi_sync_chat_models,
         // Token optimization settings
@@ -1991,6 +1994,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      onChatCompactionThresholdChange?.(updated.chat_compaction_threshold_percent ?? 80);
       toast.success('LLM configuration saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
@@ -3662,7 +3666,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
 
             <div className="form-row">
-              <div className="form-group" style={{ flex: 2 }}>
+              <div className="form-group" style={{ flex: 1 }}>
                 <label>Max Output Tokens</label>
                 {(() => {
                   const selectedLlmModel = llmModels.find(m => m.id === formData.llm_model);
@@ -3742,6 +3746,32 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
             <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
+                <label>Compact Button Threshold</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="1"
+                    max="100"
+                    step="1"
+                    style={{ flex: 1 }}
+                    value={formData.chat_compaction_threshold_percent ?? 80}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        chat_compaction_threshold_percent: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '44px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {formData.chat_compaction_threshold_percent ?? 80}%
+                  </span>
+                </div>
+                <p className="field-help">
+                  Show the chat compact button once effective conversation context reaches this percentage. Default: 80%.
+                </p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Width (px)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
@@ -3766,7 +3796,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Maximum width for inline image attachments before downsampling.
                 </p>
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Height (px)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3792,9 +3824,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Maximum height for inline image attachments before downsampling.
                 </p>
               </div>
-            </div>
 
-            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Pixels</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3820,7 +3850,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Total pixel budget (width x height). Images exceeding this are scaled down proportionally.
                 </p>
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Bytes</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3846,9 +3878,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Max encoded size of each image. Larger images are re-compressed with lower JPEG quality.
                 </p>
               </div>
-            </div>
 
-            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Max Tool Output (chars)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3875,7 +3905,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Lower values curb token growth during multi-step tool loops.
                 </p>
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Context Window (steps)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3902,33 +3934,33 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Smaller windows reduce input tokens in long conversations.
                 </p>
               </div>
-            </div>
 
-            <div className="form-group">
-              <label>Context Token Budget</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="range"
-                  min="0"
-                  max="32000"
-                  step="500"
-                  style={{ flex: 1 }}
-                  value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      context_token_budget: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {(formData.context_token_budget ?? settings?.context_token_budget ?? 4000) === 0 ? 'Off' : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
-                </span>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Context Token Budget</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="32000"
+                    step="500"
+                    style={{ flex: 1 }}
+                    value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        context_token_budget: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.context_token_budget ?? settings?.context_token_budget ?? 4000) === 0 ? 'Off' : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Cap on retrieved context tokens fed to the LLM per request (0 = unlimited).
+                  Lower values reduce input token usage; higher values give the model more knowledge to draw from.
+                </p>
               </div>
-              <p className="field-help">
-                Cap on retrieved context tokens fed to the LLM per request (0 = unlimited).
-                Lower values reduce input token usage; higher values give the model more knowledge to draw from.
-              </p>
             </div>
 
             {/* API Output Configuration */}
