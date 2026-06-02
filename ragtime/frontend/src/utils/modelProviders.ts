@@ -22,6 +22,7 @@ export const LLM_PROVIDER_KEYS = [
 
 export const EMBEDDING_PROVIDER_KEYS = [
   'openai',
+  'openrouter',
   'ollama',
   'llama_cpp',
   'lmstudio',

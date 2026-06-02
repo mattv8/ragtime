@@ -507,6 +507,47 @@ class MCPToolAdapter:
 
         return f"Error: Unknown tool '{tool_name}'"
 
+    async def is_tool_allowed_by_route_filter(self, tool_name: str, route_filter: McpRouteFilter) -> bool:
+        """Return whether a tool name is selected by a route filter.
+
+        This intentionally avoids get_available_tools(): call-time authorization
+        should not rebuild tools or run heartbeat checks before every tool call.
+        """
+        tool_configs = await get_tool_configs()
+
+        for config in tool_configs:
+            tool_id = str(config.get("id") or "")
+            if tool_id not in route_filter.tool_config_ids:
+                continue
+            if not config.get("enabled", True):
+                continue
+
+            tool_type = str(config.get("tool_type") or "")
+            if tool_type == "filesystem_indexer" and route_filter.selected_filesystem_indexes is not None:
+                if tool_id not in route_filter.selected_filesystem_indexes:
+                    continue
+
+            if self._build_tool_name(config) == tool_name:
+                return True
+
+            if route_filter.selected_schema_indexes is None or tool_id in route_filter.selected_schema_indexes:
+                schema_tool_name = self._build_schema_tool_name(config)
+                if schema_tool_name == tool_name:
+                    return True
+
+        if route_filter.include_knowledge_search:
+            app_settings = await get_app_settings()
+            aggregate_search = app_settings.get("aggregate_search", True)
+            if aggregate_search and tool_name == "search_knowledge":
+                return True
+            if not aggregate_search and tool_name.startswith("search_") and not tool_name.endswith("_schema"):
+                return True
+
+        if route_filter.include_git_history and (tool_name == "search_git_history" or tool_name.startswith("search_git_history_")):
+            return True
+
+        return False
+
     async def _check_heartbeats(self, tool_configs: list[dict]) -> dict[str, ToolHealthStatus]:
         """
         Check heartbeat status for all tools, using cache when possible.

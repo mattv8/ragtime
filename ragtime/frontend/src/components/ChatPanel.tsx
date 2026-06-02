@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
@@ -130,6 +130,11 @@ interface ChatKeywordFocusHint {
   token: number;
 }
 
+interface BranchSearchPreviewRestore {
+  conversation: Conversation;
+  previewBranchId: string;
+}
+
 function wrapFirstMatchingText(
   containers: HTMLElement[],
   query: string,
@@ -185,6 +190,338 @@ function wrapFirstMatchingText(
   }
 
   return null;
+}
+
+// In-chat find: a browser-style "find in this chat" implementation that operates
+// on the rendered messages DOM. Matches are wrapped in <mark> elements and the
+// active one is given an additional focus class so paging stays stable.
+interface InChatSearchOptions {
+  matchCase: boolean;
+  wholeWord: boolean;
+}
+
+// Shared default with stable identity so downstream memo keys do not churn.
+const EMPTY_IN_CHAT_SEARCH_OPTIONS: InChatSearchOptions = Object.freeze({
+  matchCase: false,
+  wholeWord: false,
+});
+
+function expandCollapsedReasoningForTarget(target: HTMLElement): Promise<void> {
+  const reasoningBlock = target.closest<HTMLElement>('.reasoning-block');
+  if (!reasoningBlock) return Promise.resolve();
+  const reasoningContent = reasoningBlock.querySelector<HTMLElement>('.reasoning-content');
+  if (!reasoningContent || !reasoningContent.classList.contains('reasoning-content-collapsed')) {
+    return Promise.resolve();
+  }
+  const header = reasoningBlock.querySelector<HTMLButtonElement>('.reasoning-header');
+  if (!header) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      reasoningContent.removeEventListener('transitionend', onTransitionEnd);
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.target === reasoningContent && event.propertyName === 'max-height') {
+        finish();
+      }
+    };
+    const timeoutId = window.setTimeout(finish, 450);
+    reasoningContent.addEventListener('transitionend', onTransitionEnd);
+
+    header.click();
+
+    // Reduced-motion or interrupted transition fallback.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (reasoningContent.classList.contains('reasoning-content-expanded')) {
+          finish();
+        }
+      });
+    });
+  });
+}
+
+const IN_CHAT_SEARCH_MATCH_CLASS = 'chat-in-chat-search-match';
+const IN_CHAT_SEARCH_ACTIVE_CLASS = 'chat-in-chat-search-match-active';
+const IN_CHAT_SEARCH_CSS_HIGHLIGHT_NAME = 'ragtime-chat-search-match';
+const IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME = 'ragtime-chat-search-active';
+const IN_CHAT_SEARCH_DEBOUNCE_MS = 200;
+const IN_CHAT_SEARCH_CHUNK_BUDGET_MS = 12;
+const IN_CHAT_SEARCH_PROGRESS_INTERVAL_MS = 100;
+
+type InChatSearchMatchTarget = {
+  mode: 'css' | 'dom';
+  element: HTMLElement | null;
+  range: Range | null;
+};
+
+interface CssHighlightApi {
+  HighlightCtor: new (...ranges: Range[]) => { add?: (range: Range) => void };
+  registry: {
+    set: (name: string, highlight: unknown) => void;
+    delete: (name: string) => void;
+  };
+}
+
+function buildInChatSearchRegex(query: string, options: InChatSearchOptions): RegExp | null {
+  const trimmed = query;
+  if (!trimmed) return null;
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = options.wholeWord ? `(?:^|\\b)${escaped}(?:\\b|$)` : escaped;
+  try {
+    return new RegExp(pattern, options.matchCase ? 'g' : 'gi');
+  } catch {
+    return null;
+  }
+}
+
+function textMatchesInChatSearchQuery(text: string, query: string, options: InChatSearchOptions): boolean {
+  if (!text || !query) return false;
+  const regex = buildInChatSearchRegex(query, options);
+  if (!regex) return false;
+  regex.lastIndex = 0;
+  return regex.test(text);
+}
+
+function getCssHighlightApi(): CssHighlightApi | null {
+  const browserWindow = window as Window & {
+    Highlight?: CssHighlightApi['HighlightCtor'];
+    CSS?: typeof CSS & { highlights?: CssHighlightApi['registry'] };
+  };
+  const HighlightCtor = browserWindow.Highlight;
+  const registry = browserWindow.CSS?.highlights;
+  if (typeof HighlightCtor !== 'function' || !registry) return null;
+  return { HighlightCtor, registry };
+}
+
+function deleteInChatSearchCssHighlights(): void {
+  const api = getCssHighlightApi();
+  api?.registry.delete(IN_CHAT_SEARCH_CSS_HIGHLIGHT_NAME);
+  api?.registry.delete(IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME);
+}
+
+function clearInChatSearchActiveHighlight(previous: InChatSearchMatchTarget | null): void {
+  if (previous?.mode === 'dom') {
+    previous.element?.classList.remove(IN_CHAT_SEARCH_ACTIVE_CLASS);
+  }
+  const api = getCssHighlightApi();
+  api?.registry.delete(IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME);
+}
+
+function applyInChatSearchActiveHighlight(target: InChatSearchMatchTarget | null): void {
+  if (!target) return;
+  if (target.mode === 'dom') {
+    target.element?.classList.add(IN_CHAT_SEARCH_ACTIVE_CLASS);
+    return;
+  }
+  if (!target.range) return;
+  const api = getCssHighlightApi();
+  if (!api) return;
+  api.registry.set(IN_CHAT_SEARCH_CSS_ACTIVE_HIGHLIGHT_NAME, new api.HighlightCtor(target.range));
+}
+
+function getRangeParentElement(range: Range | null): HTMLElement | null {
+  if (!range) return null;
+  const node = range.commonAncestorContainer;
+  return node.nodeType === Node.ELEMENT_NODE
+    ? (node as HTMLElement)
+    : (node.parentElement ?? null);
+}
+
+function shouldYieldInChatSearchChunk(chunkStartedAt: number): boolean {
+  return performance.now() - chunkStartedAt >= IN_CHAT_SEARCH_CHUNK_BUDGET_MS;
+}
+
+function waitForNextInChatSearchChunk(): Promise<void> {
+  return new Promise((resolve) => {
+    const browserWindow = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+    };
+    if (typeof browserWindow.requestIdleCallback === 'function') {
+      browserWindow.requestIdleCallback(() => resolve(), { timeout: 80 });
+      return;
+    }
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function collectInChatSearchTextNodes(root: HTMLElement): Text[] {
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      const text = node.textContent;
+      if (!text) return NodeFilter.FILTER_SKIP;
+      const parent = (node as Text).parentElement;
+      if (!parent) return NodeFilter.FILTER_SKIP;
+      if (parent.closest('script, style, .chat-in-chat-search, .chat-input-area')) {
+        return NodeFilter.FILTER_SKIP;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let current = walker.nextNode();
+  while (current) {
+    nodes.push(current as Text);
+    current = walker.nextNode();
+  }
+  return nodes;
+}
+
+function clearInChatSearchHighlights(root: HTMLElement): void {
+  deleteInChatSearchCssHighlights();
+  const marks = root.querySelectorAll<HTMLElement>(`mark.${IN_CHAT_SEARCH_MATCH_CLASS}`);
+  if (marks.length === 0) return;
+  const parents = new Set<Node>();
+  marks.forEach((mark) => {
+    const parent = mark.parentNode;
+    if (!parent) return;
+    parents.add(parent);
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    parent.removeChild(mark);
+  });
+  parents.forEach((parent) => {
+    try {
+      (parent as Element).normalize?.();
+    } catch {
+      // ignore — non-element parents do not support normalize
+    }
+  });
+}
+
+let lastInChatSearchProgressReportedAt = 0;
+
+function reportInChatSearchProgress(
+  matches: InChatSearchMatchTarget[],
+  onProgress?: (matches: InChatSearchMatchTarget[]) => void,
+  force = false,
+): number {
+  if (!onProgress) return performance.now();
+  const now = performance.now();
+  if (!force && now - lastInChatSearchProgressReportedAt < IN_CHAT_SEARCH_PROGRESS_INTERVAL_MS) {
+    return lastInChatSearchProgressReportedAt;
+  }
+  lastInChatSearchProgressReportedAt = now;
+  onProgress(matches.slice());
+  return now;
+}
+
+async function applyInChatSearchHighlights(
+  root: HTMLElement,
+  regex: RegExp,
+  options: {
+    shouldCancel: () => boolean;
+    onProgress?: (matches: InChatSearchMatchTarget[]) => void;
+  },
+): Promise<InChatSearchMatchTarget[] | null> {
+  const created: InChatSearchMatchTarget[] = [];
+  const textNodes = collectInChatSearchTextNodes(root);
+  if (textNodes.length === 0) return created;
+  const cssApi = getCssHighlightApi();
+
+  if (cssApi) {
+    const highlight = new cssApi.HighlightCtor();
+    cssApi.registry.set(IN_CHAT_SEARCH_CSS_HIGHLIGHT_NAME, highlight);
+    let chunkStartedAt = performance.now();
+
+    for (const node of textNodes) {
+      if (options.shouldCancel()) return null;
+      if (!node.isConnected || !root.contains(node)) continue;
+      const text = node.textContent ?? '';
+
+      regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(text)) !== null) {
+        if (options.shouldCancel()) return null;
+        if (match[0].length === 0) {
+          regex.lastIndex += 1;
+          continue;
+        }
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        highlight.add?.(range);
+        created.push({
+          mode: 'css',
+          element: node.parentElement,
+          range,
+        });
+
+        reportInChatSearchProgress(created, options.onProgress);
+        if (shouldYieldInChatSearchChunk(chunkStartedAt)) {
+          await waitForNextInChatSearchChunk();
+          chunkStartedAt = performance.now();
+        }
+      }
+    }
+
+    reportInChatSearchProgress(created, options.onProgress, true);
+    return created;
+  }
+
+  let chunkStartedAt = performance.now();
+
+  for (const node of textNodes) {
+    if (options.shouldCancel()) return null;
+    if (!node.isConnected || !root.contains(node)) continue;
+    const text = node.textContent ?? '';
+    const matches: Array<{ start: number; end: number }> = [];
+
+    regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      if (options.shouldCancel()) return null;
+      if (match[0].length === 0) {
+        regex.lastIndex += 1;
+        continue;
+      }
+      matches.push({ start: match.index, end: match.index + match[0].length });
+      if (shouldYieldInChatSearchChunk(chunkStartedAt)) {
+        await waitForNextInChatSearchChunk();
+        chunkStartedAt = performance.now();
+      }
+    }
+
+    if (matches.length === 0) continue;
+
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+
+    for (const rangeInfo of matches) {
+      if (rangeInfo.start > cursor) {
+        fragment.appendChild(document.createTextNode(text.slice(cursor, rangeInfo.start)));
+      }
+      const mark = document.createElement('mark');
+      mark.className = IN_CHAT_SEARCH_MATCH_CLASS;
+      mark.textContent = text.slice(rangeInfo.start, rangeInfo.end);
+      fragment.appendChild(mark);
+      created.push({ mode: 'dom', element: mark, range: null });
+      cursor = rangeInfo.end;
+    }
+
+    if (cursor < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+
+    try {
+      node.parentNode?.replaceChild(fragment, node);
+    } catch {
+      // best-effort: skip text nodes that were detached by a concurrent render
+    }
+
+    reportInChatSearchProgress(created, options.onProgress);
+    if (shouldYieldInChatSearchChunk(chunkStartedAt)) {
+      await waitForNextInChatSearchChunk();
+      chunkStartedAt = performance.now();
+    }
+  }
+
+  reportInChatSearchProgress(created, options.onProgress, true);
+  return created;
 }
 
 function getConversationBranchAnchorIndex(
@@ -2481,6 +2818,8 @@ interface ToolCallDisplayProps {
   onLiveVisualizationRefreshSuccess?: (response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse) => void;
   onVisualizationDisplayError?: (message: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
+  inChatSearchQuery?: string;
+  inChatSearchOptions?: InChatSearchOptions;
 }
 
 interface ScreenshotToolOutput {
@@ -2944,8 +3283,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   onLiveVisualizationRefreshSuccess,
   onVisualizationDisplayError,
   onOpenWorkspaceFile,
+  inChatSearchQuery = '',
+  inChatSearchOptions = EMPTY_IN_CHAT_SEARCH_OPTIONS,
 }: ToolCallDisplayProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const [manuallyExpanded, setManuallyExpanded] = useState(defaultExpanded);
   const [copiedButtonKey, setCopiedButtonKey] = useState<string | null>(null);
   const copyFeedbackTimer = useRef<number | null>(null);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -3035,6 +3376,38 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Effective output (use retry output if available)
   const effectiveOutput = activeOutput || '';
+
+  // Split into two memos: the searchable string composition (expensive — stringifies
+  // tool input) only re-runs when tool-call data changes; the regex test only re-runs
+  // when the query or options change.
+  const inChatSearchableText = useMemo(() => {
+    if (!inChatSearchQuery) return '';
+    const inputText = toolCall.input ? JSON.stringify(toolCall.input) : '';
+    return [
+      visualToolName,
+      toolCall.tool,
+      toolCall.connection?.tool_config_name,
+      toolCall.connection?.tool_type,
+      inputText,
+      effectiveOutput,
+      retryError ?? '',
+    ].filter(Boolean).join('\n');
+  }, [
+    effectiveOutput,
+    inChatSearchQuery,
+    retryError,
+    toolCall.connection?.tool_config_name,
+    toolCall.connection?.tool_type,
+    toolCall.input,
+    toolCall.tool,
+    visualToolName,
+  ]);
+  const inChatSearchForcesExpanded = useMemo(() => {
+    if (!inChatSearchableText) return false;
+    return textMatchesInChatSearchQuery(inChatSearchableText, inChatSearchQuery, inChatSearchOptions);
+  }, [inChatSearchableText, inChatSearchOptions, inChatSearchQuery]);
+
+  const expanded = manuallyExpanded || inChatSearchForcesExpanded;
 
   const userspaceWriteBatch = useMemo(() => {
     if (hasErrorInOutput) {
@@ -3512,11 +3885,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         onRetrySuccess?.(result.output);
       } else {
         setRetryError(result.error || 'Unknown error');
-        setExpanded(true);
+        setManuallyExpanded(true);
       }
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : 'Request failed');
-      setExpanded(true);
+      setManuallyExpanded(true);
     } finally {
       clearRetryProgressTimers();
       setRetryProgressText(null);
@@ -4661,7 +5034,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       <div className="tool-call-header-row">
         <button
           className="tool-call-header"
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => setManuallyExpanded((current) => (inChatSearchForcesExpanded ? false : !current))}
         >
           <span className="tool-call-icon">{statusIcon || toolIcon}</span>
           {isTerminalCommand ? (
@@ -4964,6 +5337,8 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   workspaceId,
   conversationId,
   onOpenWorkspaceFile,
+  inChatSearchQuery = '',
+  inChatSearchOptions = EMPTY_IN_CHAT_SEARCH_OPTIONS,
 }: {
   content: string;
   isComplete: boolean;
@@ -4974,6 +5349,8 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
+  inChatSearchQuery?: string;
+  inChatSearchOptions?: InChatSearchOptions;
 }) {
   const [isExpanded, setIsExpanded] = useState(() => {
     if (visibility === 'expanded') return true;
@@ -5199,6 +5576,8 @@ const ReasoningDisplay = memo(function ReasoningDisplay({
                   workspaceId={workspaceId}
                   conversationId={conversationId}
                   onOpenWorkspaceFile={onOpenWorkspaceFile}
+                  inChatSearchQuery={inChatSearchQuery}
+                  inChatSearchOptions={inChatSearchOptions}
                 />
               </div>
             );
@@ -5227,12 +5606,16 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   workspaceId,
   conversationId,
   onOpenWorkspaceFile,
+  inChatSearchQuery = '',
+  inChatSearchOptions = EMPTY_IN_CHAT_SEARCH_OPTIONS,
 }: {
   segment: StreamingSegment;
   showToolCalls: boolean;
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
+  inChatSearchQuery?: string;
+  inChatSearchOptions?: InChatSearchOptions;
 }) {
   if (segment.type === 'reasoning' && segment.content) {
     return (
@@ -5245,6 +5628,8 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
         workspaceId={workspaceId}
         conversationId={conversationId}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
+        inChatSearchQuery={inChatSearchQuery}
+        inChatSearchOptions={inChatSearchOptions}
       />
     );
   } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
@@ -5256,6 +5641,8 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
           workspaceId={workspaceId}
           conversationId={conversationId}
           onOpenWorkspaceFile={onOpenWorkspaceFile}
+          inChatSearchQuery={inChatSearchQuery}
+          inChatSearchOptions={inChatSearchOptions}
         />
       </div>
     );
@@ -5526,11 +5913,13 @@ function mapBranchSearchMatchesByConversation(
 
 function getBranchSearchTooltip(match: ConversationBranchSearchMatch): string {
   const branchKindLabel = match.branch_kind ? `${match.branch_kind} branch` : 'branch';
-  return `Match found in ${branchKindLabel} anchored near message ${match.branch_point_index + 1}.`;
+  return `Open match in ${branchKindLabel} anchored near message ${match.branch_point_index + 1}.`;
 }
 
 function getBranchSearchLabel(match: ConversationBranchSearchMatch): string {
-  const branchKindLabel = match.branch_kind ? `${match.branch_kind} branch` : 'Branch';
+  const branchKindLabel = match.branch_kind
+    ? `${match.branch_kind.charAt(0).toUpperCase()}${match.branch_kind.slice(1)} branch`
+    : 'Branch';
   return `${branchKindLabel} at msg ${match.branch_point_index + 1}`;
 }
 
@@ -5751,6 +6140,29 @@ export function ChatPanel({
   const [branchSelections, setBranchSelections] = useState<Record<string, string>>({});
   const [branchSearchAnchorHint, setBranchSearchAnchorHint] = useState<BranchSearchAnchorHint | null>(null);
   const [chatKeywordFocusHint, setChatKeywordFocusHint] = useState<ChatKeywordFocusHint | null>(null);
+  // In-chat find state — browser-like find scoped to the rendered messages
+  // of the active conversation. Independent from the sidebar/workspace
+  // search above so the global search experience is unaffected.
+  const [inChatSearchOpen, setInChatSearchOpen] = useState(false);
+  const [inChatSearchQuery, setInChatSearchQuery] = useState('');
+  const [debouncedInChatSearchQuery, setDebouncedInChatSearchQuery] = useState('');
+  const [inChatSearchMatchCase, setInChatSearchMatchCase] = useState(false);
+  const [inChatSearchWholeWord, setInChatSearchWholeWord] = useState(false);
+  const [inChatSearchIncludeBranches, setInChatSearchIncludeBranches] = useState(false);
+  const [inChatSearchActiveIndex, setInChatSearchActiveIndex] = useState(0);
+  const [inChatSearchTotal, setInChatSearchTotal] = useState(0);
+  const [inChatSearchRunning, setInChatSearchRunning] = useState(false);
+  const [inChatSearchFloating, setInChatSearchFloating] = useState(false);
+  const [inChatSearchBranchMatches, setInChatSearchBranchMatches] = useState<ConversationBranchSearchMatch[]>([]);
+  const [inChatSearchBranchIndex, setInChatSearchBranchIndex] = useState(0);
+  const [inChatSearchActiveSource, setInChatSearchActiveSource] = useState<'visible' | 'branch'>('visible');
+  const [inChatSearchInlineSize, setInChatSearchInlineSize] = useState<{ width: number; height: number } | null>(null);
+  const inChatSearchInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inChatSearchMarksRef = useRef<InChatSearchMatchTarget[]>([]);
+  const inChatSearchActiveIndexRef = useRef(0);
+  const previouslyActiveInChatMarkRef = useRef<InChatSearchMatchTarget | null>(null);
+  const inChatSearchResizeCleanupRef = useRef<(() => void) | null>(null);
+  const branchSearchPreviewRestoreRef = useRef<BranchSearchPreviewRestore | null>(null);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
@@ -5896,6 +6308,350 @@ export function ChatPanel({
       cleanupHighlight?.();
     };
   }, [activeConversationId, chatKeywordFocusHint]);
+
+  useEffect(() => {
+    if (!inChatSearchOpen || !inChatSearchQuery.trim()) {
+      setDebouncedInChatSearchQuery('');
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedInChatSearchQuery(inChatSearchQuery);
+    }, IN_CHAT_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [inChatSearchOpen, inChatSearchQuery]);
+
+  // In-chat find: recompute highlights when query/options/active conversation
+  // change, or when streaming/branch updates rerender the messages tree.
+  const inChatSearchTrimmedQuery = debouncedInChatSearchQuery.trim();
+  const activeInChatSearchOptions = useMemo<InChatSearchOptions>(() => ({
+    matchCase: inChatSearchMatchCase,
+    wholeWord: inChatSearchWholeWord,
+  }), [inChatSearchMatchCase, inChatSearchWholeWord]);
+  useEffect(() => {
+    const root = chatMessagesRef.current;
+    if (!root) return;
+
+    const reset = () => {
+      clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
+      clearInChatSearchHighlights(root);
+      inChatSearchMarksRef.current = [];
+      previouslyActiveInChatMarkRef.current = null;
+      setInChatSearchRunning(false);
+      setInChatSearchTotal(0);
+    };
+
+    if (!inChatSearchOpen || !inChatSearchTrimmedQuery) {
+      reset();
+      return;
+    }
+    const regex = buildInChatSearchRegex(inChatSearchTrimmedQuery, activeInChatSearchOptions);
+    if (!regex) {
+      reset();
+      return;
+    }
+
+    let cancelled = false;
+    setInChatSearchRunning(true);
+
+    const run = async () => {
+      clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
+      clearInChatSearchHighlights(root);
+      inChatSearchMarksRef.current = [];
+      previouslyActiveInChatMarkRef.current = null;
+      setInChatSearchTotal(0);
+
+      const marks = await applyInChatSearchHighlights(root, regex, {
+        shouldCancel: () => cancelled,
+        onProgress: (partialMarks) => {
+          if (cancelled) return;
+          inChatSearchMarksRef.current = partialMarks;
+          setInChatSearchTotal(partialMarks.length);
+          const clamped = partialMarks.length === 0
+            ? 0
+            : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), partialMarks.length - 1);
+          clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
+          const nextActive = partialMarks[clamped] ?? null;
+          previouslyActiveInChatMarkRef.current = nextActive;
+          if (inChatSearchActiveSource === 'visible') {
+            applyInChatSearchActiveHighlight(nextActive);
+          }
+        },
+      });
+
+      if (cancelled || !marks) return;
+      inChatSearchMarksRef.current = marks;
+      setInChatSearchTotal(marks.length);
+      setInChatSearchRunning(false);
+      const clamped = marks.length === 0
+        ? 0
+        : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), marks.length - 1);
+      if (clamped !== inChatSearchActiveIndexRef.current) {
+        setInChatSearchActiveIndex(clamped);
+      }
+      inChatSearchActiveIndexRef.current = clamped;
+      // Re-apply active class directly: marks array identity has changed, so
+      // the active-mark effect would not re-fire on its own when index/total
+      // happen to be unchanged after a re-highlight.
+      const nextActive = marks[clamped] ?? null;
+      clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
+      previouslyActiveInChatMarkRef.current = nextActive;
+      if (inChatSearchActiveSource === 'visible') {
+        applyInChatSearchActiveHighlight(nextActive);
+      }
+    };
+
+    void run().catch(() => {
+      if (cancelled) return;
+      setInChatSearchRunning(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    inChatSearchOpen,
+    inChatSearchTrimmedQuery,
+    activeInChatSearchOptions,
+    activeConversationId,
+    activeConversation?.active_branch_id,
+    activeConversation?.messages.length,
+    inChatSearchActiveSource,
+    streamingContent,
+    streamingEvents.length,
+  ]);
+
+  // Apply the active-match focus class + scroll into view whenever the
+  // selection changes. Kept separate so paging does not retrigger a full
+  // DOM rescan. Tracks the previously active mark via ref so toggling is
+  // O(1) instead of clearing the class from every mark.
+  useEffect(() => {
+    inChatSearchActiveIndexRef.current = inChatSearchActiveIndex;
+    const marks = inChatSearchMarksRef.current;
+    const previous = previouslyActiveInChatMarkRef.current;
+    const active = marks[inChatSearchActiveIndex] ?? null;
+    if (previous && (previous !== active || inChatSearchActiveSource === 'branch')) {
+      clearInChatSearchActiveHighlight(previous);
+    }
+    if (inChatSearchActiveSource === 'branch') {
+      previouslyActiveInChatMarkRef.current = null;
+      return;
+    }
+    previouslyActiveInChatMarkRef.current = active;
+    if (!active) return;
+    applyInChatSearchActiveHighlight(active);
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const targetElement = active.element ?? getRangeParentElement(active.range);
+        if (targetElement) {
+          await expandCollapsedReasoningForTarget(targetElement);
+        }
+        if (cancelled) return;
+        if (active.mode === 'dom' && active.element) {
+          active.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return;
+        }
+        const rangeRect = active.range?.getBoundingClientRect();
+        const messagesRoot = chatMessagesRef.current;
+        if (rangeRect && messagesRoot) {
+          const rootRect = messagesRoot.getBoundingClientRect();
+          messagesRoot.scrollTo({
+            top: messagesRoot.scrollTop + rangeRect.top - rootRect.top - (rootRect.height / 2) + (rangeRect.height / 2),
+            behavior: 'smooth',
+          });
+          return;
+        }
+        targetElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch {
+        // ignore scroll/expansion failures (e.g. detached node)
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [inChatSearchActiveIndex, inChatSearchActiveSource]);
+
+  // Optional branch search mode for in-chat find. This fetches branch matches
+  // for the active conversation and lets next/prev jump across branch results
+  // when the currently rendered branch has no visible matches.
+  useEffect(() => {
+    if (!inChatSearchOpen || !inChatSearchIncludeBranches || !inChatSearchTrimmedQuery || !activeConversationId) {
+      setInChatSearchBranchMatches([]);
+      setInChatSearchBranchIndex(0);
+      setInChatSearchActiveSource('visible');
+      return;
+    }
+    let cancelled = false;
+    void api.searchConversationBranches([activeConversationId], inChatSearchTrimmedQuery)
+      .then((response) => {
+        if (cancelled) return;
+        const matches = response.matches.filter((match) => match.conversation_id === activeConversationId);
+        setInChatSearchBranchMatches(matches);
+        setInChatSearchBranchIndex(0);
+        setInChatSearchActiveSource('visible');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setInChatSearchBranchMatches([]);
+        setInChatSearchBranchIndex(0);
+        setInChatSearchActiveSource('visible');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inChatSearchOpen, inChatSearchIncludeBranches, inChatSearchTrimmedQuery, activeConversationId]);
+
+  // Reset find when switching conversations so stale matches do not bleed
+  // into the next chat.
+  useEffect(() => {
+    setInChatSearchOpen(false);
+    setInChatSearchQuery('');
+    setDebouncedInChatSearchQuery('');
+    setInChatSearchActiveIndex(0);
+    setInChatSearchTotal(0);
+    setInChatSearchRunning(false);
+    setInChatSearchBranchMatches([]);
+    setInChatSearchBranchIndex(0);
+    setInChatSearchActiveSource('visible');
+    const restore = branchSearchPreviewRestoreRef.current;
+    if (restore && restore.conversation.id !== activeConversationId) {
+      setConversations((prev) => prev.map((conversation) => (
+        conversation.id === restore.conversation.id && conversation.active_branch_id === restore.previewBranchId
+          ? restore.conversation
+          : conversation
+      )));
+      branchSearchPreviewRestoreRef.current = null;
+    }
+  }, [activeConversationId]);
+
+  const restoreBranchSearchPreview = useCallback(() => {
+    const restore = branchSearchPreviewRestoreRef.current;
+    if (!restore) return;
+    branchSearchPreviewRestoreRef.current = null;
+
+    setActiveConversation((current) => {
+      if (current?.id !== restore.conversation.id) return current;
+      if (current.active_branch_id !== restore.previewBranchId) return current;
+      return restore.conversation;
+    });
+    setConversations((prev) => prev.map((conversation) => (
+      conversation.id === restore.conversation.id && conversation.active_branch_id === restore.previewBranchId
+        ? restore.conversation
+        : conversation
+    )));
+  }, []);
+
+  // Responsive placement: drop the find bar below the header when the main
+  // chat area is too narrow to host it inline alongside the header actions.
+  useLayoutEffect(() => {
+    if (!inChatSearchOpen) return;
+    const main = chatMainRef.current;
+    if (!main) return;
+    const evaluate = () => {
+      setInChatSearchFloating(main.clientWidth < 760);
+    };
+    evaluate();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(evaluate);
+    observer.observe(main);
+    return () => observer.disconnect();
+  }, [inChatSearchOpen]);
+
+  const openInChatSearch = useCallback(() => {
+    setInChatSearchOpen(true);
+    // Focus the input after the DOM has had a chance to render it.
+    requestAnimationFrame(() => {
+      const input = inChatSearchInputRef.current;
+      if (!input) return;
+      input.focus();
+      input.select();
+    });
+  }, []);
+
+  const closeInChatSearch = useCallback(() => {
+    restoreBranchSearchPreview();
+    setInChatSearchOpen(false);
+    setInChatSearchActiveSource('visible');
+    setBranchSearchAnchorHint(null);
+    setChatKeywordFocusHint(null);
+  }, [restoreBranchSearchPreview]);
+
+  const startInChatSearchResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const wrapper = (event.currentTarget.closest('.chat-in-chat-search-inline') as HTMLElement | null)
+      ?? (event.currentTarget.closest('.chat-in-chat-search') as HTMLElement | null);
+    const input = inChatSearchInputRef.current;
+    if (!wrapper || !input) return;
+
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const inputRect = input.getBoundingClientRect();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = wrapperRect.width;
+    const startHeight = inputRect.height;
+
+    const minWidth = 220;
+    const maxWidth = 720;
+    const minHeight = 30;
+    const maxHeight = 260;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const width = Math.max(minWidth, Math.min(maxWidth, startWidth + (moveEvent.clientX - startX)));
+      const height = Math.max(minHeight, Math.min(maxHeight, startHeight + (moveEvent.clientY - startY)));
+      setInChatSearchInlineSize({
+        width: Math.round(width),
+        height: Math.round(height),
+      });
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      inChatSearchResizeCleanupRef.current = null;
+    };
+
+    inChatSearchResizeCleanupRef.current?.();
+    inChatSearchResizeCleanupRef.current = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      inChatSearchResizeCleanupRef.current?.();
+      inChatSearchResizeCleanupRef.current = null;
+      branchSearchPreviewRestoreRef.current = null;
+    };
+  }, []);
+
+  // Cmd/Ctrl+F intercept when focus is inside this chat panel. Lets users
+  // discover the in-chat find without reaching for the magnifier button.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.key !== 'f' && event.key !== 'F') return;
+      const main = chatMainRef.current;
+      if (!main) return;
+      const active = document.activeElement as Element | null;
+      if (active && active !== document.body && !main.contains(active)) {
+        return;
+      }
+      event.preventDefault();
+      openInChatSearch();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [openInChatSearch]);
 
   const [showToolCalls, setShowToolCalls] = useState(() => {
     const saved = localStorage.getItem('chat-show-tool-calls');
@@ -6968,6 +7724,19 @@ export function ChatPanel({
       }
       const matchingConversation = visibleConversations.find((conversation) => conversation.id === targetConversationId);
       if (current && matchingConversation && current.id === matchingConversation.id) {
+        const restore = branchSearchPreviewRestoreRef.current;
+        if (restore?.conversation.id === current.id && current.active_branch_id === restore.previewBranchId) {
+          branchSearchPreviewRestoreRef.current = {
+            ...restore,
+            conversation: mergeConversationFromWorkspaceSnapshot(restore.conversation, matchingConversation),
+          };
+          const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+          return {
+            ...merged,
+            active_branch_id: current.active_branch_id,
+            messages: current.messages,
+          };
+        }
         return mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
       }
       return matchingConversation ?? visibleConversations[0] ?? null;
@@ -7059,6 +7828,19 @@ export function ChatPanel({
           return visibleConversations[0] ?? null;
         }
         const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
+        const restore = branchSearchPreviewRestoreRef.current;
+        if (matchingConversation && restore?.conversation.id === current.id && current.active_branch_id === restore.previewBranchId) {
+          branchSearchPreviewRestoreRef.current = {
+            ...restore,
+            conversation: mergeConversationFromWorkspaceSnapshot(restore.conversation, matchingConversation),
+          };
+          const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+          return {
+            ...merged,
+            active_branch_id: current.active_branch_id,
+            messages: current.messages,
+          };
+        }
         return matchingConversation ?? visibleConversations[0] ?? null;
       });
 
@@ -8060,50 +8842,6 @@ export function ChatPanel({
     }
   };
 
-  const selectConversationFromSearchResult = useCallback(async (
-    conversation: Conversation,
-    branchSearchMatch?: ConversationBranchSearchMatch,
-    keywordQuery?: string,
-  ) => {
-    const selectedConversation = await selectConversation(conversation);
-    if (!selectedConversation) {
-      return;
-    }
-    const trimmedKeywordQuery = keywordQuery?.trim() || '';
-    if (trimmedKeywordQuery) {
-      setChatKeywordFocusHint({
-        conversationId: conversation.id,
-        query: trimmedKeywordQuery,
-        preferBranchAnchor: Boolean(branchSearchMatch?.branch_id),
-        token: Date.now(),
-      });
-    } else {
-      setChatKeywordFocusHint(null);
-    }
-    if (!branchSearchMatch?.branch_id) {
-      setBranchSearchAnchorHint(null);
-      return;
-    }
-
-    setBranchSearchAnchorHint({
-      conversationId: conversation.id,
-      branchId: branchSearchMatch.branch_id,
-      branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
-    });
-    void refreshBranchPoints(conversation.id);
-  }, [refreshBranchPoints, selectConversation]);
-
-  const jumpToBranchSearchResult = useCallback(async (
-    conversation: Conversation,
-    branchSearchMatch?: ConversationBranchSearchMatch,
-    keywordQuery?: string,
-  ) => {
-    if (!branchSearchMatch) {
-      return;
-    }
-    await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
-  }, [selectConversationFromSearchResult]);
-
   const deleteConversation = async (conversationId: string, e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -8610,21 +9348,22 @@ export function ChatPanel({
     return Math.max(messageIdx, 0);
   }, []);
 
-  const switchBranch = useCallback(async (branchId: string) => {
-    if (!activeConversation || branchSwitching) return;
-    const conversationId = activeConversation.id;
+  const switchBranch = useCallback(async (branchId: string, conversationOverride?: Conversation) => {
+    const targetConversation = conversationOverride ?? activeConversation;
+    if (!targetConversation || branchSwitching) return;
+    const conversationId = targetConversation.id;
     const isLiveTarget = branchId.startsWith('__current__:');
     setBranchSwitching(true);
     try {
       // Remember the old active branch's position before switching
-      const oldActiveBranchId = activeConversation.active_branch_id;
+      const oldActiveBranchId = targetConversation.active_branch_id;
       if (oldActiveBranchId) {
         const oldBranch = branchesById.get(oldActiveBranchId);
         if (oldBranch) {
           const anchorIndex = getConversationBranchAnchorIndex(
             oldBranch.branch_point_index,
             oldBranch.branch_kind,
-            activeConversation.messages.length,
+            targetConversation.messages.length,
           );
           const selectionKey = getConversationBranchSelectionKey(oldBranch.branch_point_index, anchorIndex);
           setBranchSelections(prev => ({ ...prev, [selectionKey]: oldActiveBranchId }));
@@ -8666,6 +9405,211 @@ export function ChatPanel({
       setBranchSwitching(false);
     }
   }, [activeConversation, branchSwitching, workspaceId, branchesById, refreshBranchPoints, onBranchSwitch]);
+
+  const applyBranchSearchPreview = useCallback((
+    conversation: Conversation,
+    branchSearchMatch: ConversationBranchSearchMatch,
+  ): boolean => {
+    const preservedMessages = branchSearchMatch.preserved_messages ?? [];
+    if (preservedMessages.length === 0) {
+      return false;
+    }
+
+    const existingRestore = branchSearchPreviewRestoreRef.current;
+    let originConversation = conversation;
+    if (existingRestore) {
+      if (existingRestore.conversation.id === conversation.id) {
+        originConversation = existingRestore.conversation;
+      } else {
+        restoreBranchSearchPreview();
+      }
+    }
+
+    const branchPointIndex = Math.max(
+      0,
+      Math.min(branchSearchMatch.branch_point_index, originConversation.messages.length),
+    );
+    const previewConversation: Conversation = {
+      ...originConversation,
+      active_branch_id: branchSearchMatch.branch_id,
+      messages: [
+        ...originConversation.messages.slice(0, branchPointIndex),
+        ...preservedMessages,
+      ],
+    };
+    branchSearchPreviewRestoreRef.current = {
+      conversation: originConversation,
+      previewBranchId: branchSearchMatch.branch_id,
+    };
+    setActiveConversation(previewConversation);
+    setConversations((prev) => prev.map((item) => (
+      item.id === previewConversation.id ? previewConversation : item
+    )));
+    return true;
+  }, [restoreBranchSearchPreview]);
+
+  const selectConversationFromSearchResult = useCallback(async (
+    conversation: Conversation,
+    branchSearchMatch?: ConversationBranchSearchMatch,
+    keywordQuery?: string,
+  ) => {
+    const selectedConversation = await selectConversation(conversation);
+    if (!selectedConversation) {
+      return;
+    }
+
+    const trimmedKeywordQuery = keywordQuery?.trim() || '';
+    if (!branchSearchMatch?.branch_id) {
+      setBranchSearchAnchorHint(null);
+      setChatKeywordFocusHint(trimmedKeywordQuery ? {
+        conversationId: conversation.id,
+        query: trimmedKeywordQuery,
+        preferBranchAnchor: false,
+        token: Date.now(),
+      } : null);
+      return;
+    }
+
+    setBranchSearchAnchorHint({
+      conversationId: conversation.id,
+      branchId: branchSearchMatch.branch_id,
+      branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
+    });
+
+    const didPreview = applyBranchSearchPreview(selectedConversation, branchSearchMatch);
+    if (!didPreview) {
+      void refreshBranchPoints(conversation.id);
+    }
+
+    setChatKeywordFocusHint(trimmedKeywordQuery ? {
+      conversationId: conversation.id,
+      query: trimmedKeywordQuery,
+      preferBranchAnchor: true,
+      token: Date.now(),
+    } : null);
+  }, [applyBranchSearchPreview, refreshBranchPoints, selectConversation]);
+
+  const jumpToBranchSearchResult = useCallback(async (
+    conversation: Conversation,
+    branchSearchMatch?: ConversationBranchSearchMatch,
+    keywordQuery?: string,
+  ) => {
+    if (!branchSearchMatch) {
+      return;
+    }
+    await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
+  }, [selectConversationFromSearchResult]);
+
+  const jumpToInChatBranchMatch = useCallback(async (matchIndex: number) => {
+    if (!activeConversation || !inChatSearchIncludeBranches || inChatSearchBranchMatches.length === 0) return;
+    const normalized = ((matchIndex % inChatSearchBranchMatches.length) + inChatSearchBranchMatches.length)
+      % inChatSearchBranchMatches.length;
+    const match = inChatSearchBranchMatches[normalized];
+    setInChatSearchBranchIndex(normalized);
+    setInChatSearchActiveSource('branch');
+    setBranchSearchAnchorHint({
+      conversationId: activeConversation.id,
+      branchId: match.branch_id,
+      branchPointIndex: Math.max(0, match.branch_point_index),
+    });
+    applyBranchSearchPreview(activeConversation, match);
+    setChatKeywordFocusHint({
+      conversationId: activeConversation.id,
+      query: inChatSearchTrimmedQuery,
+      preferBranchAnchor: true,
+      token: Date.now(),
+    });
+  }, [
+    activeConversation,
+    applyBranchSearchPreview,
+    inChatSearchIncludeBranches,
+    inChatSearchBranchMatches,
+    inChatSearchTrimmedQuery,
+  ]);
+
+  const goToNextInChatMatch = useCallback(() => {
+    const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
+    if (inChatSearchTotal === 0 && branchCount === 0) return;
+
+    if (inChatSearchActiveSource === 'branch') {
+      if (inChatSearchBranchIndex < branchCount - 1) {
+        void jumpToInChatBranchMatch(inChatSearchBranchIndex + 1);
+        return;
+      }
+      if (inChatSearchTotal > 0) {
+        setInChatSearchActiveSource('visible');
+        setInChatSearchActiveIndex(0);
+      }
+      return;
+    }
+
+    if (inChatSearchActiveIndex < inChatSearchTotal - 1) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex((current) => current + 1);
+      return;
+    }
+
+    if (branchCount > 0) {
+      void jumpToInChatBranchMatch(0);
+      return;
+    }
+
+    if (inChatSearchTotal > 0) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex(0);
+    }
+  }, [
+    inChatSearchActiveIndex,
+    inChatSearchActiveSource,
+    inChatSearchBranchIndex,
+    inChatSearchBranchMatches.length,
+    inChatSearchIncludeBranches,
+    inChatSearchTotal,
+    jumpToInChatBranchMatch,
+  ]);
+
+  const goToPrevInChatMatch = useCallback(() => {
+    const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
+    if (inChatSearchTotal === 0 && branchCount === 0) return;
+
+    if (inChatSearchActiveSource === 'branch') {
+      if (inChatSearchBranchIndex > 0) {
+        void jumpToInChatBranchMatch(inChatSearchBranchIndex - 1);
+        return;
+      }
+      if (inChatSearchTotal > 0) {
+        setInChatSearchActiveSource('visible');
+        setInChatSearchActiveIndex(inChatSearchTotal - 1);
+      } else if (branchCount > 0) {
+        void jumpToInChatBranchMatch(branchCount - 1);
+      }
+      return;
+    }
+
+    if (inChatSearchActiveIndex > 0) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex((current) => current - 1);
+      return;
+    }
+
+    if (branchCount > 0) {
+      void jumpToInChatBranchMatch(branchCount - 1);
+      return;
+    }
+
+    if (inChatSearchTotal > 0) {
+      setInChatSearchActiveSource('visible');
+      setInChatSearchActiveIndex(inChatSearchTotal - 1);
+    }
+  }, [
+    inChatSearchActiveIndex,
+    inChatSearchActiveSource,
+    inChatSearchBranchIndex,
+    inChatSearchBranchMatches.length,
+    inChatSearchIncludeBranches,
+    inChatSearchTotal,
+    jumpToInChatBranchMatch,
+  ]);
 
   const copyMessageText = useCallback(async (idx: number, content: string | ContentPart[]) => {
     const { text } = parseMessageContent(content);
@@ -9005,7 +9949,7 @@ export function ChatPanel({
     const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
     const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
     const handleItemClick = options?.onClickOverride
-      ?? (() => selectConversationFromSearchResult(conv, undefined, searchQuery));
+      ?? (() => selectConversationFromSearchResult(conv, branchSearchMatch, searchQuery));
     const handleBranchResultClick = (event: React.MouseEvent | React.KeyboardEvent) => {
       event.stopPropagation();
       void jumpToBranchSearchResult(conv, branchSearchMatch, searchQuery);
@@ -9092,7 +10036,7 @@ export function ChatPanel({
               >
                 <span className="chat-branch-search-snippet-label">
                   <GitBranch size={11} />
-                  Branch
+                  Branch match
                 </span>
                 {branchSnippet ? (
                   <HighlightedText text={branchSnippet} query={searchQuery} />
@@ -9200,6 +10144,147 @@ export function ChatPanel({
   const panelStyle: CSSProperties | undefined = !embedded
     ? ({ ['--chat-sidebar-width' as '--chat-sidebar-width']: `${sidebarWidth}px` } as CSSProperties)
     : undefined;
+
+  const renderInChatSearchBar = (variant: 'inline' | 'floating') => {
+    const hasQuery = inChatSearchTrimmedQuery.length > 0;
+    const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
+    const hasAnyResults = inChatSearchTotal > 0 || branchCount > 0;
+    const showCount = hasQuery && (inChatSearchRunning || inChatSearchTotal > 0 || branchCount > 0);
+    const branchSuffix = branchCount > 0 ? ` +${branchCount}B` : '';
+    const autoInlineWidthPx = Math.min(
+      520,
+      Math.max(220, 170 + Math.max(8, inChatSearchQuery.trim().length) * 7.5),
+    );
+    const inlineWidthPx = inChatSearchInlineSize?.width ?? autoInlineWidthPx;
+    const inlineHeightPx = inChatSearchInlineSize?.height ?? 30;
+    const counterText = inChatSearchRunning
+      ? inChatSearchTotal > 0
+        ? `${inChatSearchTotal}...`
+        : '...'
+      : inChatSearchTotal > 0
+      ? inChatSearchActiveSource === 'branch' && branchCount > 0
+        ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
+        : `${inChatSearchActiveIndex + 1}/${inChatSearchTotal}${branchSuffix}`
+      : branchCount > 0
+        ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
+        : '0/0';
+    const counterTitle = inChatSearchRunning
+      ? 'Searching visible chat text'
+      : branchCount > 0
+      ? `${inChatSearchTotal} visible match${inChatSearchTotal === 1 ? '' : 'es'}, ${branchCount} branch match${branchCount === 1 ? '' : 'es'}`
+      : undefined;
+    return (
+      <div
+        className={`chat-in-chat-search chat-in-chat-search-${variant}`}
+        aria-busy={inChatSearchRunning || undefined}
+        style={({
+          ['--chat-in-chat-search-inline-width' as '--chat-in-chat-search-inline-width']: `${inlineWidthPx}px`,
+          ['--chat-in-chat-search-inline-height' as '--chat-in-chat-search-inline-height']: `${inlineHeightPx}px`,
+        } as CSSProperties)}
+      >
+        <div className="chat-in-chat-search-field">
+          <textarea
+            ref={inChatSearchInputRef}
+            className="chat-in-chat-search-input"
+            placeholder="Find in chat..."
+            rows={1}
+            value={inChatSearchQuery}
+            onChange={(event) => {
+              setInChatSearchQuery(event.target.value);
+              setInChatSearchActiveIndex(0);
+              setInChatSearchBranchIndex(0);
+              setInChatSearchActiveSource('visible');
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                if (event.shiftKey) goToPrevInChatMatch();
+                else goToNextInChatMatch();
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                if (inChatSearchQuery) {
+                  setInChatSearchQuery('');
+                  setInChatSearchActiveIndex(0);
+                  setInChatSearchBranchIndex(0);
+                  setInChatSearchActiveSource('visible');
+                } else {
+                  closeInChatSearch();
+                }
+              }
+            }}
+            aria-label="Find in chat"
+          />
+          <div className="chat-in-chat-search-controls">
+            {showCount && <span className="chat-in-chat-search-count" title={counterTitle} aria-live="polite">{counterText}</span>}
+            {hasAnyResults && (
+              <>
+                <button
+                  type="button"
+                  className="chat-in-chat-search-nav"
+                  onClick={goToPrevInChatMatch}
+                  title="Previous match (Shift+Enter)"
+                  aria-label="Previous match"
+                >
+                  <ChevronUp size={12} />
+                </button>
+                <button
+                  type="button"
+                  className="chat-in-chat-search-nav"
+                  onClick={goToNextInChatMatch}
+                  title="Next match (Enter)"
+                  aria-label="Next match"
+                >
+                  <ChevronDown size={12} />
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              className={`chat-in-chat-search-toggle${inChatSearchIncludeBranches ? ' active' : ''}`}
+              onClick={() => setInChatSearchIncludeBranches((value) => !value)}
+              title={inChatSearchIncludeBranches ? 'Search includes chat branches' : 'Search chat branches'}
+              aria-pressed={inChatSearchIncludeBranches}
+            >
+              <GitBranch size={12} />
+            </button>
+            <button
+              type="button"
+              className={`chat-in-chat-search-toggle${inChatSearchMatchCase ? ' active' : ''}`}
+              onClick={() => setInChatSearchMatchCase((value) => !value)}
+              title="Match case"
+              aria-pressed={inChatSearchMatchCase}
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              className={`chat-in-chat-search-toggle chat-in-chat-search-toggle-word${inChatSearchWholeWord ? ' active' : ''}`}
+              onClick={() => setInChatSearchWholeWord((value) => !value)}
+              title="Match whole word"
+              aria-pressed={inChatSearchWholeWord}
+            >
+              <span className="chat-in-chat-search-toggle-word-label">ab</span>
+            </button>
+            <button
+              type="button"
+              className="chat-in-chat-search-close"
+              onClick={closeInChatSearch}
+              title="Close (Esc)"
+              aria-label="Close find"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div
+            className="chat-in-chat-search-resize-handle"
+            onMouseDown={startInChatSearchResize}
+            role="presentation"
+            title="Drag to resize search box"
+          />
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`} style={panelStyle}>
@@ -9533,7 +10618,7 @@ export function ChatPanel({
                                 className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
                                 onClick={() => {
                                   setIsWorkspaceConversationMenuOpen(false);
-                                  void selectConversationFromSearchResult(conversation, undefined, workspaceConversationSearchQuery);
+                                  void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
                                 }}
                                 onKeyDown={(event) => {
                                   if (isEditing) {
@@ -9542,7 +10627,7 @@ export function ChatPanel({
                                   if (event.key === 'Enter' || event.key === ' ') {
                                     event.preventDefault();
                                     setIsWorkspaceConversationMenuOpen(false);
-                                    void selectConversationFromSearchResult(conversation, undefined, workspaceConversationSearchQuery);
+                                    void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
                                   }
                                 }}
                               >
@@ -9638,7 +10723,7 @@ export function ChatPanel({
                                               >
                                                 <span className="chat-branch-search-snippet-label">
                                                   <GitBranch size={11} />
-                                                  Branch
+                                                  Branch match
                                                 </span>
                                                 {branchSnippet ? (
                                                   <HighlightedText text={branchSnippet} query={workspaceConversationSearchQuery} />
@@ -9773,12 +10858,23 @@ export function ChatPanel({
                 )}
               </div>
               <div className="chat-header-actions">
+                {inChatSearchOpen && !inChatSearchFloating && renderInChatSearchBar('inline')}
                 <ContextUsagePie
                   currentTokens={contextUsage.currentTokens}
                   totalTokens={contextUsage.totalTokens}
                   contextLimit={contextUsage.contextLimit}
                   loading={isModelsLoading}
                 />
+                <button
+                  className={`btn btn-secondary btn-sm btn-icon chat-in-chat-search-trigger chat-in-chat-search-trigger-mobile${inChatSearchOpen ? ' active' : ''}`}
+                  onClick={() => (inChatSearchOpen ? closeInChatSearch() : openInChatSearch())}
+                  title="Find in chat"
+                  aria-label="Find in chat"
+                  aria-pressed={inChatSearchOpen}
+                  type="button"
+                >
+                  <Search size={14} />
+                </button>
                 {canShareConversation && !embedded && activeConversation && (
                   <button
                     className="btn btn-secondary btn-sm btn-icon"
@@ -9863,6 +10959,8 @@ export function ChatPanel({
                 )}
               </div>
             </div>
+
+            {inChatSearchOpen && inChatSearchFloating && renderInChatSearchBar('floating')}
 
             {/* Messages */}
             {!isMessagesCollapsed && (
@@ -9957,6 +11055,8 @@ export function ChatPanel({
                                         workspaceId={workspaceId}
                                         conversationId={activeConversation.id}
                                         onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                        inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                        inChatSearchOptions={activeInChatSearchOptions}
                                       />
                                     );
                                     pendingReasoning = '';
@@ -10018,6 +11118,8 @@ export function ChatPanel({
                                               onLiveVisualizationRefreshSuccess={handleLiveVisualizationRefreshSuccess}
                                               onVisualizationDisplayError={toastActions.error}
                                               onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                              inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                              inChatSearchOptions={activeInChatSearchOptions}
                                             />
                                           </div>
                                         );
@@ -10328,6 +11430,8 @@ export function ChatPanel({
                             workspaceId={workspaceId}
                             conversationId={activeConversation.id}
                             onOpenWorkspaceFile={onOpenWorkspaceFile}
+                            inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                            inChatSearchOptions={activeInChatSearchOptions}
                           />
                         ))}
                         <div className="chat-message-streaming">
@@ -10862,7 +11966,7 @@ export function ChatPanel({
                         // chat panel can render it immediately without a
                         // refetch loop.
                         setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
-                        await selectConversationFromSearchResult(conv, archiveBranchSearchMatches[conv.id]);
+                        await selectConversationFromSearchResult(conv, archiveBranchSearchMatches[conv.id], trimmed);
                       },
                     }))}
                     {archiveLoading && archivedConversations.length > 0 && (

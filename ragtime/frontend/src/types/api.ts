@@ -341,7 +341,7 @@ export interface LdapBindDnLookupResponse {
 
 export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'interrupted';
 export type OcrMode = 'disabled' | 'tesseract' | 'vision';
-export type OcrProvider = 'ollama' | 'openai' | 'omlx' | 'lmstudio' | 'llama_cpp';
+export type OcrProvider = 'ollama' | 'openai' | 'openrouter' | 'omlx' | 'lmstudio' | 'llama_cpp';
 
 export interface IndexConfig {
   name: string;
@@ -607,7 +607,7 @@ export interface AppSettings {
   authenticated_webgl_background_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   // Embedding Configuration (for FAISS indexing)
-  embedding_provider: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  embedding_provider: 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model: string;
   embedding_dimensions?: number | null;
   // Ollama connection settings for embeddings (separate fields)
@@ -737,7 +737,7 @@ export interface UpdateSettingsRequest {
   authenticated_webgl_background_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   // Embedding settings
-  embedding_provider?: 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  embedding_provider?: 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model?: string;
   embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
@@ -1011,7 +1011,7 @@ export interface CopilotAuthStatusResponse {
 
 // Embedding Provider Model Fetching
 export interface EmbeddingModelsRequest {
-  provider: 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  provider: 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
   api_key?: string;
   base_url?: string;
   model?: string;
@@ -2033,6 +2033,7 @@ export interface ConversationBranchSearchMatch {
   branch_kind?: ConversationBranchKind | null;
   branch_point_index: number;
   snippet?: string | null;
+  preserved_messages?: ChatMessage[];
 }
 
 export interface ConversationBranchSearchResponse {

@@ -53,7 +53,7 @@ from ragtime.chat_runtime.payloads import (
 )
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS, CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.service import chat_runtime_service
-from ragtime.core import llama_cpp, lmstudio, omlx
+from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.container_capabilities import get_container_capabilities
@@ -105,6 +105,7 @@ from ragtime.core.model_providers import (
     providers_equivalent,
     providers_same,
     resolve_model_family_from_metadata,
+    resolve_provider_api_key,
     resolve_provider_base_url,
 )
 from ragtime.core.ollama import (
@@ -5902,13 +5903,7 @@ class VisionModelsResponse(BaseModel):
 
 
 def _provider_api_key_from_settings(settings: AppSettings, provider: str) -> str | None:
-    if provider == "openai":
-        return settings.openai_api_key or None
-    if provider == "omlx":
-        return settings.omlx_api_key or None
-    if provider == "lmstudio":
-        return settings.lmstudio_api_key or None
-    return None
+    return resolve_provider_api_key(settings, provider, "llm")
 
 
 def _vision_models_from_infos(provider: str, infos: list[Any]) -> list[VisionModel]:
@@ -6069,7 +6064,7 @@ class EmbeddingModelsRequest(BaseModel):
 
     provider: str = Field(
         ...,
-        description="Embedding provider: 'openai', 'llama_cpp', 'lmstudio', or 'omlx'",
+        description="Embedding provider: 'openai', 'openrouter', 'llama_cpp', 'lmstudio', or 'omlx'",
     )
     api_key: str = Field(default="", description="API key for the provider")
     base_url: str = Field(default="", description="Base URL for local providers")
@@ -6116,6 +6111,11 @@ async def fetch_embedding_models(request: EmbeddingModelsRequest, _user: User = 
     normalized_provider = normalize_provider_name(request.provider)
     if normalized_provider == "openai":
         return await _fetch_openai_embedding_models(request.api_key)
+
+    if normalized_provider == "openrouter":
+        settings = await repository.get_settings()
+        api_key = str(request.api_key or resolve_provider_api_key(settings, normalized_provider, "embedding") or "").strip()
+        return await _fetch_openrouter_embedding_models(api_key)
 
     if normalized_provider in {"llama_cpp", "lmstudio", "omlx"}:
         settings = await repository.get_settings()
@@ -6317,6 +6317,64 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
         return EmbeddingModelsResponse(success=False, message="Request to OpenAI timed out.")
     except Exception as e:
         return EmbeddingModelsResponse(success=False, message=f"Failed to fetch OpenAI embedding models: {str(e)}")
+
+
+async def _fetch_openrouter_embedding_models(api_key: str) -> EmbeddingModelsResponse:
+    """Fetch OpenRouter embedding models using explicit catalog capabilities."""
+    if not api_key:
+        return EmbeddingModelsResponse(success=False, message="OpenRouter is not configured")
+
+    try:
+        rows = await openrouter.list_embedding_models(api_key, timeout=15.0)
+        models_dev_embedding_models = await get_embedding_models()
+        models: list[EmbeddingModel] = []
+        for row in rows:
+            if not openrouter.supports_embeddings(row):
+                continue
+
+            model_id = openrouter.model_id(row)
+            if not model_id:
+                continue
+
+            model_info = models_dev_embedding_models.get(model_id)
+            if model_info is None and "/" in model_id:
+                _provider, _separator, short_id = model_id.partition("/")
+                model_info = models_dev_embedding_models.get(short_id)
+
+            dimensions = openrouter.embedding_dimensions(row)
+            context_limit = openrouter.context_limit(row)
+            if model_info is not None:
+                dimensions = dimensions or model_info.output_vector_size
+                context_limit = context_limit or model_info.max_input_tokens
+
+            models.append(
+                EmbeddingModel(
+                    id=model_id,
+                    name=openrouter.model_name(row),
+                    dimensions=dimensions,
+                    context_limit=context_limit,
+                )
+            )
+
+        models.sort(key=lambda model: (model.name.lower(), model.id.lower()))
+        return EmbeddingModelsResponse(
+            success=True,
+            message=f"Found {len(models)} OpenRouter embedding model(s).",
+            models=models,
+            default_model=models[0].id if models else None,
+        )
+
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            return EmbeddingModelsResponse(
+                success=False,
+                message="Invalid API key. Please check your OpenRouter API key.",
+            )
+        return EmbeddingModelsResponse(success=False, message=f"OpenRouter API error: {e.response.status_code}")
+    except httpx.TimeoutException:
+        return EmbeddingModelsResponse(success=False, message="Request to OpenRouter timed out.")
+    except Exception as e:
+        return EmbeddingModelsResponse(success=False, message=f"Failed to fetch OpenRouter embedding models: {str(e)}")
 
 
 # -----------------------------------------------------------------------------
@@ -6657,67 +6715,25 @@ def _resolve_omlx_chat_base_url(settings: AppSettings) -> str:
     return resolve_provider_base_url(settings, "omlx", "llm")
 
 
-def _openrouter_int(value: Any) -> Optional[int]:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
 def _openrouter_is_chat_model(row: dict[str, Any]) -> bool:
-    model_id = str(row.get("id") or "").strip().lower()
-    if not model_id:
-        return False
-    excluded_terms = (
-        "embed",
-        "embedding",
-        "rerank",
-        "moderation",
-        "whisper",
-        "tts",
-    )
-    if any(term in model_id for term in excluded_terms):
-        return False
-
-    architecture = row.get("architecture")
-    input_modalities = None
-    if isinstance(architecture, dict):
-        input_modalities = architecture.get("input_modalities")
-    if input_modalities is None:
-        modalities = row.get("modalities")
-        if isinstance(modalities, dict):
-            input_modalities = modalities.get("input")
-    if isinstance(input_modalities, list):
-        normalized_inputs = {str(item).strip().lower() for item in input_modalities}
-        return not normalized_inputs or bool(normalized_inputs & {"text", "image"})
-
-    return True
+    return openrouter.supports_chat(row)
 
 
 async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
     """Fetch chat-capable models from OpenRouter."""
     try:
         await ensure_model_metadata_loaded()
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.get(
-                "https://openrouter.ai/api/v1/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            response.raise_for_status()
-
-        data = response.json()
         models: list[LLMModel] = []
-        for row in data.get("data", []):
+        for row in await openrouter.list_models(api_key):
             if not isinstance(row, dict) or not _openrouter_is_chat_model(row):
                 continue
 
-            model_id = str(row.get("id") or "").strip()
+            model_id = openrouter.model_id(row)
             if not model_id:
                 continue
 
-            supported_parameters = row.get("supported_parameters")
-            supported_parameters = [str(item).lower() for item in supported_parameters if item] if isinstance(supported_parameters, list) else []
+            model_name = openrouter.model_name(row)
+            supported_parameters = openrouter.supported_parameters(row)
             (
                 capabilities,
                 _supported_endpoints,
@@ -6737,12 +6753,11 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
             context_limit, max_output_tokens = register_openrouter_model_limits(row)
             family_group = resolve_model_family_label(
                 model_id,
-                str(row.get("name") or model_id),
+                model_name,
                 provider="openrouter",
                 metadata=row,
             ) or resolve_model_family_from_metadata("openrouter", row)
-            architecture = row.get("architecture")
-            tokenizer = str(architecture.get("tokenizer")) if isinstance(architecture, dict) and architecture.get("tokenizer") else None
+            tokenizer = openrouter.tokenizer(row)
 
             register_model_supported_endpoints(model_id, ["/chat/completions"])
             if reasoning_supported or thinking_budget_supported:
@@ -6755,8 +6770,8 @@ async def _fetch_openrouter_models(api_key: str) -> LLMModelsResponse:
 
             model = LLMModel(
                 id=model_id,
-                name=str(row.get("name") or model_id),
-                created=_openrouter_int(row.get("created")),
+                name=model_name,
+                created=openrouter.created(row),
                 group=family_group,
                 max_output_tokens=max_output_tokens,
                 context_limit=context_limit,
@@ -6921,7 +6936,7 @@ async def _fetch_llm_models_for_provider(
         return await _fetch_anthropic_models(token)
 
     if normalized_provider == "openrouter":
-        token = str(api_key or settings.openrouter_api_key or "").strip()
+        token = str(api_key or resolve_provider_api_key(settings, normalized_provider, "llm") or "").strip()
         if not token:
             if raise_on_unconfigured:
                 raise HTTPException(status_code=400, detail="OpenRouter is not configured")
@@ -8444,20 +8459,9 @@ def _extract_provider_capability_metadata(
     model_id = str(row.get("id") or row.get("name") or row.get("model") or "").strip()
     image_input_supported = False
 
-    supported_endpoints = row.get("supportedEndpoints")
-    if isinstance(supported_endpoints, list):
-        supported_endpoints_out = [str(item) for item in supported_endpoints]
-
-    input_modalities = None
-    modalities_obj = row.get("modalities")
-    if isinstance(modalities_obj, dict):
-        input_modalities = modalities_obj.get("input")
-    if input_modalities is None:
-        input_modalities = row.get("supported_input_modalities")
-    if isinstance(input_modalities, list):
-        normalized_inputs = {str(item).strip().lower() for item in input_modalities}
-        if normalized_inputs & {"image", "images", "vision"}:
-            image_input_supported = True
+    supported_endpoints_out = openrouter.supported_endpoints_list(row)
+    if openrouter.input_modalities(row) & openrouter.VISION_INPUT_TOKENS:
+        image_input_supported = True
 
     capabilities_obj = row.get("capabilities")
     if isinstance(capabilities_obj, list):
@@ -8884,7 +8888,7 @@ async def get_available_chat_models():
         provider_states["anthropic"].connected = True
         tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("anthropic", _fetch_anthropic_models(app_settings.anthropic_api_key))))
 
-    openrouter_api_key = str(getattr(app_settings, "openrouter_api_key", "") or "")
+    openrouter_api_key = resolve_provider_api_key(app_settings, "openrouter", "llm") or ""
     if openrouter_api_key and len(openrouter_api_key) > 10:
         provider_states["openrouter"].configured = True
         provider_states["openrouter"].connected = True
@@ -9144,7 +9148,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
             )
         )
 
-    openrouter_api_key = str(getattr(app_settings, "openrouter_api_key", "") or "")
+    openrouter_api_key = resolve_provider_api_key(app_settings, "openrouter", "llm") or ""
     if openrouter_api_key and len(openrouter_api_key) > 10:
         tasks.append(
             asyncio.create_task(
@@ -9808,6 +9812,10 @@ class ConversationBranchSearchMatch(BaseModel):
     )
     branch_point_index: int = Field(description="0-based branch point index.")
     snippet: Optional[str] = Field(default=None, description="Short visible-text snippet around the branch match.")
+    preserved_messages: List[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Preserved branch messages for local, non-persistent search preview.",
+    )
 
 
 class ConversationBranchSearchResponse(BaseModel):
@@ -9832,12 +9840,31 @@ def _message_content_visible_text(content: object) -> str:
     return ""
 
 
+def _coerce_visible_search_messages(messages: object) -> list[object]:
+    if isinstance(messages, list):
+        return messages
+    if isinstance(messages, tuple):
+        return list(messages)
+    if isinstance(messages, str):
+        stripped = messages.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
 def _conversation_visible_search_text(messages: object) -> str:
-    if not isinstance(messages, list):
+    normalized_messages = _coerce_visible_search_messages(messages)
+    if not normalized_messages:
         return ""
 
     parts: list[str] = []
-    for message in messages:
+    for message in normalized_messages:
         if not isinstance(message, dict):
             continue
         content_text = _message_content_visible_text(message.get("content"))
@@ -10340,7 +10367,8 @@ async def search_conversation_branches(
         branch_point_raw = row.get("branch_point_index")
         branch_point_index = int(branch_point_raw) if branch_point_raw is not None else 0
 
-        visible_text = _conversation_visible_search_text(row.get("preserved_messages"))
+        preserved_messages = [message for message in _coerce_visible_search_messages(row.get("preserved_messages")) if isinstance(message, dict)]
+        visible_text = _conversation_visible_search_text(preserved_messages)
         snippet = _search_snippet(visible_text, query)
         if snippet is None:
             continue
@@ -10352,6 +10380,7 @@ async def search_conversation_branches(
                 branch_kind=cast(Optional[Literal["edit", "delete", "replay"]], branch_kind),
                 branch_point_index=max(0, branch_point_index),
                 snippet=snippet,
+                preserved_messages=preserved_messages,
             )
         )
 

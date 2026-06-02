@@ -26,3 +26,15 @@ def resolve_effective_tool_timeout(requested_timeout: int | None, timeout_max_se
         return 0
 
     return min(requested, max_timeout)
+
+
+def resolve_effective_command_timeout(
+    requested_timeout: int | None,
+    timeout_max_seconds: int,
+) -> int:
+    """Resolve a shell-command timeout.
+
+    Shell commands use the per-tool configured maximum as their default when the
+    model omits a timeout. An explicit ``timeout=0`` means no timeout.
+    """
+    return resolve_effective_tool_timeout(requested_timeout, timeout_max_seconds)

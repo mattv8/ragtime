@@ -26,6 +26,7 @@ from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 
 from ragtime.config import settings
+from ragtime.core import openrouter
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.datetimes import utc_now
@@ -40,7 +41,7 @@ from ragtime.core.file_constants import (
     get_embedding_safety_margin,
 )
 from ragtime.core.logging import get_logger
-from ragtime.core.model_providers import normalize_provider_name, resolve_provider_base_url
+from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
 from ragtime.core.tokenization import count_tokens
 from ragtime.indexer.chunking import (
     chunk_documents_parallel,
@@ -195,7 +196,7 @@ async def generate_index_description(
                 logger.debug("OpenAI selected but no API key configured")
 
         elif provider == "openrouter":
-            api_key = app_settings.get("openrouter_api_key", "")
+            api_key = resolve_provider_api_key(app_settings, "openrouter", "llm")
             if api_key:
                 from langchain_openai import ChatOpenAI  # type: ignore[import-untyped]
 
@@ -204,7 +205,7 @@ async def generate_index_description(
                     model=model,
                     temperature=0.3,
                     api_key=SecretStr(str(api_key)),
-                    base_url="https://openrouter.ai/api/v1",
+                    base_url=openrouter.DEFAULT_BASE_URL,
                 )
                 logger.debug(f"Using OpenRouter for description generation: {model}")
             else:

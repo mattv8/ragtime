@@ -380,6 +380,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
   | 'lmstudio_port'
   | 'lmstudio_base_url'
   | 'lmstudio_api_key'
+  | 'openrouter_api_key'
   | 'omlx_protocol'
   | 'omlx_host'
   | 'omlx_port'
@@ -408,6 +409,7 @@ function getEmbeddingSettingsFormData(data: AppSettings): Pick<UpdateSettingsReq
     lmstudio_port: data.lmstudio_port,
     lmstudio_base_url: data.lmstudio_base_url,
     lmstudio_api_key: data.lmstudio_api_key,
+    openrouter_api_key: data.openrouter_api_key,
     omlx_protocol: data.omlx_protocol,
     omlx_host: data.omlx_host,
     omlx_port: data.omlx_port,
@@ -952,10 +954,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     setCopilotWizardStep(3);
   }, [copilotVerificationUri]);
 
-  // Fetch embedding models from OpenAI API
-  const fetchEmbeddingModels = useCallback(async (apiKey: string) => {
+  // Fetch embedding models from hosted provider APIs
+  const fetchEmbeddingModels = useCallback(async (provider: 'openai' | 'openrouter', apiKey: string) => {
+    const providerLabel = provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
     if (!apiKey || apiKey.length < 10) {
-      setEmbeddingModelsError('Please enter a valid OpenAI API key first');
+      setEmbeddingModelsError(`Please enter a valid ${providerLabel} API key first`);
       return;
     }
 
@@ -966,7 +969,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
     try {
       const response = await api.fetchEmbeddingModels({
-        provider: 'openai',
+        provider,
         api_key: apiKey,
       });
 
@@ -1864,6 +1867,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
           PROVIDER_CONNECTIONS.lmstudioEmbedding,
         ),
         lmstudio_api_key: formData.lmstudio_api_key,
+        openrouter_api_key: formData.openrouter_api_key,
         omlx_protocol: formData.omlx_protocol,
         omlx_host: formData.omlx_host,
         omlx_port: formData.omlx_port,
@@ -2124,6 +2128,12 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         setVisionModelsError('Enter an OpenAI API key before loading vision models.');
         return;
       }
+    } else if (provider === 'openrouter') {
+      request.api_key = formData.openrouter_api_key;
+      if (!request.api_key || request.api_key.length < 10) {
+        setVisionModelsError('Enter an OpenRouter API key before loading vision models.');
+        return;
+      }
     } else if (provider === 'omlx') {
       request.base_url = buildLocalBaseUrl(formData.llm_omlx_protocol, formData.llm_omlx_host, formData.llm_omlx_port, PROVIDER_CONNECTIONS.omlxLlm);
       request.api_key = formData.omlx_api_key;
@@ -2159,6 +2169,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.ollama_host,
     formData.ollama_port,
     formData.openai_api_key,
+    formData.openrouter_api_key,
     formData.llm_omlx_protocol,
     formData.llm_omlx_host,
     formData.llm_omlx_port,
@@ -2530,6 +2541,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     (formData.llm_omlx_port ?? settings?.llm_omlx_port)
   );
   const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
+  const embeddingOpenRouterConfigured = Boolean((formData.openrouter_api_key ?? settings?.openrouter_api_key)?.trim());
   const embeddingOllamaConfigured = Boolean(
     (formData.ollama_protocol ?? settings?.ollama_protocol) &&
     (formData.ollama_host ?? settings?.ollama_host)?.trim() &&
@@ -2579,6 +2591,40 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     manualDefaultExistsInOptions ? manualDefaultChatModel : automaticDefaultChatModel,
     filteredChatModels,
   );
+  const hostedEmbeddingProviderConfig = (() => {
+    if (formData.embedding_provider === 'openai') {
+      return {
+        provider: 'openai' as const,
+        label: 'OpenAI',
+        apiKey: formData.openai_api_key || '',
+        apiKeyField: null,
+        modelPlaceholder: 'text-embedding-3-small',
+        unloadedHelp: 'Requires OpenAI API key (configured above). Click "Fetch Models" to see available embedding models.',
+        loadedHelp: () => {
+          const selectedModel = embeddingModels.find(m => m.id === formData.embedding_model);
+          const dimInfo = selectedModel?.dimensions
+            ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
+            : '';
+          return `Select an embedding model from OpenAI.${dimInfo}`;
+        },
+      };
+    }
+    if (formData.embedding_provider === 'openrouter') {
+      return {
+        provider: 'openrouter' as const,
+        label: 'OpenRouter',
+        apiKey: formData.openrouter_api_key || '',
+        apiKeyField: {
+          value: formData.openrouter_api_key || '',
+          placeholder: 'sk-or-...',
+        },
+        modelPlaceholder: 'openai/text-embedding-3-small',
+        unloadedHelp: 'Requires OpenRouter API key. Click "Fetch Models" to see embedding-capable models.',
+        loadedHelp: () => 'Select an embedding-capable model from OpenRouter.',
+      };
+    }
+    return null;
+  })();
 
   return (
     <div className="card">
@@ -3940,6 +3986,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 />
                 <span className="llm-provider-status-label">OpenAI</span>
               </span>
+              <span className="llm-provider-status-item" title={embeddingOpenRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingOpenRouterConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingOpenRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}
+                />
+                <span className="llm-provider-status-label">OpenRouter</span>
+              </span>
               <span className="llm-provider-status-item" title={embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'}>
                 <span
                   className={`llm-provider-status-dot ${embeddingOllamaConfigured ? 'configured' : ''}`}
@@ -3981,7 +4034,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               <select
                 value={formData.embedding_provider || 'ollama'}
                 onChange={(e) => {
-                  const newProvider = e.target.value as 'ollama' | 'openai' | 'llama_cpp' | 'lmstudio' | 'omlx';
+                  const newProvider = e.target.value as 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
                   setFormData({
                     ...formData,
                     embedding_provider: newProvider,
@@ -3995,16 +4048,15 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                             ? ''
                             : newProvider === 'omlx'
                               ? ''
-                            : 'text-embedding-3-small',
+                              : newProvider === 'openrouter'
+                                ? ''
+                                : 'text-embedding-3-small',
                   });
                   // Reset Ollama connection state when switching providers
                   if (newProvider !== 'ollama') {
                     resetEmbeddingOllamaState();
                   }
-                  // Reset embedding models when switching away from OpenAI
-                  if (newProvider !== 'openai') {
-                    resetEmbeddingModelsState();
-                  }
+                  resetEmbeddingModelsState();
                 }}
               >
                 <option value="ollama">Ollama</option>
@@ -4012,6 +4064,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 <option value="lmstudio">LM Studio</option>
                 <option value="omlx">oMLX</option>
                 <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
               </select>
               {/* Quick-fill from LLM Ollama when it has a real host */}
               {formData.embedding_provider === 'ollama' && formData.llm_provider === 'ollama' && formData.llm_ollama_host?.trim() && (
@@ -4322,8 +4375,23 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             </>
           )}
 
-          {formData.embedding_provider === 'openai' && (
+          {hostedEmbeddingProviderConfig && (
             <>
+              {hostedEmbeddingProviderConfig.apiKeyField && (
+                <div className="form-group">
+                  <label>{hostedEmbeddingProviderConfig.label} API Key</label>
+                  <input
+                    type="password"
+                    value={hostedEmbeddingProviderConfig.apiKeyField.value}
+                    onChange={(e) => {
+                      setFormData({ ...formData, openrouter_api_key: e.target.value });
+                      resetEmbeddingModelsState();
+                    }}
+                    placeholder={hostedEmbeddingProviderConfig.apiKeyField.placeholder}
+                    autoComplete="off"
+                  />
+                </div>
+              )}
               <div className="form-group">
                 <label>Embedding Model</label>
                 <div className="input-with-button">
@@ -4348,14 +4416,14 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                       onChange={(e) =>
                         setFormData({ ...formData, embedding_model: e.target.value })
                       }
-                      placeholder="text-embedding-3-small"
+                      placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
                     />
                   )}
                   <button
                     type="button"
                     className={`btn btn-test ${embeddingModelsLoaded ? 'btn-connected' : ''}`}
-                    onClick={() => fetchEmbeddingModels(formData.openai_api_key || '')}
-                    disabled={embeddingModelsFetching || !formData.openai_api_key}
+                    onClick={() => fetchEmbeddingModels(hostedEmbeddingProviderConfig.provider, hostedEmbeddingProviderConfig.apiKey)}
+                    disabled={embeddingModelsFetching || !hostedEmbeddingProviderConfig.apiKey}
                   >
                     {embeddingModelsFetching ? 'Fetching...' : embeddingModelsLoaded ? 'Loaded' : 'Fetch Models'}
                   </button>
@@ -4364,20 +4432,12 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   <p className="field-error">{embeddingModelsError}</p>
                 )}
                 <p className="field-help">
-                  {embeddingModelsLoaded
-                    ? (() => {
-                      const selectedModel = embeddingModels.find(m => m.id === formData.embedding_model);
-                      const dimInfo = selectedModel?.dimensions
-                        ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
-                        : '';
-                      return `Select an embedding model from OpenAI.${dimInfo}`;
-                    })()
-                    : 'Requires OpenAI API key (configured above). Click "Fetch Models" to see available embedding models.'}
+                  {embeddingModelsLoaded ? hostedEmbeddingProviderConfig.loadedHelp() : hostedEmbeddingProviderConfig.unloadedHelp}
                 </p>
               </div>
 
               {/* Embedding Dimensions (only for text-embedding-3-* models) */}
-              {formData.embedding_model?.startsWith('text-embedding-3') && (
+              {hostedEmbeddingProviderConfig.provider === 'openai' && formData.embedding_model?.startsWith('text-embedding-3') && (
                 <div className="form-group">
                   <label>Embedding Dimensions</label>
                   <input
@@ -4644,10 +4704,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
               {formData.default_ocr_mode === 'vision' && (
                 <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
-                  {selectedOcrProvider === 'openai' && (
+                  {(selectedOcrProvider === 'openai' || selectedOcrProvider === 'openrouter') && (
                     <p className="field-help" style={{ marginBottom: '8px' }}>
                       <span style={{ color: 'var(--warning-color, #b58900)' }}>
-                        <strong>API cost note:</strong> OpenAI vision OCR sends image content to the selected model for each processed image. Cost and latency vary by model, image size, and OCR concurrency.
+                        <strong>API cost note:</strong> {selectedOcrProviderLabel} vision OCR sends image content to the selected model for each processed image. Cost and latency vary by model, image size, and OCR concurrency.
                       </span>
                     </p>
                   )}
