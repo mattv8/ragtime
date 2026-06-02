@@ -19,7 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, List, Literal, Optional, Union, cast
+from typing import Any, Callable, List, Literal, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
@@ -134,7 +134,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
-from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
@@ -5080,9 +5080,6 @@ except Exception as e:
         description = config.get("description", "")
         working_directory = conn_config.get("working_directory", "")
 
-        # Capture timeout for closure
-        _default_timeout = timeout_max_seconds
-
         class SSHInput(BaseModel):
             command: str = Field(default="", description="Shell command to execute on the remote server")
             reason: str = Field(default="", description="Brief description of what this command does")
@@ -5096,7 +5093,7 @@ except Exception as e:
         async def execute_ssh(
             command: str = "",
             reason: str = "",
-            timeout: int = _default_timeout,
+            timeout: int | None = None,
             **_: Any,
         ) -> str:
             """Execute SSH command using this tool's configuration."""
@@ -5134,7 +5131,7 @@ except Exception as e:
                     indent=2,
                 )
 
-            effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
+            effective_timeout = resolve_effective_command_timeout(timeout, timeout_max_seconds)
 
             # Build SSH config for potential env var expansion
             ssh_config = SSHConfig(
@@ -5148,14 +5145,31 @@ except Exception as e:
                 timeout=effective_timeout,
             )
 
+            async def run_ssh_blocking(callable_: Callable[[], Any]) -> Any:
+                loop = asyncio.get_event_loop()
+                future = loop.run_in_executor(None, callable_)
+                if effective_timeout > 0:
+                    return await asyncio.wait_for(future, timeout=effective_timeout + 10)
+                return await future
+
             # If working_directory is set, expand env vars for path validation
             expanded_command = None
             if working_directory:
                 # Check if command contains env vars that need expansion (using precompiled pattern)
                 if _SSH_ENV_VAR_RE.search(command):
                     # Expand env vars on the remote host
-                    loop = asyncio.get_event_loop()
-                    expanded_command, expand_error = await loop.run_in_executor(None, lambda: expand_env_vars_via_ssh(ssh_config, command))
+                    try:
+                        expanded_command, expand_error = await run_ssh_blocking(lambda: expand_env_vars_via_ssh(ssh_config, command))
+                    except asyncio.TimeoutError:
+                        return json.dumps(
+                            {
+                                "tool": f"ssh_{tool_name}",
+                                "status": "command_failed",
+                                "exit_code": -1,
+                                "error": f"SSH command timed out after {effective_timeout} seconds while expanding environment variables",
+                            },
+                            indent=2,
+                        )
                     if expand_error:
                         return json.dumps(
                             {
@@ -5191,8 +5205,7 @@ except Exception as e:
 
             try:
                 # Run in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, full_command))
+                result = await run_ssh_blocking(lambda: execute_ssh_command(ssh_config, full_command))
 
                 exit_code = result.exit_code
                 stdout_raw = result.stdout.strip()
@@ -5213,6 +5226,16 @@ except Exception as e:
 
                 return json.dumps(terminal_payload, indent=2)
 
+            except asyncio.TimeoutError:
+                return json.dumps(
+                    {
+                        "tool": f"ssh_{tool_name}",
+                        "status": "command_failed",
+                        "exit_code": -1,
+                        "error": f"SSH command timed out after {effective_timeout} seconds",
+                    },
+                    indent=2,
+                )
             except Exception as e:
                 return json.dumps(
                     {

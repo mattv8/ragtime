@@ -53,6 +53,25 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(allowed)
 
+    def test_ssh_schema_uses_configured_max_as_default(self) -> None:
+        adapter = MCPToolAdapter()
+
+        schema = adapter._build_input_schema(  # pyright: ignore[reportPrivateUsage]
+            {
+                "id": "tool-1",
+                "name": "Docker Host",
+                "tool_type": "ssh_shell",
+                "enabled": True,
+                "timeout_max_seconds": 45,
+            }
+        )
+
+        self.assertIsNotNone(schema)
+        assert schema is not None
+        timeout_schema = schema["properties"]["timeout"]
+        self.assertEqual(timeout_schema["default"], 45)
+        self.assertEqual(timeout_schema["maximum"], 45)
+
 
 if __name__ == "__main__":
     unittest.main()
