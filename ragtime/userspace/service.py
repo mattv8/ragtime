@@ -16829,7 +16829,7 @@ class UserSpaceService:
                         "source_type": mount_source.source_type,
                         "mount_backend": mount_source.mount_backend,
                         "runtime_mount_mode": "live_bind",
-                        "read_only": True,
+                        "read_only": False,
                     }
                 )
             elif mount_source.source_type in {"microsoft_drive", "google_drive"}:

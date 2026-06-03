@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 from urllib.parse import quote
 
+from docx import Document
 from fastapi import HTTPException
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -484,8 +485,6 @@ def _simple_pdf_bytes(text: str, title: str) -> bytes:
 
 
 def _docx_bytes(text: str, title: str, columns: list[str] | None = None, rows: list[list[Any]] | None = None) -> bytes:
-    from docx import Document
-
     document = Document()
     if title:
         document.add_heading(title, level=1)

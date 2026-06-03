@@ -207,6 +207,11 @@ class _MountListService(UserSpaceService):
         return False
 
 
+class _FakeResolveWorkspaceMountDb:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.workspacemount = _FakeWorkspaceMountTable(rows)
+
+
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_mount_signature_refresh_skips_unchanged_specs(self) -> None:
         workspace_id = "workspace-1"
@@ -589,6 +594,56 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(resolved.resolve(), source_file.resolve())
+
+    async def test_resolve_workspace_mounts_for_runtime_keeps_filesystem_live_binds_writable(self) -> None:
+        row = SimpleNamespace(
+            id="mount-1",
+            mountSource=SimpleNamespace(id="source-1"),
+            userMountSource=None,
+            enabled=True,
+            sourcePath="Reconciliations",
+            targetPath="/workspace/reconciliations",
+        )
+        service = UserSpaceService()
+        mount_source = SimpleNamespace(
+            id="source-1",
+            enabled=True,
+            source_type="filesystem",
+            mount_backend="live",
+            connection_config={"base_path": "/mnt/Accounting"},
+        )
+
+        with (
+            patch(
+                "ragtime.userspace.service.get_db",
+                AsyncMock(return_value=_FakeResolveWorkspaceMountDb([row])),
+            ),
+            patch.object(
+                service,
+                "_userspace_mount_source_from_record",
+                return_value=mount_source,
+            ),
+            patch.object(
+                service,
+                "_resolve_filesystem_mount_source_path",
+                return_value="/mnt/Accounting/Reconciliations",
+            ),
+        ):
+            specs = await service.resolve_workspace_mounts_for_runtime("workspace-1")
+
+        self.assertEqual(
+            specs,
+            [
+                {
+                    "source_local_path": "/mnt/Accounting/Reconciliations",
+                    "target_path": "/workspace/reconciliations",
+                    "source_type": "filesystem",
+                    "mount_backend": "live",
+                    "runtime_mount_mode": "live_bind",
+                    "read_only": False,
+                }
+            ],
+        )
 
     async def test_cleanup_interrupted_workspace_mount_syncs_marks_syncing_rows_error(self) -> None:
         table = _FakeWorkspaceMountTable([])
