@@ -12734,7 +12734,14 @@ except Exception as e:
             raise RuntimeError(self._no_llm_configured_message(llm_resolution))
 
         request_resolution = llm_resolution
-        requested_output_tokens = min(llm_resolution.max_tokens or 1200, 1200)
+        # Reasoning models (Responses API with reasoning enabled) consume part of
+        # the output token budget for internal reasoning tokens before emitting
+        # visible text.  A 1200-token cap causes gpt-5.4 and similar models to
+        # exhaust the budget entirely on reasoning, producing an empty summary.
+        # Use a larger cap whenever the LLM has a reasoning config attached.
+        _is_reasoning_llm = bool(getattr(llm_resolution.llm, "reasoning", None))
+        _compaction_token_cap = 4096 if _is_reasoning_llm else 1200
+        requested_output_tokens = min(llm_resolution.max_tokens or _compaction_token_cap, _compaction_token_cap)
         if requested_output_tokens > 0:
             request_resolution = await self._cap_request_llm_output_tokens(llm_resolution, requested_output_tokens)
 

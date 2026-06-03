@@ -10561,7 +10561,7 @@ export function ChatPanel({
       return;
     }
 
-    const triggerKey = `${activeConversation.id}:${lastMessage?.id ?? 'none'}:${activeConversation.messages.length}`;
+    const triggerKey = `${activeConversation.id}:${lastMessage?.message_id ?? lastMessage?.timestamp ?? 'none'}:${activeConversation.messages.length}`;
     if (autoCompactionTriggerKeyRef.current === triggerKey) {
       return;
     }
