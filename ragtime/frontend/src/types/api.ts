@@ -1896,6 +1896,13 @@ export interface ChatMessage {
   snapshot_restore?: MessageSnapshotRestore;  // Per-message snapshot link (when present)
 }
 
+export interface UpdateConversationCompactionRequest {
+  message_id?: string;
+  message_index?: number;
+  summary: string;
+  create_revision_branch?: boolean;
+}
+
 // Streaming event types
 export type StreamEventType = 'content' | 'tool_start' | 'tool_end' | 'reasoning' | 'error';
 

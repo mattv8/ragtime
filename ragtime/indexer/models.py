@@ -2213,6 +2213,38 @@ class CompactConversationRequest(BaseModel):
         le=COMPACT_CONVERSATION_MAX_KEEP_RECENT_PAIRS,
         description="Legacy client option. The compaction marker is inserted at the clicked conversation tail.",
     )
+    replace_message_id: Optional[str] = Field(
+        default=None,
+        description="When retrying, replace this existing compaction marker instead of inserting a new marker.",
+    )
+    replace_message_index: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="0-based fallback index for retrying legacy compaction markers without a message ID.",
+    )
+    create_revision_branch: bool = Field(
+        default=False,
+        description="Whether to preserve the pre-retry marker state as a conversation branch.",
+    )
+
+
+class UpdateConversationCompactionRequest(BaseModel):
+    """Request to update a persisted compaction marker summary."""
+
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Stable message ID of the compaction marker to update, when available.",
+    )
+    message_index: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="0-based fallback message index for legacy compaction markers without a message ID.",
+    )
+    summary: str = Field(description="Corrected continuity summary for the compaction marker.")
+    create_revision_branch: bool = Field(
+        default=False,
+        description="Whether to preserve the pre-edit marker state as a conversation branch.",
+    )
 
 
 class SwitchConversationBranchRequest(BaseModel):

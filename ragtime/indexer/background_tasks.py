@@ -1502,6 +1502,8 @@ class BackgroundTaskService:
         snapshot_tail_message_id: Optional[str],
         snapshot_user_id: str,
         snapshot_parent_branch_id: Optional[str],
+        replace_message_id: Optional[str] = None,
+        replace_message_index: Optional[int] = None,
     ) -> str:
         """Start conversation compaction as a linked background task."""
         task = await repository.create_chat_task(conversation_id, COMPACTION_TASK_USER_MESSAGE)
@@ -1517,6 +1519,8 @@ class BackgroundTaskService:
                 snapshot_tail_message_id=snapshot_tail_message_id,
                 snapshot_user_id=snapshot_user_id,
                 snapshot_parent_branch_id=snapshot_parent_branch_id,
+                replace_message_id=replace_message_id,
+                replace_message_index=replace_message_index,
             )
         )
         self._running_tasks[task.id] = asyncio_task
@@ -1534,6 +1538,8 @@ class BackgroundTaskService:
         snapshot_tail_message_id: Optional[str],
         snapshot_user_id: str,
         snapshot_parent_branch_id: Optional[str],
+        replace_message_id: Optional[str] = None,
+        replace_message_index: Optional[int] = None,
     ) -> None:
         try:
             await repository.update_chat_task_status(task_id, ChatTaskStatus.running)
@@ -1555,9 +1561,11 @@ class BackgroundTaskService:
                 expected_message_count=snapshot_message_count,
                 expected_tail_message_id=snapshot_tail_message_id,
                 expected_active_task_id=task_id,
-                snapshot_branch_kind=ConversationBranchKind.REPLAY,
+                snapshot_branch_kind=None if (replace_message_id or replace_message_index is not None) else ConversationBranchKind.REPLAY,
                 snapshot_user_id=snapshot_user_id,
                 snapshot_parent_branch_id=snapshot_parent_branch_id,
+                replace_message_id=replace_message_id,
+                replace_message_index=replace_message_index,
             )
             if not compacted:
                 latest = await repository.get_conversation(conversation_id)

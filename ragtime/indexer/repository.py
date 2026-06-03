@@ -2527,8 +2527,10 @@ class IndexerRepository:
         snapshot_branch_kind: Optional[ConversationBranchKind] = None,
         snapshot_user_id: Optional[str] = None,
         snapshot_parent_branch_id: Optional[str] = None,
+        replace_message_id: Optional[str] = None,
+        replace_message_index: Optional[int] = None,
     ) -> Optional[Conversation]:
-        """Insert a compaction marker at the clicked tail without removing visible history."""
+        """Insert or replace a compaction marker without removing visible history."""
         db = await self._get_db()
 
         try:
@@ -2542,10 +2544,33 @@ class IndexerRepository:
                         return None
 
                     messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
-                    if expected_message_count is not None and len(messages) < expected_message_count:
-                        return None
+                    replacing_marker = bool(replace_message_id) or replace_message_index is not None
+                    if expected_message_count is not None:
+                        if replacing_marker and len(messages) != expected_message_count:
+                            return None
+                        if not replacing_marker and len(messages) < expected_message_count:
+                            return None
+                    if replacing_marker and expected_tail_message_id is not None:
+                        actual_tail_message_id = str(messages[-1].get("message_id") or "") if messages else ""
+                        if actual_tail_message_id != expected_tail_message_id:
+                            return None
                     resolved_compaction_index = compaction_index
-                    if expected_tail_message_id is not None:
+                    replace_index: Optional[int] = None
+                    if replace_message_id:
+                        replace_index = next(
+                            (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == replace_message_id),
+                            None,
+                        )
+                    elif replace_message_index is not None and 0 <= replace_message_index < len(messages):
+                        replace_index = replace_message_index
+
+                    if replacing_marker:
+                        if replace_index is None:
+                            return None
+                        if messages[replace_index].get("role") != "compaction":
+                            return None
+                        resolved_compaction_index = replace_index
+                    elif expected_tail_message_id is not None:
                         expected_anchor_index = (expected_message_count - 1) if expected_message_count is not None else None
                         anchor_index = next(
                             (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == expected_tail_message_id),
@@ -2560,12 +2585,19 @@ class IndexerRepository:
                         return None
 
                     compacted_at = utc_now()
-                    marker: dict[str, Any] = {
-                        "role": "compaction",
-                        "content": _sanitize_for_postgres(summary),
-                        "timestamp": compacted_at.isoformat(),
-                        "message_id": str(uuid.uuid4()),
-                    }
+                    if replacing_marker:
+                        existing_marker = messages[resolved_compaction_index]
+                        marker = {
+                            **existing_marker,
+                            "content": _sanitize_for_postgres(summary),
+                        }
+                    else:
+                        marker = {
+                            "role": "compaction",
+                            "content": _sanitize_for_postgres(summary),
+                            "timestamp": compacted_at.isoformat(),
+                            "message_id": str(uuid.uuid4()),
+                        }
 
                     if snapshot_branch_kind is not None:
                         await tx.conversationbranch.create(
@@ -2580,7 +2612,11 @@ class IndexerRepository:
                             }
                         )
 
-                    updated_messages = messages[:resolved_compaction_index] + [marker] + messages[resolved_compaction_index:]
+                    if replacing_marker:
+                        updated_messages = [*messages]
+                        updated_messages[resolved_compaction_index] = marker
+                    else:
+                        updated_messages = messages[:resolved_compaction_index] + [marker] + messages[resolved_compaction_index:]
                     total_tokens = _estimate_effective_conversation_tokens(updated_messages)
 
                     updated = await tx.conversation.update(
@@ -2595,6 +2631,64 @@ class IndexerRepository:
                 return self._prisma_conversation_to_model(updated)
         except Exception as e:
             logger.warning(f"Failed to compact conversation: {e}")
+            return None
+
+    async def update_compaction_marker_summary(
+        self,
+        conversation_id: str,
+        summary: str,
+        *,
+        message_id: Optional[str] = None,
+        message_index: Optional[int] = None,
+    ) -> Optional[Conversation]:
+        """Update one persisted compaction marker summary in a conversation."""
+        db = await self._get_db()
+
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    if not prisma_conv:
+                        return None
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    resolved_index: Optional[int] = None
+                    if message_id:
+                        resolved_index = next(
+                            (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == message_id),
+                            None,
+                        )
+                    elif message_index is not None and 0 <= message_index < len(messages):
+                        resolved_index = message_index
+
+                    if resolved_index is None:
+                        return None
+
+                    marker = messages[resolved_index]
+                    if marker.get("role") != "compaction":
+                        return None
+
+                    updated_marker = {
+                        **marker,
+                        "content": _sanitize_for_postgres(summary),
+                    }
+                    updated_messages = [*messages]
+                    updated_messages[resolved_index] = updated_marker
+                    total_tokens = _estimate_effective_conversation_tokens(updated_messages)
+                    updated_at = utc_now()
+
+                    updated = await tx.conversation.update(
+                        where={"id": conversation_id},
+                        data={
+                            "messages": Json(updated_messages),
+                            "totalTokens": total_tokens,
+                            "updatedAt": updated_at,
+                        },
+                        include={"user": True},
+                    )
+                return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to update compaction marker summary: {e}")
             return None
 
     # -------------------------------------------------------------------------

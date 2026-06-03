@@ -6263,10 +6263,17 @@ export function ChatPanel({
   const [compactingConversationId, setCompactingConversationId] = useState<string | null>(null);
   const [queuedCompactionMessage, setQueuedCompactionMessage] = useState<QueuedCompactionMessage | null>(null);
   const [compactionReviewMarker, setCompactionReviewMarker] = useState<CompactionReviewMarker | null>(null);
+  const [retryingCompactionMarker, setRetryingCompactionMarker] = useState<{
+    conversationId: string;
+    messageId?: string;
+    messageIndex: number;
+  } | null>(null);
   const [isEditingCompactionReview, setIsEditingCompactionReview] = useState(false);
   const [compactionReviewDraft, setCompactionReviewDraft] = useState('');
   const [compactionReviewError, setCompactionReviewError] = useState<string | null>(null);
   const [isSavingCompactionReview, setIsSavingCompactionReview] = useState(false);
+  const [compactionReviewOriginalSummary, setCompactionReviewOriginalSummary] = useState<string>('');
+  const [isHoveringCompactionSummary, setIsHoveringCompactionSummary] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -6372,6 +6379,45 @@ export function ChatPanel({
     () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
     [branchPoints],
   );
+
+  useEffect(() => {
+    if (!activeConversation || !compactionReviewMarker || isEditingCompactionReview || isSavingCompactionReview) return;
+
+    let nextIndex: number | null = null;
+    if (compactionReviewMarker.messageId) {
+      const foundIndex = activeConversation.messages.findIndex(
+        (message) => message.message_id === compactionReviewMarker.messageId,
+      );
+      nextIndex = foundIndex >= 0 ? foundIndex : null;
+    }
+    if (nextIndex === null && compactionReviewMarker.messageIndex >= 0 && compactionReviewMarker.messageIndex < activeConversation.messages.length) {
+      nextIndex = compactionReviewMarker.messageIndex;
+    }
+    if (nextIndex === null) return;
+
+    const message = activeConversation.messages[nextIndex];
+    if (message.role !== 'compaction') return;
+
+    const nextSummary = extractCompactionSummary(message.content);
+    if (
+      nextSummary === compactionReviewMarker.summary
+      && nextIndex === compactionReviewMarker.messageIndex
+      && message.message_id === compactionReviewMarker.messageId
+      && message.timestamp === compactionReviewMarker.timestamp
+    ) {
+      return;
+    }
+
+    setCompactionReviewMarker({
+      messageIndex: nextIndex,
+      messageId: message.message_id,
+      summary: nextSummary,
+      timestamp: message.timestamp,
+    });
+    setCompactionReviewDraft(nextSummary);
+    setCompactionReviewOriginalSummary(nextSummary);
+    setCompactionReviewError(null);
+  }, [activeConversation, compactionReviewMarker, isEditingCompactionReview, isSavingCompactionReview]);
 
   useEffect(() => {
     if (!branchSearchAnchorHint || activeConversationId !== branchSearchAnchorHint.conversationId) return;
@@ -8895,6 +8941,9 @@ export function ChatPanel({
       compactionAbortControllerRef.current = null;
       setIsCompacting(false);
       setCompactingConversationId(null);
+      setRetryingCompactionMarker((current) => (
+        current?.conversationId === conversationId ? null : current
+      ));
       setActiveTask(current => current?.id === taskId ? null : current);
       syncConversationActiveTaskId(conversationId, null);
 
@@ -9785,13 +9834,99 @@ export function ChatPanel({
     }
   }, [activeConversation, branchSwitching, workspaceId, branchesById, refreshBranchPoints, onBranchSwitch]);
 
-  const compactActiveConversation = useCallback(async () => {
+  const renderBranchNavStack = useCallback((groups: BranchRenderGroup[], conversation: Conversation) => {
+    if (groups.length === 0) return null;
+    const activeBranchId = conversation.active_branch_id;
+
+    return (
+      <span className="chat-branch-nav-stack">
+        {groups.map((group) => {
+          const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
+          const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
+          const hasLivePathOption = !storedLivePathBranch;
+          const allOptions = [
+            ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
+            ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+          ];
+          const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
+          const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
+          const branchIdsInGroup = new Set(group.branches.map(b => b.id));
+          let lineageBranchId: string | null = null;
+          if (activeBranchId) {
+            const visited = new Set<string>();
+            let curr: string | null = activeBranchId;
+            while (curr && !visited.has(curr)) {
+              visited.add(curr);
+              if (branchIdsInGroup.has(curr)) {
+                lineageBranchId = curr;
+                break;
+              }
+              const parent = branchesById.get(curr);
+              curr = parent?.parent_branch_id ?? null;
+            }
+          }
+
+          let matchIdx = lineageBranchId
+            ? allOptions.findIndex(o => o.id === lineageBranchId)
+            : -1;
+          if (matchIdx < 0 && !activeBranchId) {
+            if (hasLivePathOption) {
+              matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+            } else if (storedLivePathBranch) {
+              matchIdx = allOptions.length - 1;
+            }
+          }
+          if (matchIdx < 0 && branchSelections[group.selectionKey]) {
+            matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
+          }
+          if (matchIdx < 0 && inferredCurrentBranchId) {
+            matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
+          }
+          const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+          const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === conversation.id
+            && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
+
+          return (
+            <span
+              key={group.selectionKey}
+              className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
+              title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
+            >
+              <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id, conversation); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
+                <ChevronLeft size={12} />
+              </button>
+              <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
+              <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id, conversation); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
+                <ChevronRight size={12} />
+              </button>
+            </span>
+          );
+        })}
+      </span>
+    );
+  }, [branchSearchAnchorHint, branchSelections, branchSwitching, branchesById, switchBranch]);
+
+  const compactActiveConversation = useCallback(async (replaceMarker?: CompactionReviewMarker | null) => {
     if (!activeConversation || isActiveConversationCompacting || isStreaming || isReadOnly) return;
     setIsCompacting(true);
     setCompactingConversationId(activeConversation.id);
     setError(null);
     try {
-      const task = await api.compactConversation(activeConversation.id, workspaceId);
+      const task = await api.compactConversation(
+        activeConversation.id,
+        workspaceId,
+        4,
+        replaceMarker
+          ? {
+              replaceMessageId: replaceMarker.messageId,
+              replaceMessageIndex: replaceMarker.messageIndex,
+              createRevisionBranch: true,
+            }
+          : undefined,
+      );
+      if (replaceMarker) {
+        void refreshBranchPoints(activeConversation.id);
+      }
       setActiveTask(task);
       syncConversationActiveTaskId(activeConversation.id, task.id);
       void watchCompactionTask(task.id, activeConversation.id);
@@ -9801,8 +9936,96 @@ export function ChatPanel({
       toastActions.error(message);
       setIsCompacting(false);
       setCompactingConversationId(null);
+      if (replaceMarker) {
+        setRetryingCompactionMarker((current) => (
+          current?.conversationId === activeConversation.id
+          && current.messageIndex === replaceMarker.messageIndex
+          && (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
+            ? null
+            : current
+        ));
+      }
     }
-  }, [activeConversation, isActiveConversationCompacting, isReadOnly, isStreaming, syncConversationActiveTaskId, toastActions, watchCompactionTask, workspaceId]);
+  }, [activeConversation, isActiveConversationCompacting, isReadOnly, isStreaming, refreshBranchPoints, syncConversationActiveTaskId, toastActions, watchCompactionTask, workspaceId]);
+
+  const openCompactionReview = useCallback((marker: CompactionReviewMarker | null) => {
+    if (!marker) return;
+    setCompactionReviewMarker(marker);
+    setCompactionReviewDraft(marker.summary);
+    setCompactionReviewOriginalSummary(marker.summary);
+    setCompactionReviewError(null);
+    setIsEditingCompactionReview(false);
+  }, []);
+
+  const closeCompactionReview = useCallback(() => {
+    if (isSavingCompactionReview) return;
+    setCompactionReviewMarker(null);
+    setCompactionReviewDraft('');
+    setCompactionReviewOriginalSummary('');
+    setCompactionReviewError(null);
+    setIsEditingCompactionReview(false);
+    setIsHoveringCompactionSummary(false);
+  }, [isSavingCompactionReview]);
+
+  const retryCompactionReview = useCallback(() => {
+    if (!compactionReviewMarker || !activeConversation) return;
+    const marker = compactionReviewMarker;
+    closeCompactionReview();
+
+    setRetryingCompactionMarker({
+      conversationId: activeConversation.id,
+      messageId: marker.messageId,
+      messageIndex: marker.messageIndex,
+    });
+
+    void compactActiveConversation(marker);
+  }, [activeConversation, closeCompactionReview, compactActiveConversation, compactionReviewMarker]);
+
+  const saveCompactionReview = useCallback(async () => {
+    if (!activeConversation || !compactionReviewMarker || isSavingCompactionReview || isReadOnly) return;
+    const summary = compactionReviewDraft.trim();
+    if (!summary) {
+      setCompactionReviewError('Compaction summary cannot be empty.');
+      return;
+    }
+
+    // Only save if there are actual changes
+    if (summary === compactionReviewOriginalSummary) {
+      setIsEditingCompactionReview(false);
+      return;
+    }
+
+    setIsSavingCompactionReview(true);
+    setCompactionReviewError(null);
+    try {
+      const updated = await api.updateConversationCompactionMarker(
+        activeConversation.id,
+        {
+          message_id: compactionReviewMarker.messageId,
+          message_index: compactionReviewMarker.messageIndex,
+          summary,
+          create_revision_branch: true,
+        },
+        workspaceId,
+      );
+      setActiveConversation(updated);
+      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+      void refreshBranchPoints(updated.id);
+      setCompactionReviewMarker({
+        ...compactionReviewMarker,
+        summary,
+      });
+      setCompactionReviewOriginalSummary(summary);
+      setIsEditingCompactionReview(false);
+      toastActions.success('Compaction summary updated');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update compaction summary';
+      setCompactionReviewError(message);
+      toastActions.error(message);
+    } finally {
+      setIsSavingCompactionReview(false);
+    }
+  }, [activeConversation, compactionReviewDraft, compactionReviewMarker, compactionReviewOriginalSummary, isReadOnly, isSavingCompactionReview, refreshBranchPoints, toastActions, workspaceId]);
 
   const applyBranchSearchPreview = useCallback((
     conversation: Conversation,
@@ -11377,10 +11600,34 @@ export function ChatPanel({
                 <>
                   {activeConversation.messages.map((msg, idx) => {
                     if (msg.role === 'compaction') {
-                      const summary = typeof msg.content === 'string' ? msg.content : parseMessageContent(msg.content).text;
+                      const summary = extractCompactionSummary(msg.content);
+                      const marker: CompactionReviewMarker = {
+                        messageIndex: idx,
+                        messageId: msg.message_id,
+                        summary,
+                        timestamp: msg.timestamp,
+                      };
+                      const isRetryingThisCompaction = Boolean(
+                        retryingCompactionMarker
+                        && retryingCompactionMarker.conversationId === activeConversation.id
+                        && retryingCompactionMarker.messageIndex === idx
+                        && (!retryingCompactionMarker.messageId || retryingCompactionMarker.messageId === msg.message_id)
+                        && isActiveConversationCompacting,
+                      );
                       return (
                         <div key={`msg-${idx}`} className="chat-compaction-divider" title={summary || undefined}>
-                          <span className="chat-compaction-divider-label">Chat compacted</span>
+                          {isRetryingThisCompaction ? (
+                            <span className="chat-compaction-divider-label">Chat compacting</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="chat-compaction-divider-label chat-compaction-divider-button"
+                              onClick={() => openCompactionReview(marker)}
+                              aria-label="Review chat compaction"
+                            >
+                              Chat compacted
+                            </button>
+                          )}
                         </div>
                       );
                     }
@@ -11830,34 +12077,46 @@ export function ChatPanel({
                   {queuedCompactionMessage?.conversationId === activeConversation.id && (
                     <>
                       <div className="chat-compaction-divider chat-compaction-divider-pending">
-                        <span className="chat-compaction-divider-label">
-                          {queuedCompactionMessage.compactionStatus === 'compacted' ? 'Chat compacted' : 'Chat compacting'}
-                        </span>
+                        {queuedCompactionMessage.compactionStatus === 'compacted' ? (
+                          <button
+                            type="button"
+                            className="chat-compaction-divider-label chat-compaction-divider-button"
+                            onClick={() => openCompactionReview(latestCompactionReviewMarker)}
+                            disabled={!latestCompactionReviewMarker}
+                            aria-label="Review chat compaction"
+                          >
+                            Chat compacted
+                          </button>
+                        ) : (
+                          <span className="chat-compaction-divider-label">Chat compacting</span>
+                        )}
                       </div>
-                      <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
-                        <div className="chat-message chat-message-user chat-message-queued">
-                          <div className="chat-message-content">
-                            {(() => {
-                              const { text, attachments: queuedAttachments } = parseMessageContent(queuedCompactionMessage.displayContent);
-                              return (
-                                <>
-                                  {queuedAttachments.length > 0 && <MessageAttachments attachments={queuedAttachments} onImageClick={setModalImageUrl} />}
-                                  {text && (
-                                    <div className="chat-message-text chat-message-user-text">
-                                      <LinkifiedText text={text} />
-                                    </div>
-                                  )}
-                                </>
-                              );
-                            })()}
-                            <div className="chat-message-footer">
-                              <span className="chat-message-time">
-                                {formatChatTimestamp(queuedCompactionMessage.timestamp)}
-                              </span>
+                      {(queuedCompactionMessage.displayContent || queuedCompactionMessage.attachments.length > 0) && (
+                        <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
+                          <div className="chat-message chat-message-user chat-message-queued">
+                            <div className="chat-message-content">
+                              {(() => {
+                                const { text, attachments: queuedAttachments } = parseMessageContent(queuedCompactionMessage.displayContent);
+                                return (
+                                  <>
+                                    {queuedAttachments.length > 0 && <MessageAttachments attachments={queuedAttachments} onImageClick={setModalImageUrl} />}
+                                    {text && (
+                                      <div className="chat-message-text chat-message-user-text">
+                                        <LinkifiedText text={text} />
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                              <div className="chat-message-footer">
+                                <span className="chat-message-time">
+                                  {formatChatTimestamp(queuedCompactionMessage.timestamp)}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
+                      )}
                     </>
                   )}
 
@@ -12326,6 +12585,99 @@ export function ChatPanel({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {compactionReviewMarker && (
+        <div
+          className="modal-overlay"
+          onClick={closeCompactionReview}
+          onKeyDown={(e) => e.key === 'Escape' && closeCompactionReview()}
+          role="presentation"
+        >
+          <div
+            className="modal modal-large chat-compaction-review-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="chat-compaction-review-title"
+          >
+            <div className="modal-header">
+              <h3 id="chat-compaction-review-title">Compaction Result</h3>
+              <button className="modal-close" onClick={closeCompactionReview} aria-label="Close compaction review modal">
+                &times;
+              </button>
+            </div>
+            <div className="modal-body chat-compaction-review-body">
+              <div className="chat-compaction-review-meta">
+                <span>Message {compactionReviewMarker.messageIndex + 1}</span>
+                {compactionReviewMarker.timestamp && (
+                  <span>{new Date(compactionReviewMarker.timestamp).toLocaleString()}</span>
+                )}
+                {!isEditingCompactionReview && activeConversation && renderBranchNavStack(
+                  branchGroupsByIndex.get(compactionReviewMarker.messageIndex) ?? [],
+                  activeConversation,
+                )}
+              </div>
+              {compactionReviewError && (
+                <div className="chat-error chat-compaction-review-error">{compactionReviewError}</div>
+              )}
+              {isEditingCompactionReview ? (
+                <textarea
+                  className="chat-compaction-review-editor"
+                  value={compactionReviewDraft}
+                  onChange={(e) => {
+                    setCompactionReviewDraft(e.target.value);
+                  }}
+                  onBlur={() => void saveCompactionReview()}
+                  autoFocus
+                  aria-label="Edit compaction summary"
+                />
+              ) : (
+                <div
+                  className="chat-compaction-review-summary-container"
+                  onMouseEnter={() => setIsHoveringCompactionSummary(true)}
+                  onMouseLeave={() => setIsHoveringCompactionSummary(false)}
+                  onClick={() => !isReadOnly && !isActiveConversationCompacting && !isStreaming && setIsEditingCompactionReview(true)}
+                  style={{ cursor: (!isReadOnly && !isActiveConversationCompacting && !isStreaming) ? 'text' : 'default' }}
+                >
+                  <pre className="chat-compaction-review-summary">
+                    {compactionReviewMarker.summary || '(empty compaction summary)'}
+                  </pre>
+                  {isHoveringCompactionSummary && (
+                    <div className="chat-compaction-review-hover-icons">
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsEditingCompactionReview(true);
+                        }}
+                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        aria-label="Edit compaction summary"
+                        title="Edit"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          retryCompactionReview();
+                        }}
+                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        aria-label="Regenerate compaction"
+                        title="Try Again"
+                      >
+                        <RefreshCw size={16} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

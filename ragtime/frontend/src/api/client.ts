@@ -2000,13 +2000,39 @@ export const api = {
    * Compact older conversation history for future model calls while keeping
    * the full visible chat transcript intact.
    */
-  async compactConversation(conversationId: string, workspaceId?: string, keepRecentPairs = 4): Promise<import('@/types').ChatTask> {
+  async compactConversation(
+    conversationId: string,
+    workspaceId?: string,
+    keepRecentPairs = 4,
+    options?: { replaceMessageId?: string; replaceMessageIndex?: number; createRevisionBranch?: boolean },
+  ): Promise<import('@/types').ChatTask> {
     const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compact`, workspaceId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keep_recent_pairs: keepRecentPairs }),
+      body: JSON.stringify({
+        keep_recent_pairs: keepRecentPairs,
+        replace_message_id: options?.replaceMessageId,
+        replace_message_index: options?.replaceMessageIndex,
+        create_revision_branch: options?.createRevisionBranch,
+      }),
     });
     return handleResponse<import('@/types').ChatTask>(response);
+  },
+
+  /**
+   * Update a persisted compaction marker summary.
+   */
+  async updateConversationCompactionMarker(
+    conversationId: string,
+    request: import('@/types').UpdateConversationCompactionRequest,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compaction-marker`, workspaceId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<Conversation>(response);
   },
 
   /**

@@ -245,6 +245,7 @@ from ragtime.indexer.models import (
     TriggerFilesystemIndexRequest,
     TriggerPdmIndexRequest,
     TriggerSchemaIndexRequest,
+    UpdateConversationCompactionRequest,
     UpdateConversationShareAccessRequest,
     UpdateConversationShareLinkRequest,
     UpdateSettingsRequest,
@@ -11200,7 +11201,39 @@ async def compact_conversation(
     snapshot_message_count = len(conv.messages)
     snapshot_tail_message_id = conv.messages[-1].message_id if conv.messages else None
 
-    split_index, messages_to_summarize = _find_compaction_split_index(conv.messages, request.keep_recent_pairs)
+    replace_marker_index: Optional[int] = None
+    if request.replace_message_id:
+        replace_marker_index = next(
+            (idx for idx, message in enumerate(conv.messages) if (message.message_id or "") == request.replace_message_id),
+            None,
+        )
+    elif request.replace_message_index is not None and 0 <= request.replace_message_index < len(conv.messages):
+        replace_marker_index = request.replace_message_index
+
+    if request.replace_message_id or request.replace_message_index is not None:
+        if replace_marker_index is None:
+            raise HTTPException(status_code=404, detail="Compaction marker not found")
+        if conv.messages[replace_marker_index].role != "compaction":
+            raise HTTPException(status_code=400, detail="Selected message is not a compaction marker")
+        if request.create_revision_branch:
+            branch = await repository.create_conversation_snapshot_branch(
+                conversation_id=conversation_id,
+                branch_point_index=replace_marker_index,
+                branch_kind=ConversationBranchKind.EDIT,
+                user_id=user.id,
+                parent_branch_id=conv.active_branch_id,
+            )
+            if not branch:
+                raise HTTPException(status_code=500, detail="Failed to create compaction revision branch")
+        previous_marker_index = max(
+            (idx for idx, message in enumerate(conv.messages[:replace_marker_index]) if message.role == "compaction"),
+            default=-1,
+        )
+        split_index = replace_marker_index
+        messages_to_summarize = conv.messages[previous_marker_index + 1 : replace_marker_index]
+    else:
+        split_index, messages_to_summarize = _find_compaction_split_index(conv.messages, request.keep_recent_pairs)
+
     if len(messages_to_summarize) < 2:
         raise HTTPException(status_code=400, detail="Conversation does not have enough uncompacted history to compact")
 
@@ -11213,11 +11246,78 @@ async def compact_conversation(
         snapshot_tail_message_id=snapshot_tail_message_id,
         snapshot_user_id=user.id,
         snapshot_parent_branch_id=conv.active_branch_id,
+        replace_message_id=request.replace_message_id,
+        replace_message_index=replace_marker_index,
     )
     task = await repository.get_chat_task(task_id)
     if not task:
         raise HTTPException(status_code=500, detail="Failed to start compaction task")
     return _to_chat_task_response(task)
+
+
+@router.patch("/conversations/{conversation_id}/compaction-marker", response_model=ConversationResponse)
+async def update_conversation_compaction_marker(
+    conversation_id: str,
+    request: UpdateConversationCompactionRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+) -> ConversationResponse:
+    """Update a persisted compaction marker summary."""
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    summary = request.summary.strip()
+    if not summary:
+        raise HTTPException(status_code=400, detail="Compaction summary cannot be empty")
+    if not request.message_id and request.message_index is None:
+        raise HTTPException(status_code=400, detail="message_id or message_index is required")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    target_index: Optional[int] = None
+    if request.message_id:
+        target_index = next(
+            (idx for idx, message in enumerate(conv.messages) if (message.message_id or "") == request.message_id),
+            None,
+        )
+    elif request.message_index is not None and 0 <= request.message_index < len(conv.messages):
+        target_index = request.message_index
+
+    if target_index is None:
+        raise HTTPException(status_code=404, detail="Compaction marker not found")
+    if conv.messages[target_index].role != "compaction":
+        raise HTTPException(status_code=400, detail="Selected message is not a compaction marker")
+
+    if request.create_revision_branch:
+        branch = await repository.create_conversation_snapshot_branch(
+            conversation_id=conversation_id,
+            branch_point_index=target_index,
+            branch_kind=ConversationBranchKind.EDIT,
+            user_id=user.id,
+            parent_branch_id=conv.active_branch_id,
+        )
+        if not branch:
+            raise HTTPException(status_code=500, detail="Failed to create compaction revision branch")
+
+    updated = await repository.update_compaction_marker_summary(
+        conversation_id,
+        summary,
+        message_id=request.message_id,
+        message_index=target_index,
+    )
+    if not updated:
+        raise HTTPException(status_code=409, detail="Conversation changed while saving compaction marker")
+
+    return _to_conversation_response(updated)
 
 
 @router.post(
