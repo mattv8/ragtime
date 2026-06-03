@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -144,6 +145,50 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Visible text: Save changes", formatted)
         self.assertNotIn("data:image", formatted)
         self.assertNotIn("abc123", formatted)
+
+    async def test_summarize_for_compaction_prefers_final_over_analysis_blocks(self) -> None:
+        class FakeLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(
+                    content=[
+                        {"type": "reasoning", "channel": "analysis", "text": "private chain of thought"},
+                        {"type": "text", "channel": "final", "text": "Continuity summary from final channel."},
+                    ]
+                )
+
+        components = RAGComponents()
+        resolution = SimpleNamespace(llm=FakeLLM(), provider=None, model="test-model", max_tokens=1200)
+        messages = [_message("user", "Need a summary"), _message("assistant", "Working on it")]
+
+        with (
+            mock.patch.object(components, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
+            mock.patch.object(components, "_cap_request_llm_output_tokens", new=mock.AsyncMock(return_value=resolution)),
+        ):
+            summary = await components.summarize_for_compaction(messages, "test-model")
+
+        self.assertEqual(summary, "Continuity summary from final channel.")
+
+    async def test_summarize_for_compaction_accepts_commentary_when_final_missing(self) -> None:
+        class FakeLLM:
+            async def ainvoke(self, messages):
+                return AIMessage(
+                    content=[
+                        {"type": "reasoning", "channel": "analysis", "text": "private chain of thought"},
+                        {"type": "text", "channel": "commentary", "text": "Continuity summary from commentary channel."},
+                    ]
+                )
+
+        components = RAGComponents()
+        resolution = SimpleNamespace(llm=FakeLLM(), provider=None, model="test-model", max_tokens=1200)
+        messages = [_message("user", "Need a summary"), _message("assistant", "Working on it")]
+
+        with (
+            mock.patch.object(components, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
+            mock.patch.object(components, "_cap_request_llm_output_tokens", new=mock.AsyncMock(return_value=resolution)),
+        ):
+            summary = await components.summarize_for_compaction(messages, "test-model")
+
+        self.assertEqual(summary, "Continuity summary from commentary channel.")
 
 
 if __name__ == "__main__":

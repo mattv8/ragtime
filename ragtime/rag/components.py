@@ -6598,68 +6598,110 @@ except Exception as e:
         return combined, ""
 
     @staticmethod
+    def _visible_output_channels() -> tuple[str, ...]:
+        return ("final", "commentary")
+
+    @classmethod
+    def _is_reasoning_content_block(cls, block: dict[str, Any]) -> bool:
+        block_type = str(block.get("type", "")).lower()
+        reasoning_block_types = {
+            "thinking",
+            "reasoning",
+            "reasoning.text",
+            "reasoning_content",
+            "reasoning_summary",
+            "reasoning_text",
+            "reasoning.summary",
+            "reasoning_summary_text",
+            "redacted_thinking",
+        }
+        reasoning_delta_suffixes = (
+            "reasoning.delta",
+            "thinking.delta",
+            "reasoning_text.delta",
+            "reasoning_summary_text.delta",
+        )
+        if block_type in reasoning_block_types or any(block_type.endswith(suffix) for suffix in reasoning_delta_suffixes):
+            return True
+        if block.get("thought") is True:
+            return True
+        return any(
+            key in block
+            for key in (
+                "thinking",
+                "reasoning",
+                "reasoning_text",
+                "reasoning_content",
+                "reasoning_summary",
+                "reasoning_summary_text",
+                "cot_summary",
+            )
+        )
+
+    @classmethod
+    def _extract_visible_text_from_content(cls, content: Any) -> str:
+        """Extract assistant-visible text while excluding analysis/reasoning blocks."""
+        if not content:
+            return ""
+
+        if isinstance(content, str):
+            return cls._strip_lmstudio_channel_headers(content)
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                parts.append(cls._extract_visible_text_from_content(item))
+            return "".join(parts)
+
+        if not isinstance(content, dict):
+            return cls._strip_lmstudio_channel_headers(str(content))
+
+        channel = str(content.get("channel", "")).strip().lower()
+        if channel and channel not in cls._visible_output_channels():
+            return ""
+
+        if cls._is_reasoning_content_block(content):
+            return ""
+
+        item_type = str(content.get("type", "")).lower()
+        if item_type == "message":
+            return cls._extract_visible_text_from_content(content.get("content"))
+
+        if item_type in {"output_text", "text"}:
+            return cls._strip_lmstudio_channel_headers(str(content.get("text") or ""))
+
+        if item_type in {"output_refusal", "refusal"}:
+            return cls._strip_lmstudio_channel_headers(str(content.get("refusal") or content.get("text") or ""))
+
+        if channel in cls._visible_output_channels():
+            for key in ("text", "content", "refusal"):
+                value = content.get(key)
+                if isinstance(value, (str, list, dict)):
+                    text = cls._extract_visible_text_from_content(value)
+                    if text:
+                        return text
+
+        if "text" in content and isinstance(content.get("text"), str):
+            return cls._strip_lmstudio_channel_headers(str(content.get("text") or ""))
+
+        nested_content = content.get("content")
+        if isinstance(nested_content, (str, list, dict)):
+            return cls._extract_visible_text_from_content(nested_content)
+
+        return ""
+
+    @staticmethod
     def _extract_text_from_stream_content(content: Any) -> str:
         """Extract plain text from streaming content payloads."""
         if not content:
             return ""
 
-        if isinstance(content, str):
-            return RAGComponents._strip_lmstudio_channel_headers(content)
+        return RAGComponents._extract_visible_text_from_content(content)
 
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for block in content:
-                if isinstance(block, dict):
-                    text_parts.append(RAGComponents._strip_lmstudio_channel_headers(str(block.get("text", ""))))
-                else:
-                    text_parts.append(RAGComponents._strip_lmstudio_channel_headers(str(block)))
-            return "".join(text_parts)
-
-        return RAGComponents._strip_lmstudio_channel_headers(str(content))
-
-    @staticmethod
-    def _extract_text_from_responses_output_items(output_items: Any) -> str:
+    @classmethod
+    def _extract_text_from_responses_output_items(cls, output_items: Any) -> str:
         """Extract assistant-visible text from Responses API output items."""
-        if not isinstance(output_items, list):
-            return ""
-
-        text_parts: list[str] = []
-        for item in output_items:
-            if not isinstance(item, dict):
-                continue
-
-            item_type = str(item.get("type", "")).lower()
-
-            if item_type == "message":
-                content_blocks = item.get("content")
-                if not isinstance(content_blocks, list):
-                    continue
-
-                for block in content_blocks:
-                    if not isinstance(block, dict):
-                        continue
-
-                    block_type = str(block.get("type", "")).lower()
-                    if block_type in {"output_text", "text"}:
-                        text = block.get("text")
-                        if text:
-                            text_parts.append(str(text))
-                    elif block_type in {"output_refusal", "refusal"}:
-                        refusal = block.get("refusal") or block.get("text")
-                        if refusal:
-                            text_parts.append(str(refusal))
-                continue
-
-            if item_type in {"output_text", "text"}:
-                text = item.get("text")
-                if text:
-                    text_parts.append(str(text))
-            elif item_type in {"output_refusal", "refusal"}:
-                refusal = item.get("refusal") or item.get("text")
-                if refusal:
-                    text_parts.append(str(refusal))
-
-        return "".join(text_parts)
+        return cls._extract_visible_text_from_content(output_items)
 
     @classmethod
     def _extract_reasoning_text_from_content_list(cls, content: Any) -> str:
@@ -6829,7 +6871,7 @@ except Exception as e:
             return ""
 
         if hasattr(output, "content"):
-            return cls._extract_text_from_stream_content(output.content)
+            return cls._extract_visible_text_from_content(output.content)
 
         if isinstance(output, dict):
             # Responses API often places final assistant text under output[] items.
@@ -12737,8 +12779,7 @@ except Exception as e:
         if request_llm is None:
             raise RuntimeError(self._no_llm_configured_message(request_resolution))
         response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-        content = response.content
-        summary = content if isinstance(content, str) else str(content)
+        summary = self._extract_text_from_chat_model_output(response)
         summary = summary.strip()
         if not summary:
             raise RuntimeError("Compaction summary was empty")

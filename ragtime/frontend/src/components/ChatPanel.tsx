@@ -87,11 +87,19 @@ function isCompactionTask(task: ChatTask | null | undefined): boolean {
 interface QueuedCompactionMessage {
   id: string;
   conversationId: string;
+  compactionStatus: 'compacting' | 'compacted';
   serializedMessage: string;
   displayContent: string | ContentPart[];
   inputText: string;
   attachments: AttachmentFile[];
   timestamp: string;
+}
+
+interface CompactionReviewMarker {
+  messageIndex: number;
+  messageId?: string;
+  summary: string;
+  timestamp?: string;
 }
 const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_read_pdf', 'web_browse']);
 const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id));
@@ -5676,6 +5684,86 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
 // Default context limit fallback when model not found in API response
 const DEFAULT_CONTEXT_LIMIT = 8192;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isAttachmentContentPart(value: unknown): value is ContentPart {
+  if (!isRecord(value)) return false;
+  return value.type === 'image_url' || value.type === 'file';
+}
+
+function isMultimodalContentPartArray(value: unknown[]): value is ContentPart[] {
+  return value.every((item) => isRecord(item) && (item.type === 'text' || item.type === 'image_url' || item.type === 'file'));
+}
+
+function isReasoningContentBlock(value: Record<string, unknown>): boolean {
+  const blockType = typeof value.type === 'string' ? value.type.toLowerCase() : '';
+  if (
+    blockType === 'thinking'
+    || blockType === 'reasoning'
+    || blockType === 'reasoning.text'
+    || blockType === 'reasoning_content'
+    || blockType === 'reasoning_summary'
+    || blockType === 'reasoning_text'
+    || blockType === 'reasoning.summary'
+    || blockType === 'reasoning_summary_text'
+    || blockType === 'redacted_thinking'
+    || blockType.endsWith('reasoning.delta')
+    || blockType.endsWith('thinking.delta')
+    || blockType.endsWith('reasoning_text.delta')
+    || blockType.endsWith('reasoning_summary_text.delta')
+  ) {
+    return true;
+  }
+
+  if (value.thought === true) return true;
+
+  return [
+    'thinking',
+    'reasoning',
+    'reasoning_text',
+    'reasoning_content',
+    'reasoning_summary',
+    'reasoning_summary_text',
+    'cot_summary',
+  ].some((key) => key in value);
+}
+
+function extractVisibleTextFromProviderContent(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractVisibleTextFromProviderContent).join('');
+  if (!isRecord(value)) return '';
+
+  const channel = getChatEventChannel({
+    type: typeof value.type === 'string' ? value.type : undefined,
+    channel: value.channel,
+  });
+  if (channel === 'analysis') return '';
+  if (isReasoningContentBlock(value)) return '';
+
+  const blockType = typeof value.type === 'string' ? value.type.toLowerCase() : '';
+  if (blockType === 'message') {
+    return extractVisibleTextFromProviderContent(value.content);
+  }
+  if (blockType === 'output_text' || blockType === 'text') {
+    return typeof value.text === 'string' ? value.text : '';
+  }
+  if (blockType === 'output_refusal' || blockType === 'refusal') {
+    return extractVisibleTextFromProviderContent(value.refusal ?? value.text);
+  }
+
+  if (channel === 'final' || channel === 'commentary') {
+    const nested = value.text ?? value.content ?? value.refusal;
+    const nestedText = extractVisibleTextFromProviderContent(nested);
+    if (nestedText) return nestedText;
+  }
+
+  if (typeof value.text === 'string') return value.text;
+  if ('content' in value) return extractVisibleTextFromProviderContent(value.content);
+  return '';
+}
+
 // Helper to extract text and attachments from message content
 export function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
   if (typeof content === 'string') {
@@ -5683,12 +5771,21 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
     try {
       const parsed = JSON.parse(content);
       if (Array.isArray(parsed)) {
+        if (!isMultimodalContentPartArray(parsed)) {
+          return {
+            text: extractVisibleTextFromProviderContent(parsed),
+            attachments: parsed.filter(isAttachmentContentPart),
+          };
+        }
         const text = parsed
           .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
           .map(p => p.text)
           .join('\n');
         const attachments = parsed.filter((p): p is ContentPart => p.type !== 'text');
         return { text, attachments };
+      }
+      if (isRecord(parsed)) {
+        return { text: extractVisibleTextFromProviderContent(parsed), attachments: [] };
       }
     } catch {
       // Not JSON, treat as plain text
@@ -5703,6 +5800,37 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
     .join('\n');
   const attachments = content.filter((p): p is ContentPart => p.type !== 'text');
   return { text, attachments };
+}
+
+function extractCompactionSummary(content: ChatMessage['content']): string {
+  const parsed = parseMessageContent(content);
+  let summary = parsed.text.trim();
+  let textContent = '';
+
+  try {
+    const parsedJson = JSON.parse(summary);
+    if (Array.isArray(parsedJson)) {
+      for (const item of parsedJson) {
+        if (!item || typeof item !== 'object') continue;
+        if (item.type === 'text' && item.text) {
+          textContent += item.text;
+        } else if (item.type === 'content' && item.content) {
+          textContent += item.content;
+        }
+      }
+    }
+  } catch {
+    const textMatch = summary.match(/['"]text['"]: ['"](.+?)['"]/s);
+    if (textMatch) {
+      textContent = textMatch[1];
+    }
+  }
+
+  if (textContent) {
+    summary = textContent.trim();
+  }
+
+  return summary.replace(/\\n/g, '\n');
 }
 
 // Component to display message attachments
@@ -6134,6 +6262,11 @@ export function ChatPanel({
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactingConversationId, setCompactingConversationId] = useState<string | null>(null);
   const [queuedCompactionMessage, setQueuedCompactionMessage] = useState<QueuedCompactionMessage | null>(null);
+  const [compactionReviewMarker, setCompactionReviewMarker] = useState<CompactionReviewMarker | null>(null);
+  const [isEditingCompactionReview, setIsEditingCompactionReview] = useState(false);
+  const [compactionReviewDraft, setCompactionReviewDraft] = useState('');
+  const [compactionReviewError, setCompactionReviewError] = useState<string | null>(null);
+  const [isSavingCompactionReview, setIsSavingCompactionReview] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -6708,6 +6841,10 @@ export function ChatPanel({
     && activeConversation
     && compactingConversationId === activeConversation.id,
   );
+  const hasQueuedCompactionMessageForActiveConversation = Boolean(
+    activeConversation
+    && queuedCompactionMessage?.conversationId === activeConversation.id,
+  );
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -7052,6 +7189,37 @@ export function ChatPanel({
     return [...promptDebugRecords].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   }, [promptDebugRecords]);
 
+  const promptDebugCompactionMarker = useMemo(() => {
+    if (!activeConversation) return null;
+    for (let idx = activeConversation.messages.length - 1; idx >= 0; idx--) {
+      const message = activeConversation.messages[idx];
+      if (message.role !== 'compaction') continue;
+
+      return {
+        messageIndex: idx,
+        messageId: message.message_id,
+        summary: extractCompactionSummary(message.content),
+        timestamp: message.timestamp,
+      };
+    }
+    return null;
+  }, [activeConversation]);
+
+  const latestCompactionReviewMarker = useMemo<CompactionReviewMarker | null>(() => {
+    if (!activeConversation) return null;
+    for (let idx = activeConversation.messages.length - 1; idx >= 0; idx--) {
+      const message = activeConversation.messages[idx];
+      if (message.role !== 'compaction') continue;
+      return {
+        messageIndex: idx,
+        messageId: message.message_id,
+        summary: extractCompactionSummary(message.content),
+        timestamp: message.timestamp,
+      };
+    }
+    return null;
+  }, [activeConversation]);
+
   useEffect(() => {
     if (!showPromptDebugModal || promptDebugMessageIndex === null) return;
     void loadPromptDebugRecords(promptDebugMessageIndex);
@@ -7064,6 +7232,8 @@ export function ChatPanel({
   const activeConversationRef = useRef<Conversation | null>(null);
   const queuedCompactionMessageRef = useRef<QueuedCompactionMessage | null>(null);
   const sendQueuedAfterCompactionRef = useRef<((conversation: Conversation) => void) | null>(null);
+  const settledCompactionTaskIdsRef = useRef<Set<string>>(new Set());
+  const notifiedCompactionTaskIdsRef = useRef<Set<string>>(new Set());
   const streamingEventsRef = useRef<StreamingRenderEvent[]>([]);
   const streamingContentRef = useRef('');
 
@@ -8688,6 +8858,7 @@ export function ChatPanel({
   }, [applyFallbackAssistantIfNeeded, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
 
   const watchCompactionTask = useCallback(async (taskId: string, conversationId: string) => {
+    if (settledCompactionTaskIdsRef.current.has(taskId)) return;
     if (compactionTaskRef.current === taskId) return;
 
     if (compactionAbortControllerRef.current) {
@@ -8754,9 +8925,22 @@ export function ChatPanel({
         setError(message);
         toastActions.error(message);
       } else if (terminalStatus === 'completed') {
-        toastActions.success('Conversation context compacted');
+        settledCompactionTaskIdsRef.current.add(taskId);
+        if (!notifiedCompactionTaskIdsRef.current.has(taskId)) {
+          notifiedCompactionTaskIdsRef.current.add(taskId);
+          toastActions.success('Conversation context compacted');
+        }
+        if (queuedCompactionMessageRef.current?.conversationId === conversationId) {
+          setQueuedCompactionMessage((current) => (
+            current?.conversationId === conversationId
+              ? { ...current, compactionStatus: 'compacted' }
+              : current
+          ));
+        }
         if (refreshedConversation) {
-          sendQueuedAfterCompactionRef.current?.(refreshedConversation);
+          window.setTimeout(() => {
+            sendQueuedAfterCompactionRef.current?.(refreshedConversation);
+          }, queuedCompactionMessageRef.current?.conversationId === conversationId ? 250 : 0);
         }
       }
 
@@ -9289,7 +9473,7 @@ export function ChatPanel({
 
   const sendMessage = async () => {
     if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
-    if (queuedCompactionMessage && isActiveConversationCompacting) return;
+    if (hasQueuedCompactionMessageForActiveConversation) return;
 
     const userMessage = inputValue.trim();
     const messageAttachments = [...attachments];
@@ -9308,6 +9492,7 @@ export function ChatPanel({
       setQueuedCompactionMessage({
         id: `${Date.now()}-${Math.random()}`,
         conversationId: activeConversation.id,
+        compactionStatus: 'compacting',
         serializedMessage,
         displayContent,
         inputText: userMessage,
@@ -11642,10 +11827,12 @@ export function ChatPanel({
                   );
                   })}
 
-                  {isActiveConversationCompacting && queuedCompactionMessage?.conversationId === activeConversation.id && (
+                  {queuedCompactionMessage?.conversationId === activeConversation.id && (
                     <>
                       <div className="chat-compaction-divider chat-compaction-divider-pending">
-                        <span className="chat-compaction-divider-label">Chat compacted</span>
+                        <span className="chat-compaction-divider-label">
+                          {queuedCompactionMessage.compactionStatus === 'compacted' ? 'Chat compacted' : 'Chat compacting'}
+                        </span>
                       </div>
                       <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
                         <div className="chat-message chat-message-user chat-message-queued">
@@ -11796,7 +11983,7 @@ export function ChatPanel({
                   onAttachmentsChange={setAttachments}
                   conversationId={activeConversation?.id}
                   workspaceId={workspaceId}
-                  disabled={isReadOnly || isStreaming || Boolean(queuedCompactionMessage && isActiveConversationCompacting)}
+                  disabled={isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation}
                 />
                 <textarea
                   ref={inputRef}
@@ -11865,7 +12052,7 @@ export function ChatPanel({
                           type="button"
                           className="btn chat-send-btn-inline"
                           onClick={sendMessage}
-                          disabled={!activeConversation || !contextUsage.hasHeadroom || Boolean(queuedCompactionMessage && isActiveConversationCompacting)}
+                          disabled={!activeConversation || !contextUsage.hasHeadroom || hasQueuedCompactionMessageForActiveConversation}
                           title={contextUsage.hasHeadroom
                               ? 'Send message'
                               : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
@@ -11951,9 +12138,30 @@ export function ChatPanel({
                 <div className="chat-error" style={{ marginBottom: 12 }}>{promptDebugError}</div>
               )}
 
+              {promptDebugCompactionMarker && (
+                <div style={{ marginBottom: 16, border: '1px solid #fcd34d', borderRadius: 8, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#fffbeb' }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: '#92400e' }}>
+                      COMPACTION MARKER
+                    </span>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                      Message {promptDebugCompactionMarker.messageIndex + 1}
+                    </span>
+                    {promptDebugCompactionMarker.timestamp && (
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+                        {new Date(promptDebugCompactionMarker.timestamp).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>
+                    {promptDebugCompactionMarker.summary || '(empty compaction summary)'}
+                  </pre>
+                </div>
+              )}
+
               {!promptDebugLoading && chronologicalPromptDebugRecords.length === 0 && !promptDebugError && (
                 <div style={{ fontSize: '0.95rem', opacity: 0.8 }}>
-                  No prompt-debug records yet for this conversation.
+                  No prompt-debug records yet for this message.
                 </div>
               )}
 
