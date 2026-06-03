@@ -678,6 +678,12 @@ class AppSettings(BaseModel):
         le=100,
         description="Show the chat compact button once effective conversation context usage reaches this percentage.",
     )
+    chat_auto_compaction_threshold_percent: int = Field(
+        default=99,
+        ge=1,
+        le=100,
+        description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
+    )
 
     # Token optimization settings
     max_tool_output_chars: int = Field(
@@ -1123,6 +1129,12 @@ class UpdateSettingsRequest(BaseModel):
         ge=1,
         le=100,
         description="Show the chat compact button once effective conversation context usage reaches this percentage.",
+    )
+    chat_auto_compaction_threshold_percent: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
     )
     # Token optimization settings
     max_tool_output_chars: Optional[int] = Field(default=None, ge=0, le=100000)

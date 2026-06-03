@@ -580,6 +580,10 @@ class AuthStatusResponse(BaseModel):
         default=80,
         description="Show the chat compact button once effective conversation context usage reaches this percentage.",
     )
+    chat_auto_compaction_threshold_percent: int = Field(
+        default=99,
+        description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
+    )
 
 
 async def _user_response(user: User) -> UserResponse:
@@ -952,6 +956,7 @@ async def get_auth_status(
     server_name = "Ragtime"
     authenticated_webgl_background_enabled = True
     chat_compaction_threshold_percent = 80
+    chat_auto_compaction_threshold_percent = 99
 
     try:
         app_settings = await get_app_settings()
@@ -960,6 +965,7 @@ async def get_auth_status(
             server_name = configured_server_name
         authenticated_webgl_background_enabled = bool(app_settings.get("authenticated_webgl_background_enabled", True))
         chat_compaction_threshold_percent = max(1, min(100, int(app_settings.get("chat_compaction_threshold_percent", 80))))
+        chat_auto_compaction_threshold_percent = max(1, min(100, int(app_settings.get("chat_auto_compaction_threshold_percent", 99))))
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 
@@ -981,6 +987,7 @@ async def get_auth_status(
         server_name=server_name,
         authenticated_webgl_background_enabled=authenticated_webgl_background_enabled,
         chat_compaction_threshold_percent=chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent=chat_auto_compaction_threshold_percent,
     )
 
 

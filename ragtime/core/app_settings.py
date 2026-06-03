@@ -292,6 +292,7 @@ class SettingsCache:
                 "openapi_sync_chat_models": getattr(prisma_settings, "openapiSyncChatModels", True),
                 "max_iterations": prisma_settings.maxIterations,
                 "chat_compaction_threshold_percent": getattr(prisma_settings, "chatCompactionThresholdPercent", 80),
+                "chat_auto_compaction_threshold_percent": getattr(prisma_settings, "chatAutoCompactionThresholdPercent", 99),
                 # Embedding settings
                 "embedding_provider": prisma_settings.embeddingProvider,
                 "embedding_model": prisma_settings.embeddingModel,
@@ -384,6 +385,7 @@ class SettingsCache:
                 "openapi_sync_chat_models": True,
                 "max_iterations": 15,
                 "chat_compaction_threshold_percent": 80,
+                "chat_auto_compaction_threshold_percent": 99,
                 # Embedding settings
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",

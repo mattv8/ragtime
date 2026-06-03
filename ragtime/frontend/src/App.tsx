@@ -204,6 +204,7 @@ export function App() {
         server_name: serverName,
         authenticated_webgl_background_enabled: authenticatedWebglBackgroundEnabled,
         chat_compaction_threshold_percent: 80,
+        chat_auto_compaction_threshold_percent: 99,
       };
     });
   }, [authenticatedWebglBackgroundEnabled, serverName]);
@@ -250,6 +251,14 @@ export function App() {
     setAuthStatus((previous) => (previous ? {
       ...previous,
       chat_compaction_threshold_percent: normalizedThreshold,
+    } : previous));
+  }, []);
+
+  const handleChatAutoCompactionThresholdChange = useCallback((threshold: number) => {
+    const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
+    setAuthStatus((previous) => (previous ? {
+      ...previous,
+      chat_auto_compaction_threshold_percent: normalizedThreshold,
     } : previous));
   }, []);
 
@@ -837,6 +846,7 @@ export function App() {
             debugMode={Boolean(authStatus?.debug_mode)}
             initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
             chatCompactionThresholdPercent={authStatus?.chat_compaction_threshold_percent ?? 80}
+            chatAutoCompactionThresholdPercent={authStatus?.chat_auto_compaction_threshold_percent ?? 99}
             onFullscreenChange={setChatFullscreen}
           />
         </div>
@@ -846,6 +856,7 @@ export function App() {
           onServerNameChange={handleServerNameChange}
           onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
           onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
+          onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
           highlightSetting={highlightSetting}
           onHighlightComplete={() => setHighlightSetting(null)}
           authStatus={authStatus}

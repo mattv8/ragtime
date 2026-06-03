@@ -1077,6 +1077,7 @@ class IndexerRepository:
             openapi_sync_chat_models=getattr(settings, "openapiSyncChatModels", True),
             max_iterations=settings.maxIterations,
             chat_compaction_threshold_percent=getattr(settings, "chatCompactionThresholdPercent", 80),
+            chat_auto_compaction_threshold_percent=getattr(settings, "chatAutoCompactionThresholdPercent", 99),
             # Tool settings
             enabled_tools=settings.enabledTools,
             odoo_container=settings.odooContainer,
@@ -1231,6 +1232,7 @@ class IndexerRepository:
             "openapi_sync_chat_models": "openapiSyncChatModels",
             "max_iterations": "maxIterations",
             "chat_compaction_threshold_percent": "chatCompactionThresholdPercent",
+            "chat_auto_compaction_threshold_percent": "chatAutoCompactionThresholdPercent",
             # Token optimization settings
             "max_tool_output_chars": "maxToolOutputChars",
             "scratchpad_window_size": "scratchpadWindowSize",

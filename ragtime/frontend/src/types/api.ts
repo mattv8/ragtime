@@ -169,6 +169,7 @@ export interface AuthStatus {
   server_name?: string;
   authenticated_webgl_background_enabled?: boolean;
   chat_compaction_threshold_percent?: number;
+  chat_auto_compaction_threshold_percent?: number;
 }
 
 // =============================================================================
@@ -673,6 +674,7 @@ export interface AppSettings {
   openapi_sync_chat_models: boolean;
   max_iterations: number;
   chat_compaction_threshold_percent: number;
+  chat_auto_compaction_threshold_percent: number;
   // Token optimization settings
   max_tool_output_chars: number;
   scratchpad_window_size: number;
@@ -801,6 +803,7 @@ export interface UpdateSettingsRequest {
   openapi_sync_chat_models?: boolean;
   max_iterations?: number;
   chat_compaction_threshold_percent?: number;
+  chat_auto_compaction_threshold_percent?: number;
   // Token optimization settings
   max_tool_output_chars?: number;
   scratchpad_window_size?: number;

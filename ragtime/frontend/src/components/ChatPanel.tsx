@@ -6171,6 +6171,7 @@ interface ChatPanelProps {
   debugMode?: boolean;
   initialConversationId?: string | null;
   chatCompactionThresholdPercent?: number;
+  chatAutoCompactionThresholdPercent?: number;
   workspaceId?: string;
   workspaceChatState?: WorkspaceChatStateResponse | null;
   workspaceAvailableTools?: UserSpaceAvailableTool[];
@@ -6217,6 +6218,7 @@ export function ChatPanel({
   debugMode = false,
   initialConversationId,
   chatCompactionThresholdPercent = 80,
+  chatAutoCompactionThresholdPercent = 99,
   workspaceId,
   workspaceChatState,
   workspaceAvailableTools,
@@ -6249,6 +6251,7 @@ export function ChatPanel({
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
   const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id);
   const compactThresholdPercent = clampNumber(chatCompactionThresholdPercent, 1, 100);
+  const autoCompactThresholdPercent = clampNumber(chatAutoCompactionThresholdPercent, 1, 100);
 
   const [toasts, toastActions] = useToast();
 
@@ -6273,7 +6276,7 @@ export function ChatPanel({
   const [compactionReviewError, setCompactionReviewError] = useState<string | null>(null);
   const [isSavingCompactionReview, setIsSavingCompactionReview] = useState(false);
   const [compactionReviewOriginalSummary, setCompactionReviewOriginalSummary] = useState<string>('');
-  const [isHoveringCompactionSummary, setIsHoveringCompactionSummary] = useState(false);
+
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -6326,6 +6329,7 @@ export function ChatPanel({
   const branchSearchPreviewRestoreRef = useRef<BranchSearchPreviewRestore | null>(null);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
+  const autoCompactionTriggerKeyRef = useRef<string | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
   const branchGroupsByIndex = useMemo(() => {
     const messageCount = activeConversation?.messages.length ?? 0;
@@ -9964,7 +9968,6 @@ export function ChatPanel({
     setCompactionReviewOriginalSummary('');
     setCompactionReviewError(null);
     setIsEditingCompactionReview(false);
-    setIsHoveringCompactionSummary(false);
   }, [isSavingCompactionReview]);
 
   const retryCompactionReview = useCallback(() => {
@@ -10535,6 +10538,46 @@ export function ChatPanel({
       streamingContent,
     });
   }, [activeConversation, defaultContextLimit, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
+
+  useEffect(() => {
+    if (!activeConversation) {
+      autoCompactionTriggerKeyRef.current = null;
+      return;
+    }
+
+    if (
+      autoCompactThresholdPercent >= 100
+      || isReadOnly
+      || isStreaming
+      || isActiveConversationCompacting
+      || hasQueuedCompactionMessageForActiveConversation
+      || contextUsage.contextUsagePercent < autoCompactThresholdPercent
+    ) {
+      return;
+    }
+
+    const lastMessage = activeConversation.messages[activeConversation.messages.length - 1];
+    if (lastMessage?.role === 'compaction') {
+      return;
+    }
+
+    const triggerKey = `${activeConversation.id}:${lastMessage?.id ?? 'none'}:${activeConversation.messages.length}`;
+    if (autoCompactionTriggerKeyRef.current === triggerKey) {
+      return;
+    }
+
+    autoCompactionTriggerKeyRef.current = triggerKey;
+    void compactActiveConversation();
+  }, [
+    activeConversation,
+    autoCompactThresholdPercent,
+    compactActiveConversation,
+    contextUsage.contextUsagePercent,
+    hasQueuedCompactionMessageForActiveConversation,
+    isActiveConversationCompacting,
+    isReadOnly,
+    isStreaming,
+  ]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
   const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
@@ -12616,9 +12659,41 @@ export function ChatPanel({
                 {compactionReviewMarker.timestamp && (
                   <span>{new Date(compactionReviewMarker.timestamp).toLocaleString()}</span>
                 )}
-                {!isEditingCompactionReview && activeConversation && renderBranchNavStack(
-                  branchGroupsByIndex.get(compactionReviewMarker.messageIndex) ?? [],
-                  activeConversation,
+                {!isEditingCompactionReview && (
+                  <span className="chat-compaction-review-meta-actions">
+                    {activeConversation && renderBranchNavStack(
+                      branchGroupsByIndex.get(compactionReviewMarker.messageIndex) ?? [],
+                      activeConversation,
+                    )}
+                    <span className="chat-message-hover-actions">
+                      <button
+                        type="button"
+                        className="chat-action-icon-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsEditingCompactionReview(true);
+                        }}
+                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        aria-label="Edit compaction summary"
+                        title="Edit"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-action-icon-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          retryCompactionReview();
+                        }}
+                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        aria-label="Regenerate compaction"
+                        title="Try Again"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    </span>
+                  </span>
                 )}
               </div>
               {compactionReviewError && (
@@ -12638,44 +12713,12 @@ export function ChatPanel({
               ) : (
                 <div
                   className="chat-compaction-review-summary-container"
-                  onMouseEnter={() => setIsHoveringCompactionSummary(true)}
-                  onMouseLeave={() => setIsHoveringCompactionSummary(false)}
                   onClick={() => !isReadOnly && !isActiveConversationCompacting && !isStreaming && setIsEditingCompactionReview(true)}
                   style={{ cursor: (!isReadOnly && !isActiveConversationCompacting && !isStreaming) ? 'text' : 'default' }}
                 >
                   <pre className="chat-compaction-review-summary">
                     {compactionReviewMarker.summary || '(empty compaction summary)'}
                   </pre>
-                  {isHoveringCompactionSummary && (
-                    <div className="chat-compaction-review-hover-icons">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setIsEditingCompactionReview(true);
-                        }}
-                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
-                        aria-label="Edit compaction summary"
-                        title="Edit"
-                      >
-                        <Pencil size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          retryCompactionReview();
-                        }}
-                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
-                        aria-label="Regenerate compaction"
-                        title="Try Again"
-                      >
-                        <RefreshCw size={16} />
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
             </div>

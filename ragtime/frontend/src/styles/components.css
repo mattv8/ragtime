@@ -5319,6 +5319,13 @@ textarea {
   font-weight: 600;
 }
 
+.chat-compaction-review-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-left: auto;
+}
+
 .chat-compaction-review-error {
   margin: 0;
 }

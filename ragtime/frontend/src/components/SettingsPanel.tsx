@@ -428,6 +428,7 @@ interface SettingsPanelProps {
   onServerNameChange?: (name: string) => void;
   onAuthenticatedWebglBackgroundChange?: (enabled: boolean) => void;
   onChatCompactionThresholdChange?: (threshold: number) => void;
+  onChatAutoCompactionThresholdChange?: (threshold: number) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
   highlightSetting?: string | null;
   /** Called after highlight animation completes to clear the param */
@@ -436,7 +437,7 @@ interface SettingsPanelProps {
   authStatus?: AuthStatus | null;
 }
 
-export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, onChatCompactionThresholdChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
+export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, onChatCompactionThresholdChange, onChatAutoCompactionThresholdChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const initialSettingsFilterState = useMemo(() => readSettingsFilterStateFromUrl(), []);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -1369,6 +1370,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         default_chat_model: data.default_chat_model ?? null,
         max_iterations: data.max_iterations,
         chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent: data.chat_auto_compaction_threshold_percent,
         // Token optimization settings
         max_tool_output_chars: data.max_tool_output_chars,
         scratchpad_window_size: data.scratchpad_window_size,
@@ -1927,6 +1929,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
         chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
         openapi_sync_chat_models: formData.openapi_sync_chat_models,
         // Token optimization settings
@@ -1995,6 +1998,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
       onChatCompactionThresholdChange?.(updated.chat_compaction_threshold_percent ?? 80);
+      onChatAutoCompactionThresholdChange?.(updated.chat_auto_compaction_threshold_percent ?? 99);
       toast.success('LLM configuration saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
@@ -3746,29 +3750,60 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
             <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
-                <label>Compact Button Threshold</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="1"
-                    max="100"
-                    step="1"
-                    style={{ flex: 1 }}
-                    value={formData.chat_compaction_threshold_percent ?? 80}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        chat_compaction_threshold_percent: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span style={{ minWidth: '44px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                    {formData.chat_compaction_threshold_percent ?? 80}%
-                  </span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}>Compact Button Threshold</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="1"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={formData.chat_compaction_threshold_percent ?? 80}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chat_compaction_threshold_percent: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span style={{ minWidth: '44px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                        {formData.chat_compaction_threshold_percent ?? 80}%
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Show the compact button once effective conversation context reaches this percentage.
+                    </p>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}>Auto-Compact Threshold</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="1"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={formData.chat_auto_compaction_threshold_percent ?? 99}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chat_auto_compaction_threshold_percent: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span style={{ minWidth: '44px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                        {(formData.chat_auto_compaction_threshold_percent ?? 99) >= 100
+                          ? 'Never'
+                          : `${formData.chat_auto_compaction_threshold_percent ?? 99}%`}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Automatically compact once effective context reaches this percentage. Set to Never to disable it.
+                    </p>
+                  </div>
                 </div>
-                <p className="field-help">
-                  Show the chat compact button once effective conversation context reaches this percentage. Default: 80%.
-                </p>
               </div>
 
               <div className="form-group" style={{ flex: 1 }}>
