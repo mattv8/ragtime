@@ -1285,6 +1285,7 @@ textarea.chat-header-title-input {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: var(--space-lg);
   display: flex;
   flex-direction: column;
@@ -1477,10 +1478,18 @@ textarea.chat-header-title-input {
   margin-left: var(--space-xs);
 }
 
+.viz-version-anchor .visualization-export-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-xs);
+}
+
 /* All interactive controls inside the anchor share the same icon-button styling
    as .chat-action-icon-btn — flat, muted, hover-highlighted. */
 .viz-version-anchor .live-data-refresh-btn,
 .viz-version-anchor .visualization-branch-btn,
+.viz-version-anchor .visualization-export-btn,
 .viz-version-anchor .datatable-paging-btn {
   background: none;
   border: none;
@@ -1497,6 +1506,7 @@ textarea.chat-header-title-input {
 
 .viz-version-anchor .live-data-refresh-btn:hover:not(:disabled),
 .viz-version-anchor .visualization-branch-btn:hover:not(:disabled),
+.viz-version-anchor .visualization-export-btn:hover:not(:disabled),
 .viz-version-anchor .datatable-paging-btn:hover:not(:disabled) {
   color: var(--color-text);
   background: var(--color-surface-hover);
@@ -1504,6 +1514,7 @@ textarea.chat-header-title-input {
 
 .viz-version-anchor .live-data-refresh-btn:disabled,
 .viz-version-anchor .visualization-branch-btn:disabled,
+.viz-version-anchor .visualization-export-btn:disabled,
 .viz-version-anchor .datatable-paging-btn:disabled {
   opacity: 0.3;
   cursor: default;
@@ -2081,6 +2092,7 @@ textarea.chat-header-title-input {
   word-break: break-word;
   max-height: 440px;
   overflow-y: auto;
+  overflow-anchor: none;
   scroll-behavior: smooth;
 }
 /* Scale markdown headings down to fit the compact reasoning pane */
@@ -2428,6 +2440,7 @@ textarea.chat-header-title-input {
   white-space: pre;
   overflow-x: auto;
   overflow-y: auto;
+  overflow-anchor: none;
   max-height: 300px;
   line-height: 1.5;
 }
