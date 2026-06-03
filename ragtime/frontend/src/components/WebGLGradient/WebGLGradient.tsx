@@ -429,13 +429,13 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     }
 
     const handleResize = () => resize();
-    let orientationTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let orientationTimer: number | null = null;
     const handleOrientationChange = () => {
       if (orientationTimer) window.clearTimeout(orientationTimer);
       orientationTimer = window.setTimeout(resize, 100);
     };
 
-    let viewportTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let viewportTimer: number | null = null;
     const handleViewportChange = () => {
       if (viewportTimer) window.clearTimeout(viewportTimer);
       viewportTimer = window.setTimeout(resize, 50);
@@ -449,7 +449,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       window.visualViewport.addEventListener('resize', handleViewportChange);
     }
 
-    let scrollTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let scrollTimer: number | null = null;
     const handleScroll = () => {
       if (scrollTimer) window.clearTimeout(scrollTimer);
       scrollTimer = window.setTimeout(resize, 100);

@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch, Download } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
@@ -745,6 +745,7 @@ export interface ActiveToolCall {
   presentation?: {
     kind?: string;
     rerun_kind?: string;
+    visibility?: string;
   };
   connection?: {
     tool_config_id: string;
@@ -1146,6 +1147,70 @@ function parseDataTableData(output: string): DataTableData | null {
   return null;
 }
 
+function sanitizeDownloadFilename(filename: string, extension: string): string {
+  const safeExtension = extension.replace(/[^a-z0-9]+/gi, '').toLowerCase() || 'txt';
+  const raw = (filename || 'export').trim().replace(/[\\/]+/g, '_');
+  const safe = raw
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9._ -]/g, '_')
+    .replace(/^[. _-]+|[. _-]+$/g, '') || 'export';
+  const withoutExtension = safe.replace(/\.[A-Za-z0-9]+$/, '');
+  return `${withoutExtension || 'export'}.${safeExtension}`;
+}
+
+function spreadsheetSafeValue(value: unknown): string {
+  if (value == null) return '';
+  const text = typeof value === 'string' ? value : String(value);
+  return /^[=+\-@]/.test(text) ? `\t${text}` : text;
+}
+
+function serializeCsv(columns: unknown[], rows: unknown[][]): string {
+  const escapeCell = (value: unknown) => {
+    const text = spreadsheetSafeValue(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return [columns, ...rows]
+    .map((row) => row.map(escapeCell).join(','))
+    .join('\r\n') + '\r\n';
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function downloadCsv(columns: unknown[], rows: unknown[][], filename: string): void {
+  downloadBlob(
+    new Blob([`\ufeff${serializeCsv(columns, rows)}`], { type: 'text/csv;charset=utf-8' }),
+    sanitizeDownloadFilename(filename, 'csv'),
+  );
+}
+
+function getDataTableColumns(tableData: DataTableData): string[] {
+  return (tableData.config.columns || []).map((column, index) => {
+    if (typeof column === 'string') return column;
+    return String((column as { title?: unknown }).title || `Column ${index + 1}`);
+  });
+}
+
+function getChartTable(chartData: ChartData): { columns: string[]; rows: unknown[][] } {
+  const labels = Array.isArray(chartData.config.data.labels) ? chartData.config.data.labels : [];
+  const datasets = Array.isArray(chartData.config.data.datasets) ? chartData.config.data.datasets : [];
+  const columns = ['Label', ...datasets.map((dataset, index) => dataset.label || `Dataset ${index + 1}`)];
+  const rows = labels.map((label, rowIndex) => [
+    label,
+    ...datasets.map((dataset) => Array.isArray(dataset.data) ? dataset.data[rowIndex] ?? '' : ''),
+  ]);
+  return { columns, rows };
+}
+
 function validateDataTableData(tableData: DataTableData): string | null {
   const columns = tableData.config.columns;
   const rows = tableData.config.data;
@@ -1316,6 +1381,149 @@ const VisualizationVersionAnchor = memo(function VisualizationVersionAnchor({
   );
 });
 
+const VisualizationExportControls = memo(function VisualizationExportControls({
+  onCsv,
+  onXlsx,
+  onPng,
+  disabled = false,
+  isExportingXlsx = false,
+}: {
+  onCsv?: () => void;
+  onXlsx?: () => void;
+  onPng?: () => void;
+  disabled?: boolean;
+  isExportingXlsx?: boolean;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const hoverTimerRef = useRef<number | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current != null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleMenuOpen = useCallback(() => {
+    if (disabled) return;
+    clearHoverTimer();
+    clearCloseTimer();
+    hoverTimerRef.current = window.setTimeout(() => {
+      setIsMenuOpen(true);
+      hoverTimerRef.current = null;
+    }, 300);
+  }, [clearCloseTimer, clearHoverTimer, disabled]);
+
+  const scheduleMenuClose = useCallback(() => {
+    clearHoverTimer();
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setIsMenuOpen(false);
+      closeTimerRef.current = null;
+    }, 220);
+  }, [clearCloseTimer, clearHoverTimer]);
+
+  const closeMenu = useCallback(() => {
+    clearHoverTimer();
+    clearCloseTimer();
+    setIsMenuOpen(false);
+  }, [clearCloseTimer, clearHoverTimer]);
+
+  const handleButtonClick = useCallback(() => {
+    if (disabled) return;
+    clearHoverTimer();
+    clearCloseTimer();
+    setIsMenuOpen((current) => !current);
+  }, [clearCloseTimer, clearHoverTimer, disabled]);
+
+  const handleOptionClick = useCallback((handler?: () => void) => {
+    if (!handler || disabled) return;
+    handler();
+    closeMenu();
+  }, [closeMenu, disabled]);
+
+  useEffect(() => () => {
+    clearHoverTimer();
+    clearCloseTimer();
+  }, [clearCloseTimer, clearHoverTimer]);
+
+  if (!onCsv && !onXlsx && !onPng) return null;
+  return (
+    <div
+      className="visualization-export-controls"
+      aria-label="Export visualization"
+      onMouseEnter={scheduleMenuOpen}
+      onMouseLeave={scheduleMenuClose}
+      onFocus={scheduleMenuOpen}
+      onBlur={scheduleMenuClose}
+    >
+      <button
+        type="button"
+        className="visualization-export-btn"
+        onClick={handleButtonClick}
+        disabled={disabled}
+        title="Download export"
+        aria-label="Download export"
+        aria-haspopup="menu"
+        aria-expanded={isMenuOpen}
+      >
+        {isExportingXlsx ? <MiniLoadingSpinner variant="icon" size={12} /> : <Download size={12} />}
+      </button>
+      {isMenuOpen && (
+        <div
+          className="visualization-export-menu"
+          role="menu"
+          aria-label="Export formats"
+          onMouseEnter={scheduleMenuOpen}
+          onMouseLeave={scheduleMenuClose}
+        >
+      {onCsv && (
+        <button
+          type="button"
+          className="visualization-export-menu-item"
+          onClick={() => handleOptionClick(onCsv)}
+          disabled={disabled}
+          role="menuitem"
+        >
+          <span>CSV</span>
+        </button>
+      )}
+      {onXlsx && (
+        <button
+          type="button"
+          className="visualization-export-menu-item"
+          onClick={() => handleOptionClick(onXlsx)}
+          disabled={disabled || isExportingXlsx}
+          role="menuitem"
+        >
+          <span>XLSX</span>
+        </button>
+      )}
+      {onPng && (
+        <button
+          type="button"
+          className="visualization-export-menu-item"
+          onClick={() => handleOptionClick(onPng)}
+          disabled={disabled}
+          role="menuitem"
+        >
+          <span>PNG</span>
+        </button>
+      )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 const ChartDisplay = memo(function ChartDisplay({
   chartData,
   canRefresh = false,
@@ -1333,6 +1541,7 @@ const ChartDisplay = memo(function ChartDisplay({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInstanceRef = useRef<ChartInstance | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const chartFilenameBase = chartData.description?.trim() || 'chart';
 
   // Get theme colors from CSS variables
   const getThemeColors = useCallback(() => {
@@ -1434,6 +1643,20 @@ const ChartDisplay = memo(function ChartDisplay({
     };
   }, [chartData, createChart]);
 
+  const handleDownloadChartCsv = useCallback(() => {
+    const { columns, rows } = getChartTable(chartData);
+    downloadCsv(columns, rows, sanitizeDownloadFilename(chartFilenameBase, 'csv'));
+  }, [chartData, chartFilenameBase]);
+
+  const handleDownloadChartPng = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const filename = sanitizeDownloadFilename(chartFilenameBase, 'png');
+    canvas.toBlob((blob) => {
+      if (blob) downloadBlob(blob, filename);
+    }, 'image/png');
+  }, [chartFilenameBase]);
+
   return (
     <div className={`chart-with-anchor${isExpanded ? ' chart-with-anchor-expanded' : ''}`}>
       <div className={`chart-container${isExpanded ? ' chart-container-expanded' : ''}`} ref={containerRef}>
@@ -1462,6 +1685,12 @@ const ChartDisplay = memo(function ChartDisplay({
         activeBranchId={activeBranchId}
         isSwitchingBranch={isSwitchingBranch}
         onSelectBranch={onSelectBranch}
+        extraControls={(
+          <VisualizationExportControls
+            onCsv={handleDownloadChartCsv}
+            onPng={handleDownloadChartPng}
+          />
+        )}
       />
     </div>
   );
@@ -1559,6 +1788,8 @@ const DataTableControls = memo(function DataTableControls({
 
 const DataTableDisplay = memo(function DataTableDisplay({
   tableData,
+  conversationId,
+  workspaceId,
   canRefresh = false,
   isRefreshDisabled = false,
   refreshDisabledReason = null,
@@ -1570,7 +1801,7 @@ const DataTableDisplay = memo(function DataTableDisplay({
   isSwitchingBranch = false,
   onSelectBranch,
   onDisplayError,
-}: { tableData: DataTableData; onDisplayError?: (message: string) => void } & LiveRefreshControlsProps) {
+}: { tableData: DataTableData; conversationId?: string; workspaceId?: string; onDisplayError?: (message: string) => void } & LiveRefreshControlsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tableInstanceRef = useRef<unknown>(null);
   const lastNotifiedErrorRef = useRef<string | null>(null);
@@ -1582,6 +1813,7 @@ const DataTableDisplay = memo(function DataTableDisplay({
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [pageInfo, setPageInfo] = useState<DataTablePageInfo>({ page: 0, pages: 1, recordsDisplay: 0 });
+  const [isExportingXlsx, setIsExportingXlsx] = useState(false);
 
   const rowCount = Array.isArray(tableData.config.data) ? tableData.config.data.length : 0;
   const configuredPageLength = Number((tableData.config as any).pageLength);
@@ -1609,6 +1841,46 @@ const DataTableDisplay = memo(function DataTableDisplay({
       (tableInstanceRef.current as any).page(page).draw('page');
     } catch { /* ignore */ }
   }, []);
+
+  const exportFilenameBase = tableData.title?.trim() || 'table-data';
+  const handleDownloadDataTableCsv = useCallback(() => {
+    downloadCsv(getDataTableColumns(tableData), tableData.config.data || [], sanitizeDownloadFilename(exportFilenameBase, 'csv'));
+  }, [exportFilenameBase, tableData]);
+
+  const handleDownloadDataTableXlsx = useCallback(async () => {
+    if (!conversationId || isExportingXlsx) return;
+    setIsExportingXlsx(true);
+    try {
+      await api.downloadConversationExport(
+        conversationId,
+        {
+          filename: sanitizeDownloadFilename(exportFilenameBase, 'xlsx'),
+          format: 'xlsx',
+          title: tableData.title || 'Table data',
+          source_kind: 'datatable',
+          table: {
+            columns: getDataTableColumns(tableData),
+            rows: tableData.config.data || [],
+          },
+          visualization_payload: tableData as unknown as Record<string, unknown>,
+          data_connection: tableData.data_connection as Record<string, unknown> | undefined,
+        },
+        workspaceId,
+      );
+    } catch (err) {
+      console.error('Failed to download XLSX export:', err);
+    } finally {
+      setIsExportingXlsx(false);
+    }
+  }, [conversationId, exportFilenameBase, isExportingXlsx, tableData, workspaceId]);
+
+  const renderExportControls = () => (
+    <VisualizationExportControls
+      onCsv={handleDownloadDataTableCsv}
+      onXlsx={conversationId ? handleDownloadDataTableXlsx : undefined}
+      isExportingXlsx={isExportingXlsx}
+    />
+  );
 
   useEffect(() => {
     lastNotifiedErrorRef.current = null;
@@ -1846,20 +2118,24 @@ const DataTableDisplay = memo(function DataTableDisplay({
           activeBranchId={activeBranchId}
           isSwitchingBranch={isSwitchingBranch}
           onSelectBranch={onSelectBranch}
+          extraControls={renderExportControls()}
         />
       </>
     );
   }
 
   const renderControls = () => (
-    <DataTableControls
-      searchingEnabled={searchingEnabled}
-      pagingEnabled={pagingEnabled}
-      searchQuery={searchQuery}
-      onSearchChange={setSearchQuery}
-      pageInfo={pageInfo}
-      onPage={handlePage}
-    />
+    <>
+      <DataTableControls
+        searchingEnabled={searchingEnabled}
+        pagingEnabled={pagingEnabled}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        pageInfo={pageInfo}
+        onPage={handlePage}
+      />
+      {renderExportControls()}
+    </>
   );
   const hasMultiplePages = pagingEnabled && pageInfo.pages > 1;
   const headerHasAnchor = searchingEnabled || hasMultiplePages || !!(canRefresh && onRefresh) || !!(branches && branches.length >= 2 && onSelectBranch) || !!refreshError;
@@ -2881,6 +3157,7 @@ const TERMINAL_PRESENTATION_KIND = 'terminal';
 const USERSPACE_EXEC_RERUN_KIND = 'userspace_exec';
 const CONVERSATION_TOOL_RERUN_KIND = 'conversation_tool';
 const CHAT_DIAGNOSTIC_RERUN_KIND = 'chat_diagnostic';
+const HIDDEN_TOOL_VISIBILITY = 'hidden';
 const TERMINAL_RERUN_KINDS = new Set([
   USERSPACE_EXEC_RERUN_KIND,
   CONVERSATION_TOOL_RERUN_KIND,
@@ -2904,6 +3181,10 @@ function isTerminalToolCall(toolCall: ActiveToolCall): boolean {
     (toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
     || (toolType === 'odoo_shell' && connectionMode === 'ssh')
   );
+}
+
+function isHiddenToolCall(toolCall: Pick<ActiveToolCall, 'presentation'>): boolean {
+  return normalizedPresentationValue(toolCall.presentation?.visibility) === HIDDEN_TOOL_VISIBILITY;
 }
 
 function isSqlToolCall(toolCall: ActiveToolCall): boolean {
@@ -3796,6 +4077,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (!effectiveOutput) return { tableData: null, displayText: '' };
     return parseTableMetadata(effectiveOutput);
   }, [effectiveOutput]);
+  const handleDownloadResultTableCsv = useCallback(() => {
+    if (!tableData) return;
+    downloadCsv(tableData.columns, tableData.rows, sanitizeDownloadFilename(`${toolCall.tool || 'results'}-results`, 'csv'));
+  }, [tableData, toolCall.tool]);
   const visibleDisplayText = toolCall.tool === WEB_READ_PDF_TOOL_ID
     ? maskHiddenToolNames(displayText)
     : displayText;
@@ -4125,6 +4410,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // Special rendering for chart tool - show chart inline without collapsible.
   // Keep these returns after every hook in this component so tool-call output
   // transitions cannot change the hook count between renders.
+  if (isHiddenToolCall(toolCall)) {
+    return null;
+  }
+
   if (chartData) {
     const canRefreshChart = hasRefreshableVisualizationConnection(chartData.data_connection, 'chart')
       && Boolean(conversationId);
@@ -4155,6 +4444,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       <div className="tool-call tool-call-datatable tool-call-complete">
         <DataTableDisplay
           tableData={datatableData}
+          conversationId={conversationId}
+          workspaceId={workspaceId}
           canRefresh={canRefreshTable}
           isRefreshDisabled={!hasPersistedVisualizationContext}
           refreshDisabledReason={refreshDisabledReason}
@@ -5032,13 +5323,25 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           <div className="tool-call-section">
             <div className="tool-call-section-header">
               <span className="tool-call-section-label">Result:</span>
-              <button
-                className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'tool-default-result')}
-                title="Copy result"
-              >
-                {isCopiedButton('result', 'tool-default-result') ? <Check size={12} /> : <Copy size={12} />}
-              </button>
+              <div className="tool-call-terminal-header-actions">
+                {tableData && (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={handleDownloadResultTableCsv}
+                    title="Download CSV"
+                    aria-label="Download CSV"
+                  >
+                    <Download size={12} />
+                  </button>
+                )}
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'tool-default-result')}
+                  title="Copy result"
+                >
+                  {isCopiedButton('result', 'tool-default-result') ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
             </div>
             {tableData ? (
               <DataTable data={tableData} />
@@ -5655,7 +5958,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
         inChatSearchOptions={inChatSearchOptions}
       />
     );
-  } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
+  } else if (segment.type === 'tool' && segment.toolCall && showToolCalls && !isHiddenToolCall(segment.toolCall)) {
     return (
       <div className="chat-tool-calls">
         <ToolCallDisplay
@@ -7280,6 +7583,7 @@ export function ChatPanel({
 
   // Keep latest conversation available to long-lived async callbacks.
   const activeConversationRef = useRef<Conversation | null>(null);
+  const compactingConversationIdRef = useRef<string | null>(null);
   const queuedCompactionMessageRef = useRef<QueuedCompactionMessage | null>(null);
   const sendQueuedAfterCompactionRef = useRef<((conversation: Conversation) => void) | null>(null);
   const settledCompactionTaskIdsRef = useRef<Set<string>>(new Set());
@@ -7302,6 +7606,10 @@ export function ChatPanel({
   }, [queuedCompactionMessage]);
 
   useEffect(() => {
+    compactingConversationIdRef.current = compactingConversationId;
+  }, [compactingConversationId]);
+
+  useEffect(() => {
     onActiveConversationChange?.(activeConversation?.id ?? null);
   }, [activeConversation?.id, onActiveConversationChange]);
 
@@ -7317,11 +7625,14 @@ export function ChatPanel({
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const userspaceConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
+  const autoScrollFrameRef = useRef<number | null>(null);
+  const programmaticScrollRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const compactionAbortControllerRef = useRef<AbortController | null>(null);
   const compactionTaskRef = useRef<string | null>(null);
   const processingTaskRef = useRef<string | null>(null);
+  const taskStreamVersionRef = useRef<Map<string, number>>(new Map());
   // Tracks which streaming `create_userspace_snapshot` tool_end events have
   // already triggered an `onSnapshotsMaybeChanged` notification, keyed by
   // a stable string per (taskId, eventIndex). Cleared when the task ends.
@@ -7332,6 +7643,7 @@ export function ChatPanel({
   // as soon as a task_started event arrives, without waiting for the
   // periodic task-state poll.
   const connectTaskStreamRef = useRef<((taskId: string) => void) | null>(null);
+  const watchCompactionTaskRef = useRef<((taskId: string, conversationId: string) => void) | null>(null);
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
   const selectConversationRequestIdRef = useRef(0);
@@ -7799,13 +8111,18 @@ export function ChatPanel({
   // Memoized consolidated segments for streaming. Ordinary tool calls can stay
   // inline inside active reasoning; visualization artifacts render standalone.
   const consolidatedSegments = useMemo((): StreamingSegment[] => {
-    if (!streamingEvents.length) return [];
+    if (!streamingEvents.length) {
+      return streamingContent.trim()
+        ? [{ type: 'content', content: streamingContent }]
+        : [];
+    }
 
     const segments: StreamingSegment[] = [];
     let currentContent = '';
     let currentReasoning = '';
     let currentReasoningParts: ReasoningPart[] = [];
     let currentReasoningDurationSeconds: number | undefined;
+    let hasFinalContentEvent = false;
 
     // Flush accumulated reasoning into a NEW reasoning segment (adjacent reasoning merges, non-adjacent stays separate)
     const flushReasoning = (isComplete: boolean) => {
@@ -7848,6 +8165,7 @@ export function ChatPanel({
           currentReasoningDurationSeconds = durationSeconds;
         }
       } else if (channel === 'final' && ev.type === 'content') {
+        hasFinalContentEvent = true;
         // Flush any pending reasoning — it's now complete since content follows
         flushReasoning(true);
         // Accumulate content
@@ -7865,11 +8183,14 @@ export function ChatPanel({
 
     // Flush remaining reasoning (still streaming, not yet complete)
     flushReasoning(false);
+    if (!hasFinalContentEvent && streamingContent.trim()) {
+      currentContent += streamingContent;
+    }
     // Flush remaining content
     flushContent();
 
     return segments;
-  }, [streamingEvents]);
+  }, [streamingContent, streamingEvents]);
 
   // Save showToolCalls preference to localStorage
   useEffect(() => {
@@ -7912,18 +8233,54 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
-  // Auto-scroll to bottom when messages change
+  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
+    if (autoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollFrameRef.current);
+    }
+
+    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      autoScrollFrameRef.current = null;
+      const messagesRoot = chatMessagesRef.current;
+      if (!messagesRoot || !shouldAutoScrollRef.current) return;
+
+      programmaticScrollRef.current = true;
+      if (behavior === 'auto') {
+        messagesRoot.scrollTop = messagesRoot.scrollHeight;
+      } else {
+        messagesRoot.scrollTo({
+          top: messagesRoot.scrollHeight,
+          behavior,
+        });
+      }
+
+      window.requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollFrameRef.current);
+        autoScrollFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  // Auto-scroll to bottom when messages change. Streaming uses an immediate
+  // scroll so rapid token updates cannot queue competing smooth animations.
   useEffect(() => {
     if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
-
-    chatMessagesRef.current.scrollTo({
-      top: chatMessagesRef.current.scrollHeight,
-      behavior: 'smooth',
-    });
-  }, [activeConversation?.messages, streamingContent, consolidatedSegments]);
+    scheduleScrollToBottom(isStreaming ? 'auto' : 'smooth');
+  }, [activeConversation?.messages, consolidatedSegments, isStreaming, scheduleScrollToBottom, streamingContent]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
+    if (programmaticScrollRef.current) {
+      shouldAutoScrollRef.current = true;
+      return;
+    }
     const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
     // Use a small threshold to account for fractional pixels
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
@@ -8809,10 +9166,11 @@ export function ChatPanel({
     // Create new abort controller for this stream
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-    lastSeenVersionRef.current = 0;
+    const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
+    lastSeenVersionRef.current = sinceVersion;
 
     try {
-      const stream = api.streamChatTask(taskId, 0, abortController.signal, workspaceId);
+      const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
 
       for await (const data of stream) {
         // Handle explicit completion event
@@ -8832,7 +9190,10 @@ export function ChatPanel({
         if (state && typeof state === 'object') {
            const { content, events, version, hit_max_iterations } = state;
 
-           if (version !== undefined) lastSeenVersionRef.current = version;
+           if (version !== undefined) {
+             lastSeenVersionRef.current = version;
+             taskStreamVersionRef.current.set(taskId, version);
+           }
 
            if (content !== undefined) {
              setStreamingContent(prev => prev === content ? prev : content);
@@ -8841,7 +9202,8 @@ export function ChatPanel({
            if (events && Array.isArray(events)) {
              setStreamingEvents(prev => {
                 // Skip update if events haven't changed (simple length + last event check)
-                if (prev.length === events.length && prev.length > 0) {
+                if (prev.length === events.length) {
+                    if (events.length === 0) return prev;
                     const lastP = prev[prev.length - 1];
                     const lastN = events[events.length - 1];
                     // Simple check on last item to avoid unnecessary re-renders
@@ -8898,6 +9260,7 @@ export function ChatPanel({
             setIsStreaming(false);
             setStreamingContent('');
             setStreamingEvents([]);
+            taskStreamVersionRef.current.delete(taskId);
 
             // Notify parent that the task finished (e.g. refresh workspace preview)
             if (onTaskComplete) {
@@ -8921,17 +9284,23 @@ export function ChatPanel({
 
     const abortController = new AbortController();
     compactionAbortControllerRef.current = abortController;
+    const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
 
     let terminalStatus: string | null = null;
     let terminalError: string | null = null;
 
     try {
-      const stream = api.streamChatTask(taskId, 0, abortController.signal, workspaceId);
+      const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
       for await (const data of stream) {
         if (data.type === 'completion' || data.completed) {
           terminalStatus = data.status || (data.completed ? 'completed' : 'unknown');
           terminalError = data.error || null;
           break;
+        }
+        const state = data.type === 'state' ? data.state : data;
+        const version = state && typeof state === 'object' ? state.version : undefined;
+        if (version !== undefined) {
+          taskStreamVersionRef.current.set(taskId, version);
         }
       }
     } catch (err: any) {
@@ -8943,6 +9312,7 @@ export function ChatPanel({
 
       compactionTaskRef.current = null;
       compactionAbortControllerRef.current = null;
+      taskStreamVersionRef.current.delete(taskId);
       setIsCompacting(false);
       setCompactingConversationId(null);
       setRetryingCompactionMarker((current) => (
@@ -9093,6 +9463,13 @@ export function ChatPanel({
     return () => { connectTaskStreamRef.current = null; };
   }, [connectTaskStream]);
 
+  useEffect(() => {
+    watchCompactionTaskRef.current = (taskId: string, conversationId: string) => {
+      void watchCompactionTask(taskId, conversationId);
+    };
+    return () => { watchCompactionTaskRef.current = null; };
+  }, [watchCompactionTask]);
+
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
     if (workspaceChatState || workspaceId) {
@@ -9131,12 +9508,12 @@ export function ChatPanel({
             if (isCompactionTask(activeT)) {
               setIsCompacting(true);
               setCompactingConversationId(activeConversation.id);
-              void watchCompactionTask(activeT.id, activeConversation.id);
+              watchCompactionTaskRef.current?.(activeT.id, activeConversation.id);
               return;
             }
 
             // Connect to stream if not already processing this task
-            connectTaskStream(activeT.id);
+            connectTaskStreamRef.current?.(activeT.id);
         } else {
             // No active task for this conversation.
             // If we are streaming something that is NOT this task, we should stop?
@@ -9146,7 +9523,7 @@ export function ChatPanel({
             // If we were processing a task that just finished, connectTaskStream finally block clears it.
             if (!activeT) {
                  setActiveTask(null);
-                if (compactingConversationId === activeConversation.id) {
+                if (compactingConversationIdRef.current === activeConversation.id) {
                   setIsCompacting(false);
                   setCompactingConversationId(null);
                 }
@@ -9174,7 +9551,7 @@ export function ChatPanel({
         // Stop streaming when conversation ID changes (unmounting this effect instance)
         stopTaskStreaming();
     };
-  }, [activeConversation?.id, compactingConversationId, connectTaskStream, stopTaskStreaming, syncConversationActiveTaskId, watchCompactionTask, workspaceChatState, workspaceId]);
+  }, [activeConversation?.id, stopTaskStreaming, syncConversationActiveTaskId, workspaceChatState, workspaceId]);
 
   // Cleanup on component unmount
   useEffect(() => {
@@ -10305,6 +10682,14 @@ export function ChatPanel({
       setActiveTask(task);
       syncConversationActiveTaskId(conversationId, task.id);
       await connectTaskStream(task.id);
+
+      const replayResult = activeConversationRef.current;
+      if (replayBranch && replayResult?.id === conversationId && replayResult.messages.length <= truncateAt) {
+        const restored = await api.switchConversationBranch(conversationId, replayBranch.id, workspaceId);
+        setActiveConversation(restored);
+        setConversations(prev => prev.map(c => c.id === restored.id ? restored : c));
+        syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
+      }
 
       // Refresh branch points after the branch was created
       void refreshBranchPoints(conversationId);

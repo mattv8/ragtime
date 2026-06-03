@@ -1483,6 +1483,23 @@ textarea.chat-header-title-input {
   align-items: center;
   gap: 2px;
   margin-left: var(--space-xs);
+  position: relative;
+}
+
+.viz-version-anchor .visualization-export-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 72px;
+  padding: 4px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 30;
 }
 
 /* All interactive controls inside the anchor share the same icon-button styling
@@ -1490,6 +1507,7 @@ textarea.chat-header-title-input {
 .viz-version-anchor .live-data-refresh-btn,
 .viz-version-anchor .visualization-branch-btn,
 .viz-version-anchor .visualization-export-btn,
+.viz-version-anchor .visualization-export-menu-item,
 .viz-version-anchor .datatable-paging-btn {
   background: none;
   border: none;
@@ -1507,6 +1525,7 @@ textarea.chat-header-title-input {
 .viz-version-anchor .live-data-refresh-btn:hover:not(:disabled),
 .viz-version-anchor .visualization-branch-btn:hover:not(:disabled),
 .viz-version-anchor .visualization-export-btn:hover:not(:disabled),
+.viz-version-anchor .visualization-export-menu-item:hover:not(:disabled),
 .viz-version-anchor .datatable-paging-btn:hover:not(:disabled) {
   color: var(--color-text);
   background: var(--color-surface-hover);
@@ -1515,9 +1534,15 @@ textarea.chat-header-title-input {
 .viz-version-anchor .live-data-refresh-btn:disabled,
 .viz-version-anchor .visualization-branch-btn:disabled,
 .viz-version-anchor .visualization-export-btn:disabled,
+.viz-version-anchor .visualization-export-menu-item:disabled,
 .viz-version-anchor .datatable-paging-btn:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+.viz-version-anchor .visualization-export-menu-item {
+  justify-content: flex-start;
+  width: 100%;
 }
 
 /* Search input inside viz-version-anchor — compact, flush with the muted button style. */
@@ -2169,6 +2194,10 @@ textarea.chat-header-title-input {
   background: transparent;
   padding: 0.2rem;
   transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.tool-call-chart,
+.tool-call-datatable {
+  overflow: visible;
 }
 .tool-call:hover,
 .tool-call:has(.tool-call-details) {

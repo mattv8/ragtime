@@ -2532,6 +2532,44 @@ class RefreshLiveVisualizationRequest(BaseModel):
     )
 
 
+class ConversationExportTableData(BaseModel):
+    """Tabular data used to create a downloadable conversation export."""
+
+    columns: List[Any] = Field(default_factory=list, description="Column titles or column metadata objects")
+    rows: List[Any] = Field(default_factory=list, description="Rows as arrays or objects")
+
+
+class CreateConversationExportRequest(BaseModel):
+    """Request to create a short-lived downloadable export link."""
+
+    filename: str = Field(default="export", description="Desired filename. The server sanitizes the name and applies the requested extension.")
+    format: str = Field(default="csv", description="Requested file extension/format, such as csv, xlsx, pdf, doc, docx, txt, html, json, or xml.")
+    title: Optional[str] = Field(default=None, description="Optional display title used inside generated documents")
+    source_kind: Literal["table", "chart", "datatable", "live_table", "content", "binary"] = Field(
+        default="table",
+        description="Kind of export source supplied in this request.",
+    )
+    table: Optional[ConversationExportTableData] = Field(default=None, description="Snapshot table data for table-like exports")
+    visualization_payload: Optional[dict[str, Any]] = Field(default=None, description="Chart/datatable JSON payload to export")
+    data_connection: Optional[dict[str, Any]] = Field(default=None, description="Live data connection metadata used for click-time re-query")
+    text: Optional[str] = Field(default=None, description="Text content for document-like exports")
+    content_base64: Optional[str] = Field(default=None, description="Optional raw binary content encoded as base64 for arbitrary file types")
+    mime_type: Optional[str] = Field(default=None, description="Optional MIME type for binary or text content")
+    expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="How long the link remains valid")
+
+
+class CreateConversationExportResponse(BaseModel):
+    """Response containing a short-lived downloadable conversation export link."""
+
+    export_id: str = Field(description="Opaque export identifier")
+    filename: str = Field(description="Sanitized filename including extension")
+    format: str = Field(description="Resolved export format")
+    download_url: str = Field(description="Relative authenticated download URL")
+    markdown_link: str = Field(description="Markdown link using the filename as link text")
+    expires_at: datetime = Field(description="When the export link expires")
+    source_kind: str = Field(description="Resolved export source kind")
+
+
 class RefreshLiveVisualizationResponse(BaseModel):
     """Response from live data refresh for a chat visualization."""
 

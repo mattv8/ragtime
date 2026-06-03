@@ -7,6 +7,8 @@ USERSPACE_EXEC_RERUN_KIND = "userspace_exec"
 CONVERSATION_TOOL_RERUN_KIND = "conversation_tool"
 CHAT_DIAGNOSTIC_RERUN_KIND = "chat_diagnostic"
 TERMINAL_CONNECTION_TOOL_TYPES = frozenset({"ssh_shell"})
+HIDDEN_TOOL_VISIBILITY = "hidden"
+HIDDEN_PRESENTATION_TOOL_NAMES = frozenset({"create_download_link"})
 
 
 def _string_value(value: Any) -> str:
@@ -29,7 +31,7 @@ def normalize_tool_presentation(
             value_str = _string_value(value)
             if not key_str or not value_str:
                 continue
-            if key_str in {"kind", "rerun_kind"}:
+            if key_str in {"kind", "rerun_kind", "visibility"}:
                 normalized[key_str] = value_str.lower()
             else:
                 normalized[key_str] = value_str
@@ -54,6 +56,9 @@ def normalize_tool_presentation(
             "kind": TERMINAL_PRESENTATION_KIND,
             "rerun_kind": CHAT_DIAGNOSTIC_RERUN_KIND,
         }
+
+    if normalized_tool_name in HIDDEN_PRESENTATION_TOOL_NAMES:
+        return {"visibility": HIDDEN_TOOL_VISIBILITY}
 
     if tool_type in TERMINAL_CONNECTION_TOOL_TYPES:
         return {

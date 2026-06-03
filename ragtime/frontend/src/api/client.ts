@@ -3436,6 +3436,30 @@ export const api = {
     return handleResponse<import('@/types').RefreshLiveVisualizationResponse>(response);
   },
 
+  async createConversationExport(
+    conversationId: string,
+    request: import('@/types').CreateConversationExportRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').CreateConversationExportResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/exports${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').CreateConversationExportResponse>(response);
+  },
+
+  async downloadConversationExport(
+    conversationId: string,
+    request: import('@/types').CreateConversationExportRequest,
+    workspaceId?: string,
+  ): Promise<void> {
+    const exportInfo = await this.createConversationExport(conversationId, request, workspaceId);
+    const response = await apiFetch(exportInfo.download_url);
+    await downloadBlobResponse(response, exportInfo.filename, 'Failed to download export');
+  },
+
   async listVisualizationBranches(
     conversationId: string,
     request: import('@/types').RefreshLiveVisualizationRequest,

@@ -43,7 +43,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
 from pydantic import BaseModel, Field
-from starlette.responses import StreamingResponse
 
 from ragtime.chat_runtime.payloads import (
     build_chat_diagnostic_command_payload,
@@ -161,6 +160,17 @@ from ragtime.indexer.background_tasks import (
 )
 from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
+from ragtime.indexer.export_service import (
+    cleanup_expired_exports,
+    content_disposition,
+    content_source,
+    create_export_spec,
+    live_table_source,
+    load_export_spec,
+    render_export,
+    table_source,
+    verify_token,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
@@ -191,6 +201,8 @@ from ragtime.indexer.models import (
     ConversationShareSlugAvailabilityResponse,
     ConversationSummaryResponse,
     CreateConversationBranchRequest,
+    CreateConversationExportRequest,
+    CreateConversationExportResponse,
     CreateConversationRequest,
     CreateConversationShareLinkRequest,
     CreateIndexRequest,
@@ -275,6 +287,8 @@ from ragtime.rag import rag
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
+from ragtime.userspace.live_data import normalize_live_data_connection
+from ragtime.userspace.models import ExecuteComponentRequest
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
@@ -12162,6 +12176,177 @@ def _active_visualization_branch_id(branches: list[Any]) -> str | None:
     return None
 
 
+async def _assert_conversation_download_access(
+    conversation_id: str,
+    user: User,
+    workspace_id: Optional[str],
+) -> Conversation:
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+def _build_export_source_from_request(request: CreateConversationExportRequest) -> dict[str, Any]:
+    if request.source_kind == "binary":
+        return content_source(content_base64=request.content_base64, mime_type=request.mime_type)
+    if request.source_kind == "content":
+        return content_source(text=request.text, content_base64=request.content_base64, mime_type=request.mime_type)
+    if request.source_kind == "live_table":
+        if not isinstance(request.data_connection, dict):
+            raise HTTPException(status_code=400, detail="data_connection is required for live_table exports")
+        table = request.table
+        return live_table_source(
+            request.data_connection,
+            columns=(table.columns if table else None),
+            rows=(table.rows if table else None),
+        )
+    if request.source_kind == "chart":
+        payload = request.visualization_payload
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="visualization_payload is required for chart exports")
+        return {"kind": "chart_snapshot", "payload": payload}
+    if request.source_kind == "datatable":
+        payload = request.visualization_payload
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="visualization_payload is required for datatable exports")
+        return {"kind": "datatable_snapshot", "payload": payload}
+    if not request.table:
+        raise HTTPException(status_code=400, detail="table data is required for table exports")
+    return table_source(request.table.columns, request.table.rows)
+
+
+async def _resolve_live_export_table(source: dict[str, Any], selected_tool_ids: set[str]) -> tuple[list[str], list[list[Any]]]:
+    connection = source.get("data_connection")
+    try:
+        normalized = normalize_live_data_connection(
+            connection,
+            require_component_id=True,
+            require_request=True,
+            include_mappings=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert normalized is not None
+    component_request = ExecuteComponentRequest(
+        component_id=str(normalized["component_id"]),
+        request=normalized["request"],
+    )
+    component_response = await userspace_service.execute_component_for_selected_tools(
+        set(selected_tool_ids),
+        component_request,
+        error_log_prefix="Conversation export live query failed",
+    )
+    if component_response.error:
+        raise HTTPException(status_code=400, detail=component_response.error)
+    columns = list(component_response.columns or [])
+    rows_raw = list(component_response.rows or [])
+    if not columns and rows_raw and isinstance(rows_raw[0], dict):
+        columns = list(rows_raw[0].keys())
+    if not columns:
+        raise HTTPException(status_code=400, detail="Live export returned no columns")
+    rows: list[list[Any]] = []
+    for row in rows_raw:
+        if isinstance(row, dict):
+            rows.append([row.get(column) for column in columns])
+        elif isinstance(row, (list, tuple)):
+            rows.append(list(row))
+        else:
+            rows.append([row])
+    return columns, rows
+
+
+@router.post(
+    "/conversations/{conversation_id}/exports",
+    response_model=CreateConversationExportResponse,
+)
+async def create_conversation_export(
+    conversation_id: str,
+    request: CreateConversationExportRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Create a short-lived authenticated download link for a conversation export."""
+    cleanup_expired_exports()
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    effective_workspace_id = (workspace_id or conversation.workspace_id or "").strip() or None
+    await _assert_conversation_download_access(conversation_id, user, effective_workspace_id)
+
+    source = _build_export_source_from_request(request)
+    spec = create_export_spec(
+        conversation_id=conversation_id,
+        filename=request.filename,
+        export_format=request.format,
+        source=source,
+        workspace_id=effective_workspace_id,
+        title=request.title,
+        mime_type=request.mime_type,
+        expires_in_seconds=request.expires_in_seconds,
+    )
+    return CreateConversationExportResponse(
+        export_id=str(spec["id"]),
+        filename=str(spec["filename"]),
+        format=str(spec["format"]),
+        download_url=str(spec["download_url"]),
+        markdown_link=f"[{spec['filename']}]({spec['download_url']})",
+        expires_at=datetime.fromisoformat(str(spec["expires_at"])),
+        source_kind=str(source.get("kind") or request.source_kind),
+    )
+
+
+@router.get("/conversations/{conversation_id}/exports/{export_id}/{filename}")
+async def download_conversation_export(
+    conversation_id: str,
+    export_id: str,
+    filename: str,
+    token: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Render and stream a short-lived conversation export just in time."""
+    verify_token(token, conversation_id, export_id, filename)
+    spec = load_export_spec(conversation_id, export_id)
+    if spec.get("filename") != filename:
+        raise HTTPException(status_code=403, detail="Invalid export link")
+    spec_workspace_id = str(spec.get("workspace_id") or "").strip() or None
+    effective_workspace_id = (workspace_id or spec_workspace_id or "").strip() or None
+    conversation = await _assert_conversation_download_access(conversation_id, user, effective_workspace_id)
+    _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
+        conversation,
+        user,
+        effective_workspace_id,
+        _workspace_chat_required_role(effective_workspace_id),
+    )
+
+    async def live_resolver(source: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
+        return await _resolve_live_export_table(source, selected_tool_ids)
+
+    try:
+        data, media_type = await render_export(spec, live_table_resolver=live_resolver)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to render conversation export %s: %s", export_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to render export") from exc
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=media_type,
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
 @router.post(
     "/conversations/{conversation_id}/visualizations/refresh-live-data",
     response_model=RefreshLiveVisualizationResponse,
@@ -12544,8 +12729,11 @@ async def send_message_background(
         return _to_chat_task_response(existing_task)
 
     # Add user message to conversation first
-    await repository.add_message(conversation_id, "user", user_message)
+    updated_conversation = await repository.add_message(conversation_id, "user", user_message)
     schedule_title_generation(conversation_id, user_message)
+    if updated_conversation is None:
+        raise HTTPException(status_code=500, detail="Failed to add user message")
+    conv = updated_conversation
 
     await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 

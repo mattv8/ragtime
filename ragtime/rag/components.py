@@ -121,6 +121,7 @@ from ragtime.core.security import (
     validate_ssh_command,
 )
 from ragtime.core.sql_utils import (
+    TABLE_METADATA_END,
     TABLE_METADATA_START,
     add_table_metadata_to_psql_output,
     strip_table_metadata,
@@ -138,6 +139,14 @@ from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolv
 from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
 from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.indexer.export_service import (
+    chart_to_table,
+    content_source,
+    create_export_spec,
+    datatable_to_table,
+    live_table_source,
+    table_source,
+)
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
@@ -205,6 +214,7 @@ CHAT_CONTEXT_SAFETY_MARGIN_TOKENS = 1024
 CHAT_CONTEXT_PREFERRED_MIN_COMPLETION_TOKENS = 512
 CHAT_CONTEXT_ABSOLUTE_MIN_COMPLETION_TOKENS = 128
 DEFAULT_THINKING_BUDGET_TOKENS = 16384
+CREATE_DOWNLOAD_LINK_TOOL_ID = "create_download_link"
 
 
 @dataclass(frozen=True)
@@ -10993,6 +11003,326 @@ except Exception as e:
         continuity += self._build_cross_workspace_access_summary(accessible_workspace_modes or {})
         return continuity
 
+    def _build_export_context_from_visualization_output(
+        self,
+        *,
+        tool_name: str,
+        tool_args: Any,
+        tool_output: Any,
+    ) -> dict[str, Any] | None:
+        """Extract reusable export context from chart/datatable tool output."""
+        if tool_name not in {"create_chart", "create_datatable"}:
+            return None
+        payload = self._parse_json_object(tool_output)
+        if not payload:
+            return None
+
+        data_connection = payload.get("data_connection")
+        if not isinstance(data_connection, dict) or not data_connection.get("component_id") or "request" not in data_connection:
+            return None
+
+        try:
+            if tool_name == "create_chart" and payload.get("__chart__"):
+                columns, rows = chart_to_table(payload)
+                source_tool = "create_chart"
+            elif tool_name == "create_datatable" and payload.get("__datatable__"):
+                columns, rows = datatable_to_table(payload)
+                source_tool = "create_datatable"
+            else:
+                return None
+        except Exception as exc:
+            logger.debug("Could not extract export table from %s output: %s", tool_name, _format_exception_message(exc))
+            return None
+
+        title = str(payload.get("title") or "").strip()
+        if not title and isinstance(tool_args, dict):
+            title = str(tool_args.get("title") or "").strip()
+        return {
+            "source_tool": source_tool,
+            "title": title,
+            "data_connection": data_connection,
+            "columns": columns,
+            "rows": rows,
+        }
+
+    @staticmethod
+    def _extract_table_metadata_from_tool_output(tool_output: Any) -> tuple[list[str], list[list[Any]]] | None:
+        if not isinstance(tool_output, str):
+            return None
+        output = tool_output.strip()
+        if not output.startswith(TABLE_METADATA_START):
+            return None
+        line_end = output.find("\n")
+        metadata_search_end = len(output) if line_end == -1 else line_end
+        metadata_end = output.rfind(TABLE_METADATA_END, len(TABLE_METADATA_START), metadata_search_end)
+        if metadata_end == -1:
+            return None
+        raw_metadata = output[len(TABLE_METADATA_START) : metadata_end]
+        try:
+            metadata = json.loads(raw_metadata)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        columns = metadata.get("columns")
+        rows = metadata.get("rows")
+        if not isinstance(columns, list) or not columns or not isinstance(rows, list):
+            return None
+        return [str(column) for column in columns], [list(row) if isinstance(row, (list, tuple)) else [row] for row in rows]
+
+    def _build_export_context_from_query_output(
+        self,
+        *,
+        tool_name: str,
+        tool_args: Any,
+        tool_output: Any,
+    ) -> dict[str, Any] | None:
+        """Extract reusable export context from a configured query tool output."""
+        connection_meta = self._get_tool_connection_metadata(tool_name)
+        if not connection_meta or not tool_name.startswith("query_"):
+            return None
+        table = self._extract_table_metadata_from_tool_output(tool_output)
+        if table is None:
+            return None
+        columns, rows = table
+        if isinstance(tool_args, dict):
+            request_payload: Any = dict(tool_args)
+        else:
+            query_text = self._extract_query_text_from_tool_call((tool_args,), {}) if tool_args is not None else None
+            request_payload = {"query": query_text} if query_text else {}
+        if not request_payload:
+            return None
+        data_connection: dict[str, Any] = {
+            "component_kind": "tool_config",
+            "component_id": connection_meta["tool_config_id"],
+            "request": request_payload,
+        }
+        if connection_meta.get("tool_config_name"):
+            data_connection["component_name"] = connection_meta["tool_config_name"]
+        if connection_meta.get("tool_type"):
+            data_connection["component_type"] = connection_meta["tool_type"]
+        return {
+            "source_tool": tool_name,
+            "title": connection_meta.get("tool_config_name") or "Query export",
+            "data_connection": data_connection,
+            "columns": columns,
+            "rows": rows,
+        }
+
+    def _seed_latest_export_context_from_chat_history(
+        self,
+        chat_history: list[Any],
+        export_context: dict[str, Any] | None,
+    ) -> None:
+        """Seed export context from the latest reconstructed chart/datatable tool pair."""
+        if export_context is None or export_context.get("latest"):
+            return
+        pending_tool: dict[str, Any] | None = None
+        latest_context: dict[str, Any] | None = None
+        for message in chat_history:
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if tool_calls:
+                first_call = tool_calls[0]
+                if isinstance(first_call, dict):
+                    pending_tool = {
+                        "name": str(first_call.get("name") or ""),
+                        "args": first_call.get("args") if isinstance(first_call.get("args"), dict) else {},
+                    }
+                else:
+                    pending_tool = None
+                continue
+
+            tool_call_id = getattr(message, "tool_call_id", None)
+            if tool_call_id and pending_tool:
+                context = self._build_export_context_from_visualization_output(
+                    tool_name=str(pending_tool.get("name") or ""),
+                    tool_args=pending_tool.get("args") or {},
+                    tool_output=getattr(message, "content", ""),
+                )
+                if context is None:
+                    context = self._build_export_context_from_query_output(
+                        tool_name=str(pending_tool.get("name") or ""),
+                        tool_args=pending_tool.get("args") or {},
+                        tool_output=getattr(message, "content", ""),
+                    )
+                if context:
+                    latest_context = context
+                pending_tool = None
+
+        if latest_context:
+            export_context["latest"] = latest_context
+
+    def _wrap_tools_with_export_context_tracking(
+        self,
+        tools: list[Any],
+        export_context: dict[str, Any] | None,
+    ) -> list[Any]:
+        """Track latest exportable visualization output without changing tool behavior."""
+        if export_context is None or not tools:
+            return tools
+
+        wrapped_tools: list[Any] = []
+        for tool in tools:
+            tool_name = getattr(tool, "name", "")
+            original_coroutine = getattr(tool, "coroutine", None)
+            is_visualization_tool = tool_name in {"create_chart", "create_datatable"}
+            is_query_tool = tool_name.startswith("query_") and self._get_tool_connection_metadata(tool_name) is not None
+            if (not is_visualization_tool and not is_query_tool) or original_coroutine is None:
+                wrapped_tools.append(tool)
+                continue
+
+            async def tracking_coroutine(
+                *args: Any,
+                _tool_name: str = tool_name,
+                _orig=original_coroutine,
+                **kwargs: Any,
+            ) -> Any:
+                result = await _orig(*args, **kwargs)
+                if kwargs:
+                    tool_args: Any = kwargs
+                elif args and isinstance(args[0], BaseModel):
+                    tool_args = args[0].model_dump(mode="python")
+                elif args and isinstance(args[0], dict):
+                    tool_args = args[0]
+                else:
+                    tool_args = {}
+                context = self._build_export_context_from_visualization_output(
+                    tool_name=_tool_name,
+                    tool_args=tool_args,
+                    tool_output=result,
+                )
+                if context is None:
+                    context = self._build_export_context_from_query_output(
+                        tool_name=_tool_name,
+                        tool_args=tool_args,
+                        tool_output=result,
+                    )
+                if context:
+                    export_context["latest"] = context
+                return result
+
+            wrapped_tools.append(
+                self._clone_structured_tool(
+                    tool,
+                    coroutine=tracking_coroutine,
+                    func=getattr(tool, "func", None),
+                )
+            )
+
+        return wrapped_tools
+
+    def _build_conversation_export_tool(
+        self,
+        *,
+        conversation_id: Optional[str],
+        workspace_id: Optional[str],
+        export_context: dict[str, Any] | None = None,
+    ) -> StructuredTool | None:
+        """Build the hidden request-scoped tool that creates export links."""
+        if not conversation_id:
+            return None
+
+        class _CreateDownloadLinkInput(BaseModel):
+            filename: str = Field(
+                description=(
+                    "The exact download filename to show to the user, including extension "
+                    "such as prospects.xlsx, report.pdf, list.csv, brief.docx, or notes.txt."
+                )
+            )
+            format: str = Field(
+                default="csv",
+                description=(
+                    "Requested file extension/format. Supported generated formats include csv, tsv, xlsx, xls, json, txt, md, html, xml, pdf, doc, and docx. "
+                    "For other common filetypes, provide content_base64 and the matching filename extension."
+                ),
+            )
+            columns: list[Any] = Field(default_factory=list, description="Optional table column names or column metadata objects.")
+            rows: list[Any] = Field(default_factory=list, description="Optional table rows as arrays or objects.")
+            text: str = Field(default="", description="Optional text content for document-style exports such as pdf, doc, docx, txt, md, html, or json.")
+            content_base64: str = Field(default="", description="Optional base64-encoded binary content for arbitrary filetypes or prebuilt files.")
+            mime_type: str = Field(default="", description="Optional MIME type for base64 or text content.")
+            data_connection: dict[str, Any] | None = Field(
+                default=None,
+                description=(
+                    "Optional live data connection metadata with component_id and request. "
+                    "When provided, the file is queried just in time when the user clicks the link."
+                ),
+            )
+            expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="How long the download link remains valid.")
+
+        async def _create_download_link(
+            filename: str,
+            format: str = "csv",
+            columns: list[Any] | None = None,
+            rows: list[Any] | None = None,
+            text: str = "",
+            content_base64: str = "",
+            mime_type: str = "",
+            data_connection: dict[str, Any] | None = None,
+            expires_in_seconds: int = 3600,
+        ) -> str:
+            resolved_data_connection = data_connection
+            resolved_columns = columns
+            resolved_rows = rows
+            reused_context = False
+            latest_export_context = export_context.get("latest") if isinstance(export_context, dict) else None
+            if not resolved_data_connection and not rows and not columns and not text and not content_base64 and isinstance(latest_export_context, dict):
+                candidate_connection = latest_export_context.get("data_connection")
+                if isinstance(candidate_connection, dict):
+                    resolved_data_connection = candidate_connection
+                    resolved_columns = list(latest_export_context.get("columns") or [])
+                    resolved_rows = list(latest_export_context.get("rows") or [])
+                    reused_context = True
+
+            if resolved_data_connection:
+                source = live_table_source(resolved_data_connection, columns=resolved_columns or None, rows=resolved_rows or None)
+                source_kind = "live_table"
+            elif rows or columns:
+                source = table_source(rows=rows or [], columns=columns or [])
+                source_kind = "table_snapshot"
+            else:
+                source = content_source(text=text, content_base64=(content_base64 or None), mime_type=(mime_type or None))
+                source_kind = source.get("kind", "content_snapshot")
+
+            spec = create_export_spec(
+                conversation_id=conversation_id,
+                filename=filename,
+                export_format=format,
+                source=source,
+                workspace_id=workspace_id,
+                mime_type=mime_type or None,
+                expires_in_seconds=expires_in_seconds,
+            )
+            payload = {
+                "tool": CREATE_DOWNLOAD_LINK_TOOL_ID,
+                "status": "ok",
+                "filename": spec["filename"],
+                "format": spec["format"],
+                "source_kind": source_kind,
+                "reused_previous_source": reused_context,
+                "download_url": spec["download_url"],
+                "markdown_link": f"[{spec['filename']}]({spec['download_url']})",
+                "expires_at": spec["expires_at"],
+                "instruction": "In your final answer, show the markdown_link exactly as a normal download link.",
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
+        return StructuredTool.from_function(
+            coroutine=_create_download_link,
+            name=CREATE_DOWNLOAD_LINK_TOOL_ID,
+            description=(
+                "Create a short-lived authenticated download link for a file the user asked to export. "
+                "Use this when the user asks for Excel/XLSX, CSV, PDF, DOC/DOCX, or another downloadable file. "
+                "If the user asks to export the immediately previous live chart/table/query, you may omit rows/text/content and this tool will reuse the latest exportable live source. "
+                "Pass data_connection explicitly when the user refers to a different result or when you need to override that default so the file is queried just in time on click; "
+                "otherwise pass rows/columns for table exports, text for generated documents, or content_base64 for an already-built binary file. "
+                "After this tool returns, include only the markdown_link in the final response using the filename.extension as the visible link text."
+            ),
+            args_schema=_CreateDownloadLinkInput,
+            handle_tool_error=True,
+            handle_validation_error=True,
+        )
+
     def _build_chat_diagnostic_tools(
         self,
         *,
@@ -11513,6 +11843,7 @@ except Exception as e:
             "internal_continue_stop_reason": "",
             "tool_free_synthesis_used": False,
         }
+        export_context: dict[str, Any] = {}
 
         workspace_id = (workspace_context or {}).get("workspace_id", "")
         if not isinstance(workspace_id, str):
@@ -11579,6 +11910,11 @@ except Exception as e:
                     value_str = "read"
                 accessible_workspace_modes[key_str] = value_str
         has_workspace_context = bool(workspace_id and request_user_id)
+        conversation_export_tool = self._build_conversation_export_tool(
+            conversation_id=conversation_id,
+            workspace_id=workspace_id or None,
+            export_context=export_context,
+        )
 
         if has_workspace_context:
             workspace = await userspace_service.get_workspace(
@@ -11666,6 +12002,8 @@ except Exception as e:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}]
             runtime_tools.extend(userspace_tools)
             runtime_tools.extend(workspace_builtin_tools)
+            if conversation_export_tool is not None:
+                runtime_tools.append(conversation_export_tool)
             runtime_tools = self._apply_mode_specific_tool_description_overrides(
                 runtime_tools,
                 mode="userspace",
@@ -11733,6 +12071,13 @@ except Exception as e:
             )
             prompt_additions += self._build_userspace_object_storage_prompt_fragment(object_storage_config)
             prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
+            if conversation_export_tool is not None:
+                prompt_additions += (
+                    "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
+                    "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
+                    "pass data_connection only when overriding the default or targeting a different result. "
+                    "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
+                )
         else:
             has_workspace_payload = workspace_context is not None
             has_inline_viz_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in runtime_tools)
@@ -11769,6 +12114,17 @@ except Exception as e:
                         include_web_browse=(CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids),
                         include_web_read_pdf=(CHAT_WEB_READ_PDF_TOOL_ID in enabled_builtin_tool_ids),
                     )
+            if conversation_export_tool is not None:
+                runtime_tools.append(conversation_export_tool)
+                prompt_additions += (
+                    "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
+                    "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
+                    "pass data_connection only when overriding the default or targeting a different result. "
+                    "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
+                )
+
+        if conversation_export_tool is not None:
+            runtime_tools = self._wrap_tools_with_export_context_tracking(runtime_tools, export_context)
 
         if user_identity_prompt_fragment:
             prompt_additions = user_identity_prompt_fragment + prompt_additions
@@ -11794,6 +12150,7 @@ except Exception as e:
             "userspace_runtime_status_turn_hint": userspace_runtime_status_turn_hint,
             "user_identity_turn_line": user_identity_turn_line,
             "request_tool_state": request_tool_state,
+            "export_context": export_context,
             "workspace_id": workspace_id or None,
         }
 
@@ -13254,6 +13611,10 @@ except Exception as e:
                 user_content=langchain_content,
                 tools=context_tools,
             )
+            self._seed_latest_export_context_from_chat_history(
+                chat_history,
+                request_context.get("export_context"),
+            )
             request_llm = llm_resolution.llm
 
             if runtime_tools:
@@ -13509,6 +13870,10 @@ except Exception as e:
                 chat_history=chat_history,
                 user_content=langchain_content,
                 tools=context_tools,
+            )
+            self._seed_latest_export_context_from_chat_history(
+                chat_history,
+                request_context.get("export_context"),
             )
         except Exception as e:
             logger.exception("Error fitting streaming query to context window")

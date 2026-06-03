@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
@@ -62,7 +62,14 @@ export function useToast(): [ToastItem[], ToastActions] {
     };
   }, []);
 
-  return [toasts, { success, error, dismiss, clear }];
+  const actions = useMemo<ToastActions>(() => ({
+    success,
+    error,
+    dismiss,
+    clear,
+  }), [clear, dismiss, error, success]);
+
+  return [toasts, actions];
 }
 
 interface ToastContainerProps {

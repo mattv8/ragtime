@@ -3424,6 +3424,37 @@ export interface RefreshLiveVisualizationRequest {
   event_index: number;
 }
 
+export interface ConversationExportTableData {
+  columns: unknown[];
+  rows: unknown[];
+}
+
+export type ConversationExportSourceKind = 'table' | 'chart' | 'datatable' | 'live_table' | 'content' | 'binary';
+
+export interface CreateConversationExportRequest {
+  filename: string;
+  format: string;
+  title?: string | null;
+  source_kind?: ConversationExportSourceKind;
+  table?: ConversationExportTableData | null;
+  visualization_payload?: Record<string, unknown> | null;
+  data_connection?: Record<string, unknown> | null;
+  text?: string | null;
+  content_base64?: string | null;
+  mime_type?: string | null;
+  expires_in_seconds?: number;
+}
+
+export interface CreateConversationExportResponse {
+  export_id: string;
+  filename: string;
+  format: string;
+  download_url: string;
+  markdown_link: string;
+  expires_at: string;
+  source_kind: string;
+}
+
 export interface VisualizationBranchSummary {
   id: string;
   conversation_id: string;
