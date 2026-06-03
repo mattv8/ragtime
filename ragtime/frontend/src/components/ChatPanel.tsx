@@ -9149,7 +9149,8 @@ export function ChatPanel({
     setIsStreaming(false);
     setStreamingContent('');
     setStreamingEvents([]);
-  }, [stopTaskStreaming]);
+    syncConversationActiveTaskId(activeConversationRef.current?.id ?? '', null);
+  }, [stopTaskStreaming, syncConversationActiveTaskId]);
 
   const connectTaskStream = useCallback(async (taskId: string) => {
     // Prevent duplicate connection for same task
