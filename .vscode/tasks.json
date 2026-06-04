@@ -18,26 +18,8 @@
     },
     {
       "type": "shell",
-      "label": "Check README Sync",
-      "command": "bash tests/check_readme_sync.sh --check",
-      "group": "test",
-      "isBackground": false,
-      "problemMatcher": [],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated"
-      },
-      "detail": "Verify README.md snippets match .env.example and docker-compose.yml."
-    },
-    {
-      "type": "shell",
       "label": "Run All Tests",
-      "command": "docker build --progress=plain --target python-test -f ${workspaceFolder}/docker/Dockerfile ${workspaceFolder} && docker build --progress=plain --target frontend-builder -f ${workspaceFolder}/docker/Dockerfile --build-arg ENVIRONMENT=local --build-arg APP_VERSION=local ${workspaceFolder}",
-      "dependsOn": "Check README Sync",
-      "dependsOrder": "sequence",
+      "command": "bash tests/check_readme_sync.sh --check && docker build --progress=plain --target python-test -f ${workspaceFolder}/docker/Dockerfile ${workspaceFolder} && docker build --progress=plain --target frontend-builder -f ${workspaceFolder}/docker/Dockerfile --build-arg ENVIRONMENT=local --build-arg APP_VERSION=local ${workspaceFolder}",
       "group": {
         "kind": "test",
         "isDefault": true
