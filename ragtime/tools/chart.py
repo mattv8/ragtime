@@ -18,6 +18,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ragtime.core.logging import get_logger
+from ragtime.tools.visualization_validation import format_visualization_validation_error
 from ragtime.userspace.live_data import (
     normalize_live_data_connection,
     validate_live_data_connection,
@@ -42,9 +43,50 @@ Chat mode override:
 - For SQL-backed charts, pass the raw successful query result as `source_data` with `columns` and `rows`.
 - Do not manually build `labels` or `datasets`; this tool formats Chart.js data from `source_data`.
 - `data_connection` must include component_kind=tool_config, component_id, request, and a `result_mapping` that maps row fields to chart labels/datasets.
+- `data_connection` must reference an executable selected tool component. Do not use descriptive metadata such as component_kind=web_research, research dates, source labels, or notes in place of component_id/request.
+- If the values were synthesized from non-live web/prose research rather than one refreshable query/tool result, summarize them in text or a markdown table instead of forcing a live chart.
 - In `result_mapping`, use `label_field` for labels and `data_field` or `dataset` for the numeric value field.
 - Validate that `source_data.columns` contains every field referenced by `data_connection.result_mapping` before calling this tool.
 """
+
+
+CHART_EXPECTED_INPUT_SHAPE = """Live/query-backed chat chart:
+{
+    "chart_type": "<supported Chart.js chart type from this tool schema>",
+    "title": "Chart title",
+    "source_data": {"columns": ["label", "value"], "rows": [["A", 10]]},
+    "data_connection": {
+        "component_kind": "tool_config",
+        "component_id": "<selected ToolConfig ID>",
+        "request": {"query": "<exact successful query payload>"},
+        "result_mapping": {
+            "label_field": "label",
+            "datasets": [{"label": "Value", "data_field": "value"}]
+        }
+    }
+}
+
+Static/current-response chart when live refresh is not required:
+{
+    "chart_type": "<supported Chart.js chart type from this tool schema>",
+    "title": "Chart title",
+    "labels": ["A"],
+    "datasets": [{"label": "Value", "data": [10]}]
+}"""
+
+
+def _format_chart_validation_error(error: Exception) -> str:
+    return format_visualization_validation_error(
+        error,
+        tool_name="create_chart",
+        expected_shape=CHART_EXPECTED_INPUT_SHAPE,
+        guidance=[
+            "For SQL-backed chat charts, pass the raw successful query result in source_data.columns/source_data.rows.",
+            "Choose the chart_type that fits the data using the chart types accepted by the create_chart tool schema.",
+            "data_connection must identify a real selected tool_config component with component_id, request, and result_mapping.",
+            "If the values were synthesized from web research or other non-live sources, use text or a markdown table instead of retrying this tool.",
+        ],
+    )
 
 
 class ChartDataset(BaseModel):
@@ -520,7 +562,7 @@ async def create_chart(
 create_chart_tool = StructuredTool.from_function(
     coroutine=create_chart,
     name="create_chart",
-    handle_validation_error=True,
+    handle_validation_error=_format_chart_validation_error,
     description="""Create a data visualization chart to display to the user.
 PROACTIVELY use this tool when you retrieve numeric data that could be visualized.
 

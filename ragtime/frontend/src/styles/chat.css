@@ -1502,6 +1502,20 @@ textarea.chat-header-title-input {
   z-index: 30;
 }
 
+.markdown-table-export-wrapper {
+  margin: 0.75em 0;
+  max-width: 100%;
+}
+
+.markdown-table-export-anchor {
+  padding: 0 0 2px;
+}
+
+.markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 /* All interactive controls inside the anchor share the same icon-button styling
    as .chat-action-icon-btn — flat, muted, hover-highlighted. */
 .viz-version-anchor .live-data-refresh-btn,
@@ -3749,7 +3763,7 @@ button.tool-call-userspace-write-path-link:hover {
   max-width: 100%;
   overflow-x: auto;
   border-collapse: collapse;
-  margin: 0.75em 0;
+  margin: 0;
   font-size: var(--text-sm);
   background: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);

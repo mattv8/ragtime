@@ -692,6 +692,138 @@ const PreBlock = ({ children, ...rest }: React.HTMLAttributes<HTMLPreElement> & 
   return <pre {...rest}>{children}</pre>;
 };
 
+type MarkdownTableSnapshot = {
+  columns: string[];
+  rows: string[][];
+};
+
+function normalizeMarkdownTableCell(value: string | null | undefined): string {
+  return (value || '').replace(/\s+/g, ' ').trim();
+}
+
+function extractMarkdownTableSnapshot(tableElement: HTMLTableElement | null): MarkdownTableSnapshot | null {
+  if (!tableElement) return null;
+
+  const headerCells = Array.from(tableElement.querySelectorAll('thead tr:first-child th'));
+  const bodyRows = Array.from(tableElement.querySelectorAll('tbody tr'));
+  const rows = bodyRows.map((row) => Array.from(row.querySelectorAll('td, th')).map((cell) => normalizeMarkdownTableCell(cell.textContent)));
+
+  let columns = headerCells.map((cell) => normalizeMarkdownTableCell(cell.textContent));
+  if (columns.length === 0 && rows.length > 0) {
+    columns = rows[0].map((_, index) => `Column ${index + 1}`);
+  }
+  if (columns.length === 0) return null;
+
+  const width = columns.length;
+  const normalizedRows = rows.map((row) => {
+    if (row.length < width) return [...row, ...Array.from({ length: width - row.length }, () => '')];
+    return row.slice(0, width);
+  });
+  return { columns, rows: normalizedRows };
+}
+
+type MarkdownTableProps = React.TableHTMLAttributes<HTMLTableElement> & {
+  children?: ReactNode;
+  conversationId?: string;
+  workspaceId?: string;
+  enableExport?: boolean;
+  node?: unknown;
+};
+
+const MarkdownTable = memo(function MarkdownTable({
+  children,
+  conversationId,
+  workspaceId,
+  enableExport = false,
+  node: _node,
+  ...tableProps
+}: MarkdownTableProps) {
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [isExportingXlsx, setIsExportingXlsx] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const getSnapshot = useCallback(() => extractMarkdownTableSnapshot(tableRef.current), []);
+  const exportFilenameBase = 'markdown-table';
+
+  const handleDownloadMarkdownTableCsv = useCallback(() => {
+    const snapshot = getSnapshot();
+    if (!snapshot) return;
+    downloadCsv(snapshot.columns, snapshot.rows, sanitizeDownloadFilename(exportFilenameBase, 'csv'));
+  }, [getSnapshot]);
+
+  const handleDownloadMarkdownTableXlsx = useCallback(async () => {
+    if (!conversationId || isExportingXlsx) return;
+    const snapshot = getSnapshot();
+    if (!snapshot) return;
+    setIsExportingXlsx(true);
+    try {
+      await api.downloadConversationExport(
+        conversationId,
+        {
+          filename: sanitizeDownloadFilename(exportFilenameBase, 'xlsx'),
+          format: 'xlsx',
+          title: 'Markdown table',
+          source_kind: 'table',
+          table: snapshot,
+        },
+        workspaceId,
+      );
+    } catch (err) {
+      console.error('Failed to download markdown table XLSX export:', err);
+    } finally {
+      setIsExportingXlsx(false);
+    }
+  }, [conversationId, getSnapshot, isExportingXlsx, workspaceId]);
+
+  useEffect(() => {
+    const table = tableRef.current;
+    if (!table) return;
+
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    for (const row of rows) {
+      const rowText = normalizeMarkdownTableCell(row.textContent).toLowerCase();
+      const matches = !normalizedSearch || rowText.includes(normalizedSearch);
+      (row as HTMLTableRowElement).style.display = matches ? '' : 'none';
+    }
+
+    return () => {
+      for (const row of rows) {
+        (row as HTMLTableRowElement).style.display = '';
+      }
+    };
+  }, [searchQuery, children]);
+
+  const exportControls = enableExport ? (
+    <div className="viz-version-anchor markdown-table-export-anchor">
+      <div className="datatable-controls">
+        <input
+          type="search"
+          className="dt-input datatable-search-input"
+          placeholder="Search table..."
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          aria-label="Search markdown table"
+        />
+      </div>
+      <VisualizationExportControls
+        onCsv={handleDownloadMarkdownTableCsv}
+        onXlsx={conversationId ? handleDownloadMarkdownTableXlsx : undefined}
+        isExportingXlsx={isExportingXlsx}
+      />
+    </div>
+  ) : null;
+
+  return (
+    <div className="markdown-table-export-wrapper">
+      {exportControls}
+      <div className="markdown-table-scroll">
+        <table {...tableProps} ref={tableRef}>{children}</table>
+      </div>
+    </div>
+  );
+});
+
 const markdownComponents: Components = {
   pre: PreBlock,
 };
@@ -724,13 +856,35 @@ function normalizeMarkdownMathFences(content: string): string {
 
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
-export const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
+export const MemoizedMarkdown = memo(function MemoizedMarkdown({
+  content,
+  conversationId,
+  workspaceId,
+  enableTableExports = false,
+}: {
+  content: string;
+  conversationId?: string;
+  workspaceId?: string;
+  enableTableExports?: boolean;
+}) {
   const normalized = useMemo(() => normalizeMarkdownMathFences(content), [content]);
+  const components = useMemo<Components>(() => ({
+    ...markdownComponents,
+    table: ({ node, ...props }) => (
+      <MarkdownTable
+        {...props}
+        node={node}
+        conversationId={conversationId}
+        workspaceId={workspaceId}
+        enableExport={enableTableExports}
+      />
+    ),
+  }), [conversationId, enableTableExports, workspaceId]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
-      components={markdownComponents}
+      components={components}
     >
       {normalized}
     </ReactMarkdown>
@@ -5977,7 +6131,12 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
     // The final saved message will be properly rendered with markdown
     return (
       <div className="chat-message-text markdown-content">
-        <MemoizedMarkdown content={segment.content} />
+        <MemoizedMarkdown
+          content={segment.content}
+          conversationId={conversationId}
+          workspaceId={workspaceId}
+          enableTableExports
+        />
       </div>
     );
   }
@@ -12211,7 +12370,12 @@ export function ChatPanel({
                                       } else if (channel === 'final' && ev.type === 'content') {
                                         result.push(
                                           <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
-                                            <MemoizedMarkdown content={ev.content} />
+                                            <MemoizedMarkdown
+                                              content={ev.content}
+                                              conversationId={activeConversation.id}
+                                              workspaceId={workspaceId}
+                                              enableTableExports
+                                            />
                                           </div>
                                         );
                                       } else if (ev.type === 'error') {
@@ -12250,7 +12414,12 @@ export function ChatPanel({
                                   </>
                                 ) : (
                                   <div className="chat-message-text markdown-content">
-                                    <MemoizedMarkdown content={parseMessageContent(msg.content).text} />
+                                    <MemoizedMarkdown
+                                      content={parseMessageContent(msg.content).text}
+                                      conversationId={activeConversation.id}
+                                      workspaceId={workspaceId}
+                                      enableTableExports
+                                    />
                                   </div>
                                 )}
                               </>

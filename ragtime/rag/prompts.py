@@ -154,9 +154,10 @@ This is a turn-level reminder to follow real tool-calling behavior.
 - Keep channels distinct: reasoning belongs only in the reasoning/analysis stream,
     visible prose belongs in normal assistant content, and tool outputs must come
     only from real tool calls.
-- For visualizations, call create_chart/create_datatable. Never inline chart/table
-    JSON, __chart__/__datatable__ markers, markdown tables, or tool-result payloads
-    in reasoning or visible message text.
+- For live/query-backed visualizations, call create_chart/create_datatable. Never inline chart/table
+    JSON, __chart__/__datatable__ markers, or tool-result payloads in reasoning or visible message text.
+- For synthesized non-live tabular data compiled from prose, web pages, or several sources without
+    one authoritative refreshable tool request, render a normal markdown table in visible final text.
 ]
 
 """
@@ -486,7 +487,8 @@ You have visualization tools for rich, interactive displays.
 | Numeric comparisons | create_chart (bar) |
 | Time series, trends | create_chart (line) |
 | Parts of whole, distribution | create_chart (pie/doughnut) - max 7 segments |
-| Any tabular data | create_datatable |
+| Live/query-backed tabular data | create_datatable |
+| Synthesized non-live tabular data | markdown table |
 | Aggregations with raw data | BOTH: chart for viz + datatable for details |
 
 ### Chart Type Guide
@@ -501,11 +503,13 @@ UI_VISUALIZATION_CHAT_PROMPT = """
 
 ### Chat Mode Rules
 
-1. **NEVER use markdown tables** - Always use create_datatable instead
-2. **Use raw query results as source data** - For SQL-backed chat visualizations, pass the successful query result as `source_data` with `columns` and `rows`; do not manually build chart `labels`/`datasets` or DataTables `data`
-3. **Persist live refresh metadata** - When a chart/table is based on an active SQL query tool, include `data_connection` with `component_kind=tool_config`, the exact active ToolConfig ID as `component_id`, and the exact successful query payload as `request`
-4. **Map chart rows deterministically** - For charts sourced from row data, include `data_connection.result_mapping` with a label field and dataset field mappings so initial render and refresh rebuild the same chart without guessing
-5. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
+1. **Choose live vs non-live table rendering** - Use create_datatable only when the rows came from one refreshable query/tool result. Use a markdown table for synthesized lists compiled from web pages, prose, screenshots, or multiple non-canonical sources.
+2. **Markdown table exports are available** - Non-live markdown tables rendered in chat have CSV/XLSX export controls in the UI, so do not force them through create_datatable just to make them downloadable.
+3. **Use raw query results as source data** - For SQL-backed chat visualizations, pass the successful query result as `source_data` with `columns` and `rows`; do not manually build chart `labels`/`datasets` or DataTables `data`
+4. **Persist live refresh metadata** - When a chart/table is based on an active SQL query tool, include `data_connection` with `component_kind=tool_config`, the exact active ToolConfig ID as `component_id`, and the exact successful query payload as `request`
+5. **Use executable components, not descriptive metadata** - `data_connection` is not a notes field. Never use `component_kind=web_research`, research dates, source labels, or prose metadata as a substitute for `component_id` and `request`. If the current rows were synthesized from research instead of returned by a refreshable query/tool component, render a markdown table instead of calling create_datatable.
+6. **Map chart rows deterministically** - For charts sourced from row data, include `data_connection.result_mapping` with a label field and dataset field mappings so initial render and refresh rebuild the same chart without guessing
+7. **Visualize proactively** - Don't wait to be asked; render charts and tables automatically
 """
 
 

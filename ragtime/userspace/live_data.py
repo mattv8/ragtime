@@ -123,6 +123,29 @@ def validate_live_data_connection(
     require_result_mapping: bool = False,
 ) -> dict[str, Any]:
     """Validate and normalize required live data metadata for tool schemas."""
+    if not isinstance(data_connection, dict):
+        raise ValueError("data_connection must be an object with component_id and request")
+
+    errors: list[str] = []
+    component_id = _first_non_empty_string(data_connection, _COMPONENT_ID_KEYS)
+    request_payload = _first_present_value(data_connection, _REQUEST_KEYS)
+    if not component_id:
+        errors.append("data_connection.component_id is required")
+    if request_payload is None:
+        errors.append("data_connection.request is required")
+    elif _is_empty_request(request_payload):
+        errors.append("data_connection.request cannot be empty")
+    elif not isinstance(request_payload, (dict, str)):
+        errors.append("data_connection.request must be an object or string")
+
+    if require_result_mapping:
+        has_mapping = any(isinstance(data_connection.get(mapping_key), dict) and bool(data_connection.get(mapping_key)) for mapping_key in _MAPPING_KEYS)
+        if not has_mapping:
+            errors.append("data_connection.result_mapping is required for live charts")
+
+    if errors:
+        raise ValueError("; ".join(errors))
+
     normalized = normalize_live_data_connection(
         data_connection,
         require_component_id=True,

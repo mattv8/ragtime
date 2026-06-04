@@ -18,6 +18,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ragtime.core.logging import get_logger
+from ragtime.tools.visualization_validation import format_visualization_validation_error
 from ragtime.userspace.live_data import (
     normalize_live_data_connection,
     validate_live_data_connection,
@@ -40,10 +41,44 @@ CHAT_DATATABLE_DESCRIPTION_SUFFIX = """
 
 Chat mode override:
 - For SQL-backed tables, pass the raw successful query result as `source_data` with `columns` and `rows`.
+- For synthesized non-live tables compiled from web pages, prose, screenshots, or multiple non-canonical sources, render a markdown table in the final answer instead of calling this tool.
 - Do not manually transform rows into the final DataTables `data` array; this tool formats the table payload.
 - Include `data_connection` with component_kind=tool_config, component_id, and the exact request payload used to fetch the rows.
+- `data_connection` must reference an executable selected tool component. Do not use descriptive metadata such as component_kind=web_research, research dates, source labels, or notes in place of component_id/request.
 - Validate that `source_data.columns` matches each row before calling this tool.
 """
+
+
+DATATABLE_EXPECTED_INPUT_SHAPE = """Live/query-backed chat table:
+{
+    "title": "Table title",
+    "source_data": {"columns": ["column_a"], "rows": [["value"]]},
+    "data_connection": {
+        "component_kind": "tool_config",
+        "component_id": "<selected ToolConfig ID>",
+        "request": {"query": "<exact successful query payload>"}
+    }
+}
+
+Static/current-response table when live refresh is not required:
+{
+    "title": "Table title",
+    "columns": ["column_a"],
+    "data": [["value"]]
+}"""
+
+
+def _format_datatable_validation_error(error: Exception) -> str:
+    return format_visualization_validation_error(
+        error,
+        tool_name="create_datatable",
+        expected_shape=DATATABLE_EXPECTED_INPUT_SHAPE,
+        guidance=[
+            "For SQL-backed chat tables, pass the raw successful query result in source_data.columns/source_data.rows.",
+            "data_connection must identify a real selected tool_config component with component_id and the exact successful request payload.",
+            "If the rows were synthesized from web research or other non-live sources, render a markdown table in the final answer instead of retrying this tool.",
+        ],
+    )
 
 
 def _normalize_source_table(source_data: Any) -> tuple[list[str], list[list[Any]]]:
@@ -157,6 +192,31 @@ class CreateLiveDataTableInput(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_live_input(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+
+        normalized = dict(values)
+        source_data = normalized.get("source_data")
+        if not isinstance(source_data, dict):
+            return normalized
+
+        source_copy = dict(source_data)
+        top_level_columns = normalized.pop("columns", None)
+        top_level_rows = normalized.pop("rows", None)
+        top_level_data = normalized.pop("data", None)
+        if "columns" not in source_copy and top_level_columns is not None:
+            source_copy["columns"] = top_level_columns
+        if "rows" not in source_copy and "data" not in source_copy:
+            if top_level_rows is not None:
+                source_copy["rows"] = top_level_rows
+            elif top_level_data is not None:
+                source_copy["rows"] = top_level_data
+        normalized["source_data"] = source_copy
+        return normalized
+
     @field_validator("data_connection", mode="before")
     @classmethod
     def require_live_data_connection(cls, value: Any) -> dict[str, Any]:
@@ -241,7 +301,7 @@ async def create_datatable(
 create_datatable_tool = StructuredTool.from_function(
     coroutine=create_datatable,
     name="create_datatable",
-    handle_validation_error=True,
+    handle_validation_error=_format_datatable_validation_error,
     description="""Create an interactive data table with sorting, searching, and pagination.
 Use this tool when presenting tabular data that the user might want to explore.
 
