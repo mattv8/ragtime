@@ -1,7 +1,19 @@
+import asyncio
 import unittest
 from unittest import mock
 
-from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter
+import ragtime.mcp.tools as mcp_tools
+from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, MCPToolDefinition
+
+
+class _HangingMcpTool:
+    def __init__(self) -> None:
+        self.started = False
+
+    async def __call__(self, **_kwargs: object) -> str:
+        self.started = True
+        await asyncio.Event().wait()
+        return "unreachable"
 
 
 class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
@@ -71,6 +83,37 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         timeout_schema = schema["properties"]["timeout"]
         self.assertEqual(timeout_schema["default"], 45)
         self.assertEqual(timeout_schema["maximum"], 45)
+
+    def test_mcp_call_timeout_uses_explicit_requested_timeout(self) -> None:
+        adapter = MCPToolAdapter()
+
+        effective_timeout = adapter._resolve_mcp_call_timeout(  # pyright: ignore[reportPrivateUsage]
+            {"command": "sleep 999", "timeout": 60},
+            timeout_max_seconds=300,
+            input_schema={"properties": {"timeout": {"default": 300}}},
+        )
+
+        self.assertEqual(effective_timeout, 60)
+
+    async def test_execute_tool_returns_timeout_when_executor_hangs(self) -> None:
+        adapter = MCPToolAdapter()
+        hanging_tool = _HangingMcpTool()
+        adapter._tool_definitions["ssh_docker_1"] = MCPToolDefinition(  # pyright: ignore[reportPrivateUsage]
+            name="ssh_docker_1",
+            description="Execute shell commands via SSH.",
+            input_schema={"properties": {"timeout": {"default": 1}}},
+            tool_config={"timeout_max_seconds": 1},
+            execute_fn=hanging_tool,
+        )
+
+        with mock.patch.object(mcp_tools, "MCP_TOOL_TIMEOUT_GRACE_SECONDS", 0.01):
+            result = await adapter.execute_tool(
+                "ssh_docker_1",
+                {"command": "sleep 999", "timeout": 1},
+            )
+
+        self.assertTrue(hanging_tool.started)
+        self.assertIn("timed out after 1 seconds", result)
 
 
 if __name__ == "__main__":
