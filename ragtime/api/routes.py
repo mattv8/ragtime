@@ -428,6 +428,9 @@ async def _get_openapi_model_entries(
 
         try:
             available = await get_available_chat_models()
+            if not sync_chat:
+                allowed_openapi = {str(value).strip() for value in (available.allowed_openapi_models or []) if str(value).strip()}
+                collapse_cross_provider_duplicates = not allowed_openapi
 
             for model in available.models:
                 if not str(model.id or "").strip():

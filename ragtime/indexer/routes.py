@@ -6668,6 +6668,96 @@ def _build_discovered_model_identifiers(models: List[AvailableModel]) -> List[st
     return list(dict.fromkeys(_build_scoped_model_identifier(model) for model in models))
 
 
+def _split_scoped_model_identifier(identifier: str) -> tuple[Optional[str], str]:
+    """Split provider-scoped identifiers while tolerating legacy bare model IDs."""
+    raw = str(identifier or "").strip()
+    if not raw:
+        return None, ""
+    if "::" not in raw:
+        return None, raw
+    provider, _, model_id = raw.partition("::")
+    provider = normalize_provider_name(provider)
+    model_id = model_id.strip()
+    if not provider or not model_id:
+        return None, raw
+    return provider, model_id
+
+
+def _prune_stale_allowed_models(
+    allowed_models: List[str],
+    discovered_model_identifiers: List[str],
+    refreshed_providers: set[str],
+) -> tuple[List[str], List[str]]:
+    """Drop provider-scoped allowlist entries removed from successfully refreshed providers."""
+    discovered_by_provider: dict[str, list[set[str]]] = defaultdict(list)
+    for identifier in discovered_model_identifiers:
+        provider, model_id = _split_scoped_model_identifier(identifier)
+        if provider and model_id:
+            discovered_by_provider[provider].append({variant.casefold() for variant in _model_id_variants(model_id)})
+
+    reconciled: List[str] = []
+    removed: List[str] = []
+    seen: set[str] = set()
+
+    for value in allowed_models:
+        candidate = str(value or "").strip()
+        if not candidate:
+            continue
+        folded = candidate.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+
+        provider, model_id = _split_scoped_model_identifier(candidate)
+        if provider and provider in refreshed_providers:
+            candidate_variants = {variant.casefold() for variant in _model_id_variants(model_id)}
+            if not any(candidate_variants.intersection(discovered_variants) for discovered_variants in discovered_by_provider.get(provider, [])):
+                removed.append(candidate)
+                continue
+
+        reconciled.append(candidate)
+
+    return reconciled, removed
+
+
+async def _reconcile_allowed_models_with_discovery(
+    app_settings: AppSettings,
+    *,
+    settings_attr: str,
+    update_key: str,
+    label: str,
+    discovered_model_identifiers: List[str],
+    refreshed_providers: set[str],
+) -> List[str]:
+    """Persist allowlist cleanup after a successful provider refresh pass."""
+    allowed_models = [str(value).strip() for value in (getattr(app_settings, settings_attr, None) or []) if str(value).strip()]
+    if not allowed_models or not refreshed_providers:
+        return allowed_models
+
+    reconciled, removed = _prune_stale_allowed_models(
+        allowed_models,
+        discovered_model_identifiers,
+        refreshed_providers,
+    )
+    if not removed:
+        return allowed_models
+
+    try:
+        await repository.update_settings({update_key: reconciled})
+        invalidate_settings_cache()
+        logger.info(
+            "Pruned %d stale %s model allowlist entr%s: %s",
+            len(removed),
+            label,
+            "y" if len(removed) == 1 else "ies",
+            removed,
+        )
+        return reconciled
+    except Exception as exc:
+        logger.warning("Failed to persist stale allowlist cleanup: %s", exc)
+        return allowed_models
+
+
 def _model_id_variants(model_id: str) -> set[str]:
     """Return comparable model ID variants for publisher-prefixed IDs."""
     raw = str(model_id or "").strip().lstrip("/")
@@ -8990,6 +9080,7 @@ async def get_available_chat_models():
 
     # --- Await all provider fetches in parallel ---
     results: list[tuple[str, LLMModelsResponse]] = []
+    successful_discovery_providers: set[str] = set()
     if tasks:
         results = await asyncio.gather(*tasks)
 
@@ -9005,6 +9096,8 @@ async def get_available_chat_models():
                 if any(code in (result.message or "") for code in ["401", "403"]):
                     state.connected = False
             continue
+
+        successful_discovery_providers.add(normalized_provider)
 
         if state:
             state.available = bool(result.models)
@@ -9077,9 +9170,26 @@ async def get_available_chat_models():
 
     discovered_model_identifiers = _build_discovered_model_identifiers(all_models)
 
+    allowed_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_chat_models",
+        update_key="allowed_chat_models",
+        label="chat",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
+
+    allowed_openapi_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_openapi_models",
+        update_key="allowed_openapi_models",
+        label="OpenAPI",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
+
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
-    allowed_models = [str(value).strip() for value in (app_settings.allowed_chat_models or []) if str(value).strip()]
     if allowed_models:
         all_models = [model for model in all_models if _identifier_in_allowed_models(_build_scoped_model_identifier(model), allowed_models)]
 
@@ -9116,7 +9226,7 @@ async def get_available_chat_models():
         current_model=current_model,
         discovered_model_identifiers=discovered_model_identifiers,
         allowed_models=allowed_models,
-        allowed_openapi_models=app_settings.allowed_openapi_models or [],
+        allowed_openapi_models=allowed_openapi_models,
         models_loading=models_loading,
         copilot_refresh_in_progress=copilot_refresh_in_progress,
         provider_states=list(provider_states.values()),
@@ -9264,6 +9374,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
     # --- Await all provider fetches in parallel ---
     results: list[tuple[str, LLMModelsResponse | None]] = []
+    successful_discovery_providers: set[str] = set()
     if tasks:
         results = await asyncio.gather(*tasks)
 
@@ -9271,6 +9382,8 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     for provider_key, result in results:
         if not result or not result.success:
             continue
+
+        successful_discovery_providers.add(_normalize_provider_alias(provider_key))
 
         for m in result.models:
             if provider_key == "github_copilot":
@@ -9323,8 +9436,25 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                 )
             )
 
-    # Get currently allowed models from settings
-    allowed_models = app_settings.allowed_chat_models or []
+    discovered_model_identifiers = _build_discovered_model_identifiers(all_models)
+
+    allowed_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_chat_models",
+        update_key="allowed_chat_models",
+        label="chat",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
+
+    allowed_openapi_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_openapi_models",
+        update_key="allowed_openapi_models",
+        label="OpenAPI",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
 
     # Assign groups to models for UI organization
     await ensure_model_metadata_loaded()
@@ -9334,9 +9464,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         models=all_models,
         default_model=app_settings.llm_model,
         current_model=app_settings.llm_model,
-        discovered_model_identifiers=_build_discovered_model_identifiers(all_models),
+        discovered_model_identifiers=discovered_model_identifiers,
         allowed_models=allowed_models,
-        allowed_openapi_models=app_settings.allowed_openapi_models or [],
+        allowed_openapi_models=allowed_openapi_models,
     )
 
 

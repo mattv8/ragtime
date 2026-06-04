@@ -1202,14 +1202,35 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
   const initSelectedFromAllowed = (models: AvailableModel[], allowedModels: string[]): Set<string> => {
     const toScopedKey = (model: AvailableModel): string => `${model.provider}::${model.id}`;
+    const modelIdVariants = (modelId: string): Set<string> => {
+      const raw = modelId.trim().replace(/^\/+/, '').toLowerCase();
+      if (!raw) return new Set();
+      const variants = new Set([raw]);
+      if (raw.includes('/')) {
+        variants.add(raw.split('/').slice(1).join('/'));
+      }
+      return variants;
+    };
+    const scopedAllowedMatchesModel = (allowed: string, model: AvailableModel): boolean => {
+      const [allowedProvider, allowedModelId] = allowed.trim().split('::', 2);
+      if (normalizeLlmProvider(allowedProvider) !== model.provider || !allowedModelId) return false;
+      const allowedVariants = modelIdVariants(allowedModelId);
+      return [...modelIdVariants(model.id)].some((variant) => allowedVariants.has(variant));
+    };
     if (allowedModels.length > 0) {
       const hasScopedEntries = allowedModels.some((value) => value.includes('::'));
       if (hasScopedEntries) {
-        return new Set(allowedModels);
+        return new Set(
+          models
+            .filter((model) => allowedModels.some((allowed) => scopedAllowedMatchesModel(allowed, model)))
+            .map((model) => toScopedKey(model))
+        );
       }
-      const legacyIds = new Set(allowedModels);
+      const legacyIds = new Set(allowedModels.map((value) => value.trim().toLowerCase()).filter(Boolean));
       return new Set(
-        models.filter((model) => legacyIds.has(model.id)).map((model) => toScopedKey(model))
+        models
+          .filter((model) => [...modelIdVariants(model.id)].some((variant) => legacyIds.has(variant)))
+          .map((model) => toScopedKey(model))
       );
     }
     return new Set(models.map((m) => toScopedKey(m)));

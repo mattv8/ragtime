@@ -40,6 +40,7 @@ from ragtime.indexer.routes import (
     _merge_llm_model_results,
     _normalize_conversation_model_provider,
     _parse_model_identifier,
+    _prune_stale_allowed_models,
 )
 from ragtime.rag.components import RAGComponents, _CopilotChatOpenAI
 
@@ -296,6 +297,36 @@ class ModelResolutionTests(unittest.TestCase):
             ),
             "Inclusion AI Ring 2.6 1T (free)",
         )
+
+    def test_prune_stale_allowed_models_preserves_github_publisher_variants(self) -> None:
+        reconciled, removed = _prune_stale_allowed_models(
+            [
+                "github_copilot::gpt-4.1",
+                "github_copilot::gemini-3-flash-preview",
+                "openai::gpt-4.1",
+            ],
+            [
+                "github_copilot::openai/gpt-4.1",
+                "github_copilot::gemini-3.5-flash",
+            ],
+            {"github_copilot"},
+        )
+
+        self.assertEqual(
+            reconciled,
+            ["github_copilot::gpt-4.1", "openai::gpt-4.1"],
+        )
+        self.assertEqual(removed, ["github_copilot::gemini-3-flash-preview"])
+
+    def test_prune_stale_allowed_models_only_prunes_refreshed_providers(self) -> None:
+        reconciled, removed = _prune_stale_allowed_models(
+            ["openai::gpt-4.1"],
+            ["github_copilot::openai/gpt-4.1"],
+            {"github_copilot"},
+        )
+
+        self.assertEqual(reconciled, ["openai::gpt-4.1"])
+        self.assertEqual(removed, [])
 
     def test_openapi_model_entry_disambiguates_duplicate_display_ids(self) -> None:
         openai_entry = _build_openapi_model_entry(
