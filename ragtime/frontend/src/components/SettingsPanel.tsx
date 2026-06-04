@@ -1213,7 +1213,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     };
     const scopedAllowedMatchesModel = (allowed: string, model: AvailableModel): boolean => {
       const [allowedProvider, allowedModelId] = allowed.trim().split('::', 2);
-      if (normalizeLlmProvider(allowedProvider) !== model.provider || !allowedModelId) return false;
+      if (normalizeLlmProvider(allowedProvider as LlmProviderWire) !== model.provider || !allowedModelId) return false;
       const allowedVariants = modelIdVariants(allowedModelId);
       return [...modelIdVariants(model.id)].some((variant) => allowedVariants.has(variant));
     };
