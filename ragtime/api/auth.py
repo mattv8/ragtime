@@ -35,7 +35,7 @@ from ragtime.core.api_accounting import (
     get_api_daily_trend,
     get_api_provider_model_breakdown,
 )
-from ragtime.core.app_settings import get_app_settings
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     authenticate,
     create_access_token,
@@ -959,6 +959,10 @@ async def get_auth_status(
     chat_auto_compaction_threshold_percent = 99
 
     try:
+        # Invalidate the settings cache before reading to ensure fresh values.
+        # The cache is per-worker, so a setting saved on one worker may be stale
+        # on another in multi-worker deployments.
+        invalidate_settings_cache()
         app_settings = await get_app_settings()
         configured_server_name = str(app_settings.get("server_name") or "").strip()
         if configured_server_name:
