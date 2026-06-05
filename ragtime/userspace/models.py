@@ -445,6 +445,10 @@ class UserSpaceWorkspaceScmStatus(BaseModel):
     auto_pull_enabled: bool = False
     auto_push_interval_seconds: int = Field(default=3600, ge=300, le=2592000)
     auto_pull_interval_seconds: int = Field(default=3600, ge=300, le=2592000)
+    auto_push_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    auto_push_timezone: str | None = None
+    auto_pull_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    auto_pull_timezone: str | None = None
     sync_paused: bool = False
     sync_paused_reason: str | None = None
     connected_at: datetime | None = None
@@ -549,6 +553,26 @@ class UserSpaceWorkspaceScmSettingsRequest(BaseModel):
         ge=300,
         le=2592000,
         description="Auto-pull interval in seconds (5 minutes to 30 days).",
+    )
+    auto_push_start_minute: int | None = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for auto-push.",
+    )
+    auto_push_timezone: str | None = Field(
+        default=None,
+        description="IANA timezone used with auto_push_start_minute.",
+    )
+    auto_pull_start_minute: int | None = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for auto-pull.",
+    )
+    auto_pull_timezone: str | None = Field(
+        default=None,
+        description="IANA timezone used with auto_pull_start_minute.",
     )
     clear_sync_paused: bool = Field(
         default=False,
@@ -1104,6 +1128,8 @@ class UserspaceMountSource(BaseModel):
         default=30,
         description="Polling interval in seconds for auto-sync (1 to 2592000)",
     )
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
     source_available: bool = True
     source_unavailable_reason: str | None = None
     source_unavailable_kind: MountSourceUnavailableKind | None = None
@@ -1131,6 +1157,8 @@ class CreateUserspaceMountSourceRequest(BaseModel):
         le=2592000,
         description="Polling interval in seconds for auto-sync (1s to ~1 month)",
     )
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
 
 
 class CreateUserUserspaceMountSourceRequest(BaseModel):
@@ -1145,6 +1173,8 @@ class CreateUserUserspaceMountSourceRequest(BaseModel):
     oauth_account_id: str | None = Field(default=None)
     connection_config: dict[str, Any] = Field(default_factory=dict)
     approved_paths: list[str] = Field(default_factory=list)
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
 
 
 class BrowseCloudMountSourceRequest(BaseModel):
@@ -1168,6 +1198,8 @@ class UpdateUserUserspaceMountSourceRequest(BaseModel):
     oauth_account_id: str | None = None
     connection_config: dict[str, Any] | None = None
     approved_paths: list[str] | None = None
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
 
 
 class UserCloudOAuthAccount(BaseModel):
@@ -1226,6 +1258,8 @@ class UpdateUserspaceMountSourceRequest(BaseModel):
         le=2592000,
         description="Polling interval in seconds for auto-sync (1s to ~1 month)",
     )
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
 
 
 class BrowseUserspaceMountSourceRequest(BaseModel):
@@ -1276,6 +1310,8 @@ class WorkspaceMount(BaseModel):
         default=None,
         description="Per-workspace mount auto-sync interval override in seconds. Null inherits the source/global default.",
     )
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
     source_name: str | None = None
     source_type: UserspaceMountSourceType | None = None
     mount_backend: UserspaceMountBackend | None = None
@@ -1352,6 +1388,8 @@ class CreateWorkspaceMountRequest(BaseModel):
         le=2592000,
         description="Optional per-mount auto-sync interval override in seconds. Null inherits the source/global default.",
     )
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
     sync_mode: WorkspaceMountSyncMode = Field(
         default="merge",
         description=(
@@ -1369,6 +1407,8 @@ class UpdateWorkspaceMountRequest(BaseModel):
     enabled: bool | None = Field(default=None)
     auto_sync_enabled: bool | None = Field(default=None)
     sync_interval_seconds: int | None = Field(default=None, ge=1, le=2592000)
+    sync_start_minute: int | None = Field(default=None, ge=0, le=1439)
+    sync_timezone: str | None = None
     sync_mode: WorkspaceMountSyncMode | None = Field(
         default=None,
         description="Updated sync policy for SSH/SFTP and cloud-backed mounts.",

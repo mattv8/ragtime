@@ -16,6 +16,7 @@ import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
+import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
@@ -1424,6 +1425,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_chats_default: data.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: data.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: data.userspace_mount_sync_interval_seconds,
+        userspace_mount_sync_start_minute: data.userspace_mount_sync_start_minute,
+        userspace_mount_sync_timezone: data.userspace_mount_sync_timezone,
         userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
 
         // OpenAPI model settings
@@ -2303,6 +2306,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_chats_default: formData.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: formData.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: formData.userspace_mount_sync_interval_seconds,
+        userspace_mount_sync_start_minute: formData.userspace_mount_sync_start_minute ?? defaultScheduleStartMinute(),
+        userspace_mount_sync_timezone: formData.userspace_mount_sync_timezone ?? defaultScheduleTimezone(),
         userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
         http_proxy_safe_timeout_seconds: formData.http_proxy_safe_timeout_seconds,
       });
@@ -2315,6 +2320,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_chats_default: updated.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: updated.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: updated.userspace_mount_sync_interval_seconds,
+        userspace_mount_sync_start_minute: updated.userspace_mount_sync_start_minute,
+        userspace_mount_sync_timezone: updated.userspace_mount_sync_timezone,
         userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
         http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
@@ -2331,6 +2338,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.userspace_duplicate_copy_chats_default,
     formData.userspace_duplicate_copy_mounts_default,
     formData.userspace_mount_sync_interval_seconds,
+    formData.userspace_mount_sync_start_minute,
+    formData.userspace_mount_sync_timezone,
     formData.userspace_sqlite_import_max_bytes,
     formData.http_proxy_safe_timeout_seconds,
   ]);
@@ -5950,6 +5959,15 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                           {formatMountSyncInterval(currentVal)}
                         </span>
                       </div>
+                      <ScheduleStartTimeInput
+                        enabled={currentVal > 0}
+                        startMinute={formData.userspace_mount_sync_start_minute ?? settings?.userspace_mount_sync_start_minute ?? null}
+                        timezone={formData.userspace_mount_sync_timezone ?? settings?.userspace_mount_sync_timezone ?? null}
+                        onStartMinuteChange={(value) => setFormData({ ...formData, userspace_mount_sync_start_minute: value })}
+                        onTimezoneChange={(value) => setFormData({ ...formData, userspace_mount_sync_timezone: value })}
+                        label="Start Time"
+                        style={{ marginTop: 10 }}
+                      />
                       <p className="field-help">
                         Range: 1 second to 30 days. Local workspace file changes still wake eligible mounts immediately.
                       </p>

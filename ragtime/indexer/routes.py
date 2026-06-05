@@ -868,6 +868,8 @@ async def reindex_from_git(
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
         git_history_depth=config_data.get("git_history_depth", 1),
         reindex_interval_hours=config_data.get("reindex_interval_hours", 0),
+        reindex_start_minute=config_data.get("reindex_start_minute"),
+        reindex_timezone=config_data.get("reindex_timezone"),
     )
 
     try:
@@ -1146,6 +1148,16 @@ class UpdateIndexConfigRequest(BaseModel):
         le=8760,
         description="Hours between automatic pull & re-index (0 = manual only)",
     )
+    reindex_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for automatic pull & re-index.",
+    )
+    reindex_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with reindex_start_minute.",
+    )
 
 
 @router.patch("/{name}/config")
@@ -1188,6 +1200,8 @@ async def update_index_config(
         "git_clone_timeout_minutes",
         "git_history_depth",
         "reindex_interval_hours",
+        "reindex_start_minute",
+        "reindex_timezone",
     ]:
         if key in existing_config:
             new_config[key] = existing_config[key]
@@ -1215,6 +1229,10 @@ async def update_index_config(
         new_config["git_history_depth"] = request.git_history_depth
     if request.reindex_interval_hours is not None:
         new_config["reindex_interval_hours"] = request.reindex_interval_hours
+    if "reindex_start_minute" in request.model_fields_set:
+        new_config["reindex_start_minute"] = request.reindex_start_minute
+    if "reindex_timezone" in request.model_fields_set:
+        new_config["reindex_timezone"] = request.reindex_timezone
 
     success = await repository.update_index_config(
         name=name,
@@ -1754,7 +1772,9 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
         "max_file_size_mb",
         "max_total_files",
         "schema_index_interval_hours",
+        "schema_index_start_minute",
         "reindex_interval_hours",
+        "reindex_start_minute",
     ]
 
     for field in int_fields:
@@ -1896,7 +1916,9 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
             "max_file_size_mb",
             "max_total_files",
             "schema_index_interval_hours",
+            "schema_index_start_minute",
             "reindex_interval_hours",
+            "reindex_start_minute",
         ]
 
         for field in int_fields:

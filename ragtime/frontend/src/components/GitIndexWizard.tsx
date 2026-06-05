@@ -8,6 +8,7 @@ import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
+import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
 
 type StatusType = 'info' | 'success' | 'error' | null;
 type WizardStep = 'input' | 'analyzing' | 'review' | 'indexing';
@@ -157,6 +158,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth ?? 1);
   const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
+  const [reindexStartMinute, setReindexStartMinute] = useState<number | null>(configSnapshot?.reindex_start_minute ?? null);
+  const [reindexTimezone, setReindexTimezone] = useState<string | null>(configSnapshot?.reindex_timezone ?? null);
   const [timeoutManuallySet, setTimeoutManuallySet] = useState(false);  // Track if user overrode timeout
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
@@ -191,6 +194,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setOcrProvider(snapshot.ocr_provider ?? null);
         setOcrVisionModel(snapshot.ocr_vision_model || '');
         setReindexIntervalHours(snapshot.reindex_interval_hours || 0);
+        setReindexStartMinute(snapshot.reindex_start_minute ?? null);
+        setReindexTimezone(snapshot.reindex_timezone ?? null);
 
         // Use nullish coalescing - 0 is a valid depth (full history)
         const loadedDepth = snapshot.git_history_depth ?? 1;
@@ -210,6 +215,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setOcrMode('disabled');
         setOcrProvider(null);
         setOcrVisionModel('');
+        setReindexIntervalHours(0);
+        setReindexStartMinute(null);
+        setReindexTimezone(null);
         setGitCloneTimeoutMinutes(5);
         setGitHistoryDepth(1);
         setTimeoutManuallySet(false);
@@ -272,6 +280,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setOcrProvider(null);
     setOcrVisionModel('');
     setVectorStoreType('faiss');
+    setReindexIntervalHours(0);
+    setReindexStartMinute(null);
+    setReindexTimezone(null);
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, []);
@@ -478,6 +489,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
           git_history_depth: gitHistoryDepth,
           reindex_interval_hours: reindexIntervalHours,
+          reindex_start_minute: reindexIntervalHours > 0 ? (reindexStartMinute ?? defaultScheduleStartMinute()) : null,
+          reindex_timezone: reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
         },
       });
       const successMessage = `Job started - ID: ${job.id}`;
@@ -547,6 +560,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         git_history_depth: gitHistoryDepth,
         reindex_interval_hours: reindexIntervalHours,
+        reindex_start_minute: reindexIntervalHours > 0 ? (reindexStartMinute ?? defaultScheduleStartMinute()) : null,
+        reindex_timezone: reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
       });
       // Reflect saved config locally so the UI shows persisted values
       const snap = updated?.config_snapshot;
@@ -554,6 +569,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setGitHistoryDepth(snap.git_history_depth ?? gitHistoryDepth);
         setGitCloneTimeoutMinutes(snap.git_clone_timeout_minutes ?? gitCloneTimeoutMinutes);
         setReindexIntervalHours(snap.reindex_interval_hours ?? reindexIntervalHours);
+        setReindexStartMinute(snap.reindex_start_minute ?? null);
+        setReindexTimezone(snap.reindex_timezone ?? null);
         setFilePatterns(snap.file_patterns?.join(', ') || filePatterns);
         setExcludePatterns(snap.exclude_patterns?.join(', ') || excludePatterns);
         setChunkSize(snap.chunk_size ?? chunkSize);
@@ -590,8 +607,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           <div><strong>Source:</strong> {editIndex.source}</div>
         </div>
 
-        <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
-          <div className="form-group" style={{ flex: 2 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', marginBottom: '16px', alignItems: 'flex-start' }}>
+          <div className="form-group" style={{ flex: '1 1 160px', minWidth: '160px', margin: 0 }}>
             <label>
               Branch
               {loadingBranches && (
@@ -624,8 +641,12 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           <ReindexIntervalSelect
             value={reindexIntervalHours}
             onChange={setReindexIntervalHours}
+            startMinute={reindexStartMinute}
+            timezone={reindexTimezone}
+            onStartMinuteChange={setReindexStartMinute}
+            onTimezoneChange={setReindexTimezone}
             disabled={isLoading}
-            style={{ flex: 1 }}
+            style={{ flex: '1 1 300px' }}
           />
         </div>
 
@@ -657,7 +678,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
               }}
               disabled={isLoading}
-              style={{ flex: 1 }}
+              style={{ flex: '1 1 300px' }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
               {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
@@ -711,18 +732,19 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   if (wizardStep === 'input' || wizardStep === 'analyzing') {
     return (
       <div>
-        <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
-          <div className="form-group" style={{ flex: 2 }}>
-            <label>Git URL *</label>
-            <input
-              type="text"
-              value={gitUrl}
-              onChange={(e) => setGitUrl(e.target.value)}
-              placeholder="https://github.com/user/repo.git or https://your-git-server.com/user/repo.git"
-              disabled={isLoading}
-            />
-          </div>
-          <div className="form-group" style={{ flex: 1 }}>
+        <div className="form-group" style={{ marginBottom: '16px' }}>
+          <label>Git URL *</label>
+          <input
+            type="text"
+            value={gitUrl}
+            onChange={(e) => setGitUrl(e.target.value)}
+            placeholder="https://github.com/user/repo.git or https://your-git-server.com/user/repo.git"
+            disabled={isLoading}
+          />
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', marginBottom: '16px', alignItems: 'flex-start' }}>
+          <div className="form-group" style={{ flex: '1 1 160px', minWidth: '160px', margin: 0 }}>
             <label>
               Branch
               {loadingBranches && (
@@ -760,8 +782,12 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           <ReindexIntervalSelect
             value={reindexIntervalHours}
             onChange={setReindexIntervalHours}
+            startMinute={reindexStartMinute}
+            timezone={reindexTimezone}
+            onStartMinuteChange={setReindexStartMinute}
+            onTimezoneChange={setReindexTimezone}
             disabled={isLoading}
-            style={{ flex: 1 }}
+            style={{ flex: '1 1 300px' }}
           />
         </div>
 
@@ -867,7 +893,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
               }}
               disabled={isLoading}
-              style={{ flex: 1 }}
+              style={{ flex: '1 1 300px' }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
               {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
@@ -964,6 +990,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         <ReindexIntervalSelect
           value={reindexIntervalHours}
           onChange={setReindexIntervalHours}
+          startMinute={reindexStartMinute}
+          timezone={reindexTimezone}
+          onStartMinuteChange={setReindexStartMinute}
+          onTimezoneChange={setReindexTimezone}
           disabled={isLoading}
           style={{ marginBottom: '16px', maxWidth: '300px' }}
         />
@@ -982,7 +1012,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 setGitHistoryDepth(sliderVal === 1001 ? 0 : sliderVal);
               }}
               disabled={isLoading}
-              style={{ flex: 1 }}
+              style={{ flex: '1 1 300px' }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
               {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}

@@ -1046,6 +1046,8 @@ class IndexerService:
                     git_clone_timeout_minutes=config_snapshot_data.get("git_clone_timeout_minutes", 5),
                     git_history_depth=config_snapshot_data.get("git_history_depth", 1),
                     reindex_interval_hours=config_snapshot_data.get("reindex_interval_hours", 0),
+                    reindex_start_minute=config_snapshot_data.get("reindex_start_minute"),
+                    reindex_timezone=config_snapshot_data.get("reindex_timezone"),
                 )
 
             # Keep /indexes request-time work cheap. Git history tooling maintains
@@ -3008,6 +3010,8 @@ class IndexerService:
                     "git_clone_timeout_minutes",
                     "git_history_depth",
                     "reindex_interval_hours",
+                    "reindex_start_minute",
+                    "reindex_timezone",
                 ]
                 for key in user_config_keys:
                     if key in db_snapshot:

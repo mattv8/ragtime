@@ -140,6 +140,16 @@ class IndexConfig(BaseModel):
         le=8760,  # Max 1 year
         description="Hours between automatic pull & re-index (0 = manual only). Only applies to git-based indexes.",
     )
+    reindex_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for automatic pull & re-index.",
+    )
+    reindex_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with reindex_start_minute.",
+    )
 
 
 class IndexJob(BaseModel):
@@ -189,6 +199,8 @@ class IndexConfigSnapshot(BaseModel):
     git_clone_timeout_minutes: int = Field(default=5)
     git_history_depth: int = Field(default=1)
     reindex_interval_hours: int = Field(default=0)
+    reindex_start_minute: Optional[int] = Field(default=None, ge=0, le=1439)
+    reindex_timezone: Optional[str] = Field(default=None)
 
 
 class IndexInfo(BaseModel):
@@ -908,6 +920,16 @@ class AppSettings(BaseModel):
         le=2592000,
         description="Global default auto-sync interval in seconds for SSH and cloud workspace mounts.",
     )
+    userspace_mount_sync_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for workspace mount auto-sync.",
+    )
+    userspace_mount_sync_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with userspace_mount_sync_start_minute.",
+    )
     userspace_sqlite_import_max_bytes: int = Field(
         default=USERSPACE_SQLITE_IMPORT_DEFAULT_MAX_BYTES,
         ge=USERSPACE_SQLITE_IMPORT_MIN_BYTES,
@@ -1294,6 +1316,16 @@ class UpdateSettingsRequest(BaseModel):
         le=2592000,
         description="Global default auto-sync interval in seconds for SSH and cloud workspace mounts.",
     )
+    userspace_mount_sync_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for workspace mount auto-sync.",
+    )
+    userspace_mount_sync_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with userspace_mount_sync_start_minute.",
+    )
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
     @classmethod
@@ -1388,6 +1420,15 @@ class PostgresConnectionConfig(BaseModel):
     ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
     ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
     ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
+    # Schema indexing options
+    schema_index_enabled: bool = Field(default=False, description="Enable automatic schema indexing")
+    schema_index_interval_hours: int = Field(default=24, ge=0, le=168, description="Re-index schema every N hours")
+    schema_index_start_minute: Optional[int] = Field(
+        default=None, ge=0, le=1439, description="Optional local minutes-after-midnight anchor for schema re-indexing"
+    )
+    schema_index_timezone: Optional[str] = Field(default=None, description="IANA timezone used with schema_index_start_minute")
+    last_schema_indexed_at: Optional[str] = Field(default=None, description="Timestamp of last schema indexing")
+    schema_hash: Optional[str] = Field(default=None, description="Hash of last indexed schema")
 
 
 class MssqlConnectionConfig(BaseModel):
@@ -1408,6 +1449,15 @@ class MssqlConnectionConfig(BaseModel):
     ssh_tunnel_key_content: str = Field(default="", description="SSH private key content (preferred over path)")
     ssh_tunnel_key_passphrase: str = Field(default="", description="Passphrase for encrypted SSH key")
     ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
+    # Schema indexing options
+    schema_index_enabled: bool = Field(default=False, description="Enable automatic schema indexing")
+    schema_index_interval_hours: int = Field(default=24, ge=0, le=168, description="Re-index schema every N hours")
+    schema_index_start_minute: Optional[int] = Field(
+        default=None, ge=0, le=1439, description="Optional local minutes-after-midnight anchor for schema re-indexing"
+    )
+    schema_index_timezone: Optional[str] = Field(default=None, description="IANA timezone used with schema_index_start_minute")
+    last_schema_indexed_at: Optional[str] = Field(default=None, description="Timestamp of last schema indexing")
+    schema_hash: Optional[str] = Field(default=None, description="Hash of last indexed schema")
 
 
 class MysqlConnectionConfig(BaseModel):
@@ -1436,7 +1486,11 @@ class MysqlConnectionConfig(BaseModel):
     ssh_tunnel_public_key: str = Field(default="", description="SSH public key for generated keypairs")
     # Schema indexing options
     schema_index_enabled: bool = Field(default=False, description="Enable automatic schema indexing")
-    schema_index_interval_hours: int = Field(default=24, ge=1, le=168, description="Re-index schema every N hours")
+    schema_index_interval_hours: int = Field(default=24, ge=0, le=168, description="Re-index schema every N hours")
+    schema_index_start_minute: Optional[int] = Field(
+        default=None, ge=0, le=1439, description="Optional local minutes-after-midnight anchor for schema re-indexing"
+    )
+    schema_index_timezone: Optional[str] = Field(default=None, description="IANA timezone used with schema_index_start_minute")
     last_schema_indexed_at: Optional[str] = Field(default=None, description="Timestamp of last schema indexing")
     schema_hash: Optional[str] = Field(default=None, description="Hash of last indexed schema")
 
@@ -1594,6 +1648,16 @@ class FilesystemConnectionConfig(BaseModel):
         ge=0,
         le=8760,  # Max 1 year
         description="Hours between automatic re-indexing (0 = manual only)",
+    )
+    reindex_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for automatic filesystem re-indexing.",
+    )
+    reindex_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with reindex_start_minute.",
     )
     last_indexed_at: Optional[datetime] = Field(default=None, description="Timestamp of last completed index")
 
@@ -2758,6 +2822,16 @@ class SchemaIndexConfig(BaseModel):
         ge=0,
         le=8760,  # Max 1 year
         description="Hours between automatic schema re-indexing (0 = manual only)",
+    )
+    schema_index_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for automatic schema re-indexing.",
+    )
+    schema_index_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with schema_index_start_minute.",
     )
     last_schema_indexed_at: Optional[datetime] = Field(default=None, description="Timestamp of last completed schema index")
     schema_hash: Optional[str] = Field(

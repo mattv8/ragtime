@@ -27,6 +27,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
+import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 import type { BrowseResponse, CloudOAuthProviderStatus, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserCloudOAuthAccount, UserCloudOAuthProvider, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, UserspaceMountSource, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import {
@@ -833,6 +834,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [createMountDescription, setCreateMountDescription] = useState('');
   const [createMountSyncMode, setCreateMountSyncMode] = useState<WorkspaceMountSyncMode>('merge');
   const [createMountSyncIntervalSeconds, setCreateMountSyncIntervalSeconds] = useState<number | null>(null);
+  const [createMountSyncStartMinute, setCreateMountSyncStartMinute] = useState<number | null>(null);
+  const [createMountSyncTimezone, setCreateMountSyncTimezone] = useState<string | null>(null);
   const [createMountActiveSourceTab, setCreateMountActiveSourceTab] = useState('');
   const [createMountBrowserPathDisplayMap, setCreateMountBrowserPathDisplayMap] = useState<BrowserPathDisplayMap>(createBrowserPathDisplayMap());
   const [savingMount, setSavingMount] = useState(false);
@@ -5278,6 +5281,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         target_directory_to_create: targetDirectoryToCreate,
         auto_sync_enabled: false,
         sync_interval_seconds: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncIntervalSeconds : null,
+        sync_start_minute: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && createMountSyncIntervalSeconds != null
+          ? (createMountSyncStartMinute ?? defaultScheduleStartMinute())
+          : null,
+        sync_timezone: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && createMountSyncIntervalSeconds != null
+          ? (createMountSyncTimezone ?? defaultScheduleTimezone())
+          : null,
         sync_mode: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncMode : 'merge',
         description: createMountDescription.trim() || null,
       });
@@ -5294,6 +5303,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setCreateMountDescription('');
       setCreateMountSyncMode('merge');
       setCreateMountSyncIntervalSeconds(null);
+      setCreateMountSyncStartMinute(null);
+      setCreateMountSyncTimezone(null);
       setError(created.sync_notice || null);
       if (targetDirectoryToCreate) {
         await loadWorkspaceData(activeWorkspaceId);
@@ -5303,7 +5314,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setSavingMount(false);
     }
-  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountSourceScope, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncIntervalSeconds, createMountSyncMode, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountSourceScope, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncIntervalSeconds, createMountSyncMode, createMountSyncStartMinute, createMountSyncTimezone, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
 
   const handleSaveMountDescription = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
@@ -5575,12 +5586,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError]);
 
-  const handleUpdateMountSyncInterval = useCallback(async (mount: WorkspaceMount, intervalSeconds: number | null) => {
+  const handleUpdateMountSyncInterval = useCallback(async (
+    mount: WorkspaceMount,
+    intervalSeconds: number | null,
+    startMinute: number | null = mount.sync_start_minute,
+    timezone: string | null = mount.sync_timezone,
+  ) => {
     if (!activeWorkspaceId || !isOwner) return;
     setSavingMountIntervalId(mount.id);
     try {
       const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
         sync_interval_seconds: intervalSeconds,
+        sync_start_minute: intervalSeconds == null ? null : (startMinute ?? defaultScheduleStartMinute()),
+        sync_timezone: intervalSeconds == null ? null : (timezone ?? defaultScheduleTimezone()),
       });
       setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
@@ -8083,7 +8101,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                   onClick={() => {
                                                     setExpandedMountIntervalMenuId(null);
                                                     setMountIntervalMenuRect(null);
-                                                    void handleUpdateMountSyncInterval(mount, seconds);
+                                                    void handleUpdateMountSyncInterval(mount, seconds, mount.sync_start_minute, mount.sync_timezone);
                                                   }}
                                                 >
                                                   <span>Every {formatMountSyncInterval(seconds)}</span>
@@ -8097,7 +8115,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                   onClick={() => {
                                                     setExpandedMountIntervalMenuId(null);
                                                     setMountIntervalMenuRect(null);
-                                                    void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds);
+                                                    void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, mount.sync_timezone);
                                                   }}
                                                 >
                                                   <span>Every {formatMountSyncInterval(mount.sync_interval_seconds)}</span>
@@ -8108,6 +8126,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                           </>
                                         )}
                                       </div>
+                                    )}
+                                    {mount.auto_sync_enabled && mount.sync_interval_seconds != null && (
+                                      <ScheduleStartTimeInput
+                                        enabled={true}
+                                        startMinute={mount.sync_start_minute}
+                                        timezone={mount.sync_timezone}
+                                        onStartMinuteChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, value, mount.sync_timezone)}
+                                        onTimezoneChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, value)}
+                                        disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
+                                        label="Start Time"
+                                        style={{ marginBottom: 0, minWidth: 220 }}
+                                      />
                                     )}
                                     <button
                                       className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
@@ -8617,6 +8647,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 const value = e.target.value;
                                 if (value === 'custom') return;
                                 setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
+                                if (value === 'inherit') {
+                                  setCreateMountSyncStartMinute(null);
+                                  setCreateMountSyncTimezone(null);
+                                } else {
+                                  setCreateMountSyncStartMinute((current) => current ?? defaultScheduleStartMinute());
+                                  setCreateMountSyncTimezone((current) => current ?? defaultScheduleTimezone());
+                                }
                               }}
                               title="How often Auto Sync checks this mount"
                               style={{
@@ -8636,6 +8673,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 </option>
                               ))}
                             </select>
+                            <ScheduleStartTimeInput
+                              enabled={createMountSyncIntervalSeconds != null}
+                              startMinute={createMountSyncStartMinute}
+                              timezone={createMountSyncTimezone}
+                              onStartMinuteChange={setCreateMountSyncStartMinute}
+                              onTimezoneChange={setCreateMountSyncTimezone}
+                              label="Start Time"
+                            />
                           </label>
                         </div>
                         );

@@ -20,6 +20,7 @@ import type {
   UserSpaceWorkspaceScmSyncResponse,
 } from '@/types';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToastContainer, useToast } from './shared/Toast';
 
@@ -274,6 +275,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [autoPullEnabled, setAutoPullEnabled] = useState(Boolean(initialScm?.auto_pull_enabled));
   const [autoPushIntervalSeconds, setAutoPushIntervalSeconds] = useState(initialScm?.auto_push_interval_seconds ?? 3600);
   const [autoPullIntervalSeconds, setAutoPullIntervalSeconds] = useState(initialScm?.auto_pull_interval_seconds ?? 3600);
+  const [autoPushStartMinute, setAutoPushStartMinute] = useState<number | null>(initialScm?.auto_push_start_minute ?? null);
+  const [autoPushTimezone, setAutoPushTimezone] = useState<string | null>(initialScm?.auto_push_timezone ?? null);
+  const [autoPullStartMinute, setAutoPullStartMinute] = useState<number | null>(initialScm?.auto_pull_start_minute ?? null);
+  const [autoPullTimezone, setAutoPullTimezone] = useState<string | null>(initialScm?.auto_pull_timezone ?? null);
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
   const archiveFileInputRef = useRef<HTMLInputElement>(null);
   const lastDownloadedArchiveTaskIdRef = useRef<string | null>(null);
@@ -398,7 +403,11 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setAutoPullEnabled(Boolean(activeScm?.auto_pull_enabled));
     setAutoPushIntervalSeconds(activeScm?.auto_push_interval_seconds ?? 3600);
     setAutoPullIntervalSeconds(activeScm?.auto_pull_interval_seconds ?? 3600);
-  }, [activeScm?.auto_pull_enabled, activeScm?.auto_pull_interval_seconds, activeScm?.auto_push_interval_seconds, activeScm?.auto_sync_policy]);
+    setAutoPushStartMinute(activeScm?.auto_push_start_minute ?? null);
+    setAutoPushTimezone(activeScm?.auto_push_timezone ?? null);
+    setAutoPullStartMinute(activeScm?.auto_pull_start_minute ?? null);
+    setAutoPullTimezone(activeScm?.auto_pull_timezone ?? null);
+  }, [activeScm?.auto_pull_enabled, activeScm?.auto_pull_interval_seconds, activeScm?.auto_pull_start_minute, activeScm?.auto_pull_timezone, activeScm?.auto_push_interval_seconds, activeScm?.auto_push_start_minute, activeScm?.auto_push_timezone, activeScm?.auto_sync_policy]);
 
   const hasPendingPatToken = useMemo(() => hasConfiguredRemote && gitToken.trim().length > 0, [gitToken, hasConfiguredRemote]);
 
@@ -410,6 +419,10 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     const savedAutoPullEnabled = Boolean(activeScm.auto_pull_enabled);
     const savedAutoPushInterval = activeScm.auto_push_interval_seconds ?? 3600;
     const savedAutoPullInterval = activeScm.auto_pull_interval_seconds ?? 3600;
+    const savedAutoPushStartMinute = activeScm.auto_push_start_minute ?? null;
+    const savedAutoPushTimezone = activeScm.auto_push_timezone ?? null;
+    const savedAutoPullStartMinute = activeScm.auto_pull_start_minute ?? null;
+    const savedAutoPullTimezone = activeScm.auto_pull_timezone ?? null;
 
     if (autoPushEnabled !== savedAutoPushEnabled) {
       return true;
@@ -420,11 +433,17 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     if (autoPushEnabled && autoPushIntervalSeconds !== savedAutoPushInterval) {
       return true;
     }
+    if (autoPushEnabled && (autoPushStartMinute !== savedAutoPushStartMinute || autoPushTimezone !== savedAutoPushTimezone)) {
+      return true;
+    }
     if (autoPullEnabled && autoPullIntervalSeconds !== savedAutoPullInterval) {
       return true;
     }
+    if (autoPullEnabled && (autoPullStartMinute !== savedAutoPullStartMinute || autoPullTimezone !== savedAutoPullTimezone)) {
+      return true;
+    }
     return false;
-  }, [activeScm, autoPullEnabled, autoPullIntervalSeconds, autoPushEnabled, autoPushIntervalSeconds, hasConfiguredRemote]);
+  }, [activeScm, autoPullEnabled, autoPullIntervalSeconds, autoPullStartMinute, autoPullTimezone, autoPushEnabled, autoPushIntervalSeconds, autoPushStartMinute, autoPushTimezone, hasConfiguredRemote]);
 
   const hasScmSettingsMutations = hasPendingPatToken || hasDirtyUpstreamSyncSettings;
 
@@ -485,9 +504,19 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         };
         if (autoPushEnabled) {
           patch.auto_push_interval_seconds = autoPushIntervalSeconds;
+          patch.auto_push_start_minute = autoPushStartMinute ?? defaultScheduleStartMinute();
+          patch.auto_push_timezone = autoPushTimezone ?? defaultScheduleTimezone();
+        } else {
+          patch.auto_push_start_minute = null;
+          patch.auto_push_timezone = null;
         }
         if (autoPullEnabled) {
           patch.auto_pull_interval_seconds = autoPullIntervalSeconds;
+          patch.auto_pull_start_minute = autoPullStartMinute ?? defaultScheduleStartMinute();
+          patch.auto_pull_timezone = autoPullTimezone ?? defaultScheduleTimezone();
+        } else {
+          patch.auto_pull_start_minute = null;
+          patch.auto_pull_timezone = null;
         }
         if (nextAutoSyncPolicy === 'auto_push') {
           patch.clear_sync_paused = true;
@@ -1481,6 +1510,15 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                               />
                               <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
                             </div>
+                            <ScheduleStartTimeInput
+                              enabled={autoPushEnabled}
+                              startMinute={autoPushStartMinute}
+                              timezone={autoPushTimezone}
+                              onStartMinuteChange={setAutoPushStartMinute}
+                              onTimezoneChange={setAutoPushTimezone}
+                              disabled={isLoading}
+                              label="Start Time"
+                            />
                           </>
                         )}
                       </div>
@@ -1515,6 +1553,15 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                               />
                               <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
                             </div>
+                            <ScheduleStartTimeInput
+                              enabled={autoPullEnabled}
+                              startMinute={autoPullStartMinute}
+                              timezone={autoPullTimezone}
+                              onStartMinuteChange={setAutoPullStartMinute}
+                              onTimezoneChange={setAutoPullTimezone}
+                              disabled={isLoading}
+                              label="Start Time"
+                            />
                           </>
                         )}
                       </div>

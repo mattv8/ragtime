@@ -28,6 +28,7 @@ import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
+import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
 import { DirectoryBrowser } from './DirectoryBrowser';
 
 // System mounts to filter out from the "Available Mounts" display
@@ -2118,13 +2119,32 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   };
 
   const getConnectionConfig = (): ConnectionConfig => {
+    const withSchemaSchedule = <T extends PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig>(config: T): T => ({
+      ...config,
+      schema_index_start_minute: config.schema_index_enabled && (config.schema_index_interval_hours ?? 24) > 0
+        ? (config.schema_index_start_minute ?? defaultScheduleStartMinute())
+        : null,
+      schema_index_timezone: config.schema_index_enabled && (config.schema_index_interval_hours ?? 24) > 0
+        ? (config.schema_index_timezone ?? defaultScheduleTimezone())
+        : null,
+    });
+    const withFilesystemSchedule = (config: FilesystemConnectionConfig): FilesystemConnectionConfig => ({
+      ...config,
+      reindex_start_minute: (config.reindex_interval_hours ?? 24) > 0
+        ? (config.reindex_start_minute ?? defaultScheduleStartMinute())
+        : null,
+      reindex_timezone: (config.reindex_interval_hours ?? 24) > 0
+        ? (config.reindex_timezone ?? defaultScheduleTimezone())
+        : null,
+    });
+
     switch (toolType) {
       case 'postgres':
-        return postgresConfig;
+        return withSchemaSchedule(postgresConfig);
       case 'mysql':
-        return mysqlConfig;
+        return withSchemaSchedule(mysqlConfig);
       case 'mssql':
-        return mssqlConfig;
+        return withSchemaSchedule(mssqlConfig);
       case 'influxdb':
         return influxdbConfig;
       case 'odoo_shell':
@@ -2133,7 +2153,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         return sshConfig;
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
-        return { ...filesystemConfig, index_name: name || filesystemConfig.index_name };
+        return withFilesystemSchedule({ ...filesystemConfig, index_name: name || filesystemConfig.index_name });
       case 'solidworks_pdm':
         return pdmConfig;
     }
@@ -3119,11 +3139,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {postgresConfig.schema_index_enabled && (
             <ReindexIntervalSelect
               value={postgresConfig.schema_index_interval_hours ?? 24}
-              onChange={(val) => setPostgresConfig({
-                ...postgresConfig,
-                schema_index_interval_hours: val
-              })}
-              style={{ marginTop: '1rem' }}
+              onChange={(val) => setPostgresConfig(prev => ({
+                ...prev,
+                schema_index_interval_hours: val,
+                schema_index_start_minute: val > 0 ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute()) : null,
+                schema_index_timezone: val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
+              }))}
+              startMinute={postgresConfig.schema_index_start_minute ?? null}
+              timezone={postgresConfig.schema_index_timezone ?? null}
+              onStartMinuteChange={(val) => setPostgresConfig(prev => ({ ...prev, schema_index_start_minute: val }))}
+              onTimezoneChange={(val) => setPostgresConfig(prev => ({ ...prev, schema_index_timezone: val }))}
+              label="Schema Index Interval"
+              style={{ marginTop: '1rem', marginBottom: '1rem' }}
             />
           )}
         </div>
@@ -3296,11 +3323,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {mssqlConfig.schema_index_enabled && (
             <ReindexIntervalSelect
               value={mssqlConfig.schema_index_interval_hours ?? 24}
-              onChange={(val) => setMssqlConfig({
-                ...mssqlConfig,
-                schema_index_interval_hours: val
-              })}
-              style={{ marginTop: '1rem' }}
+              onChange={(val) => setMssqlConfig(prev => ({
+                ...prev,
+                schema_index_interval_hours: val,
+                schema_index_start_minute: val > 0 ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute()) : null,
+                schema_index_timezone: val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
+              }))}
+              startMinute={mssqlConfig.schema_index_start_minute ?? null}
+              timezone={mssqlConfig.schema_index_timezone ?? null}
+              onStartMinuteChange={(val) => setMssqlConfig(prev => ({ ...prev, schema_index_start_minute: val }))}
+              onTimezoneChange={(val) => setMssqlConfig(prev => ({ ...prev, schema_index_timezone: val }))}
+              label="Schema Index Interval"
+              style={{ marginTop: '1rem', marginBottom: '1rem' }}
             />
           )}
         </div>
@@ -3575,11 +3609,18 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {mysqlConfig.schema_index_enabled && (
             <ReindexIntervalSelect
               value={mysqlConfig.schema_index_interval_hours ?? 24}
-              onChange={(val) => setMysqlConfig({
-                ...mysqlConfig,
-                schema_index_interval_hours: val
-              })}
-              style={{ marginTop: '1rem' }}
+              onChange={(val) => setMysqlConfig(prev => ({
+                ...prev,
+                schema_index_interval_hours: val,
+                schema_index_start_minute: val > 0 ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute()) : null,
+                schema_index_timezone: val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
+              }))}
+              startMinute={mysqlConfig.schema_index_start_minute ?? null}
+              timezone={mysqlConfig.schema_index_timezone ?? null}
+              onStartMinuteChange={(val) => setMysqlConfig(prev => ({ ...prev, schema_index_start_minute: val }))}
+              onTimezoneChange={(val) => setMysqlConfig(prev => ({ ...prev, schema_index_timezone: val }))}
+              label="Schema Index Interval"
+              style={{ marginTop: '1rem', marginBottom: '1rem' }}
             />
           )}
         </div>
@@ -4833,7 +4874,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         {/* Auto Re-index Interval - visible outside Advanced section */}
         <ReindexIntervalSelect
           value={filesystemConfig.reindex_interval_hours ?? 24}
-          onChange={(val) => setFilesystemConfig({ ...filesystemConfig, reindex_interval_hours: val })}
+          onChange={(val) => setFilesystemConfig(prev => ({
+            ...prev,
+            reindex_interval_hours: val,
+            reindex_start_minute: val > 0 ? (prev.reindex_start_minute ?? defaultScheduleStartMinute()) : null,
+            reindex_timezone: val > 0 ? (prev.reindex_timezone ?? defaultScheduleTimezone()) : null,
+          }))}
+          startMinute={filesystemConfig.reindex_start_minute ?? null}
+          timezone={filesystemConfig.reindex_timezone ?? null}
+          onStartMinuteChange={(val) => setFilesystemConfig(prev => ({ ...prev, reindex_start_minute: val }))}
+          onTimezoneChange={(val) => setFilesystemConfig(prev => ({ ...prev, reindex_timezone: val }))}
           style={{ marginTop: '1rem', marginBottom: '1rem', maxWidth: '300px' }}
         />
 

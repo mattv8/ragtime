@@ -320,6 +320,16 @@ class SettingsCache:
                     "userspaceMountSyncIntervalSeconds",
                     30,
                 ),
+                "userspace_mount_sync_start_minute": getattr(
+                    prisma_settings,
+                    "userspaceMountSyncStartMinute",
+                    None,
+                ),
+                "userspace_mount_sync_timezone": getattr(
+                    prisma_settings,
+                    "userspaceMountSyncTimezone",
+                    None,
+                ),
             }
             return self._settings
 
@@ -409,6 +419,8 @@ class SettingsCache:
                 # User Space configuration
                 "userspace_preview_sandbox_flags": list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
                 "userspace_mount_sync_interval_seconds": 30,
+                "userspace_mount_sync_start_minute": None,
+                "userspace_mount_sync_timezone": None,
             }
 
     async def get_tool_configs(self) -> List[dict]:

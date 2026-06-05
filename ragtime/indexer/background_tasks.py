@@ -19,6 +19,7 @@ from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.logging import get_logger
+from ragtime.core.scheduling import is_anchored_schedule_due
 from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.usage_accounting import (
     _estimate_output_tokens,
@@ -562,7 +563,17 @@ class BackgroundTaskService:
 
                     # Check if re-indexing is due
                     last_indexed = fs_config.last_indexed_at
-                    if last_indexed:
+                    anchored_due = is_anchored_schedule_due(
+                        interval_seconds=fs_config.reindex_interval_hours * 3600,
+                        start_minute=fs_config.reindex_start_minute,
+                        timezone_name=fs_config.reindex_timezone,
+                        last_run_at=last_indexed,
+                    )
+                    if anchored_due is False:
+                        continue
+                    if anchored_due is True:
+                        pass
+                    elif last_indexed:
                         next_reindex = last_indexed + timedelta(hours=fs_config.reindex_interval_hours)
                         # Use timezone-aware comparison (handle both naive and aware)
                         now = datetime.now(timezone.utc)
@@ -638,7 +649,17 @@ class BackgroundTaskService:
 
                     # Check if re-indexing is due
                     last_indexed = schema_config.last_schema_indexed_at
-                    if last_indexed:
+                    anchored_due = is_anchored_schedule_due(
+                        interval_seconds=schema_config.schema_index_interval_hours * 3600,
+                        start_minute=schema_config.schema_index_start_minute,
+                        timezone_name=schema_config.schema_index_timezone,
+                        last_run_at=last_indexed,
+                    )
+                    if anchored_due is False:
+                        continue
+                    if anchored_due is True:
+                        pass
+                    elif last_indexed:
                         # Ensure timezone awareness for comparison
                         if last_indexed.tzinfo is None:
                             last_indexed = last_indexed.replace(tzinfo=timezone.utc)
@@ -710,7 +731,17 @@ class BackgroundTaskService:
 
                     # Check if re-indexing is due
                     last_modified = metadata.lastModified
-                    if last_modified:
+                    anchored_due = is_anchored_schedule_due(
+                        interval_seconds=int(interval_hours) * 3600,
+                        start_minute=config_snapshot.get("reindex_start_minute"),
+                        timezone_name=config_snapshot.get("reindex_timezone"),
+                        last_run_at=last_modified,
+                    )
+                    if anchored_due is False:
+                        continue
+                    if anchored_due is True:
+                        pass
+                    elif last_modified:
                         next_reindex = coerce_utc_datetime(last_modified + timedelta(hours=interval_hours))
                         if utc_now() < next_reindex:
                             continue  # Not due yet
@@ -756,6 +787,8 @@ class BackgroundTaskService:
                         git_clone_timeout_minutes=config_snapshot.get("git_clone_timeout_minutes", 5),
                         git_history_depth=config_snapshot.get("git_history_depth", 1),
                         reindex_interval_hours=interval_hours,
+                        reindex_start_minute=config_snapshot.get("reindex_start_minute"),
+                        reindex_timezone=config_snapshot.get("reindex_timezone"),
                     )
 
                     # Trigger re-indexing

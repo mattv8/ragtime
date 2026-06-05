@@ -51,6 +51,7 @@ from ragtime.core.entrypoint_status import EntrypointStatus, parse_entrypoint_co
 from ragtime.core.git import create_repository, parse_git_url
 from ragtime.core.http_timeouts import get_http_proxy_safe_timeout_seconds
 from ragtime.core.logging import get_logger
+from ragtime.core.scheduling import next_anchored_run_after
 from ragtime.core.sql_utils import (
     DB_TYPE_POSTGRES,
     TABLE_METADATA_END,
@@ -2531,6 +2532,8 @@ class UserSpaceService:
                     description=mount.description,
                     auto_sync_enabled=False,
                     sync_interval_seconds=mount.sync_interval_seconds,
+                    sync_start_minute=mount.sync_start_minute,
+                    sync_timezone=mount.sync_timezone,
                     sync_mode=mount.sync_mode,
                 ),
             )
@@ -3093,6 +3096,8 @@ class UserSpaceService:
             "description": mount.description,
             "sync_mode": mount.sync_mode,
             "sync_interval_seconds": mount.sync_interval_seconds,
+            "sync_start_minute": mount.sync_start_minute,
+            "sync_timezone": mount.sync_timezone,
             "enabled": mount.enabled,
             "auto_sync_enabled": mount.auto_sync_enabled,
         }
@@ -3196,6 +3201,8 @@ class UserSpaceService:
                         description=str(placeholder.get("description") or "") or None,
                         auto_sync_enabled=False,
                         sync_interval_seconds=placeholder.get("sync_interval_seconds"),
+                        sync_start_minute=placeholder.get("sync_start_minute"),
+                        sync_timezone=placeholder.get("sync_timezone"),
                         sync_mode=self._normalize_workspace_mount_sync_configuration_value(str(placeholder.get("sync_mode") or "merge")),
                     ),
                 )
@@ -6558,6 +6565,44 @@ class UserSpaceService:
             )
         )
 
+    def _workspace_scm_direction_schedule(
+        self,
+        workspace_record: Any,
+        direction: WorkspaceScmDirection,
+    ) -> tuple[int, int | None, str | None]:
+        if direction == "export":
+            start_field = "scmAutoPushStartMinute"
+            timezone_field = "scmAutoPushTimezone"
+        else:
+            start_field = "scmAutoPullStartMinute"
+            timezone_field = "scmAutoPullTimezone"
+        return (
+            self._workspace_scm_direction_interval_seconds(workspace_record, direction),
+            getattr(workspace_record, start_field, None),
+            getattr(workspace_record, timezone_field, None),
+        )
+
+    @staticmethod
+    def _anchored_due_monotonic(
+        *,
+        interval_seconds: int | float,
+        start_minute: int | None,
+        timezone_name: str | None,
+        after: datetime | None = None,
+    ) -> float | None:
+        now = utc_now()
+        next_run = next_anchored_run_after(
+            interval_seconds=interval_seconds,
+            start_minute=start_minute,
+            timezone_name=timezone_name,
+            after=after or now,
+            now=now,
+        )
+        if next_run is None:
+            return None
+        delay = max(0.0, (next_run - now).total_seconds())
+        return _time.monotonic() + delay
+
     async def _get_workspace_scm_operation_lock(
         self,
         workspace_id: str,
@@ -6664,20 +6709,34 @@ class UserSpaceService:
                 active_job_keys.add(key)
                 if key in self._workspace_scm_watch_inflight:
                     continue
-                due_at = self._workspace_scm_watch_next_due_monotonic.get(key, 0.0)
-                if now_monotonic < due_at:
-                    continue
-
-                interval_seconds = self._workspace_scm_direction_interval_seconds(
+                interval_seconds, start_minute, timezone_name = self._workspace_scm_direction_schedule(
                     workspace,
                     direction,
                 )
+                due_at = self._workspace_scm_watch_next_due_monotonic.get(key)
+                if due_at is None:
+                    last_sync_direction = str(getattr(workspace, "scmLastSyncDirection", "") or "")
+                    last_sync_at = getattr(workspace, "scmLastSyncAt", None) if last_sync_direction == direction else None
+                    due_at = self._anchored_due_monotonic(
+                        interval_seconds=interval_seconds,
+                        start_minute=start_minute,
+                        timezone_name=timezone_name,
+                        after=last_sync_at,
+                    )
+                    if due_at is not None:
+                        self._workspace_scm_watch_next_due_monotonic[key] = due_at
+                    else:
+                        due_at = 0.0
+                if now_monotonic < due_at:
+                    continue
                 self._workspace_scm_watch_inflight.add(key)
                 asyncio.create_task(
                     self._run_workspace_scm_auto_sync(
                         workspace_id,
                         direction,
                         interval_seconds,
+                        start_minute,
+                        timezone_name,
                     ),
                     name=f"userspace-scm-auto-sync:{workspace_id}:{direction}",
                 )
@@ -6692,6 +6751,8 @@ class UserSpaceService:
         workspace_id: str,
         direction: WorkspaceScmDirection,
         interval_seconds: int,
+        start_minute: int | None = None,
+        timezone_name: str | None = None,
     ) -> None:
         t0 = _time.monotonic()
         key = self._workspace_scm_watch_key(workspace_id, direction)
@@ -6723,9 +6784,14 @@ class UserSpaceService:
                     elapsed,
                     float(interval_seconds),
                 )
-            self._workspace_scm_watch_next_due_monotonic[key] = (
-                _time.monotonic() + float(interval_seconds) + self._workspace_scm_watch_stagger_seconds(workspace_id, direction)
+            anchored_due = self._anchored_due_monotonic(
+                interval_seconds=interval_seconds,
+                start_minute=start_minute,
+                timezone_name=timezone_name,
             )
+            if anchored_due is None:
+                anchored_due = _time.monotonic() + float(interval_seconds)
+            self._workspace_scm_watch_next_due_monotonic[key] = anchored_due + self._workspace_scm_watch_stagger_seconds(workspace_id, direction)
             self._workspace_scm_watch_inflight.discard(key)
 
     async def _run_workspace_auto_push(self, workspace_id: str) -> None:
@@ -6864,6 +6930,20 @@ class UserSpaceService:
         except Exception:
             return 30
 
+    async def _global_workspace_mount_sync_schedule(self) -> tuple[int, int | None, str | None]:
+        try:
+            cached_settings = await SettingsCache.get_instance().get_settings()
+            return (
+                self._clamp_workspace_mount_sync_interval_seconds(
+                    cached_settings.get("userspace_mount_sync_interval_seconds"),
+                    30,
+                ),
+                cached_settings.get("userspace_mount_sync_start_minute"),
+                cached_settings.get("userspace_mount_sync_timezone"),
+            )
+        except Exception:
+            return 30, None, None
+
     async def _workspace_mount_target_signature(
         self,
         workspace_id: str,
@@ -6896,7 +6976,7 @@ class UserSpaceService:
 
         active_mount_ids: set[str] = set()
         now_monotonic = _time.monotonic()
-        global_interval_seconds = await self._global_workspace_mount_sync_interval_seconds()
+        global_interval_seconds, global_start_minute, global_timezone = await self._global_workspace_mount_sync_schedule()
 
         for mount in mounts:
             mount_id = str(getattr(mount, "id", "") or "")
@@ -6924,12 +7004,35 @@ class UserSpaceService:
                 getattr(mount_source, "syncIntervalSeconds", None),
                 global_interval_seconds,
             )
+            source_start_minute = getattr(mount_source, "syncStartMinute", None)
+            source_timezone = getattr(mount_source, "syncTimezone", None)
+            if source_start_minute is None:
+                source_start_minute = global_start_minute
+            if source_timezone is None:
+                source_timezone = global_timezone
             interval_seconds = self._clamp_workspace_mount_sync_interval_seconds(
                 getattr(mount, "syncIntervalSeconds", None),
                 source_interval,
             )
+            start_minute = getattr(mount, "syncStartMinute", None)
+            timezone_name = getattr(mount, "syncTimezone", None)
+            if start_minute is None:
+                start_minute = source_start_minute
+            if timezone_name is None:
+                timezone_name = source_timezone
 
-            due_at = self._workspace_mount_watch_next_due_monotonic.get(mount_id, 0.0)
+            due_at = self._workspace_mount_watch_next_due_monotonic.get(mount_id)
+            if due_at is None:
+                due_at = self._anchored_due_monotonic(
+                    interval_seconds=interval_seconds,
+                    start_minute=start_minute,
+                    timezone_name=timezone_name,
+                    after=getattr(mount, "lastSyncAt", None),
+                )
+                if due_at is not None:
+                    self._workspace_mount_watch_next_due_monotonic[mount_id] = due_at
+                else:
+                    due_at = 0.0
             target_path = str(getattr(mount, "targetPath", "") or "")
             has_local_change = False
             if now_monotonic < due_at:
@@ -6968,6 +7071,8 @@ class UserSpaceService:
                     workspace_id,
                     mount_id,
                     float(interval_seconds),
+                    start_minute,
+                    timezone_name,
                 ),
                 name=f"userspace-mount-watch-sync:{workspace_id}:{mount_id}",
             )
@@ -6984,6 +7089,8 @@ class UserSpaceService:
         workspace_id: str,
         mount_id: str,
         source_interval_seconds: float,
+        start_minute: int | None = None,
+        timezone_name: str | None = None,
     ) -> None:
         t0 = _time.monotonic()
         try:
@@ -7103,9 +7210,14 @@ class UserSpaceService:
                 )
             # Schedule from completion so the interval is measured between the
             # end of one sync and the start of the next.
-            self._workspace_mount_watch_next_due_monotonic[mount_id] = (
-                _time.monotonic() + source_interval_seconds + self._workspace_mount_watch_stagger_seconds(mount_id)
+            anchored_due = self._anchored_due_monotonic(
+                interval_seconds=source_interval_seconds,
+                start_minute=start_minute,
+                timezone_name=timezone_name,
             )
+            if anchored_due is None:
+                anchored_due = _time.monotonic() + source_interval_seconds
+            self._workspace_mount_watch_next_due_monotonic[mount_id] = anchored_due + self._workspace_mount_watch_stagger_seconds(mount_id)
             self._workspace_mount_watch_inflight.discard(mount_id)
 
     async def _startup_git_drift_reconciliation(self) -> None:
@@ -9021,6 +9133,10 @@ class UserSpaceService:
                     ),
                 ),
             ),
+            auto_push_start_minute=getattr(record, "scmAutoPushStartMinute", None),
+            auto_push_timezone=getattr(record, "scmAutoPushTimezone", None),
+            auto_pull_start_minute=getattr(record, "scmAutoPullStartMinute", None),
+            auto_pull_timezone=getattr(record, "scmAutoPullTimezone", None),
             sync_paused=bool(getattr(record, "scmSyncPaused", False)),
             sync_paused_reason=getattr(record, "scmSyncPausedReason", None),
             connected_at=getattr(record, "scmConnectedAt", None),
@@ -9553,6 +9669,14 @@ class UserSpaceService:
                     int(request.auto_pull_interval_seconds),
                 ),
             )
+        if "auto_push_start_minute" in request.model_fields_set:
+            update_data["scmAutoPushStartMinute"] = request.auto_push_start_minute
+        if "auto_push_timezone" in request.model_fields_set:
+            update_data["scmAutoPushTimezone"] = request.auto_push_timezone
+        if "auto_pull_start_minute" in request.model_fields_set:
+            update_data["scmAutoPullStartMinute"] = request.auto_pull_start_minute
+        if "auto_pull_timezone" in request.model_fields_set:
+            update_data["scmAutoPullTimezone"] = request.auto_pull_timezone
         if request.clear_sync_paused:
             update_data["scmSyncPaused"] = False
             update_data["scmSyncPausedReason"] = None
@@ -9566,10 +9690,14 @@ class UserSpaceService:
             where={"id": workspace_id},
             data=cast(Any, update_data),
         )
-        if request.auto_sync_policy == "auto_push" or request.auto_push_interval_seconds is not None:
-            self._nudge_workspace_scm_watch_due(workspace_id, "export")
-        if request.auto_pull_enabled is True or request.auto_pull_interval_seconds is not None:
-            self._nudge_workspace_scm_watch_due(workspace_id, "import")
+        if any(
+            field in request.model_fields_set for field in ("auto_sync_policy", "auto_push_interval_seconds", "auto_push_start_minute", "auto_push_timezone")
+        ):
+            self._workspace_scm_watch_next_due_monotonic.pop(self._workspace_scm_watch_key(workspace_id, "export"), None)
+        if any(
+            field in request.model_fields_set for field in ("auto_pull_enabled", "auto_pull_interval_seconds", "auto_pull_start_minute", "auto_pull_timezone")
+        ):
+            self._workspace_scm_watch_next_due_monotonic.pop(self._workspace_scm_watch_key(workspace_id, "import"), None)
         return self._workspace_from_record(updated).scm or UserSpaceWorkspaceScmStatus()
 
     async def _push_workspace_snapshot_commit(
@@ -13552,6 +13680,8 @@ class UserSpaceService:
             access_user_ids=cls._load_mount_source_access_user_ids(record),
             access_group_identifiers=cls._load_mount_source_access_group_identifiers(record),
             sync_interval_seconds=getattr(record, "syncIntervalSeconds", 30) or 30,
+            sync_start_minute=getattr(record, "syncStartMinute", None),
+            sync_timezone=getattr(record, "syncTimezone", None),
             source_available=source_available,
             source_unavailable_reason=source_unavailable_reason,
             source_unavailable_kind=source_unavailable_kind,
@@ -13685,6 +13815,8 @@ class UserSpaceService:
             last_sync_error=getattr(record, "lastSyncError", None),
             auto_sync_enabled=bool(getattr(record, "autoSyncEnabled", False)),
             sync_interval_seconds=getattr(record, "syncIntervalSeconds", None),
+            sync_start_minute=getattr(record, "syncStartMinute", None),
+            sync_timezone=getattr(record, "syncTimezone", None),
             source_name=mount_source.name if mount_source else None,
             source_type=source_type,
             mount_backend=mount_source.mount_backend if mount_source else None,
@@ -15336,6 +15468,8 @@ class UserSpaceService:
                     "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
                     "approvedPaths": Json(approved_paths),
                     "syncIntervalSeconds": 30,
+                    "syncStartMinute": request.sync_start_minute,
+                    "syncTimezone": request.sync_timezone,
                     "createdAt": now,
                     "updatedAt": now,
                 },
@@ -15366,20 +15500,22 @@ class UserSpaceService:
             connection_config=next_config,
             approved_paths=existing.approved_paths if "approved_paths" not in fields_set else list(request.approved_paths or []),
         )
+        update_data: dict[str, Any] = {
+            "name": existing.name if "name" not in fields_set else self._normalize_mount_source_name(request.name or ""),
+            "description": existing.description if "description" not in fields_set else self._normalize_mount_source_description(request.description),
+            "enabled": existing.enabled if "enabled" not in fields_set else bool(request.enabled),
+            "oauthAccountId": next_oauth_account_id,
+            "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
+            "approvedPaths": Json(approved_paths),
+            "updatedAt": utc_now(),
+        }
+        if "sync_start_minute" in fields_set:
+            update_data["syncStartMinute"] = request.sync_start_minute
+        if "sync_timezone" in fields_set:
+            update_data["syncTimezone"] = request.sync_timezone
         updated = await db.useruserspacemountsource.update(
             where={"id": mount_source_id},
-            data=cast(
-                Any,
-                {
-                    "name": existing.name if "name" not in fields_set else self._normalize_mount_source_name(request.name or ""),
-                    "description": existing.description if "description" not in fields_set else self._normalize_mount_source_description(request.description),
-                    "enabled": existing.enabled if "enabled" not in fields_set else bool(request.enabled),
-                    "oauthAccountId": next_oauth_account_id,
-                    "connectionConfig": Json(encrypt_json_passwords(normalized_config, CONNECTION_CONFIG_PASSWORD_FIELDS)),
-                    "approvedPaths": Json(approved_paths),
-                    "updatedAt": utc_now(),
-                },
-            ),
+            data=cast(Any, update_data),
             include={"oauthAccount": True},
         )
         return self._userspace_mount_source_from_record(updated, source_scope="user")
@@ -15483,6 +15619,8 @@ class UserSpaceService:
             "accessUserIds": Json(access_user_ids),
             "accessGroupIdentifiers": Json(access_group_identifiers),
             "syncIntervalSeconds": (request.sync_interval_seconds if request.sync_interval_seconds is not None else 30),
+            "syncStartMinute": request.sync_start_minute,
+            "syncTimezone": request.sync_timezone,
             "createdAt": now,
             "updatedAt": now,
         }
@@ -15591,6 +15729,10 @@ class UserSpaceService:
         }
         if next_sync_interval is not None:
             update_data["syncIntervalSeconds"] = max(1, min(2592000, next_sync_interval))
+        if "sync_start_minute" in fields_set:
+            update_data["syncStartMinute"] = request.sync_start_minute
+        if "sync_timezone" in fields_set:
+            update_data["syncTimezone"] = request.sync_timezone
         updated = await db.userspacemountsource.update(
             where={"id": mount_source_id},
             data=cast(Any, update_data),
@@ -16127,6 +16269,8 @@ class UserSpaceService:
             "targetPath": target_path,
             "autoSyncEnabled": bool(request.auto_sync_enabled),
             "syncIntervalSeconds": request.sync_interval_seconds,
+            "syncStartMinute": request.sync_start_minute,
+            "syncTimezone": request.sync_timezone,
             "syncMode": request.sync_mode,
             "description": self._normalize_mount_description(request.description),
             "syncStatus": initial_sync_status,
@@ -16222,6 +16366,10 @@ class UserSpaceService:
             update_data["syncMode"] = request.sync_mode
         if "sync_interval_seconds" in request.model_fields_set:
             update_data["syncIntervalSeconds"] = request.sync_interval_seconds
+        if "sync_start_minute" in request.model_fields_set:
+            update_data["syncStartMinute"] = request.sync_start_minute
+        if "sync_timezone" in request.model_fields_set:
+            update_data["syncTimezone"] = request.sync_timezone
         if request.enabled is not None:
             update_data["enabled"] = bool(request.enabled)
             if not request.enabled:
@@ -16290,9 +16438,12 @@ class UserSpaceService:
             data={"updatedAt": update_data["updatedAt"]},
         )
 
-        if any(field in request.model_fields_set for field in ("auto_sync_enabled", "sync_interval_seconds", "sync_mode", "enabled", "target_path")):
+        if any(
+            field in request.model_fields_set
+            for field in ("auto_sync_enabled", "sync_interval_seconds", "sync_start_minute", "sync_timezone", "sync_mode", "enabled", "target_path")
+        ):
             if next_auto_sync_enabled and bool(update_data.get("enabled", getattr(existing, "enabled", True))) and source_enabled:
-                self._workspace_mount_watch_next_due_monotonic[mount_id] = 0.0
+                self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)
                 self._workspace_mount_watch_wakeup.set()
             else:
                 self._workspace_mount_watch_next_due_monotonic.pop(mount_id, None)

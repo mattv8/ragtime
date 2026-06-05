@@ -361,6 +361,8 @@ export interface IndexConfig {
   git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
   git_history_depth?: number;  // 1=shallow (default), 0=full history
   reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
+  reindex_start_minute?: number | null;
+  reindex_timezone?: string | null;
 }
 
 export interface IndexJob {
@@ -392,6 +394,8 @@ export interface IndexConfigSnapshot {
   git_clone_timeout_minutes?: number;  // May be absent for older indexes
   git_history_depth?: number;  // 1=shallow (default), 0=full history
   reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
+  reindex_start_minute?: number | null;
+  reindex_timezone?: string | null;
 }
 
 export interface IndexInfo {
@@ -431,6 +435,8 @@ export interface UpdateIndexConfigRequest {
   git_clone_timeout_minutes?: number;
   git_history_depth?: number;
   reindex_interval_hours?: number;
+  reindex_start_minute?: number | null;
+  reindex_timezone?: string | null;
 }
 
 export interface RenameIndexRequest {
@@ -731,6 +737,8 @@ export interface AppSettings {
   userspace_duplicate_copy_chats_default: boolean;
   userspace_duplicate_copy_mounts_default: boolean;
   userspace_mount_sync_interval_seconds: number;
+  userspace_mount_sync_start_minute: number | null;
+  userspace_mount_sync_timezone: string | null;
   userspace_sqlite_import_max_bytes: number;
   updated_at: string | null;
 }
@@ -856,6 +864,8 @@ export interface UpdateSettingsRequest {
   userspace_duplicate_copy_chats_default?: boolean;
   userspace_duplicate_copy_mounts_default?: boolean;
   userspace_mount_sync_interval_seconds?: number;
+  userspace_mount_sync_start_minute?: number | null;
+  userspace_mount_sync_timezone?: string | null;
   userspace_sqlite_import_max_bytes?: number;
 }
 
@@ -1094,6 +1104,8 @@ export interface PostgresConnectionConfig extends SSHTunnelConfig {
   // Schema indexing options
   schema_index_enabled?: boolean;
   schema_index_interval_hours?: number;
+  schema_index_start_minute?: number | null;
+  schema_index_timezone?: string | null;
   last_schema_indexed_at?: string | null;
   schema_hash?: string | null;
 }
@@ -1107,6 +1119,8 @@ export interface MssqlConnectionConfig extends SSHTunnelConfig {
   // Schema indexing options
   schema_index_enabled?: boolean;
   schema_index_interval_hours?: number;
+  schema_index_start_minute?: number | null;
+  schema_index_timezone?: string | null;
   last_schema_indexed_at?: string | null;
   schema_hash?: string | null;
 }
@@ -1122,6 +1136,8 @@ export interface MysqlConnectionConfig extends SSHTunnelConfig {
   // Schema indexing options
   schema_index_enabled?: boolean;
   schema_index_interval_hours?: number;
+  schema_index_start_minute?: number | null;
+  schema_index_timezone?: string | null;
   last_schema_indexed_at?: string | null;
   schema_hash?: string | null;
 }
@@ -1210,6 +1226,8 @@ export interface FilesystemConnectionConfig {
 
   // Re-indexing schedule
   reindex_interval_hours?: number;
+  reindex_start_minute?: number | null;
+  reindex_timezone?: string | null;
   last_indexed_at?: string | null;
 }
 
@@ -2172,7 +2190,11 @@ export interface UserSpaceWorkspaceScmStatus {
   auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy | null;
   auto_pull_enabled?: boolean;
   auto_push_interval_seconds?: number;
+  auto_push_start_minute?: number | null;
+  auto_push_timezone?: string | null;
   auto_pull_interval_seconds?: number;
+  auto_pull_start_minute?: number | null;
+  auto_pull_timezone?: string | null;
   sync_paused?: boolean;
   sync_paused_reason?: string | null;
   connected_at?: string | null;
@@ -2279,7 +2301,11 @@ export interface UserSpaceWorkspaceScmSettingsRequest {
   auto_sync_policy?: UserSpaceWorkspaceScmAutoSyncPolicy;
   auto_pull_enabled?: boolean;
   auto_push_interval_seconds?: number;
+  auto_push_start_minute?: number | null;
+  auto_push_timezone?: string | null;
   auto_pull_interval_seconds?: number;
+  auto_pull_start_minute?: number | null;
+  auto_pull_timezone?: string | null;
   clear_sync_paused?: boolean;
 }
 
@@ -2572,6 +2598,8 @@ export interface UserspaceMountSource {
   access_user_ids: string[];
   access_group_identifiers: string[];
   sync_interval_seconds: number | null;
+  sync_start_minute: number | null;
+  sync_timezone: string | null;
   source_available?: boolean;
   source_unavailable_reason?: string | null;
   source_unavailable_kind?: MountSourceUnavailableKind | null;
@@ -2591,6 +2619,8 @@ export interface CreateUserspaceMountSourceRequest {
   access_user_ids?: string[];
   access_group_identifiers?: string[];
   sync_interval_seconds?: number | null;
+  sync_start_minute?: number | null;
+  sync_timezone?: string | null;
 }
 
 export interface UpdateUserspaceMountSourceRequest {
@@ -2602,6 +2632,8 @@ export interface UpdateUserspaceMountSourceRequest {
   access_user_ids?: string[] | null;
   access_group_identifiers?: string[] | null;
   sync_interval_seconds?: number | null;
+  sync_start_minute?: number | null;
+  sync_timezone?: string | null;
 }
 
 export interface CreateUserUserspaceMountSourceRequest {
@@ -2613,6 +2645,8 @@ export interface CreateUserUserspaceMountSourceRequest {
   oauth_account_id?: string | null;
   connection_config?: CloudMountConnectionConfig;
   approved_paths?: string[];
+  sync_start_minute?: number | null;
+  sync_timezone?: string | null;
 }
 
 export interface BrowseCloudMountSourceRequest {
@@ -2636,6 +2670,8 @@ export interface UpdateUserUserspaceMountSourceRequest {
   oauth_account_id?: string | null;
   connection_config?: CloudMountConnectionConfig;
   approved_paths?: string[];
+  sync_start_minute?: number | null;
+  sync_timezone?: string | null;
 }
 
 export interface UserCloudOAuthAccount {
@@ -2713,6 +2749,8 @@ export interface WorkspaceMount {
   last_sync_error: string | null;
   auto_sync_enabled: boolean;
   sync_interval_seconds: number | null;
+  sync_start_minute: number | null;
+  sync_timezone: string | null;
   source_name: string | null;
   source_type: UserspaceMountSourceType | null;
   mount_backend: UserspaceMountBackend | null;
@@ -2753,6 +2791,8 @@ export interface CreateWorkspaceMountRequest {
   target_directory_to_create?: string | null;
   auto_sync_enabled?: boolean;
   sync_interval_seconds?: number | null;
+  sync_start_minute?: number | null;
+  sync_timezone?: string | null;
   sync_mode?: WorkspaceMountSyncMode;
   description?: string | null;
 }
@@ -2763,6 +2803,8 @@ export interface UpdateWorkspaceMountRequest {
   enabled?: boolean;
   auto_sync_enabled?: boolean;
   sync_interval_seconds?: number | null;
+  sync_start_minute?: number | null;
+  sync_timezone?: string | null;
   sync_mode?: WorkspaceMountSyncMode;
   destructive_auto_sync_preview_token?: string;
 }

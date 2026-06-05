@@ -1155,6 +1155,16 @@ class IndexerRepository:
                 "userspaceMountSyncIntervalSeconds",
                 30,
             ),
+            userspace_mount_sync_start_minute=getattr(
+                settings,
+                "userspaceMountSyncStartMinute",
+                None,
+            ),
+            userspace_mount_sync_timezone=getattr(
+                settings,
+                "userspaceMountSyncTimezone",
+                None,
+            ),
             userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(getattr(settings, "userspaceSqliteImportMaxBytes", None)),
             updated_at=settings.updatedAt,
         )
@@ -1289,6 +1299,8 @@ class IndexerRepository:
             "userspace_duplicate_copy_chats_default": "userspaceDuplicateCopyChatsDefault",
             "userspace_duplicate_copy_mounts_default": "userspaceDuplicateCopyMountsDefault",
             "userspace_mount_sync_interval_seconds": "userspaceMountSyncIntervalSeconds",
+            "userspace_mount_sync_start_minute": "userspaceMountSyncStartMinute",
+            "userspace_mount_sync_timezone": "userspaceMountSyncTimezone",
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
         }
 
