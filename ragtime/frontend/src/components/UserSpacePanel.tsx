@@ -4635,42 +4635,52 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       }
       await loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete file');
+      const message = getApiErrorMessage(err, 'Failed to delete file');
+      setError(message);
+      toast.error(message, 8000);
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath, toast]);
 
   const handleDeleteFolder = useCallback(async (folderPath: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
 
-    const normalizedFolderPath = normalizeWorkspacePath(folderPath);
-    const descendants = files.filter((file) => file.path.startsWith(`${normalizedFolderPath}/`));
-    if (descendants.length === 0) {
+    try {
+      const normalizedFolderPath = normalizeWorkspacePath(folderPath);
+      const descendants = files.filter((file) => file.path.startsWith(`${normalizedFolderPath}/`));
+      if (descendants.length === 0) {
+        setDeleteConfirmFolderPath(null);
+        setError('Folder is empty; no files to delete');
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path))
+      );
+      const failures = results.filter((result) => result.status === 'rejected').length;
+
       setDeleteConfirmFolderPath(null);
-      setError('Folder is empty; no files to delete');
-      return;
-    }
+      // Clean up changed/acknowledged markers for all deleted descendants.
+      const deletedPaths = new Set(descendants.map((file) => file.path));
+      setChangedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
+      setAcknowledgedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
+      if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
+        setSelectedFilePath('');
+        setFileContent('');
+        setFileDirty(false);
+      }
+      await loadWorkspaceData(activeWorkspaceId);
 
-    const results = await Promise.allSettled(
-      descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path))
-    );
-    const failures = results.filter((result) => result.status === 'rejected').length;
-
-    setDeleteConfirmFolderPath(null);
-    // Clean up changed/acknowledged markers for all deleted descendants.
-    const deletedPaths = new Set(descendants.map((file) => file.path));
-    setChangedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
-    setAcknowledgedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
-    if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
-      setSelectedFilePath('');
-      setFileContent('');
-      setFileDirty(false);
+      if (failures > 0) {
+        const message = `Deleted folder contents with ${failures} failure(s)`;
+        setError(message);
+        toast.error(message, 8000);
+      }
+    } catch (err) {
+      const message = getApiErrorMessage(err, 'Failed to delete folder');
+      setError(message);
+      toast.error(message, 8000);
     }
-    await loadWorkspaceData(activeWorkspaceId);
-
-    if (failures > 0) {
-      setError(`Deleted folder contents with ${failures} failure(s)`);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath, toast]);
 
   const handleToggleFolder = useCallback((folderPath: string) => {
     setExpandedFolders((current) => {
