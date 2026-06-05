@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 from unittest import mock
 
 from ragtime.indexer import chunking
@@ -74,6 +75,44 @@ function Example(props: Props) {
                 max_workers=original_workers,
                 max_batch_size=original_batch,
             )
+
+    def test_shutdown_process_pool_terminates_active_workers_when_requested(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.terminated = False
+                self.join_timeout = None
+
+            def is_alive(self) -> bool:
+                return True
+
+            def terminate(self) -> None:
+                self.terminated = True
+
+            def join(self, timeout=None) -> None:
+                self.join_timeout = timeout
+
+        class FakePool:
+            def __init__(self) -> None:
+                self.worker = FakeProcess()
+                self._processes = {1: self.worker}
+                self.shutdown_args: tuple[bool, bool] | None = None
+
+            def shutdown(self, *, wait=True, cancel_futures=False) -> None:
+                self.shutdown_args = (wait, cancel_futures)
+
+        original_pool = chunking._process_pool
+        fake_pool = FakePool()
+        try:
+            chunking._process_pool = cast(Any, fake_pool)
+
+            chunking.shutdown_process_pool(wait=False, cancel_futures=True, terminate_workers=True)
+
+            self.assertIsNone(chunking._process_pool)
+            self.assertTrue(fake_pool.worker.terminated)
+            self.assertEqual(fake_pool.worker.join_timeout, 0.2)
+            self.assertEqual(fake_pool.shutdown_args, (False, True))
+        finally:
+            chunking._process_pool = original_pool
 
     def test_recursive_fallback_marks_chunks(self) -> None:
         chunks, counts = chunking._chunk_document_batch_recursive_sync(

@@ -54,6 +54,26 @@ _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
 
 
+class _CancellationSafeStreamingResponse(StreamingResponse):
+    """Suppress shutdown/disconnect cancellation noise for long-lived streams."""
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except BaseException as exc:
+            if not _is_cancellation_only(exc):
+                raise
+            logger.debug("Userspace streaming response cancelled during disconnect or shutdown")
+
+
+def _is_cancellation_only(exc: BaseException) -> bool:
+    if isinstance(exc, asyncio.CancelledError):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return all(_is_cancellation_only(inner) for inner in exc.exceptions)
+    return False
+
+
 def _runtime_service() -> Any:
     # Lazy import avoids import cycle: runtime_service -> service -> preview_host -> runtime_routes.
     from ragtime.userspace.runtime_service import userspace_runtime_service
@@ -354,6 +374,20 @@ def _is_html_media_type(media_type: str) -> bool:
     return "text/html" in (media_type or "").lower()
 
 
+def _is_secure_browser_request(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    return (
+        request.url.scheme == "https"
+        or forwarded_proto == "https"
+        or request.headers.get("x-forwarded-ssl", "").lower() == "on"
+        or request.headers.get("x-scheme", "").lower() == "https"
+    )
+
+
+def _should_clear_site_data_for_proxy_response(request: Request, media_type: str) -> bool:
+    return _is_html_media_type(media_type) and _is_secure_browser_request(request)
+
+
 def _extract_capability_token_from_request(request: Request) -> str | None:
     # Capability tokens must travel via Authorization/explicit header only.
     # Query-string transport is rejected to prevent leakage via browser
@@ -611,7 +645,7 @@ async def _proxy_http_request(
     resp_headers[_USERSPACE_PREVIEW_PROXY_HEADER] = "true"
     _make_proxy_response_uncacheable(
         resp_headers,
-        clear_site_cache=_is_html_media_type(media_type),
+        clear_site_cache=_should_clear_site_data_for_proxy_response(request, media_type),
     )
 
     if _is_html_media_type(media_type):
@@ -650,11 +684,13 @@ async def _proxy_http_request(
         try:
             async for chunk in upstream_response.aiter_raw():
                 yield chunk
+        except asyncio.CancelledError:
+            return
         finally:
             await upstream_response.aclose()
             await client.aclose()
 
-    return StreamingResponse(
+    return _CancellationSafeStreamingResponse(
         _iter_stream(),
         status_code=upstream_response.status_code,
         headers=resp_headers,
@@ -781,25 +817,28 @@ async def workspace_events_sse(
     async def _stream():
         # Always emit the current generation so the client knows the
         # connection is live and what the baseline is.
-        generation = await _runtime_service().get_workspace_generation(workspace_id)
-        initial_payload = _runtime_service().get_workspace_event_payload(workspace_id)
-        yield f"data: {json.dumps(initial_payload)}\n\n"
+        try:
+            generation = await _runtime_service().get_workspace_generation(workspace_id)
+            initial_payload = _runtime_service().get_workspace_event_payload(workspace_id)
+            yield f"data: {json.dumps(initial_payload)}\n\n"
 
-        while True:
-            if await request.is_disconnected():
-                break
-            new_gen = await _runtime_service().wait_workspace_generation(workspace_id, generation, timeout=25.0)
-            if await request.is_disconnected():
-                break
-            if new_gen > generation:
-                generation = new_gen
-                payload = _runtime_service().get_workspace_event_payload(workspace_id)
-                yield f"data: {json.dumps(payload)}\n\n"
-            else:
-                # Keepalive – SSE comment to prevent proxy/browser timeouts
-                yield ": keepalive\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                new_gen = await _runtime_service().wait_workspace_generation(workspace_id, generation, timeout=25.0)
+                if await request.is_disconnected():
+                    break
+                if new_gen > generation:
+                    generation = new_gen
+                    payload = _runtime_service().get_workspace_event_payload(workspace_id)
+                    yield f"data: {json.dumps(payload)}\n\n"
+                else:
+                    # Keepalive – SSE comment to prevent proxy/browser timeouts
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            return
 
-    return StreamingResponse(
+    return _CancellationSafeStreamingResponse(
         _stream(),
         media_type="text/event-stream",
         headers={

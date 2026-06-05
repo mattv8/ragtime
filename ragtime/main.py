@@ -243,8 +243,9 @@ async def lifespan(app: FastAPI):
     # Cleanup - stop background services before disconnecting DB
     await background_task_service.stop()
 
-    # Shutdown chunking process pool
-    shutdown_process_pool()
+    # Shutdown chunking process pool without waiting on CPU-bound workers; hot
+    # reload/shutdown must not leave the API socket open but unserved.
+    shutdown_process_pool(wait=False, cancel_futures=True, terminate_workers=True)
 
     # Shutdown I/O thread pool
     if _io_thread_pool is not None:
