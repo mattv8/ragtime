@@ -1053,8 +1053,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const codeEditorRef = useRef<HTMLDivElement>(null);
 
+  // Live-value refs for drag — updated imperatively to avoid React re-renders.
+  // JSX inline styles read from these refs, so streaming-chat re-renders
+  // pick up the correct live width/fraction.
+  const sidebarWidthLiveRef = useRef(sidebarWidth);
+  const leftPaneFractionLiveRef = useRef(leftPaneFraction);
+  const editorFractionLiveRef = useRef(editorFraction);
+
+  // DOM refs for imperative style manipulation during drag
+  const fileSidebarRef = useRef<HTMLDivElement>(null);
+  const editorSectionRef = useRef<HTMLDivElement>(null);
+  const chatSectionRef = useRef<HTMLDivElement>(null);
+
   // Collapse state: track which panes are collapsed + their last size for restore
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false);
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
   const [editorChatCollapsedSide, setEditorChatCollapsedSide] = useState<'before' | 'after' | null>(null);
   const prevSidebarWidth = useRef(180);
@@ -1063,83 +1076,184 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const skipNextLayoutPersistRef = useRef(true);
   const skipNextFullscreenPersistRef = useRef(true);
 
+  const rightPaneRef = useRef<HTMLDivElement>(null);
+
   const SIDEBAR_COLLAPSE_THRESHOLD = 60;
   const MAIN_COLLAPSE_LEFT_THRESHOLD = 0.08;
   const MAIN_COLLAPSE_RIGHT_THRESHOLD = 0.92;
   const EDITOR_COLLAPSE_TOP_THRESHOLD = 0.08;
   const EDITOR_COLLAPSE_BOTTOM_THRESHOLD = 0.92;
 
+  // ── Sidebar resize ──────────────────────────────────────────
+  // During drag: update live ref + DOM imperatively (no React state).
   const handleResizeSidebar = useCallback((delta: number) => {
-    setSidebarWidth((prev) => {
-      const next = prev + delta;
-      if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
-        prevSidebarWidth.current = prev > SIDEBAR_COLLAPSE_THRESHOLD ? prev : prevSidebarWidth.current;
-        setSidebarCollapsed(true);
-        return 0;
+    const prev = sidebarWidthLiveRef.current;
+    let next = prev + delta;
+
+    if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
+      if (prev >= SIDEBAR_COLLAPSE_THRESHOLD) prevSidebarWidth.current = prev;
+      next = 0;
+    } else {
+      next = Math.min(400, next);
+    }
+
+    sidebarWidthLiveRef.current = next;
+    const el = fileSidebarRef.current;
+    if (el) {
+      if (next === 0) el.style.display = 'none';
+      else {
+        el.style.display = '';
+        el.style.width = `${next}px`;
       }
-      setSidebarCollapsed(false);
-      return Math.min(400, next);
-    });
+    }
   }, []);
 
+  // Commit final width to React state (triggers one re-render + persist).
+  const commitSidebarWidth = useCallback(() => {
+    const width = sidebarWidthLiveRef.current;
+    if (width === 0) {
+      setSidebarCollapsed(true);
+      setSidebarWidth(0);
+    } else {
+      setSidebarCollapsed(false);
+      setSidebarWidth(width);
+    }
+  }, []);
+
+  // ── Main-split resize (left pane | right pane) ──────────────
   const handleResizeMainSplit = useCallback((delta: number) => {
     const el = contentRef.current;
     if (!el) return;
     const totalWidth = el.offsetWidth;
     if (totalWidth === 0) return;
-    setLeftPaneFraction((prev) => {
-      const next = prev + delta / totalWidth;
-      if (next > MAIN_COLLAPSE_RIGHT_THRESHOLD) {
-        prevLeftPaneFraction.current = prev < MAIN_COLLAPSE_RIGHT_THRESHOLD ? prev : prevLeftPaneFraction.current;
-        setRightPaneCollapsed(true);
-        return 1;
-      }
-      if (next < MAIN_COLLAPSE_LEFT_THRESHOLD) {
-        prevLeftPaneFraction.current = prev > MAIN_COLLAPSE_LEFT_THRESHOLD ? prev : prevLeftPaneFraction.current;
-        // Left pane collapse not implemented (keep at min)
-        return 0.05;
-      }
-      setRightPaneCollapsed(false);
-      return next;
-    });
+    const prev = leftPaneFractionLiveRef.current;
+    let next = prev + delta / totalWidth;
+
+    if (next > MAIN_COLLAPSE_RIGHT_THRESHOLD) {
+      if (prev <= MAIN_COLLAPSE_RIGHT_THRESHOLD) prevLeftPaneFraction.current = prev;
+      next = 1;
+    } else if (next < MAIN_COLLAPSE_LEFT_THRESHOLD) {
+      if (prev >= MAIN_COLLAPSE_LEFT_THRESHOLD) prevLeftPaneFraction.current = prev;
+      next = 0;
+    }
+
+    leftPaneFractionLiveRef.current = next;
+    el.style.gridTemplateColumns = next === 1
+      ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
+      : next === 0
+        ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
+        : `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
+
+    if (next === 0 && leftPaneRef.current) leftPaneRef.current.style.display = 'none';
+    else if (leftPaneRef.current) leftPaneRef.current.style.display = '';
+
+    if (next === 1 && rightPaneRef.current) rightPaneRef.current.style.display = 'none';
+    else if (rightPaneRef.current) rightPaneRef.current.style.display = '';
   }, []);
 
+  const commitMainSplitFraction = useCallback(() => {
+    const fraction = leftPaneFractionLiveRef.current;
+    if (fraction === 1) {
+      setRightPaneCollapsed(true);
+      setLeftPaneCollapsed(false);
+      setLeftPaneFraction(1);
+    } else if (fraction === 0) {
+      setRightPaneCollapsed(false);
+      setLeftPaneCollapsed(true);
+      setLeftPaneFraction(0);
+    } else {
+      setRightPaneCollapsed(false);
+      setLeftPaneCollapsed(false);
+      setLeftPaneFraction(fraction);
+    }
+  }, []);
+
+  // ── Editor-chat vertical split ──────────────────────────────
   const handleResizeEditorChat = useCallback((delta: number) => {
     const el = leftPaneRef.current;
     if (!el) return;
     const totalHeight = el.offsetHeight;
     if (totalHeight === 0) return;
-    setEditorFraction((prev) => {
-      const next = prev + delta / totalHeight;
-      if (next < EDITOR_COLLAPSE_TOP_THRESHOLD) {
-        prevEditorFraction.current = prev > EDITOR_COLLAPSE_TOP_THRESHOLD ? prev : prevEditorFraction.current;
-        setEditorChatCollapsedSide('before');
-        return 0;
-      }
-      if (next > EDITOR_COLLAPSE_BOTTOM_THRESHOLD) {
-        prevEditorFraction.current = prev < EDITOR_COLLAPSE_BOTTOM_THRESHOLD ? prev : prevEditorFraction.current;
-        setEditorChatCollapsedSide('after');
-        return 1;
-      }
+    const prev = editorFractionLiveRef.current;
+    let next = prev + delta / totalHeight;
+
+    if (next < EDITOR_COLLAPSE_TOP_THRESHOLD) {
+      if (prev >= EDITOR_COLLAPSE_TOP_THRESHOLD) prevEditorFraction.current = prev;
+      next = 0;
+    } else if (next > EDITOR_COLLAPSE_BOTTOM_THRESHOLD) {
+      if (prev <= EDITOR_COLLAPSE_BOTTOM_THRESHOLD) prevEditorFraction.current = prev;
+      next = 1;
+    } else {
+      next = Math.min(0.9, Math.max(0.1, next));
+    }
+
+    editorFractionLiveRef.current = next;
+
+    // Imperatively update flex on both children
+    const editorEl = editorSectionRef.current;
+    const chatEl = chatSectionRef.current;
+    if (next === 0) {
+      if (editorEl) editorEl.style.display = 'none';
+      if (chatEl) { chatEl.style.display = ''; chatEl.style.flex = '1'; }
+    } else if (next === 1) {
+      if (editorEl) { editorEl.style.display = ''; editorEl.style.flex = '1'; }
+      if (chatEl) chatEl.style.display = 'none';
+    } else {
+      if (editorEl) { editorEl.style.display = ''; editorEl.style.flex = String(next); }
+      if (chatEl) { chatEl.style.display = ''; chatEl.style.flex = String(1 - next); }
+    }
+  }, []);
+
+  const commitEditorChatFraction = useCallback(() => {
+    const fraction = editorFractionLiveRef.current;
+    if (fraction === 0) {
+      setEditorChatCollapsedSide('before');
+    } else if (fraction === 1) {
+      setEditorChatCollapsedSide('after');
+    } else {
       setEditorChatCollapsedSide(null);
-      return Math.min(0.9, Math.max(0.1, next));
-    });
+      setEditorFraction(fraction);
+    }
   }, []);
 
   const expandSidebar = useCallback(() => {
+    const width = prevSidebarWidth.current || 180;
+    sidebarWidthLiveRef.current = width;
+    const el = fileSidebarRef.current;
+    if (el) el.style.width = `${width}px`;
     setSidebarCollapsed(false);
-    setSidebarWidth(prevSidebarWidth.current || 180);
+    setSidebarWidth(width);
+  }, []);
+
+  const expandLeftPane = useCallback(() => {
+    const fraction = prevLeftPaneFraction.current || 0.5;
+    leftPaneFractionLiveRef.current = fraction;
+    const root = contentRef.current;
+    if (root) root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+    if (leftPaneRef.current) leftPaneRef.current.style.display = '';
+    setLeftPaneCollapsed(false);
+    setLeftPaneFraction(fraction);
   }, []);
 
   const expandRightPane = useCallback(() => {
+    const fraction = prevLeftPaneFraction.current || 0.5;
+    leftPaneFractionLiveRef.current = fraction;
+    const root = contentRef.current;
+    if (root) root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+    if (rightPaneRef.current) rightPaneRef.current.style.display = '';
     setRightPaneCollapsed(false);
-    setLeftPaneFraction(prevLeftPaneFraction.current || 0.5);
+    setLeftPaneFraction(fraction);
   }, []);
 
   const expandChat = useCallback(() => {
+    const fraction = Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6));
+    editorFractionLiveRef.current = fraction;
+    const editorEl = editorSectionRef.current;
+    const chatEl = chatSectionRef.current;
+    if (editorEl) editorEl.style.flex = String(fraction);
+    if (chatEl) chatEl.style.flex = String(1 - fraction);
     setEditorChatCollapsedSide(null);
-    const restored = prevEditorFraction.current || 0.6;
-    setEditorFraction(Math.min(0.9, Math.max(0.1, restored)));
+    setEditorFraction(fraction);
   }, []);
 
   const isCodeEditorFocused = useCallback(() => {
@@ -1155,13 +1269,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const stored = readStoredUserSpaceLayout(userSpaceLayoutCookieName);
 
     if (!stored) {
-      setSidebarWidth(180);
+      const defW = 180;
+      sidebarWidthLiveRef.current = defW;
+      leftPaneFractionLiveRef.current = 0.5;
+      editorFractionLiveRef.current = 0.6;
+      setSidebarWidth(defW);
       setSidebarCollapsed(false);
       setLeftPaneFraction(0.5);
       setRightPaneCollapsed(false);
       setEditorFraction(0.6);
       setEditorChatCollapsedSide(null);
-      prevSidebarWidth.current = 180;
+      prevSidebarWidth.current = defW;
       prevLeftPaneFraction.current = 0.5;
       prevEditorFraction.current = 0.6;
       return;
@@ -1170,6 +1288,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const restoredSidebarWidth = clampNumber(stored.sidebarWidth, SIDEBAR_COLLAPSE_THRESHOLD, 400);
     const restoredLeftPaneFraction = clampNumber(stored.leftPaneFraction, 0.1, 0.9);
     const restoredEditorFraction = clampNumber(stored.editorFraction, 0.1, 0.9);
+
+    sidebarWidthLiveRef.current = stored.sidebarCollapsed ? 0 : restoredSidebarWidth;
+    leftPaneFractionLiveRef.current = stored.rightPaneCollapsed ? 1 : restoredLeftPaneFraction;
+    editorFractionLiveRef.current = stored.editorChatCollapsedSide === 'before' ? 0
+      : stored.editorChatCollapsedSide === 'after' ? 1
+      : restoredEditorFraction;
 
     setSidebarCollapsed(stored.sidebarCollapsed);
     setSidebarWidth(stored.sidebarCollapsed ? 0 : restoredSidebarWidth);
@@ -7139,14 +7263,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       )}
 
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
-      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: rightPaneCollapsed ? '1fr 16px 0fr' : `${leftPaneFraction}fr 4px ${1 - leftPaneFraction}fr` }}>
+      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: rightPaneCollapsed ? 'minmax(0, 1fr) 16px minmax(0, 0fr)' : leftPaneCollapsed ? 'minmax(0, 0fr) 16px minmax(0, 1fr)' : `minmax(0, ${leftPaneFractionLiveRef.current}fr) 4px minmax(0, ${1 - leftPaneFractionLiveRef.current}fr)` }}>
         {/* Left pane */}
-        <div className="userspace-left-pane" ref={leftPaneRef}>
-          {editorChatCollapsedSide !== 'before' && (
-          <div className="userspace-editor-section" style={{ flex: editorFraction }}>
+        <div className="userspace-left-pane" ref={leftPaneRef} style={{ display: leftPaneCollapsed ? 'none' : undefined }}>
+          <div className="userspace-editor-section" ref={editorSectionRef} style={{ display: editorChatCollapsedSide === 'before' ? 'none' : undefined, flex: editorFractionLiveRef.current }}>
             {/* File sidebar */}
             {!sidebarCollapsed && (
-            <div className="userspace-file-sidebar" style={{ width: sidebarWidth }}>
+            <div className="userspace-file-sidebar" ref={fileSidebarRef} style={{ width: sidebarWidthLiveRef.current }}>
               <div className="userspace-file-sidebar-header">
                 <h4><File size={14} /> Files</h4>
               </div>
@@ -7189,7 +7312,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             </div>
             )}
 
-            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
+            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} onResizeEnd={commitSidebarWidth} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
 
             {/* Code editor */}
             <div className="userspace-code-editor" ref={codeEditorRef}>
@@ -7246,18 +7369,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               )}
             </div>
           </div>
-          )}
 
           <ResizeHandle
             direction="vertical"
             onResize={handleResizeEditorChat}
+            onResizeEnd={commitEditorChatFraction}
             collapsed={editorChatCollapsedSide ?? undefined}
             onExpand={expandChat}
           />
 
           {/* Chat section */}
-          {editorChatCollapsedSide !== 'after' && (
-          <div className="userspace-chat-section" style={{ flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFraction }}>
+          <div className="userspace-chat-section" ref={chatSectionRef} style={{ display: editorChatCollapsedSide === 'after' ? 'none' : undefined, flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current }}>
             {activeWorkspaceId ? (
               <ChatPanel
                 key={activeWorkspaceId}
@@ -7301,14 +7423,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               </div>
             )}
           </div>
-          )}
         </div>
 
-        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} collapsed={rightPaneCollapsed ? 'after' : undefined} onExpand={expandRightPane} />
+        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} onResizeEnd={commitMainSplitFraction} collapsed={rightPaneCollapsed ? 'after' : leftPaneCollapsed ? 'before' : undefined} onExpand={leftPaneCollapsed ? expandLeftPane : expandRightPane} />
 
         {/* Right pane */}
-        {!rightPaneCollapsed && (
-        <div className="userspace-right-pane">
+        <div
+          className="userspace-right-pane"
+          ref={rightPaneRef}
+          style={{ display: rightPaneCollapsed ? 'none' : undefined }}
+        >
           {activeRightTab === 'preview' ? (
             <div className="userspace-preview-section">
               <UserSpaceArtifactPreview
@@ -7719,7 +7843,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             )}
           </div>
         </div>
-        )}
       </div>
 
       <FileDiffOverlay

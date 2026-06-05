@@ -1807,10 +1807,23 @@ textarea:focus {
 
 .userspace-content {
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns: 1fr 0px 1fr;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.userspace-content > .userspace-left-pane {
+  grid-column: 1;
+}
+
+.userspace-content > .resize-handle {
+  grid-column: 2;
+}
+
+.userspace-content > .userspace-right-pane {
+  grid-column: 3;
 }
 
 /* --- Left pane: editor + chat --- */
@@ -2984,6 +2997,7 @@ textarea:focus {
 
 .userspace-snapshot-diff-columns {
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1px;
   flex: 1;
@@ -4439,6 +4453,23 @@ textarea:focus {
   background: var(--color-primary);
 }
 
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  cursor: inherit;
+}
+
+.resize-handle-horizontal::before {
+  left: -5px;
+  right: -5px;
+}
+
+.resize-handle-vertical::before {
+  top: -5px;
+  bottom: -5px;
+}
+
 .resize-handle-horizontal {
   width: 4px;
   cursor: col-resize;
@@ -4455,15 +4486,16 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   background: var(--color-border);
-  cursor: pointer;
 }
 
 .resize-handle-collapsed.resize-handle-horizontal {
   width: 16px;
+  cursor: col-resize;
 }
 
 .resize-handle-collapsed.resize-handle-vertical {
   height: 16px;
+  cursor: row-resize;
 }
 
 .resize-handle-chevron {
