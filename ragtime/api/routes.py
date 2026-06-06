@@ -806,8 +806,19 @@ async def _stream_response_tokens(
     """
     chunk_id = f"chatcmpl-{int(time.time())}"
 
-    def make_chunk(content: str, finish_reason: str | None = None) -> str:
-        """Create an SSE chunk with the given content."""
+    def make_chunk(
+        content: str | None = None,
+        finish_reason: str | None = None,
+        *,
+        reasoning_content: str | None = None,
+    ) -> str:
+        """Create an OpenAI-compatible SSE chunk with the given delta fields."""
+        delta: dict[str, str] = {}
+        if content:
+            delta["content"] = content
+        if reasoning_content:
+            delta["reasoning_content"] = reasoning_content
+
         chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
@@ -816,7 +827,7 @@ async def _stream_response_tokens(
             "choices": [
                 {
                     "index": 0,
-                    "delta": {"content": content} if content else {},
+                    "delta": delta,
                     "finish_reason": finish_reason,
                 }
             ],
@@ -898,11 +909,12 @@ async def _stream_response_tokens(
                 yield make_chunk("\n\n> **Note:** Reached maximum tool iterations\n")
 
             elif event_type == "reasoning":
-                # Reasoning/thinking content - emit as collapsible details block
+                # Reasoning/thinking content belongs in a dedicated delta field.
+                # OpenAI-compatible clients such as Open WebUI render this as a
+                # single thinking block instead of treating it as assistant text.
                 reasoning_text = event.get("content", "")
                 if reasoning_text:
-                    block = f'\n<details type="reasoning">\n<summary>Thinking...</summary>\n\n{reasoning_text}\n\n</details>\n'
-                    yield make_chunk(block)
+                    yield make_chunk(reasoning_content=str(reasoning_text))
 
         else:
             # Plain string content - stream directly
