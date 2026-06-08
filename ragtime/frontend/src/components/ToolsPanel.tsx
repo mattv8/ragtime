@@ -298,17 +298,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
               )}
             </div>
             <div className="tool-card-header-actions">
-              {onToggleWrite && (
-                <label className="toggle-switch" title={tool.allow_write ? 'Disable write access' : 'Enable write access'}>
-                  <span className={`toggle-switch-label write-toggle-label ${tool.allow_write ? 'active' : ''}`}>Write</span>
-                  <input
-                    type="checkbox"
-                    checked={tool.allow_write}
-                    onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
-                  />
-                  <span className="toggle-slider"></span>
-                </label>
-              )}
               <div className="tool-card-heartbeat">
                 <span
                   className={`heartbeat-indicator ${heartbeatDisplay.status}`}
@@ -398,6 +387,19 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
 
       <div className="tool-card-footer">
         <div className="tool-card-constraints">
+          {onToggleWrite && (
+            <div className={`write-mode-toggle ${tool.allow_write ? 'active' : ''}`} title="Quick toggle write access">
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={tool.allow_write}
+                  onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+              <span>{tool.allow_write ? 'Allow Write' : 'Read Only'}</span>
+            </div>
+          )}
           <IndexingPill
             activeJob={activeSchemaJob}
             progressLabelPrefix="Indexing"
@@ -510,6 +512,56 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     loading: boolean;
   } | null>(null);
   const [writeConfirmTool, setWriteConfirmTool] = useState<ToolConfig | null>(null);
+
+  // Selected group tab (null = show ungrouped / all)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const groupContentRef = useRef<HTMLDivElement>(null);
+
+  // Group the tools for display — include ALL groups (even empty) as drop targets
+  const { allGroups, ungroupedTools } = useMemo(() => {
+    const grouped = new Map<string, { group: ToolGroup; tools: ToolConfig[] }>();
+    const ungrouped: ToolConfig[] = [];
+
+    for (const g of groups) {
+      grouped.set(g.id, { group: g, tools: [] });
+    }
+
+    for (const tool of tools) {
+      if (tool.group_id && grouped.has(tool.group_id)) {
+        grouped.get(tool.group_id)!.tools.push(tool);
+      } else {
+        ungrouped.push(tool);
+      }
+    }
+
+    return {
+      allGroups: Array.from(grouped.values()),
+      ungroupedTools: ungrouped,
+    };
+  }, [tools, groups]);
+
+  const activeSchemaJobsByToolId = useMemo(() => {
+    const jobsByToolId: Record<string, SchemaIndexJob> = {};
+
+    for (const job of schemaJobs) {
+      if ((job.status === 'pending' || job.status === 'indexing') && !jobsByToolId[job.tool_config_id]) {
+        jobsByToolId[job.tool_config_id] = job;
+      }
+    }
+
+    return jobsByToolId;
+  }, [schemaJobs]);
+
+  const selectedGroup = useMemo(() => {
+    if (!selectedGroupId) {
+      return null;
+    }
+
+    return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
+  }, [allGroups, selectedGroupId]);
+
+  const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
+  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
 
   const loadTools = useCallback(async () => {
     try {
@@ -633,15 +685,15 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     toast.success('Tool configuration saved successfully');
   };
 
-  const patchToolInState = (toolId: string, updates: Partial<ToolConfig>) => {
+  const patchToolInState = useCallback((toolId: string, updates: Partial<ToolConfig>) => {
     setTools((current) =>
       current.map((tool) => tool.id === toolId ? { ...tool, ...updates } : tool)
     );
-  };
+  }, []);
 
-  const replaceToolInState = (updatedTool: ToolConfig) => {
+  const replaceToolInState = useCallback((updatedTool: ToolConfig) => {
     setTools((current) => current.map((tool) => tool.id === updatedTool.id ? updatedTool : tool));
-  };
+  }, []);
 
   const startEditingGroup = useCallback((groupId: string, name: string) => {
     setEditingGroupId(groupId);
@@ -831,69 +883,6 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   };
 
-  const handleAssignGroup = async (toolId: string, groupId: string | null) => {
-    try {
-      const previousTool = tools.find((tool) => tool.id === toolId);
-      const previousGroupId = previousTool?.group_id ?? null;
-      const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
-      replaceToolInState(updatedTool);
-
-      await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to assign group');
-    }
-  };
-
-  // Group the tools for display — include ALL groups (even empty) as drop targets
-  const { allGroups, ungroupedTools } = useMemo(() => {
-    const grouped = new Map<string, { group: ToolGroup; tools: ToolConfig[] }>();
-    const ungrouped: ToolConfig[] = [];
-
-    for (const g of groups) {
-      grouped.set(g.id, { group: g, tools: [] });
-    }
-
-    for (const tool of tools) {
-      if (tool.group_id && grouped.has(tool.group_id)) {
-        grouped.get(tool.group_id)!.tools.push(tool);
-      } else {
-        ungrouped.push(tool);
-      }
-    }
-
-    return {
-      allGroups: Array.from(grouped.values()),
-      ungroupedTools: ungrouped,
-    };
-  }, [tools, groups]);
-
-  const activeSchemaJobsByToolId = useMemo(() => {
-    const jobsByToolId: Record<string, SchemaIndexJob> = {};
-
-    for (const job of schemaJobs) {
-      if ((job.status === 'pending' || job.status === 'indexing') && !jobsByToolId[job.tool_config_id]) {
-        jobsByToolId[job.tool_config_id] = job;
-      }
-    }
-
-    return jobsByToolId;
-  }, [schemaJobs]);
-
-  // Selected group tab (null = show ungrouped / all)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const groupContentRef = useRef<HTMLDivElement>(null);
-
-  const selectedGroup = useMemo(() => {
-    if (!selectedGroupId) {
-      return null;
-    }
-
-    return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
-  }, [allGroups, selectedGroupId]);
-
-  const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
-  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
-
   const deleteEmptyGroupIfNeeded = useCallback(async (toolId: string, previousGroupId: string | null, nextGroupId: string | null | undefined) => {
     if (!previousGroupId || previousGroupId === nextGroupId) {
       return;
@@ -914,6 +903,19 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setSelectedGroupId(null);
     }
   }, [tools, selectedGroupId]);
+
+  const handleAssignGroup = useCallback(async (toolId: string, groupId: string | null) => {
+    try {
+      const previousTool = tools.find((tool) => tool.id === toolId);
+      const previousGroupId = previousTool?.group_id ?? null;
+      const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
+      replaceToolInState(updatedTool);
+
+      await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to assign group');
+    }
+  }, [tools, replaceToolInState, deleteEmptyGroupIfNeeded, toast]);
 
   // Click outside the group content area clears the selected group
   useEffect(() => {
@@ -1378,30 +1380,47 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleToolCardDrop = useCallback(async (e: React.DragEvent, targetToolId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    const draggedId = e.dataTransfer.getData('text/plain');
+    const draggedId = e.dataTransfer.getData('text/plain') || dragToolId;
 
     const localDragOverId = dragOverToolId;
     const localInsertBefore = localDragOverId ? dragInsertBefore : true;
     const localGroupTarget = dragGroupTargetId;
+
+    // Re-detect center zone during drop to ensure grouping intent is captured even if state was cleared
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const relY = (e.clientY - rect.top) / rect.height;
+    const isCenterZone = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
 
     clearDragPreview();
     setDragToolId(null);
 
     if (!draggedId || draggedId === targetToolId) return;
 
-    // Center drop → create a new group containing both tools
-    if (localGroupTarget === targetToolId) {
+    // Center drop or localGroupTarget match → group tools
+    if (isCenterZone || localGroupTarget === targetToolId) {
       try {
-        const targetTool = tools.find((tool) => tool.id === targetToolId) ?? null;
-        const { created: newGroup } = await createSuggestedGroup(targetTool);
-        // Assign both tools to the new group (target first so it retains lower sort_order)
-        await Promise.all([
-          handleAssignGroup(targetToolId, newGroup.id),
-          handleAssignGroup(draggedId, newGroup.id),
-        ]);
-        setSelectedGroupId(newGroup.id);
+        const targetTool = tools.find((tool) => tool.id === targetToolId);
+        if (!targetTool) return;
+
+        const targetGroupId = targetTool.group_id;
+
+        if (targetGroupId) {
+          // Target is already in a group, just add dragged tool to it
+          await handleAssignGroup(draggedId, targetGroupId);
+          setSelectedGroupId(targetGroupId);
+        } else {
+          // Target is not in a group, create a new suggested group for both
+          const { created: newGroup } = await createSuggestedGroup(targetTool);
+          // Assign both tools to the new group (target first so it retains lower sort_order)
+          await Promise.all([
+            handleAssignGroup(targetToolId, newGroup.id),
+            handleAssignGroup(draggedId, newGroup.id),
+          ]);
+          setSelectedGroupId(newGroup.id);
+        }
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to create group');
+        toast.error(err instanceof Error ? err.message : 'Failed to group tools');
       }
       return;
     }
@@ -1412,7 +1431,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     if (toIdx < 0) return;
     const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
     await reorderVisibleTools(draggedId, insertIdx);
-  }, [visibleTools, dragOverToolId, dragInsertBefore, dragGroupTargetId, reorderVisibleTools, clearDragPreview, handleAssignGroup, toast]);
+  }, [visibleTools, tools, dragToolId, dragOverToolId, dragInsertBefore, dragGroupTargetId, reorderVisibleTools, clearDragPreview, handleAssignGroup, createSuggestedGroup, setSelectedGroupId, toast]);
 
   const handleSlotDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();

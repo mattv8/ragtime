@@ -981,20 +981,26 @@ body.authenticated-webgl-background-active #root {
   flex-direction: column;
 }
 
+
 .tool-card-header-main {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: 4px;
   width: 100%;
 }
 
 .tool-card-header-actions {
   display: flex;
   align-items: center;
+  gap: var(--space-sm);
   flex-shrink: 0;
 }
 
 .tool-card-title {
+  display: flex;
+  align-items: center;
   flex: 1;
   min-width: 0;
   padding-left: 3px;
@@ -1005,6 +1011,20 @@ body.authenticated-webgl-background-active #root {
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.name-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 
 .tool-card-connection-sub {
@@ -1094,21 +1114,6 @@ body.authenticated-webgl-background-active #root {
   margin-bottom: var(--space-xs);
 }
 
-.tool-card-header-main {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-md);
-  margin-bottom: 4px;
-}
-
-.tool-card-header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  flex-shrink: 0;
-}
-
 .tool-card-header-sub {
   display: flex;
   align-items: center;
@@ -1190,6 +1195,7 @@ body.authenticated-webgl-background-active #root {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-md);
   margin-top: auto;
   padding-top: var(--space-sm);
@@ -1206,7 +1212,9 @@ body.authenticated-webgl-background-active #root {
 .tool-card-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-xs);
+  margin-left: auto;
 }
 
 .write-toggle-wrapper {
@@ -1216,14 +1224,22 @@ body.authenticated-webgl-background-active #root {
 /* Inline Edit for Tool Cards */
 .editable-field-wrapper {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-xs);
   cursor: pointer;
   position: relative;
+  width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 
 .editable-field-wrapper h3 {
   margin: 0;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .editable-field-wrapper .inline-edit-btn {
