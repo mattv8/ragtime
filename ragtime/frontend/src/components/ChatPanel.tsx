@@ -1068,11 +1068,16 @@ function parseTableMetadata(output: string): { tableData: TableData | null; disp
     return { tableData: null, displayText: output };
   }
 
+  const withoutMalformedMetadata = () => {
+    const lineEndIdx = output.indexOf('\n');
+    return lineEndIdx === -1 ? '' : output.slice(lineEndIdx + 1).replace(/^\r?\n/, '');
+  };
+
   const lineEndIdx = output.indexOf('\n');
   const metadataSearchEnd = lineEndIdx === -1 ? output.length - 1 : lineEndIdx - 1;
   const endIdx = output.lastIndexOf(endMarker, metadataSearchEnd);
   if (endIdx < startMarker.length) {
-    return { tableData: null, displayText: output };
+    return { tableData: null, displayText: withoutMalformedMetadata() };
   }
 
   const jsonStr = output.substring(startMarker.length, endIdx);
@@ -1089,7 +1094,7 @@ function parseTableMetadata(output: string): { tableData: TableData | null; disp
     const displayText = output.slice(contentStart);
     return { tableData, displayText };
   } catch {
-    return { tableData: null, displayText: output };
+    return { tableData: null, displayText: output.slice(endIdx + endMarker.length).replace(/^\r?\n/, '') };
   }
 }
 

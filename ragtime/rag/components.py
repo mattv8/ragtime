@@ -443,6 +443,13 @@ def truncate_tool_output(output: str, max_chars: int) -> str:
     if max_chars <= 0 or len(output) <= max_chars:
         return output
 
+    # If we must truncate, discard UI-only TABLEDATA so the LLM gets more
+    # actual content (e.g. ASCII table) and doesn't get confused by broken JSON.
+    if output.lstrip().startswith(TABLE_METADATA_START):
+        output = strip_table_metadata(output)
+        if len(output) <= max_chars:
+            return output
+
     try:
         structured_output = json.loads(output)
     except (TypeError, ValueError):

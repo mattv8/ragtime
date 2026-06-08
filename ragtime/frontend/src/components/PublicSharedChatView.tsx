@@ -316,7 +316,7 @@ function SharedChatSurface({
         autoScrollFrameRef.current = null;
       }
     };
-  }, [loading, visibleMessages.length, activeTask?.streaming_state?.content_length]);
+  }, [loading, visibleMessages.length, activeTask?.streaming_state?.version]);
 
   // Auto-resize textarea
   const handleTextareaInput = useCallback(() => {
