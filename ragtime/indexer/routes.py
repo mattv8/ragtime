@@ -62,6 +62,7 @@ from ragtime.core.copilot_auth import (
     exchange_github_token_for_copilot_token,
     is_copilot_token_refresh_in_progress,
 )
+from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.embedding_models import (
     OPENAI_EMBEDDING_PRIORITY,
     get_embedding_models,
@@ -3800,6 +3801,7 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
             env = {"PGPASSWORD": password}
         elif container:
             # Docker container test
+            docker_ssh_config = docker_ssh_config_from_dict(config, timeout=30)
             cmd = [
                 "docker",
                 "exec",
@@ -3809,6 +3811,16 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
                 "-c",
                 'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
             ]
+            if docker_ssh_config:
+                result = await _run_remote_docker_command(docker_ssh_config, cmd, timeout=35.0)
+                if result.success:
+                    return ToolTestResponse(
+                        success=True,
+                        message="PostgreSQL connection successful (remote Docker)",
+                        details={"host": container, "database": database, "mode": "docker_ssh"},
+                    )
+                error = (result.stderr or result.stdout).strip()
+                return ToolTestResponse(success=False, message=f"Connection failed: {error}")
             env = None
         else:
             return ToolTestResponse(
@@ -3920,9 +3932,49 @@ async def _test_mysql_connection(config: dict) -> ToolTestResponse:
         # Docker container mode
         docker_network = config.get("docker_network", "")
         database = config.get("database", "")
+        docker_ssh_config = docker_ssh_config_from_dict(config, timeout=30)
 
         if not database:
             return ToolTestResponse(success=False, message="Database is required")
+
+        if docker_ssh_config:
+            user_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_USER"],
+                timeout=10.0,
+            )
+            root_password_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_ROOT_PASSWORD"],
+                timeout=10.0,
+            )
+            password_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_PASSWORD"],
+                timeout=10.0,
+            )
+            db_user = user_result.stdout.strip() if user_result.success and user_result.stdout.strip() else "root"
+            db_password = root_password_result.stdout.strip() if db_user == "root" else password_result.stdout.strip()
+
+            test_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "mysql", f"-u{db_user}", f"-p{db_password}", "-N", "-e", "SELECT VERSION()", database],
+                timeout=35.0,
+            )
+            if test_result.success:
+                return ToolTestResponse(
+                    success=True,
+                    message=f"Connected to {database} in remote container {container}",
+                    details={
+                        "version": test_result.stdout.strip() or "Unknown",
+                        "database": database,
+                        "container": container,
+                        "docker_network": docker_network,
+                        "mode": "docker_ssh",
+                    },
+                )
+            error = (test_result.stderr or test_result.stdout).strip()
+            return ToolTestResponse(success=False, message=f"Connection failed: {error}")
 
         success, message, details = await test_mysql_connection(
             container=container,
@@ -4141,11 +4193,65 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
     database = config.get("database", "odoo")
     config_path = config.get("config_path", "")
     docker_network = config.get("docker_network", "")
+    docker_ssh_config = docker_ssh_config_from_dict(config, timeout=120)
 
     if not container:
         return ToolTestResponse(success=False, message="Container name is required")
 
     try:
+        if docker_ssh_config:
+            inspect_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "inspect", "-f", "{{.State.Running}}", container],
+                timeout=15.0,
+            )
+            if not inspect_result.success:
+                return ToolTestResponse(success=False, message=f"Container '{container}' not found or not accessible on remote host")
+            if inspect_result.stdout.strip().lower() != "true":
+                return ToolTestResponse(success=False, message=f"Container '{container}' is not running")
+
+            version = "unknown"
+            version_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", "-i", container, "odoo", "--version"],
+                timeout=15.0,
+            )
+            if version_result.success:
+                version = version_result.stdout.strip()
+            else:
+                which_result = await _run_remote_docker_command(
+                    docker_ssh_config,
+                    ["docker", "exec", "-i", container, "which", "odoo"],
+                    timeout=10.0,
+                )
+                if not which_result.success:
+                    return ToolTestResponse(success=False, message="Odoo command not found in remote container")
+                version = "detected (custom wrapper)"
+
+            cmd = ["docker", "exec", "-i", container, "odoo", "shell", "--no-http", "-d", database]
+            if config_path:
+                cmd.extend(["-c", config_path])
+
+            test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
+            shell_result = await _run_remote_docker_command(docker_ssh_config, cmd, timeout=120.0, input_data=test_input)
+            output = shell_result.output
+
+            if "ODOO_TEST_SUCCESS" in output:
+                return ToolTestResponse(
+                    success=True,
+                    message=f"Odoo shell accessible on remote Docker host: {version}",
+                    details={
+                        "container": container,
+                        "database": database,
+                        "version": version,
+                        "docker_network": docker_network,
+                        "mode": "docker_ssh",
+                    },
+                )
+
+            output_snippet = output[-500:] if len(output) > 500 else output
+            return ToolTestResponse(success=False, message="Odoo shell test failed on remote Docker host", details={"output_tail": output_snippet})
+
         # Test if container is running
         cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container]
         process = await asyncio.wait_for(
@@ -4336,6 +4442,145 @@ class DockerDiscoveryResponse(BaseModel):
     containers: List[DockerContainer] = []
     current_network: Optional[str] = None
     current_container: Optional[str] = None
+
+
+class DockerDiscoverRequest(BaseModel):
+    """Optional SSH target for Docker discovery."""
+
+    docker_ssh_host: Optional[str] = None
+    docker_ssh_port: Optional[int] = 22
+    docker_ssh_user: Optional[str] = None
+    docker_ssh_password: Optional[str] = None
+    docker_ssh_key_path: Optional[str] = None
+    docker_ssh_key_content: Optional[str] = None
+    docker_ssh_key_passphrase: Optional[str] = None
+
+
+async def _run_remote_docker_command(
+    ssh_config: SSHConfig,
+    command: list[str],
+    timeout: float = 10.0,
+    input_data: str | None = None,
+):
+    """Run a Docker command on a remote host without blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(None, lambda: execute_docker_command_on_remote_host(ssh_config, command, input_data=input_data)),
+        timeout=timeout,
+    )
+
+
+async def _discover_remote_docker_resources(request: DockerDiscoverRequest) -> DockerDiscoveryResponse:
+    """Discover Docker resources on a remote host over SSH."""
+    ssh_config = docker_ssh_config_from_dict(request.model_dump(exclude_none=True), timeout=15)
+    if not ssh_config:
+        return DockerDiscoveryResponse(success=False, message="Remote Docker SSH host and user are required")
+
+    networks: list[DockerNetwork] = []
+    containers: list[DockerContainer] = []
+
+    try:
+        # Verify Docker is callable before returning an empty discovery result.
+        version_result = await _run_remote_docker_command(ssh_config, ["docker", "version", "--format", "{{.Server.Version}}"], timeout=20.0)
+        if not version_result.success:
+            message = version_result.stderr or version_result.stdout or "Docker command failed on remote host"
+            return DockerDiscoveryResponse(success=False, message=message.strip())
+
+        networks_result = await _run_remote_docker_command(
+            ssh_config,
+            ["docker", "network", "ls", "--format", "{{json .}}"],
+            timeout=15.0,
+        )
+        if networks_result.success:
+            for line in networks_result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                try:
+                    net = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if net.get("Name") not in ["bridge", "host", "none"]:
+                    networks.append(
+                        DockerNetwork(
+                            name=net.get("Name", ""),
+                            driver=net.get("Driver", ""),
+                            scope=net.get("Scope", ""),
+                        )
+                    )
+
+        containers_result = await _run_remote_docker_command(
+            ssh_config,
+            ["docker", "ps", "--format", "{{json .}}"],
+            timeout=15.0,
+        )
+        if containers_result.success:
+            for line in containers_result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                try:
+                    cont = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                container_name = cont.get("Names", "")
+                net_result = await _run_remote_docker_command(
+                    ssh_config,
+                    [
+                        "docker",
+                        "inspect",
+                        "-f",
+                        "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+                        container_name,
+                    ],
+                    timeout=10.0,
+                )
+                container_networks = net_result.stdout.strip().split() if net_result.success else []
+
+                has_odoo = False
+                if "odoo" in cont.get("Image", "").lower() or "odoo" in container_name.lower():
+                    await _run_remote_docker_command(
+                        ssh_config,
+                        ["docker", "exec", "-i", container_name, "odoo", "--version"],
+                        timeout=8.0,
+                    )
+                    has_odoo = True
+
+                containers.append(
+                    DockerContainer(
+                        name=container_name,
+                        image=cont.get("Image", ""),
+                        status=cont.get("Status", ""),
+                        networks=container_networks,
+                        has_odoo=has_odoo,
+                    )
+                )
+
+        for network in networks:
+            network.containers = [c.name for c in containers if network.name in c.networks]
+
+        return DockerDiscoveryResponse(
+            success=True,
+            message=f"Found {len(networks)} networks and {len(containers)} containers on remote Docker host",
+            networks=networks,
+            containers=containers,
+            current_network=None,
+            current_container=None,
+        )
+    except asyncio.TimeoutError:
+        return DockerDiscoveryResponse(success=False, message="Remote Docker discovery timed out")
+    except Exception as e:
+        return DockerDiscoveryResponse(success=False, message=f"Remote Docker discovery failed: {str(e)}")
+
+
+@router.post("/docker/discover", response_model=DockerDiscoveryResponse, tags=["Tools"])
+async def discover_docker_resources_with_options(
+    request: DockerDiscoverRequest | None = Body(default=None),
+    _user: User = Depends(require_admin),
+):
+    """Discover local Docker resources, or remote Docker resources via SSH."""
+    if request and request.docker_ssh_host:
+        return await _discover_remote_docker_resources(request)
+    return await discover_docker_resources(_user)
 
 
 @router.get("/docker/discover", response_model=DockerDiscoveryResponse, tags=["Tools"])
@@ -11395,8 +11640,14 @@ async def compact_conversation(
             (idx for idx, message in enumerate(conv.messages[:replace_marker_index]) if message.role == "compaction"),
             default=-1,
         )
-        split_index = replace_marker_index
-        messages_to_summarize = conv.messages[previous_marker_index + 1 : replace_marker_index]
+        split_index, messages_to_summarize = _find_compaction_split_index(
+            conv.messages[:replace_marker_index],
+            request.keep_recent_pairs,
+        )
+        if not messages_to_summarize:
+            split_index = replace_marker_index
+            summarize_start = previous_marker_index if previous_marker_index >= 0 else 0
+            messages_to_summarize = conv.messages[summarize_start:replace_marker_index]
     else:
         split_index, messages_to_summarize = _find_compaction_split_index(conv.messages, request.keep_recent_pairs)
 

@@ -9453,6 +9453,7 @@ export function ChatPanel({
 
     let terminalStatus: string | null = null;
     let terminalError: string | null = null;
+    let streamError: string | null = null;
 
     try {
       const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
@@ -9471,6 +9472,7 @@ export function ChatPanel({
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         console.error('Compaction task stream error:', err);
+        streamError = err instanceof Error ? err.message : 'Lost connection to compaction updates';
       }
     } finally {
       if (compactionTaskRef.current !== taskId) return;
@@ -9495,6 +9497,11 @@ export function ChatPanel({
         void refreshBranchPoints(conversationId);
       } catch (e) {
         console.error(e);
+      }
+
+      if (!terminalStatus && streamError) {
+        terminalStatus = 'failed';
+        terminalError = streamError;
       }
 
       if (terminalStatus && terminalStatus !== 'completed') {
@@ -10457,6 +10464,7 @@ export function ChatPanel({
     setIsCompacting(true);
     setCompactingConversationId(activeConversation.id);
     setError(null);
+    toastActions.info(replaceMarker ? 'Retrying conversation compaction...' : 'Compacting conversation context...');
     try {
       const task = await api.compactConversation(
         activeConversation.id,

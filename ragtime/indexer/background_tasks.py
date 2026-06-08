@@ -67,8 +67,19 @@ def is_compaction_task_message(user_message: str | None) -> bool:
 
 def _find_compaction_split_index(messages: list[ChatMessage], keep_recent_pairs: int) -> tuple[int, list[ChatMessage]]:
     last_compaction_index = max((idx for idx, msg in enumerate(messages) if msg.role == "compaction"), default=-1)
-    search_start = last_compaction_index + 1
-    return len(messages), messages[search_start:]
+    summary_start = last_compaction_index if last_compaction_index >= 0 else 0
+    uncompacted_start = last_compaction_index + 1
+    recent_user_turns = 0
+
+    for idx in range(len(messages) - 1, uncompacted_start - 1, -1):
+        if messages[idx].role != "user":
+            continue
+        recent_user_turns += 1
+        if recent_user_turns >= keep_recent_pairs:
+            split_index = idx
+            return split_index, messages[summary_start:split_index]
+
+    return len(messages), []
 
 
 async def _notify_conversation_progress(conversation_id: str, task_id: str) -> None:

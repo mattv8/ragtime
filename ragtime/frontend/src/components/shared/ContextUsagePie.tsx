@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 interface ContextUsagePieProps {
   currentTokens: number;
@@ -6,11 +6,12 @@ interface ContextUsagePieProps {
   contextLimit: number;
   compactThresholdPercent?: number;
   loading?: boolean;
-  onCompact?: () => void;
+  onCompact?: () => void | Promise<void>;
   isCompacting?: boolean;
 }
 
 export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, compactThresholdPercent = 80, loading, onCompact, isCompacting }: ContextUsagePieProps) {
+  const [optimisticCompacting, setOptimisticCompacting] = useState(false);
   const { percentage, color } = useMemo(() => {
     const pct = contextLimit > 0 ? Math.round((totalTokens / contextLimit) * 100) : 0;
 
@@ -35,10 +36,21 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
   const center = size / 2;
   const threshold = Math.max(1, Math.min(100, Math.round(compactThresholdPercent)));
   const canCompact = Boolean(onCompact) && percentage >= threshold;
-  const isLoading = loading || isCompacting;
+  const effectiveCompacting = Boolean(isCompacting || optimisticCompacting);
+  const isLoading = loading || effectiveCompacting;
   const title = canCompact
     ? `Compact conversation context (${percentage}% full, threshold: ${threshold}%, ${totalTokens.toLocaleString()} / ${contextLimit.toLocaleString()} tokens)`
     : `Context: ${percentage}% (${totalTokens.toLocaleString()} / ${contextLimit.toLocaleString()} tokens, current message: ${currentTokens.toLocaleString()})`;
+
+  const handleCompactClick = async () => {
+    if (!onCompact || optimisticCompacting || isCompacting) return;
+    setOptimisticCompacting(true);
+    try {
+      await onCompact();
+    } finally {
+      setOptimisticCompacting(false);
+    }
+  };
 
   if (isLoading) {
     const loadingArc = circumference * 0.25;
@@ -87,8 +99,8 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
         <button
           type="button"
           className="context-usage-pie context-usage-pie-button"
-          title={isCompacting ? 'Compacting context...' : 'Loading context info...'}
-          aria-label={isCompacting ? 'Compacting context' : 'Loading context info'}
+          title={effectiveCompacting ? 'Compacting context...' : 'Loading context info...'}
+          aria-label={effectiveCompacting ? 'Compacting context' : 'Loading context info'}
           disabled
         >
           {loadingContent}
@@ -98,7 +110,7 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
     return (
       <div
         className="context-usage-pie"
-        title={isCompacting ? 'Compacting context...' : 'Loading context info...'}
+        title={effectiveCompacting ? 'Compacting context...' : 'Loading context info...'}
         style={{
           position: 'relative',
           width: `${size}px`,
@@ -202,7 +214,7 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
         className="context-usage-pie context-usage-pie-button context-usage-pie-compact-mode"
         title={title}
         aria-label="Compact conversation context"
-        onClick={onCompact}
+        onClick={() => { void handleCompactClick(); }}
       >
         {pieContent}
       </button>

@@ -2287,7 +2287,7 @@ class CompactConversationRequest(BaseModel):
         default=COMPACT_CONVERSATION_DEFAULT_KEEP_RECENT_PAIRS,
         ge=1,
         le=COMPACT_CONVERSATION_MAX_KEEP_RECENT_PAIRS,
-        description="Legacy client option. The compaction marker is inserted at the clicked conversation tail.",
+        description="Number of recent user turns to keep uncompressed after the compaction marker.",
     )
     replace_message_id: Optional[str] = Field(
         default=None,

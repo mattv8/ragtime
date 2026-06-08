@@ -1,17 +1,62 @@
 import unittest
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from ragtime.indexer.models import ChatMessage
-from ragtime.indexer.repository import _estimate_conversation_tokens, _estimate_effective_conversation_tokens
+from ragtime.indexer.models import ChatMessage, ConversationBranchKind
+from ragtime.indexer.repository import (
+    IndexerRepository,
+    _estimate_conversation_tokens,
+    _estimate_effective_conversation_tokens,
+)
 from ragtime.indexer.routes import _build_chat_history_for_conversation, _find_compaction_split_index
 from ragtime.rag.components import RAGComponents
 
 
 def _message(role: str, content: str) -> ChatMessage:
     return ChatMessage(role=role, content=content)
+
+
+class _FakeConversationDelegate:
+    def __init__(self, initial: Any, updated: Any) -> None:
+        self._initial = initial
+        self._updated = updated
+        self.find_unique_calls = 0
+
+    async def find_unique(self, **_kwargs: Any) -> Any:
+        self.find_unique_calls += 1
+        return self._initial if self.find_unique_calls == 1 else self._updated
+
+
+class _FakeCompactionTransaction:
+    def __init__(self, initial: Any, updated: Any) -> None:
+        self.conversation = _FakeConversationDelegate(initial, updated)
+        self.executed_sql: list[str] = []
+
+    async def execute_raw(self, sql: str) -> int:
+        self.executed_sql.append(sql)
+        return 1
+
+
+class _FakeTransactionContext:
+    def __init__(self, tx: _FakeCompactionTransaction) -> None:
+        self._tx = tx
+
+    async def __aenter__(self) -> _FakeCompactionTransaction:
+        return self._tx
+
+    async def __aexit__(self, *_args: Any) -> bool:
+        return False
+
+
+class _FakeCompactionDb:
+    def __init__(self, tx: _FakeCompactionTransaction) -> None:
+        self._tx = tx
+
+    def tx(self) -> _FakeTransactionContext:
+        return _FakeTransactionContext(self._tx)
 
 
 class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
@@ -30,7 +75,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(effective_tokens, full_tokens)
         self.assertEqual(effective_tokens, _estimate_conversation_tokens(messages[2:]))
 
-    def test_find_compaction_split_anchors_at_tail(self) -> None:
+    def test_find_compaction_split_keeps_recent_user_turns(self) -> None:
         messages = []
         for idx in range(6):
             messages.append(_message("user", f"user {idx}"))
@@ -38,7 +83,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         split_index, summarized = _find_compaction_split_index(messages, keep_recent_pairs=2)
 
-        self.assertEqual(split_index, len(messages))
+        self.assertEqual(split_index, 8)
         self.assertEqual(
             [message.content for message in summarized],
             [
@@ -50,14 +95,10 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
                 "assistant 2",
                 "user 3",
                 "assistant 3",
-                "user 4",
-                "assistant 4",
-                "user 5",
-                "assistant 5",
             ],
         )
 
-    def test_find_compaction_split_only_summarizes_after_last_marker(self) -> None:
+    def test_find_compaction_split_includes_previous_marker_summary(self) -> None:
         messages = [
             _message("user", "old user"),
             _message("assistant", "old assistant"),
@@ -72,18 +113,30 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         split_index, summarized = _find_compaction_split_index(messages, keep_recent_pairs=1)
 
-        self.assertEqual(split_index, len(messages))
+        self.assertEqual(split_index, 7)
         self.assertEqual(
             [message.content for message in summarized],
             [
+                "first summary",
                 "fresh 1",
                 "fresh reply 1",
                 "fresh 2",
                 "fresh reply 2",
-                "fresh 3",
-                "fresh reply 3",
             ],
         )
+
+    def test_find_compaction_split_requires_history_before_recent_tail(self) -> None:
+        messages = [
+            _message("user", "recent 1"),
+            _message("assistant", "reply 1"),
+            _message("user", "recent 2"),
+            _message("assistant", "reply 2"),
+        ]
+
+        split_index, summarized = _find_compaction_split_index(messages, keep_recent_pairs=4)
+
+        self.assertEqual(split_index, len(messages))
+        self.assertEqual(summarized, [])
 
     async def test_build_chat_history_resets_at_compaction_marker(self) -> None:
         messages = [
@@ -189,6 +242,119 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
             summary = await components.summarize_for_compaction(messages, "test-model")
 
         self.assertEqual(summary, "Continuity summary from commentary channel.")
+
+    async def test_compaction_persistence_uses_postgres_side_json_updates(self) -> None:
+        large_payload = "large-payload-" + ("x" * 1000)
+        messages = [
+            {"role": "user", "content": large_payload, "message_id": "m1"},
+            {"role": "assistant", "content": "reply", "message_id": "tail-id"},
+        ]
+        initial = SimpleNamespace(messages=messages, activeTaskId="task-1")
+        updated = SimpleNamespace(messages=[*messages], activeTaskId="task-1")
+        fake_tx = _FakeCompactionTransaction(initial, updated)
+        repo = IndexerRepository()
+
+        with (
+            mock.patch.object(
+                repo,
+                "_get_db",
+                new=mock.AsyncMock(return_value=_FakeCompactionDb(fake_tx)),
+            ),
+            mock.patch.object(repo, "_prisma_conversation_to_model", return_value="converted") as convert,
+        ):
+            result = await repo.compact_conversation(
+                "conv-1",
+                len(messages),
+                "summary",
+                expected_message_count=len(messages),
+                expected_tail_message_id="tail-id",
+                expected_active_task_id="task-1",
+                snapshot_branch_kind=ConversationBranchKind.REPLAY,
+                snapshot_user_id="user-1",
+            )
+
+        self.assertEqual(result, "converted")
+        self.assertEqual(convert.call_count, 1)
+        self.assertEqual(len(fake_tx.executed_sql), 2)
+        branch_sql, update_sql = fake_tx.executed_sql
+        self.assertIn("INSERT INTO conversation_branches", branch_sql)
+        self.assertIn("SELECT", branch_sql)
+        self.assertIn("messages,", branch_sql)
+        self.assertIn("messages || jsonb_build_array", update_sql)
+        self.assertNotIn(large_payload, branch_sql + update_sql)
+
+    async def test_compaction_marker_edit_uses_jsonb_set(self) -> None:
+        large_payload = "large-marker-edit-payload-" + ("x" * 1000)
+        messages = [
+            {"role": "user", "content": large_payload, "message_id": "m1"},
+            {"role": "compaction", "content": "old summary", "message_id": "marker-1"},
+            {"role": "assistant", "content": "reply", "message_id": "m2"},
+        ]
+        initial = SimpleNamespace(messages=messages, activeTaskId=None)
+        updated = SimpleNamespace(messages=[*messages], activeTaskId=None)
+        fake_tx = _FakeCompactionTransaction(initial, updated)
+        repo = IndexerRepository()
+
+        with (
+            mock.patch.object(
+                repo,
+                "_get_db",
+                new=mock.AsyncMock(return_value=_FakeCompactionDb(fake_tx)),
+            ),
+            mock.patch.object(repo, "_prisma_conversation_to_model", return_value="converted"),
+        ):
+            result = await repo.update_compaction_marker_summary(
+                "conv-1",
+                "new summary",
+                message_id="marker-1",
+            )
+
+        self.assertEqual(result, "converted")
+        self.assertEqual(len(fake_tx.executed_sql), 1)
+        update_sql = fake_tx.executed_sql[0]
+        self.assertIn("jsonb_set", update_sql)
+        self.assertIn("marker-1", update_sql)
+        self.assertNotIn(large_payload, update_sql)
+
+    async def test_compaction_retry_can_move_tail_marker_before_recent_turns(self) -> None:
+        messages = [
+            {"role": "compaction", "content": "previous summary", "message_id": "marker-old"},
+            {"role": "user", "content": "older user", "message_id": "m1"},
+            {"role": "assistant", "content": "older reply", "message_id": "m2"},
+            {"role": "user", "content": "recent user", "message_id": "m3"},
+            {"role": "assistant", "content": "recent reply", "message_id": "m4"},
+            {"role": "compaction", "content": "bad tail summary", "message_id": "marker-bad"},
+        ]
+        initial = SimpleNamespace(messages=messages, activeTaskId="task-1")
+        updated = SimpleNamespace(messages=[*messages], activeTaskId="task-1")
+        fake_tx = _FakeCompactionTransaction(initial, updated)
+        repo = IndexerRepository()
+
+        with (
+            mock.patch.object(
+                repo,
+                "_get_db",
+                new=mock.AsyncMock(return_value=_FakeCompactionDb(fake_tx)),
+            ),
+            mock.patch.object(repo, "_prisma_conversation_to_model", return_value="converted"),
+        ):
+            result = await repo.compact_conversation(
+                "conv-1",
+                3,
+                "stitched summary",
+                expected_message_count=len(messages),
+                expected_tail_message_id="marker-bad",
+                expected_active_task_id="task-1",
+                replace_message_id="marker-bad",
+            )
+
+        self.assertEqual(result, "converted")
+        self.assertEqual(len(fake_tx.executed_sql), 1)
+        update_sql = fake_tx.executed_sql[0]
+        self.assertIn("messages - 5", update_sql)
+        self.assertIn("jsonb_insert", update_sql)
+        self.assertIn("ARRAY['3']", update_sql)
+        self.assertIn("marker-bad", update_sql)
 
 
 if __name__ == "__main__":

@@ -145,6 +145,13 @@ def _sql_quote_literal(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _sql_jsonb_literal(value: Any) -> str:
+    """Quote a JSON-compatible value as a PostgreSQL jsonb literal."""
+    sanitized = _sanitize_json_for_postgres(value)
+    payload = json.dumps(sanitized, default=str, ensure_ascii=False, separators=(",", ":"))
+    return f"{_sql_quote_literal(payload)}::jsonb"
+
+
 def _identifier_in_allowed_models(
     identifier: str,
     allowed_models: list[str],
@@ -2570,6 +2577,7 @@ class IndexerRepository:
                             return None
                     resolved_compaction_index = compaction_index
                     replace_index: Optional[int] = None
+                    replacement_index = -1
                     if replace_message_id:
                         replace_index = next(
                             (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == replace_message_id),
@@ -2581,9 +2589,12 @@ class IndexerRepository:
                     if replacing_marker:
                         if replace_index is None:
                             return None
+                        replacement_index = replace_index
                         if messages[replace_index].get("role") != "compaction":
                             return None
-                        resolved_compaction_index = replace_index
+                        if compaction_index < 0 or compaction_index > len(messages):
+                            return None
+                        resolved_compaction_index = compaction_index
                     elif expected_tail_message_id is not None:
                         expected_anchor_index = (expected_message_count - 1) if expected_message_count is not None else None
                         anchor_index = next(
@@ -2613,33 +2624,120 @@ class IndexerRepository:
                             "message_id": str(uuid.uuid4()),
                         }
 
+                    if replacing_marker:
+                        messages_without_replaced_marker = [
+                            *messages[:replacement_index],
+                            *messages[replacement_index + 1 :],
+                        ]
+                        token_insert_index = resolved_compaction_index
+                        if resolved_compaction_index > replacement_index:
+                            token_insert_index -= 1
+                        token_insert_index = max(0, min(token_insert_index, len(messages_without_replaced_marker)))
+                        updated_messages_for_tokens = [
+                            *messages_without_replaced_marker[:token_insert_index],
+                            marker,
+                            *messages_without_replaced_marker[token_insert_index:],
+                        ]
+                    else:
+                        updated_messages_for_tokens = [
+                            *messages[:resolved_compaction_index],
+                            marker,
+                            *messages[resolved_compaction_index:],
+                        ]
+                    total_tokens = _estimate_effective_conversation_tokens(updated_messages_for_tokens)
+                    active_task_clause = (
+                        f"AND (active_task_id IS NULL OR active_task_id = {_sql_quote_literal(expected_active_task_id)})"
+                        if expected_active_task_id
+                        else "AND active_task_id IS NULL"
+                    )
+                    message_count_clause = ""
+                    if expected_message_count is not None:
+                        operator = "=" if replacing_marker else ">="
+                        message_count_clause = f"AND jsonb_array_length(messages) {operator} {int(expected_message_count)}"
+                    tail_clause = ""
+                    if expected_message_count is not None and expected_tail_message_id is not None:
+                        tail_clause = f"AND messages -> {int(expected_message_count - 1)} ->> 'message_id' = {_sql_quote_literal(expected_tail_message_id)}"
+                    marker_json = _sql_jsonb_literal(marker)
+                    compacted_at_literal = _sql_quote_literal(compacted_at.isoformat())
+
                     if snapshot_branch_kind is not None:
-                        await tx.conversationbranch.create(
-                            data={
-                                "id": str(uuid.uuid4()),
-                                "conversationId": conversation_id,
-                                "parentBranchId": snapshot_parent_branch_id,
-                                "branchPointIndex": 0,
-                                "branchKind": cast(Any, snapshot_branch_kind.value),
-                                "preservedMessages": Json(list(messages)),
-                                "createdByUserId": snapshot_user_id,
-                            }
-                        )
+                        branch_kind_literal = _sql_quote_literal(snapshot_branch_kind.value)
+                        inserted_branches = await tx.execute_raw(f"""
+                            INSERT INTO conversation_branches (
+                                id,
+                                conversation_id,
+                                parent_branch_id,
+                                branch_point_index,
+                                branch_kind,
+                                preserved_messages,
+                                associated_snapshot_id,
+                                created_by_user_id,
+                                created_at,
+                                updated_at
+                            )
+                            SELECT
+                                {_sql_quote_literal(str(uuid.uuid4()))},
+                                id,
+                                {_sql_quote_literal(snapshot_parent_branch_id)},
+                                0,
+                                {branch_kind_literal}::"ConversationBranchKind",
+                                messages,
+                                NULL,
+                                {_sql_quote_literal(snapshot_user_id)},
+                                {compacted_at_literal}::timestamp,
+                                {compacted_at_literal}::timestamp
+                            FROM conversations
+                            WHERE id = {_sql_quote_literal(conversation_id)}
+                            {active_task_clause}
+                            AND jsonb_typeof(messages) = 'array'
+                            {message_count_clause}
+                            {tail_clause}
+                            """)
+                        if inserted_branches == 0:
+                            return None
 
                     if replacing_marker:
-                        updated_messages = [*messages]
-                        updated_messages[resolved_compaction_index] = marker
+                        marker_guard_clause = f"AND messages -> {int(replacement_index)} ->> 'role' = 'compaction'"
+                        if resolved_compaction_index == replacement_index:
+                            update_expression = f"jsonb_set(messages, ARRAY[{_sql_quote_literal(str(replacement_index))}]::text[], {marker_json}, false)"
+                        else:
+                            target_index = resolved_compaction_index
+                            if resolved_compaction_index > replacement_index:
+                                target_index -= 1
+                            target_index = max(0, min(target_index, len(messages) - 1))
+                            without_replaced_marker_expression = f"messages - {int(replacement_index)}"
+                            if target_index >= len(messages) - 1:
+                                update_expression = f"({without_replaced_marker_expression}) || jsonb_build_array({marker_json})"
+                            else:
+                                update_expression = (
+                                    f"jsonb_insert({without_replaced_marker_expression}, "
+                                    f"ARRAY[{_sql_quote_literal(str(target_index))}]::text[], {marker_json}, false)"
+                                )
+                    elif resolved_compaction_index >= len(messages):
+                        update_expression = f"messages || jsonb_build_array({marker_json})"
+                        marker_guard_clause = ""
                     else:
-                        updated_messages = messages[:resolved_compaction_index] + [marker] + messages[resolved_compaction_index:]
-                    total_tokens = _estimate_effective_conversation_tokens(updated_messages)
+                        update_expression = f"jsonb_insert(messages, ARRAY[{_sql_quote_literal(str(resolved_compaction_index))}]::text[], {marker_json}, false)"
+                        marker_guard_clause = ""
 
-                    updated = await tx.conversation.update(
+                    updated_rows = await tx.execute_raw(f"""
+                        UPDATE conversations
+                        SET
+                            messages = {update_expression},
+                            total_tokens = {int(total_tokens)},
+                            updated_at = {compacted_at_literal}::timestamp
+                        WHERE id = {_sql_quote_literal(conversation_id)}
+                        {active_task_clause}
+                        AND jsonb_typeof(messages) = 'array'
+                        {message_count_clause}
+                        {tail_clause}
+                        {marker_guard_clause}
+                        """)
+                    if updated_rows == 0:
+                        raise RuntimeError("Compaction marker update affected 0 rows")
+
+                    updated = await tx.conversation.find_unique(
                         where={"id": conversation_id},
-                        data={
-                            "messages": Json(updated_messages),
-                            "totalTokens": total_tokens,
-                            "updatedAt": compacted_at,
-                        },
                         include={"user": True},
                     )
                 return self._prisma_conversation_to_model(updated)
@@ -2691,13 +2789,30 @@ class IndexerRepository:
                     total_tokens = _estimate_effective_conversation_tokens(updated_messages)
                     updated_at = utc_now()
 
-                    updated = await tx.conversation.update(
+                    message_id_clause = ""
+                    if message_id:
+                        message_id_clause = f"AND messages -> {int(resolved_index)} ->> 'message_id' = {_sql_quote_literal(message_id)}"
+                    updated_rows = await tx.execute_raw(f"""
+                        UPDATE conversations
+                        SET
+                            messages = jsonb_set(
+                                messages,
+                                ARRAY[{_sql_quote_literal(str(resolved_index))}]::text[],
+                                {_sql_jsonb_literal(updated_marker)},
+                                false
+                            ),
+                            total_tokens = {int(total_tokens)},
+                            updated_at = {_sql_quote_literal(updated_at.isoformat())}::timestamp
+                        WHERE id = {_sql_quote_literal(conversation_id)}
+                        AND jsonb_typeof(messages) = 'array'
+                        AND messages -> {int(resolved_index)} ->> 'role' = 'compaction'
+                        {message_id_clause}
+                        """)
+                    if updated_rows == 0:
+                        return None
+
+                    updated = await tx.conversation.find_unique(
                         where={"id": conversation_id},
-                        data={
-                            "messages": Json(updated_messages),
-                            "totalTokens": total_tokens,
-                            "updatedAt": updated_at,
-                        },
                         include={"user": True},
                     )
                 return self._prisma_conversation_to_model(updated)
