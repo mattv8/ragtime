@@ -89,9 +89,10 @@ interface ToolCardProps {
   activeSchemaJob?: SchemaIndexJob | null;
   schemaStats?: SchemaIndexStats | null;
   onInlineUpdate?: (toolId: string, updates: { name?: string; description?: string }) => Promise<void>;
+  onToggleWrite?: (toolId: string, allowWrite: boolean) => void;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate, onToggleWrite }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
   const workingDirectory = getToolWorkingDirectory(tool);
@@ -297,6 +298,17 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
               )}
             </div>
             <div className="tool-card-header-actions">
+              {onToggleWrite && (
+                <label className="toggle-switch" title={tool.allow_write ? 'Disable write access' : 'Enable write access'}>
+                  <span className={`toggle-switch-label write-toggle-label ${tool.allow_write ? 'active' : ''}`}>Write</span>
+                  <input
+                    type="checkbox"
+                    checked={tool.allow_write}
+                    onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
+                  />
+                  <span className="toggle-slider"></span>
+                </label>
+              )}
               <div className="tool-card-heartbeat">
                 <span
                   className={`heartbeat-indicator ${heartbeatDisplay.status}`}
@@ -369,27 +381,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      {(tool.allow_write || workingDirectory || activeSchemaJob) && (
-        <div className="tool-card-constraints">
-          <IndexingPill
-            activeJob={activeSchemaJob}
-            progressLabelPrefix="Indexing"
-          />
-          {tool.allow_write && (
-            <span className="write-enabled-pill">
-              <Icon name="alert-triangle" size={12} />
-              Write enabled
-            </span>
-          )}
-          {workingDirectory && (
-            <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
-              <Icon name="folder" size={14} />
-              <span className="path-text">{workingDirectory}</span>
-            </span>
-          )}
-        </div>
-      )}
-
       {/* Schema index stats */}
       {hasSchemaIndexing && schemaStats && schemaStats.embedding_count > 0 && (
         <div className="tool-card-schema-stats">
@@ -405,60 +396,75 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      <div className="tool-card-actions">
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => onTest(tool.id)}
-          disabled={testing}
-        >
-          {testing ? 'Testing...' : 'Test'}
-        </button>
-        {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
-          <>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => onPdmReindex(tool.id, false)}
-              disabled={pdmIndexing}
-              title="Index new and changed documents"
-            >
-              {pdmIndexing ? 'Indexing...' : 'Index'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => onPdmReindex(tool.id, true)}
-              disabled={pdmIndexing}
-              title="Re-index all documents from scratch"
-            >
-              Full Re-index
-            </button>
-          </>
-        )}
-        {hasSchemaIndexing && onSchemaReindex && (
+      <div className="tool-card-footer">
+        <div className="tool-card-constraints">
+          <IndexingPill
+            activeJob={activeSchemaJob}
+            progressLabelPrefix="Indexing"
+          />
+          {workingDirectory && (
+            <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
+              <Icon name="folder" size={14} />
+              <span className="path-text">{workingDirectory}</span>
+            </span>
+          )}
+        </div>
+
+        <div className="tool-card-actions">
           <button
             type="button"
             className="btn btn-sm"
-            onClick={() => onSchemaReindex(tool.id, true)}
-            disabled={schemaIndexing}
-            title="Re-index database schema"
+            onClick={() => onTest(tool.id)}
+            disabled={testing}
           >
-            {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+            {testing ? 'Testing...' : 'Test'}
           </button>
-        )}
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => onEdit(tool)}
-        >
-          Edit
-        </button>
-        <DeleteConfirmButton
-          onDelete={() => onDelete(tool.id)}
-          className="btn btn-sm btn-danger"
-          title="Delete tool"
-        />
+          {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
+            <>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onPdmReindex(tool.id, false)}
+                disabled={pdmIndexing}
+                title="Index new and changed documents"
+              >
+                {pdmIndexing ? 'Indexing...' : 'Index'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onPdmReindex(tool.id, true)}
+                disabled={pdmIndexing}
+                title="Re-index all documents from scratch"
+              >
+                Full Re-index
+              </button>
+            </>
+          )}
+          {hasSchemaIndexing && onSchemaReindex && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => onSchemaReindex(tool.id, true)}
+              disabled={schemaIndexing}
+              title="Re-index database schema"
+            >
+              {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => onEdit(tool)}
+          >
+            Edit
+          </button>
+          <DeleteConfirmButton
+            onDelete={() => onDelete(tool.id)}
+            className="btn btn-sm btn-danger"
+            title="Delete tool"
+          />
+        </div>
       </div>
     </div>
   );
@@ -503,6 +509,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     affected: MountSourceAffectedWorkspacesResponse | null;
     loading: boolean;
   } | null>(null);
+  const [writeConfirmTool, setWriteConfirmTool] = useState<ToolConfig | null>(null);
 
   const loadTools = useCallback(async () => {
     try {
@@ -682,6 +689,38 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       toast.error(err instanceof Error ? err.message : 'Failed to toggle tool');
     }
   };
+
+  const handleToggleWrite = async (toolId: string, allowWrite: boolean) => {
+    if (allowWrite) {
+      const tool = tools.find((t) => t.id === toolId);
+      if (tool) {
+        setWriteConfirmTool(tool);
+      }
+      return;
+    }
+
+    try {
+      const updatedTool = await api.updateToolConfig(toolId, { allow_write: false });
+      replaceToolInState(updatedTool);
+      toast.success('Write access disabled');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to disable write access');
+    }
+  };
+
+  const handleConfirmWriteEnable = useCallback(async () => {
+    if (!writeConfirmTool) return;
+    const toolId = writeConfirmTool.id;
+    setWriteConfirmTool(null);
+
+    try {
+      const updatedTool = await api.updateToolConfig(toolId, { allow_write: true });
+      replaceToolInState(updatedTool);
+      toast.success('Write access enabled');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to enable write access');
+    }
+  }, [writeConfirmTool, replaceToolInState, toast]);
 
   const handleTestTool = async (toolId: string) => {
     try {
@@ -1475,6 +1514,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
           schemaStats={schemaStats[tool.id] || null}
           onInlineUpdate={handleInlineUpdate}
+          onToggleWrite={handleToggleWrite}
         />
       </div>
     );
@@ -1902,6 +1942,39 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                 disabled={disableConfirmation.loading}
               >
                 Disable Mount Source
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Write Access Enable Confirmation Modal */}
+      {writeConfirmTool && (
+        <div className="modal-overlay" onClick={() => setWriteConfirmTool(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Enable Write Access</h3>
+              <button className="modal-close" onClick={() => setWriteConfirmTool(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                Are you sure you want to enable write access for <strong>{writeConfirmTool.name}</strong>?
+              </p>
+              <p className="field-help" style={{ marginTop: 8 }}>
+                This allows the AI to modify data, run destructive queries, and make changes to the connected system.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setWriteConfirmTool(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => void handleConfirmWriteEnable()}
+              >
+                Enable Write Access
               </button>
             </div>
           </div>
