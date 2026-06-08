@@ -1093,7 +1093,19 @@ export interface SSHTunnelConfig {
   ssh_tunnel_public_key?: string;
 }
 
-export interface PostgresConnectionConfig extends SSHTunnelConfig {
+export interface DockerSSHConfig {
+  docker_ssh_enabled?: boolean;
+  docker_ssh_host?: string;
+  docker_ssh_port?: number;
+  docker_ssh_user?: string;
+  docker_ssh_password?: string;
+  docker_ssh_key_path?: string;
+  docker_ssh_key_content?: string;
+  docker_ssh_key_passphrase?: string;
+  docker_ssh_public_key?: string;
+}
+
+export interface PostgresConnectionConfig extends SSHTunnelConfig, DockerSSHConfig {
   host?: string;
   port?: number;
   user?: string;
@@ -1125,7 +1137,7 @@ export interface MssqlConnectionConfig extends SSHTunnelConfig {
   schema_hash?: string | null;
 }
 
-export interface MysqlConnectionConfig extends SSHTunnelConfig {
+export interface MysqlConnectionConfig extends SSHTunnelConfig, DockerSSHConfig {
   host?: string;
   port?: number;
   user?: string;
@@ -1151,7 +1163,7 @@ export interface InfluxdbConnectionConfig extends SSHTunnelConfig {
   bucket?: string;
 }
 
-export interface OdooShellConnectionConfig {
+export interface OdooShellConnectionConfig extends DockerSSHConfig {
   mode?: 'docker' | 'ssh';
   // Docker mode
   container?: string;

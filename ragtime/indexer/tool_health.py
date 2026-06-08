@@ -35,8 +35,10 @@ class ToolHealthCheckResult:
 
 def get_heartbeat_timeout_seconds(connection_config: dict[str, Any] | None) -> float:
     """Return the heartbeat timeout for a tool connection."""
-    has_ssh_tunnel = bool((connection_config or {}).get("ssh_tunnel_enabled", False))
-    return 15.0 if has_ssh_tunnel else 5.0
+    config = connection_config or {}
+    has_ssh_tunnel = bool(config.get("ssh_tunnel_enabled", False))
+    has_remote_docker = bool(config.get("docker_ssh_enabled", False))
+    return 15.0 if has_ssh_tunnel or has_remote_docker else 5.0
 
 
 def _tool_attr(tool: Any, name: str, default: Any = None) -> Any:

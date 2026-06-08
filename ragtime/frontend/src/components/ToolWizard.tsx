@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/api';
-import type { DockerContainer, DockerNetwork } from '@/api';
+import type { DockerContainer, DockerNetwork, DockerSSHConfig } from '@/api';
 import type {
   ToolConfig,
   ToolType,
@@ -1147,6 +1147,20 @@ interface DockerConnectionPanelProps {
   containerCountLabel: string;
   containerHelpText: string;
   fallbackPlaceholder: string;
+  remoteDocker?: boolean;
+}
+
+function isInfrastructureDockerContainer(container: DockerContainer): boolean {
+  const text = `${container.name} ${container.image}`.toLowerCase();
+  return [
+    'postgres',
+    'mysql',
+    'mariadb',
+    'redis',
+    'traefik',
+    'nginx',
+    'caddy',
+  ].some(marker => text.includes(marker));
 }
 
 // Reusable Docker connection panel component
@@ -1168,113 +1182,125 @@ function DockerConnectionPanel({
   containerCountLabel,
   containerHelpText,
   fallbackPlaceholder,
+  remoteDocker = false,
 }: DockerConnectionPanelProps) {
   const filteredContainers = dockerContainers.filter(containerFilter);
   const networkContainers = dockerContainers.filter(
     c => currentNetwork && c.networks.includes(currentNetwork) && c.name !== currentContainer
   );
+  const selectableContainers = remoteDocker
+    ? filteredContainers.filter(c => !selectedNetwork || c.networks.includes(selectedNetwork))
+    : networkContainers;
 
   return (
     <>
-      {/* Discover Docker button */}
-      <div className="form-group">
-        <label>Discover Docker Environment</label>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={onDiscoverDocker}
-          disabled={loadingDocker}
-          style={{ width: '100%' }}
-        >
-          {loadingDocker ? 'Scanning...' : dockerContainers.length > 0 ? 'Refresh' : 'Discover Containers'}
-        </button>
-        <p className="field-help">
-          {dockerContainers.length > 0
-            ? `Found ${filteredContainers.length} ${containerCountLabel} across ${dockerNetworks.length} network(s).`
-            : `Scan for Docker containers running ${containerCountLabel.replace(/\(s\)$/, '')}.`}
-        </p>
-      </div>
+      <div className="form-row-3" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '1rem', alignItems: 'flex-start' }}>
+        {/* Discover Docker button */}
+        <div className="form-group" style={{ marginBottom: 0 }}>
+          <label>Docker Environment</label>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={onDiscoverDocker}
+            disabled={loadingDocker}
+            style={{ width: '100%' }}
+          >
+            {loadingDocker ? 'Scanning...' : dockerContainers.length > 0 ? 'Refresh' : 'Discover'}
+          </button>
+        </div>
 
-      {/* Network selection (after discovery) */}
-      {dockerNetworks.length > 0 && (
-        <div className="form-group">
-          <label>Docker Network</label>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <select
-              value={selectedNetwork}
-              onChange={(e) => onNetworkChange(e.target.value)}
-              style={{ flex: 1 }}
-            >
-              <option value="">Select network...</option>
-              {dockerNetworks.map(n => (
-                <option key={n.name} value={n.name}>
-                  {n.name} ({n.containers.length})
-                  {n.name === currentNetwork ? ' - connected' : ''}
-                </option>
-              ))}
-            </select>
-            {selectedNetwork && selectedNetwork !== currentNetwork && (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={(e) => onConnectNetwork(e, selectedNetwork)}
-                disabled={connectingNetwork}
+        {/* Network selection (after discovery) */}
+        {dockerNetworks.length > 0 && (
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Docker Network</label>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <select
+                value={selectedNetwork}
+                onChange={(e) => onNetworkChange(e.target.value)}
+                style={{ flex: 1 }}
               >
-                {connectingNetwork ? '...' : 'Connect'}
-              </button>
+                <option value="">Select network...</option>
+                {dockerNetworks.map(n => (
+                  <option key={n.name} value={n.name}>
+                    {n.name} ({n.containers.length})
+                    {n.name === currentNetwork ? ' - connected' : ''}
+                  </option>
+                ))}
+              </select>
+              {!remoteDocker && selectedNetwork && selectedNetwork !== currentNetwork && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={(e) => onConnectNetwork(e, selectedNetwork)}
+                  disabled={connectingNetwork}
+                >
+                  {connectingNetwork ? '...' : 'Connect'}
+                </button>
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* Container selection (after connected) */}
+        {(currentNetwork || remoteDocker) && (
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Container Name</label>
+            {selectableContainers.length > 0 ? (
+              <select
+                value={selectedContainer}
+                onChange={(e) => onContainerChange(e.target.value)}
+              >
+                <option value="">Select container...</option>
+                {selectableContainers.map(c => (
+                  <option key={c.name} value={c.name}>
+                    {containerLabel(c)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={selectedContainer}
+                onChange={(e) => onContainerChange(e.target.value)}
+                placeholder="No containers found on this network"
+              />
             )}
           </div>
-          <p className="field-help">
-            {currentNetwork
-              ? `Connected to ${currentNetwork}.`
-              : 'Select a network and click Connect to access containers.'}
-          </p>
-        </div>
-      )}
+        )}
 
-      {/* Container selection (after connected) */}
-      {currentNetwork && (
-        <div className="form-group">
-          <label>Container Name</label>
-          {networkContainers.length > 0 ? (
-            <select
-              value={selectedContainer}
-              onChange={(e) => onContainerChange(e.target.value)}
-            >
-              <option value="">Select container...</option>
-              {networkContainers.map(c => (
-                <option key={c.name} value={c.name}>
-                  {containerLabel(c)}
-                </option>
-              ))}
-            </select>
-          ) : (
+        {/* Fallback: Manual container name if no networks discovered */}
+        {dockerNetworks.length === 0 && !remoteDocker && (
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Container Name</label>
             <input
               type="text"
               value={selectedContainer}
               onChange={(e) => onContainerChange(e.target.value)}
-              placeholder="No containers found on this network"
+              placeholder={fallbackPlaceholder}
             />
-          )}
-          <p className="field-help">{containerHelpText}</p>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
-      {/* Fallback: Manual container name if no networks discovered */}
-      {dockerNetworks.length === 0 && (
-        <div className="form-group">
-          <label>Container Name</label>
-          <input
-            type="text"
-            value={selectedContainer}
-            onChange={(e) => onContainerChange(e.target.value)}
-            placeholder={fallbackPlaceholder}
-          />
-          <p className="field-help">
-            Enter the Docker container name manually, or click Discover above to find containers.
-          </p>
-        </div>
-      )}
+      {/* Help text below the row */}
+      <div className="field-help" style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
+        {dockerNetworks.length === 0 && !remoteDocker ? (
+          <>Enter the Docker container name manually, or click Discover to find containers.</>
+        ) : (
+          <>
+            {dockerContainers.length > 0
+              ? `Found ${filteredContainers.length} ${containerCountLabel} across ${dockerNetworks.length} network(s). `
+              : `Scan for Docker containers running ${containerCountLabel.replace(/\(s\)$/, '')}. `}
+            {currentNetwork
+              ? `Connected to ${currentNetwork}. `
+              : remoteDocker
+                ? 'Remote Docker networks are shown for context only. '
+                : 'Select a network and click Connect to access containers. '}
+            {containerHelpText}
+          </>
+        )}
+      </div>
     </>
   );
 }
@@ -1601,6 +1627,119 @@ function SSHAuthPanel({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+interface RemoteDockerSSHPanelProps {
+  enabled: boolean;
+  config: DockerSSHConfig;
+  onEnabledChange: (enabled: boolean) => void;
+  onConfigChange: (config: DockerSSHConfig) => void;
+  authMode: SSHAuthMode;
+  onAuthModeChange: (mode: SSHAuthMode) => void;
+  generatingKey: boolean;
+  onGenerateKey: () => void;
+  keyCopied: boolean;
+  onCopyPublicKey: () => void;
+  toolName?: string;
+}
+
+function RemoteDockerSSHPanel({
+  enabled,
+  config,
+  onEnabledChange,
+  onConfigChange,
+  authMode,
+  onAuthModeChange,
+  generatingKey,
+  onGenerateKey,
+  keyCopied,
+  onCopyPublicKey,
+  toolName = 'docker',
+}: RemoteDockerSSHPanelProps) {
+  return (
+    <div className="ssh-tunnel-section" style={{ marginBottom: '1rem' }}>
+      <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onEnabledChange(e.target.checked)}
+          style={{ width: 'auto', margin: 0 }}
+        />
+        <span>Remote Docker host via SSH</span>
+      </label>
+      <p className="field-help" style={{ marginTop: 0, marginBottom: enabled ? '1rem' : 0 }}>
+        Run Docker discovery and container commands on a remote server over SSH.
+      </p>
+
+      {enabled && (
+        <>
+          <div className="form-row">
+            <div className="form-group" style={{ flex: 2 }}>
+              <label>SSH Host</label>
+              <input
+                type="text"
+                value={config.docker_ssh_host || ''}
+                onChange={(e) => onConfigChange({ ...config, docker_ssh_host: e.target.value })}
+                placeholder="docker.example.com"
+              />
+            </div>
+            <div className="form-group form-group-small" style={{ flex: 1 }}>
+              <label>SSH Port</label>
+              <input
+                type="number"
+                value={config.docker_ssh_port || 22}
+                onChange={(e) => {
+                  const parsedPort = Number.parseInt(e.target.value, 10);
+                  onConfigChange({ ...config, docker_ssh_port: Number.isNaN(parsedPort) ? 22 : parsedPort });
+                }}
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>SSH User</label>
+            <input
+              type="text"
+              value={config.docker_ssh_user || ''}
+              onChange={(e) => onConfigChange({ ...config, docker_ssh_user: e.target.value })}
+              placeholder="ubuntu"
+            />
+          </div>
+
+          <SSHAuthPanel
+            config={{
+              host: config.docker_ssh_host || '',
+              port: config.docker_ssh_port || 22,
+              user: config.docker_ssh_user || '',
+              key_path: config.docker_ssh_key_path || '',
+              key_content: config.docker_ssh_key_content || '',
+              public_key: config.docker_ssh_public_key || '',
+              key_passphrase: config.docker_ssh_key_passphrase || '',
+              password: config.docker_ssh_password || '',
+            }}
+            onConfigChange={(sshAuthConfig) => onConfigChange({
+              ...config,
+              docker_ssh_key_path: sshAuthConfig.key_path || '',
+              docker_ssh_key_content: sshAuthConfig.key_content || '',
+              docker_ssh_public_key: sshAuthConfig.public_key || '',
+              docker_ssh_key_passphrase: sshAuthConfig.key_passphrase || '',
+              docker_ssh_password: sshAuthConfig.password || '',
+            })}
+            authMode={authMode}
+            onAuthModeChange={onAuthModeChange}
+            generatingKey={generatingKey}
+            onGenerateKey={onGenerateKey}
+            keyCopied={keyCopied}
+            onCopyPublicKey={onCopyPublicKey}
+            toolName={toolName}
+            showHostPort={false}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -2108,6 +2247,20 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [sshTunnelGeneratingKey, setSshTunnelGeneratingKey] = useState(false);
   const [sshTunnelKeyCopied, setSshTunnelKeyCopied] = useState(false);
 
+  const [dockerSSHAuthMode, setDockerSSHAuthMode] = useState<SSHAuthMode>(
+    (() => {
+      const config = existingTool?.connection_config as DockerSSHConfig | undefined;
+      if (config) {
+        if (config.docker_ssh_key_content) return 'upload';
+        if (config.docker_ssh_key_path) return 'path';
+        if (config.docker_ssh_password) return 'password';
+      }
+      return 'generate';
+    })()
+  );
+  const [dockerSSHGeneratingKey, setDockerSSHGeneratingKey] = useState(false);
+  const [dockerSSHKeyCopied, setDockerSSHKeyCopied] = useState(false);
+
   const toDatabaseOptions = (result: {
     databases: string[];
     database_options?: DatabaseDiscoverOption[];
@@ -2116,6 +2269,28 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       return result.database_options;
     }
     return result.databases.map((name) => ({ name, accessible: true }));
+  };
+
+  const getCurrentDockerSSHConfig = (): DockerSSHConfig => {
+    if (toolType === 'postgres') return postgresConfig;
+    if (toolType === 'mysql') return mysqlConfig;
+    if (toolType === 'odoo_shell') return odooConfig;
+    return {};
+  };
+
+  const getDockerDiscoverySSHConfig = (): DockerSSHConfig | undefined => {
+    const config = getCurrentDockerSSHConfig();
+    return config.docker_ssh_enabled && config.docker_ssh_host ? config : undefined;
+  };
+
+  const updateCurrentDockerSSHConfig = (updates: DockerSSHConfig) => {
+    if (toolType === 'postgres') {
+      setPostgresConfig({ ...postgresConfig, ...updates });
+    } else if (toolType === 'mysql') {
+      setMysqlConfig({ ...mysqlConfig, ...updates });
+    } else if (toolType === 'odoo_shell') {
+      setOdooConfig({ ...odooConfig, ...updates });
+    }
   };
 
   const getConnectionConfig = (): ConnectionConfig => {
@@ -2159,11 +2334,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     }
   };
 
-  // Shared Docker discovery handlers for PostgreSQL container mode and Odoo Docker mode
+  // Shared Docker discovery handlers for container-backed tools
   const handleDiscoverDocker = async () => {
     setLoadingDocker(true);
     try {
-      const result = await api.discoverDocker();
+      const dockerSSHConfig = getDockerDiscoverySSHConfig();
+      const result = await api.discoverDocker(dockerSSHConfig);
       if (result.success) {
         setDockerContainers(result.containers);
         setDockerNetworks(result.networks);
@@ -2180,8 +2356,21 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               docker_network: firstPg.networks[0] || ''
             });
           }
+        } else if (toolType === 'mysql' && !mysqlConfig.container) {
+          const firstMysql = result.containers.find(c => {
+            const image = c.image.toLowerCase();
+            return (image.includes('mysql') || image.includes('mariadb')) && c.name !== result.current_container;
+          });
+          if (firstMysql) {
+            setMysqlConfig({
+              ...mysqlConfig,
+              container: firstMysql.name,
+              docker_network: firstMysql.networks[0] || ''
+            });
+          }
         } else if (toolType === 'odoo_shell' && !odooConfig.container) {
-          const firstOdoo = result.containers.find(c => c.has_odoo && c.name !== result.current_container);
+          const odooCandidates = result.containers.filter(c => c.name !== result.current_container);
+          const firstOdoo = odooCandidates.find(c => c.has_odoo) || odooCandidates.find(c => !isInfrastructureDockerContainer(c)) || odooCandidates[0];
           if (firstOdoo) {
             setOdooConfig({
               ...odooConfig,
@@ -2198,6 +2387,70 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     }
   };
 
+  const getFirstDockerContainerForTool = (networkName: string): DockerContainer | undefined => {
+    const matchingNetworkContainers = dockerContainers.filter((container) => {
+      if (networkName && !container.networks.includes(networkName)) {
+        return false;
+      }
+      if (toolType === 'postgres') {
+        return container.image.toLowerCase().includes('postgres');
+      }
+      if (toolType === 'mysql') {
+        const image = container.image.toLowerCase();
+        return image.includes('mysql') || image.includes('mariadb');
+      }
+      if (toolType === 'odoo_shell') {
+        return true;
+      }
+      return false;
+    });
+
+    if (toolType === 'odoo_shell') {
+      return matchingNetworkContainers.find(c => c.has_odoo)
+        || matchingNetworkContainers.find(c => !isInfrastructureDockerContainer(c))
+        || matchingNetworkContainers[0];
+    }
+
+    return matchingNetworkContainers[0];
+  };
+
+  const handleDockerNetworkChange = (networkName: string) => {
+    const nextContainer = getFirstDockerContainerForTool(networkName)?.name || '';
+
+    if (toolType === 'postgres') {
+      const currentContainerStillMatches = Boolean(
+        postgresConfig.container &&
+        dockerContainers.some(c => c.name === postgresConfig.container && (!networkName || c.networks.includes(networkName)))
+      );
+      setPostgresConfig({
+        ...postgresConfig,
+        docker_network: networkName,
+        container: currentContainerStillMatches ? postgresConfig.container : nextContainer,
+      });
+    } else if (toolType === 'mysql') {
+      const currentContainerStillMatches = Boolean(
+        mysqlConfig.container &&
+        dockerContainers.some(c => c.name === mysqlConfig.container && (!networkName || c.networks.includes(networkName)))
+      );
+      setMysqlConfig({
+        ...mysqlConfig,
+        docker_network: networkName,
+        container: currentContainerStillMatches ? mysqlConfig.container : nextContainer,
+      });
+      setMysqlDiscoveredDatabases([]);
+    } else if (toolType === 'odoo_shell') {
+      const currentContainerStillMatches = Boolean(
+        odooConfig.container &&
+        dockerContainers.some(c => c.name === odooConfig.container && (!networkName || c.networks.includes(networkName)))
+      );
+      setOdooConfig({
+        ...odooConfig,
+        docker_network: networkName,
+        container: currentContainerStillMatches ? odooConfig.container : nextContainer,
+      });
+    }
+  };
+
   const handleConnectNetwork = async (e: React.MouseEvent, networkName: string) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2206,12 +2459,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       const result = await api.connectToNetwork(networkName);
       if (result.success) {
         setCurrentNetwork(networkName);
-        // Update the appropriate config
-        if (toolType === 'postgres') {
-          setPostgresConfig({ ...postgresConfig, docker_network: networkName });
-        } else if (toolType === 'odoo_shell') {
-          setOdooConfig({ ...odooConfig, docker_network: networkName });
-        }
+        handleDockerNetworkChange(networkName);
       }
     } catch (err) {
       console.error('Network connection failed:', err);
@@ -2555,6 +2803,33 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     }
   };
 
+  const handleGenerateDockerSSHKey = async () => {
+    setDockerSSHGeneratingKey(true);
+    setError(null);
+    try {
+      const dockerConfig = getCurrentDockerSSHConfig();
+      const result = await api.generateSSHKeypair(name || 'docker', dockerConfig.docker_ssh_key_passphrase || undefined);
+      updateCurrentDockerSSHConfig({
+        docker_ssh_key_content: result.private_key,
+        docker_ssh_public_key: result.public_key,
+        docker_ssh_key_path: '',
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate SSH keypair');
+    } finally {
+      setDockerSSHGeneratingKey(false);
+    }
+  };
+
+  const handleCopyDockerSSHPublicKey = async () => {
+    const pubKey = getCurrentDockerSSHConfig().docker_ssh_public_key;
+    if (pubKey) {
+      await navigator.clipboard.writeText(pubKey);
+      setDockerSSHKeyCopied(true);
+      setTimeout(() => setDockerSSHKeyCopied(false), 2000);
+    }
+  };
+
   const wizardSteps = getWizardSteps();
   const getCurrentStepIndex = () => wizardSteps.indexOf(currentStep);
 
@@ -2816,12 +3091,20 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   };
 
   const validateConnection = (): boolean => {
+    const hasRemoteDockerAuth = (config: DockerSSHConfig): boolean => Boolean(
+      config.docker_ssh_host &&
+      config.docker_ssh_user &&
+      (config.docker_ssh_key_content || config.docker_ssh_key_path || config.docker_ssh_password)
+    );
+
     switch (toolType) {
       case 'postgres':
         // Either host or container must be specified
+        if (postgresConfig.container && postgresConfig.docker_ssh_enabled && !hasRemoteDockerAuth(postgresConfig)) return false;
         return Boolean((postgresConfig.host && postgresConfig.user) || postgresConfig.container);
       case 'mysql':
         // Either host or container must be specified
+        if (mysqlConfig.container && mysqlConfig.docker_ssh_enabled && !hasRemoteDockerAuth(mysqlConfig)) return false;
         return Boolean((mysqlConfig.host && mysqlConfig.user) || mysqlConfig.container);
       case 'mssql':
         // Host, user, password, and database are required
@@ -2838,6 +3121,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           );
           return Boolean(odooConfig.ssh_host && odooConfig.ssh_user && hasAuth);
         }
+        if (odooConfig.container && odooConfig.docker_ssh_enabled && !hasRemoteDockerAuth(odooConfig)) return false;
         return Boolean(odooConfig.container);
       case 'ssh_shell':
         const hasSshAuth = Boolean(
@@ -3084,6 +3368,25 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </div>
         ) : pgConnectionMode === 'container' ? (
           <div className="connection-panel">
+            <RemoteDockerSSHPanel
+              enabled={postgresConfig.docker_ssh_enabled ?? false}
+              onEnabledChange={(enabled) => {
+                setPostgresConfig({ ...postgresConfig, docker_ssh_enabled: enabled });
+                setDockerContainers([]);
+                setDockerNetworks([]);
+                setCurrentNetwork(null);
+                setCurrentContainer(null);
+              }}
+              config={postgresConfig}
+              onConfigChange={(dockerConfig) => setPostgresConfig({ ...postgresConfig, ...dockerConfig })}
+              authMode={dockerSSHAuthMode}
+              onAuthModeChange={setDockerSSHAuthMode}
+              generatingKey={dockerSSHGeneratingKey}
+              onGenerateKey={handleGenerateDockerSSHKey}
+              keyCopied={dockerSSHKeyCopied}
+              onCopyPublicKey={handleCopyDockerSSHPublicKey}
+              toolName={name || 'postgres-docker'}
+            />
             <DockerConnectionPanel
               dockerContainers={dockerContainers}
               dockerNetworks={dockerNetworks}
@@ -3095,13 +3398,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               selectedContainer={postgresConfig.container || ''}
               onDiscoverDocker={handleDiscoverDocker}
               onConnectNetwork={handleConnectNetwork}
-              onNetworkChange={(network) => setPostgresConfig({ ...postgresConfig, docker_network: network })}
+              onNetworkChange={handleDockerNetworkChange}
               onContainerChange={(container) => setPostgresConfig({ ...postgresConfig, container })}
               containerFilter={(c) => c.image.toLowerCase().includes('postgres')}
               containerLabel={(c) => `${c.name}${c.image.toLowerCase().includes('postgres') ? ' (PostgreSQL)' : ''}`}
               containerCountLabel="PostgreSQL container(s)"
               containerHelpText="Uses container's POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB environment variables."
               fallbackPlaceholder="my-postgres-container"
+              remoteDocker={postgresConfig.docker_ssh_enabled ?? false}
             />
 
             <div className="form-group">
@@ -3511,6 +3815,25 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </div>
         ) : mysqlConnectionMode === 'container' ? (
           <div className="connection-panel">
+            <RemoteDockerSSHPanel
+              enabled={mysqlConfig.docker_ssh_enabled ?? false}
+              onEnabledChange={(enabled) => {
+                setMysqlConfig({ ...mysqlConfig, docker_ssh_enabled: enabled });
+                setDockerContainers([]);
+                setDockerNetworks([]);
+                setCurrentNetwork(null);
+                setCurrentContainer(null);
+              }}
+              config={mysqlConfig}
+              onConfigChange={(dockerConfig) => setMysqlConfig({ ...mysqlConfig, ...dockerConfig })}
+              authMode={dockerSSHAuthMode}
+              onAuthModeChange={setDockerSSHAuthMode}
+              generatingKey={dockerSSHGeneratingKey}
+              onGenerateKey={handleGenerateDockerSSHKey}
+              keyCopied={dockerSSHKeyCopied}
+              onCopyPublicKey={handleCopyDockerSSHPublicKey}
+              toolName={name || 'mysql-docker'}
+            />
             <DockerConnectionPanel
               dockerContainers={dockerContainers}
               dockerNetworks={dockerNetworks}
@@ -3522,7 +3845,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               selectedContainer={mysqlConfig.container || ''}
               onDiscoverDocker={handleDiscoverDocker}
               onConnectNetwork={handleConnectNetwork}
-              onNetworkChange={(network) => setMysqlConfig({ ...mysqlConfig, docker_network: network })}
+              onNetworkChange={handleDockerNetworkChange}
               onContainerChange={(container) => {
                 setMysqlConfig({ ...mysqlConfig, container });
                 setMysqlDiscoveredDatabases([]);
@@ -3536,6 +3859,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               containerCountLabel="MySQL/MariaDB container(s)"
               containerHelpText="Uses container's MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE (or MYSQL_ROOT_PASSWORD for root) environment variables."
               fallbackPlaceholder="my-mysql-container"
+              remoteDocker={mysqlConfig.docker_ssh_enabled ?? false}
             />
 
             <div className="form-group">
@@ -4388,6 +4712,25 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
         {odooConnectionMode === 'docker' ? (
           <div className="connection-panel">
+            <RemoteDockerSSHPanel
+              enabled={odooConfig.docker_ssh_enabled ?? false}
+              onEnabledChange={(enabled) => {
+                setOdooConfig({ ...odooConfig, docker_ssh_enabled: enabled });
+                setDockerContainers([]);
+                setDockerNetworks([]);
+                setCurrentNetwork(null);
+                setCurrentContainer(null);
+              }}
+              config={odooConfig}
+              onConfigChange={(dockerConfig) => setOdooConfig({ ...odooConfig, ...dockerConfig })}
+              authMode={dockerSSHAuthMode}
+              onAuthModeChange={setDockerSSHAuthMode}
+              generatingKey={dockerSSHGeneratingKey}
+              onGenerateKey={handleGenerateDockerSSHKey}
+              keyCopied={dockerSSHKeyCopied}
+              onCopyPublicKey={handleCopyDockerSSHPublicKey}
+              toolName={name || 'odoo-docker'}
+            />
             <DockerConnectionPanel
               dockerContainers={dockerContainers}
               dockerNetworks={dockerNetworks}
@@ -4399,13 +4742,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               selectedContainer={odooConfig.container || ''}
               onDiscoverDocker={handleDiscoverDocker}
               onConnectNetwork={handleConnectNetwork}
-              onNetworkChange={(network) => setOdooConfig({ ...odooConfig, docker_network: network })}
+              onNetworkChange={handleDockerNetworkChange}
               onContainerChange={(container) => setOdooConfig({ ...odooConfig, container })}
-              containerFilter={(c) => c.has_odoo}
+              containerFilter={() => true}
               containerLabel={(c) => `${c.name}${c.has_odoo ? ' (Odoo)' : ''}`}
-              containerCountLabel="Odoo container(s)"
+              containerCountLabel="container(s)"
               containerHelpText="The Docker container running the Odoo server."
               fallbackPlaceholder="odoo-server"
+              remoteDocker={odooConfig.docker_ssh_enabled ?? false}
             />
 
             {/* Database and config path (always show for Docker mode) */}

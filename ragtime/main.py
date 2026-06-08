@@ -184,9 +184,9 @@ async def lifespan(app: FastAPI):
     # Connect to database
     await connect_db()
 
-    # Prime tool heartbeat state before runtime tools are materialized. Missing
-    # or failed heartbeats are treated as unavailable for chat/tool selection.
-    await tool_health_monitor.check_once()
+    # Start heartbeat checks before runtime tools are materialized, but do not
+    # block API readiness on remote SSH/Docker health probes.
+    tool_health_monitor.start(on_change=_handle_tool_health_change)
 
     # Initialize RAG components
     await rag.initialize()
@@ -228,8 +228,6 @@ async def lifespan(app: FastAPI):
     userspace_service.schedule_workspace_sqlite_import_recovery()
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
-    tool_health_monitor.start(on_change=_handle_tool_health_change)
-
     # Start MCP session manager (enable/disable checked at request time)
     async with mcp_lifespan_manager():
         yield

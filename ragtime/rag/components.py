@@ -72,6 +72,7 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
+from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
 from ragtime.core.file_constants import (
     USERSPACE_MODULE_SOURCE_EXTENSIONS,
@@ -121,9 +122,12 @@ from ragtime.core.security import (
     validate_ssh_command,
 )
 from ragtime.core.sql_utils import (
+    DB_TYPE_MYSQL,
     TABLE_METADATA_END,
     TABLE_METADATA_START,
     add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
     strip_table_metadata,
 )
 from ragtime.core.ssh import (
@@ -197,7 +201,7 @@ from ragtime.tools.git_history import (
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
-from ragtime.tools.odoo_shell import filter_odoo_output
+from ragtime.tools.odoo_shell import build_docker_shell_command, build_odoo_shell_args, build_shell_input, filter_odoo_output
 from ragtime.userspace.models import (
     ArtifactType,
     UpsertWorkspaceEnvVarRequest,
@@ -294,6 +298,19 @@ async def _terminate_subprocess_after_timeout(
         await process.wait()
     except ProcessLookupError:
         pass
+
+
+async def _execute_remote_docker_command(
+    ssh_config: SSHConfig,
+    command: list[str],
+    input_data: str | None = None,
+):
+    """Run a Docker CLI command on a remote host over SSH without blocking the loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: execute_docker_command_on_remote_host(ssh_config, command, input_data=input_data),
+    )
 
 
 # Maximum timeout for any tool execution (5 minutes)
@@ -4552,9 +4569,11 @@ class RAGComponents:
 
         host = conn_config.get("host", "")
         port = conn_config.get("port", 5432)
+        container = conn_config.get("container", "")
 
-        # Build SSH tunnel config if enabled
-        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+        # Build SSH tunnel config if enabled. Docker container mode takes
+        # precedence when both container and stale SSH tunnel fields are present.
+        ssh_tunnel_config = None if container else build_ssh_tunnel_config(conn_config, host, port)
 
         # Create input schema with captured timeout value
         _default_timeout = timeout_max_seconds  # Capture for closure
@@ -4707,6 +4726,30 @@ class RAGComponents:
                     "-c",
                     f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
                 ]
+                docker_ssh_config = docker_ssh_config_from_dict(conn_config, timeout=effective_timeout if effective_timeout > 0 else 30)
+                if docker_ssh_config:
+                    try:
+                        if effective_timeout > 0:
+                            result = await asyncio.wait_for(
+                                _execute_remote_docker_command(docker_ssh_config, cmd),
+                                timeout=effective_timeout + 5,
+                            )
+                        else:
+                            result = await _execute_remote_docker_command(docker_ssh_config, cmd)
+
+                        if not result.success:
+                            return f"Error: {(result.stderr or result.stdout).strip()}"
+
+                        output = result.stdout.strip()
+                        if not output:
+                            return "Query executed successfully (no results)"
+                        if not include_metadata and "(0 rows)" in output[-20:]:
+                            return "Query executed successfully (no results)"
+                        output = add_table_metadata_to_psql_output(output, include_metadata=include_metadata)
+                        return sanitize_output(output)
+                    except asyncio.TimeoutError:
+                        return f"Error: Query timed out after {effective_timeout}s"
+
                 env = None
             else:
                 return "Error: No connection configured"
@@ -4826,6 +4869,132 @@ class RAGComponents:
         user = conn_config.get("user", "")
         password = conn_config.get("password", "")
         database = conn_config.get("database", "")
+        container = conn_config.get("container", "")
+
+        if container:
+            _default_timeout = timeout_max_seconds
+
+            class MysqlContainerInput(BaseModel):
+                query: str = Field(
+                    default="",
+                    description="SQL query to execute. Must include LIMIT clause.",
+                )
+                reason: str = Field(default="", description="Brief description of what this query retrieves")
+
+            mysql_args_schema = self._add_timeout_field_to_schema(
+                MysqlContainerInput,
+                timeout_max_seconds=timeout_max_seconds,
+                timeout_label="Query",
+            )
+
+            async def get_container_env_var(var_name: str, docker_ssh_config: SSHConfig | None) -> str:
+                cmd = ["docker", "exec", container, "printenv", var_name]
+                if docker_ssh_config:
+                    result = await _execute_remote_docker_command(docker_ssh_config, cmd)
+                    return result.stdout.strip() if result.success else ""
+                process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, _stderr = await process.communicate()
+                return stdout.decode("utf-8", errors="replace").strip() if process.returncode == 0 else ""
+
+            async def execute_query(query: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any) -> str:
+                if not query or not query.strip():
+                    return "Error: 'query' parameter is required. Provide a SQL query to execute."
+                if not reason:
+                    reason = "SQL query"
+
+                logger.info(f"[{tool_name}] MySQL container query: {reason}")
+                effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
+
+                is_safe, validation_reason = validate_sql_query(
+                    query,
+                    enable_write=allow_write,
+                )
+                if not is_safe:
+                    return f"Error: {validation_reason}"
+
+                query_to_run = enforce_max_results(query, max_results, db_type=DB_TYPE_MYSQL)
+                docker_ssh_config = docker_ssh_config_from_dict(conn_config, timeout=effective_timeout if effective_timeout > 0 else 30)
+
+                try:
+                    db_user = await get_container_env_var("MYSQL_USER", docker_ssh_config) or "root"
+                    db_password = (
+                        await get_container_env_var("MYSQL_ROOT_PASSWORD", docker_ssh_config)
+                        if db_user == "root"
+                        else await get_container_env_var("MYSQL_PASSWORD", docker_ssh_config)
+                    )
+                    db_name = database or await get_container_env_var("MYSQL_DATABASE", docker_ssh_config)
+                    if not db_name:
+                        return "Error: No database specified and MYSQL_DATABASE is not set in container"
+
+                    cmd = [
+                        "docker",
+                        "exec",
+                        container,
+                        "mysql",
+                        f"-u{db_user}",
+                        f"-p{db_password}",
+                        "--batch",
+                        "--raw",
+                        "-e",
+                        query_to_run,
+                        db_name,
+                    ]
+
+                    if docker_ssh_config:
+                        if effective_timeout > 0:
+                            result = await asyncio.wait_for(
+                                _execute_remote_docker_command(docker_ssh_config, cmd),
+                                timeout=effective_timeout + 5,
+                            )
+                        else:
+                            result = await _execute_remote_docker_command(docker_ssh_config, cmd)
+                        stdout = result.stdout
+                        stderr = result.stderr
+                        returncode = result.exit_code
+                    else:
+                        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if effective_timeout > 0:
+                            try:
+                                stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=effective_timeout)
+                            except asyncio.TimeoutError:
+                                await _terminate_subprocess_after_timeout(process)
+                                raise
+                        else:
+                            stdout_bytes, stderr_bytes = await process.communicate()
+                        stdout = stdout_bytes.decode("utf-8", errors="replace")
+                        stderr = stderr_bytes.decode("utf-8", errors="replace")
+                        returncode = process.returncode
+
+                    if returncode != 0:
+                        return f"Error: {stderr.strip() or stdout.strip()}"
+
+                    output = stdout.strip()
+                    if not output:
+                        return "Query executed successfully (no results)"
+
+                    lines = output.splitlines()
+                    columns = lines[0].split("\t") if lines else []
+                    rows = [dict(zip(columns, line.split("\t"))) for line in lines[1:]] if columns else []
+                    if not rows and not columns:
+                        return "Query executed successfully (no results)"
+                    return format_query_result(list(rows), columns, include_metadata=include_metadata)
+                except asyncio.TimeoutError:
+                    return f"Error: Query timed out after {effective_timeout}s"
+                except Exception as e:
+                    logger.exception("Unexpected error in MySQL container query")
+                    return f"Error: {str(e)}"
+
+            tool_description = f"Query the {config.get('name', 'MySQL/MariaDB')} database using SQL."
+            if description:
+                tool_description += f" This database contains: {description}"
+            tool_description += " Include LIMIT clause to restrict results. SELECT queries only unless writes are enabled."
+
+            return StructuredTool.from_function(
+                coroutine=execute_query,
+                name=f"query_{tool_name}",
+                description=tool_description,
+                args_schema=mysql_args_schema,
+            )
 
         # Build SSH tunnel config if enabled
         ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
@@ -4917,23 +5086,6 @@ class RAGComponents:
             timeout_label="Execution",
         )
 
-        def _build_docker_command(container: str, database: str, config_path: str) -> list:
-            """Build Docker exec command for Odoo shell."""
-            cmd = [
-                "docker",
-                "exec",
-                "-i",
-                container,
-                "odoo",
-                "shell",
-                "--no-http",
-                "-d",
-                database,
-            ]
-            if config_path:
-                cmd.extend(["-c", config_path])
-            return cmd
-
         async def execute_odoo(code: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             # Validate required fields
@@ -4954,20 +5106,25 @@ class RAGComponents:
             database = conn_config.get("database", "odoo")
             config_path = conn_config.get("config_path", "")
 
-            # Wrap user code with env setup and error handling
-            wrapped_code = f"""
-env = self.env
-try:
-{chr(10).join("    " + line for line in code.strip().split(chr(10)))}
-except Exception as e:
-    print(f"ODOO_ERROR: {{type(e).__name__}}: {{e}}")
-"""
-            # Add exit command
-            full_input = wrapped_code + "\nexit()\n"
+            full_input = build_shell_input(code)
 
-            async def _run_with_cmd(cmd: list) -> str:
+            async def _run_with_cmd(cmd: list, docker_ssh_config: SSHConfig | None = None) -> str:
                 """Execute command and return filtered output."""
                 try:
+                    if docker_ssh_config:
+                        if effective_timeout > 0:
+                            result = await asyncio.wait_for(
+                                _execute_remote_docker_command(docker_ssh_config, cmd, input_data=full_input),
+                                timeout=effective_timeout + 5,
+                            )
+                        else:
+                            result = await _execute_remote_docker_command(docker_ssh_config, cmd, input_data=full_input)
+                        output = result.output
+                        if not result.success and "ODOO_ERROR" not in output:
+                            return f"Error: {(result.stderr or result.stdout).strip()}"
+                        filtered = filter_odoo_output(output)
+                        return sanitize_output(filtered) if filtered else "Query executed successfully (no output)"
+
                     process = await asyncio.create_subprocess_exec(
                         *cmd,
                         stdin=subprocess.PIPE,
@@ -5021,13 +5178,12 @@ except Exception as e:
                 working_directory = conn_config.get("working_directory", "")
                 run_as_user = conn_config.get("run_as_user", "")
 
-                odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
-                if odoo_config_path:
-                    odoo_cmd = f"{odoo_cmd} -c {odoo_config_path}"
+                odoo_cmd_parts = shlex.split(odoo_bin_path) + build_odoo_shell_args(database, odoo_config_path, shell_interface="python")
+                odoo_cmd = shlex.join(odoo_cmd_parts)
                 if run_as_user:
-                    odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
+                    odoo_cmd = f"sudo -u {shlex.quote(run_as_user)} {odoo_cmd}"
                 if working_directory:
-                    odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
+                    odoo_cmd = f"cd {shlex.quote(working_directory)} && {odoo_cmd}"
 
                 # Use heredoc to pass code to shell
                 remote_command = f"{odoo_cmd} <<'ODOO_EOF'\n{full_input}ODOO_EOF"
@@ -5074,8 +5230,9 @@ except Exception as e:
                 container = conn_config.get("container", "")
                 if not container:
                     return "Error: No container configured"
-                cmd = _build_docker_command(container, database, config_path)
-                return await _run_with_cmd(cmd)
+                cmd = build_docker_shell_command(container, database, config_path, shell_interface="python")
+                docker_ssh_config = docker_ssh_config_from_dict(conn_config, timeout=effective_timeout if effective_timeout > 0 else 30)
+                return await _run_with_cmd(cmd, docker_ssh_config=docker_ssh_config)
 
         mode_label = "SSH" if mode == "ssh" else "Docker"
         tool_description = f"Query {config.get('name', 'Odoo')} ERP using Python ORM code ({mode_label} connection)."

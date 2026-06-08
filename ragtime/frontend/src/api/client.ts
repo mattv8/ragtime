@@ -1459,7 +1459,15 @@ export const api = {
   /**
    * Discover Docker networks and containers
    */
-  async discoverDocker(): Promise<DockerDiscoveryResponse> {
+  async discoverDocker(sshConfig?: Partial<DockerSSHConfig>): Promise<DockerDiscoveryResponse> {
+    if (sshConfig?.docker_ssh_host) {
+      const response = await apiFetch(`${API_BASE}/docker/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sshConfig),
+      });
+      return handleResponse<DockerDiscoveryResponse>(response);
+    }
     const response = await apiFetch(`${API_BASE}/docker/discover`);
     return handleResponse<DockerDiscoveryResponse>(response);
   },
@@ -4003,6 +4011,18 @@ export const api = {
 };
 
 // Docker discovery types
+export interface DockerSSHConfig {
+  docker_ssh_enabled?: boolean;
+  docker_ssh_host?: string;
+  docker_ssh_port?: number;
+  docker_ssh_user?: string;
+  docker_ssh_password?: string;
+  docker_ssh_key_path?: string;
+  docker_ssh_key_content?: string;
+  docker_ssh_key_passphrase?: string;
+  docker_ssh_public_key?: string;
+}
+
 export interface DockerNetwork {
   name: string;
   driver: string;
