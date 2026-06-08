@@ -8,7 +8,7 @@ import { formatChatTimestamp } from '@/utils';
 import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
 import { BrandName } from '@/utils/buildEnvironment';
 
-import { LinkifiedText, MemoizedMarkdown, MessageAttachments, ToolCallDisplay, parseMessageContent, type ActiveToolCall } from './ChatPanel';
+import { LinkifiedText, MemoizedMarkdown, MessageAttachments, ToolCallDisplay, ReasoningDisplay, parseMessageContent, type ActiveToolCall, type ReasoningPart } from './ChatPanel';
 import { FileAttachment, attachmentsToContentParts, type AttachmentFile } from './FileAttachment';
 import { LoginCard } from './LoginPage';
 import { Popover } from './Popover';
@@ -292,11 +292,30 @@ function SharedChatSurface({
     contextLimit: contextLimitForPie,
   }), [contextLimitForPie, conversation?.total_tokens, isScopedShare, visibleMessages]);
 
+  const autoScrollFrameRef = useRef<number | null>(null);
+
   // Auto-scroll to latest message
   useEffect(() => {
-    if (!loading && visibleMessages.length) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    if (loading || !visibleMessages.length || !messagesEndRef.current) return;
+
+    if (autoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollFrameRef.current);
     }
+    const isStreaming = Boolean(activeTask && (activeTask.status === 'pending' || activeTask.status === 'running'));
+    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      autoScrollFrameRef.current = null;
+      messagesEndRef.current?.scrollIntoView({
+        behavior: isStreaming ? 'auto' : 'smooth',
+        block: 'end'
+      });
+    });
+
+    return () => {
+      if (autoScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollFrameRef.current);
+        autoScrollFrameRef.current = null;
+      }
+    };
   }, [loading, visibleMessages.length, activeTask?.streaming_state?.content_length]);
 
   // Auto-resize textarea
@@ -501,47 +520,90 @@ function SharedChatSurface({
                             ) : (
                               <>
                                 {msg.events && msg.events.length > 0 ? (
-                                  msg.events.map((event: MessageEvent, eventIdx: number) => {
-                                    if (event.type === 'tool') {
-                                      const toolCall: ActiveToolCall = {
-                                        tool: event.tool,
-                                        input: event.input,
-                                        output: event.output,
-                                        presentation: event.presentation,
-                                        connection: event.connection,
-                                        status: event.output === undefined ? 'running' : 'complete',
-                                      };
-                                      return (
-                                        <div key={`shared-tool-${idx}-${eventIdx}`} className="chat-tool-calls">
-                                          <ToolCallDisplay
-                                            toolCall={toolCall}
-                                            defaultExpanded={false}
-                                            siblingEvents={siblingEvents}
-                                            allowRerun={false}
+                                  (() => {
+                                    const result: React.ReactNode[] = [];
+                                    let pendingReasoning = '';
+                                    let pendingReasoningParts: ReasoningPart[] = [];
+                                    let pendingReasoningDurationSeconds: number | undefined;
+                                    let reasoningBlockCount = 0;
+
+                                    const flushReasoning = () => {
+                                      if (!pendingReasoning) return;
+                                      reasoningBlockCount++;
+                                      result.push(
+                                        <div key={`shared-reasoning-wrapper-${idx}-${reasoningBlockCount}`} className="chat-reasoning-container">
+                                          <ReasoningDisplay
+                                            content={pendingReasoning}
+                                            isComplete={true}
+                                            parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
+                                            durationSeconds={pendingReasoningDurationSeconds}
+                                            showToolCalls={true}
                                           />
                                         </div>
                                       );
-                                    }
+                                      pendingReasoning = '';
+                                      pendingReasoningParts = [];
+                                      pendingReasoningDurationSeconds = undefined;
+                                    };
 
-                                    if (event.type === 'content' || event.type === 'reasoning') {
-                                      return (
-                                        <div key={`shared-content-${idx}-${eventIdx}`} className="chat-message-text markdown-content">
-                                          <MemoizedMarkdown content={event.content} />
-                                        </div>
-                                      );
-                                    }
+                                    msg.events?.forEach((event: MessageEvent, eventIdx: number) => {
+                                      if (event.type === 'reasoning') {
+                                        pendingReasoning += event.content;
+                                        const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
+                                        if (lastPart && lastPart.type === 'text') {
+                                          lastPart.text = (lastPart.text || '') + event.content;
+                                        } else {
+                                          pendingReasoningParts.push({ type: 'text', text: event.content });
+                                        }
+                                        if (event.duration_seconds !== undefined) {
+                                          pendingReasoningDurationSeconds = event.duration_seconds;
+                                        }
+                                      } else if (event.type === 'content') {
+                                        flushReasoning();
+                                        result.push(
+                                          <div key={`shared-content-${idx}-${eventIdx}`} className="chat-message-text markdown-content">
+                                            <MemoizedMarkdown content={event.content} />
+                                          </div>
+                                        );
+                                      } else if (event.type === 'error') {
+                                        flushReasoning();
+                                        result.push(
+                                          <div key={`shared-error-${idx}-${eventIdx}`} className="chat-message-generation-error" role="status">
+                                            <AlertCircle size={14} aria-hidden="true" />
+                                            <span>Generation failed: {event.content}</span>
+                                          </div>
+                                        );
+                                      } else if (event.type === 'tool') {
+                                        const toolCall: ActiveToolCall = {
+                                          tool: event.tool,
+                                          input: event.input,
+                                          output: event.output,
+                                          presentation: event.presentation,
+                                          connection: event.connection,
+                                          status: event.output === undefined ? 'running' : 'complete',
+                                        };
+                                        if (pendingReasoning) {
+                                          // Embed tool in reasoning if it fits chronologically
+                                          pendingReasoningParts.push({ type: 'tool', toolCall });
+                                        } else {
+                                          flushReasoning(); // Just in case, though it should be empty
+                                          result.push(
+                                            <div key={`shared-tool-${idx}-${eventIdx}`} className="chat-tool-calls">
+                                              <ToolCallDisplay
+                                                toolCall={toolCall}
+                                                defaultExpanded={false}
+                                                siblingEvents={siblingEvents}
+                                                allowRerun={false}
+                                              />
+                                            </div>
+                                          );
+                                        }
+                                      }
+                                    });
 
-                                    if (event.type === 'error') {
-                                      return (
-                                        <div key={`shared-error-${idx}-${eventIdx}`} className="chat-message-generation-error" role="status">
-                                          <AlertCircle size={14} aria-hidden="true" />
-                                          <span>Generation failed: {event.content}</span>
-                                        </div>
-                                      );
-                                    }
-
-                                    return null;
-                                  })
+                                    flushReasoning();
+                                    return result;
+                                  })()
                                 ) : (
                                   <div className="chat-message-text markdown-content">
                                     <MemoizedMarkdown content={text} />

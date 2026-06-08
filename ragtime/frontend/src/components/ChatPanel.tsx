@@ -5801,13 +5801,13 @@ interface StreamingSegment {
 // Memoized component for rendering streaming segments efficiently
 // Collapsible reasoning/thinking display
 
-interface ReasoningPart {
+export interface ReasoningPart {
   type: 'text' | 'tool';
   text?: string;
   toolCall?: ActiveToolCall;
 }
 
-const ReasoningDisplay = memo(function ReasoningDisplay({
+export const ReasoningDisplay = memo(function ReasoningDisplay({
   content,
   isComplete,
   parts,
