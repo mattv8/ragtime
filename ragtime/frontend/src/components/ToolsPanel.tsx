@@ -11,6 +11,7 @@ import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
+import { Popover } from './Popover';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -285,7 +286,9 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
                 </div>
               ) : (
                 <div className="editable-field-wrapper name-wrapper" onClick={() => handleStartEdit('name')}>
-                  <h3>{tool.name}</h3>
+                  <Popover className="tool-title-popover" content={tool.name} position="top" trigger="hover">
+                    <h3>{tool.name}</h3>
+                  </Popover>
                   <button
                     type="button"
                     className="inline-edit-btn"

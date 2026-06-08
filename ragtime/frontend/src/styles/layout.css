@@ -984,9 +984,8 @@ body.authenticated-webgl-background-active #root {
 
 .tool-card-header-main {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
-  gap: var(--space-md);
   margin-bottom: 4px;
   width: 100%;
 }
@@ -1001,9 +1000,15 @@ body.authenticated-webgl-background-active #root {
 .tool-card-title {
   display: flex;
   align-items: center;
-  flex: 1;
   min-width: 0;
   padding-left: 3px;
+  flex-shrink: 1;
+}
+
+.tool-title-popover {
+  display: inline-flex;
+  flex: 1;
+  min-width: 0;
 }
 
 .tool-card-title h3 {
