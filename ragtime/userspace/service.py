@@ -8962,6 +8962,17 @@ class UserSpaceService:
             paths.append(relative)
         return self._deduplicate_ancestor_paths(paths)
 
+    async def _clean_workspace_untracked_files(
+        self,
+        workspace_id: str,
+        *,
+        check: bool = True,
+    ) -> _GitCommandResult:
+        args = ["clean", "-fd"]
+        for mount_path in await self._list_workspace_mount_target_repo_paths(workspace_id):
+            args.append(f"--exclude=/{mount_path.rstrip('/')}/")
+        return await self._run_git(workspace_id, args, check=check)
+
     async def ensure_workspace_path_not_in_disabled_mount(
         self,
         workspace_id: str,
@@ -18137,7 +18148,7 @@ class UserSpaceService:
             # Reset the worktree first so restore is resilient to platform-managed
             # files being rewritten outside Git between snapshots.
             await self._run_git(workspace_id, ["reset", "--hard"], check=False)
-            await self._run_git(workspace_id, ["clean", "-fd"], check=False)
+            await self._clean_workspace_untracked_files(workspace_id, check=False)
             if branch_ref_name and is_branch_tip:
                 checkout_result = await self._run_git(
                     workspace_id,
@@ -18152,7 +18163,7 @@ class UserSpaceService:
             else:
                 await self._run_git(workspace_id, ["checkout", "--detach", commit_hash])
             await self._run_git(workspace_id, ["reset", "--hard", commit_hash])
-            await self._run_git(workspace_id, ["clean", "-fd"])
+            await self._clean_workspace_untracked_files(workspace_id, check=False)
             await self._activate_branch(workspace_id, branch_id)
             await self._set_current_snapshot_cursor(workspace_id, snapshot_id, branch_id)
 

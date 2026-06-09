@@ -21,7 +21,7 @@ if "ragtime.rag.prompts" not in sys.modules:
 
 from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceRuntimeSession, UserSpaceWorkspace
 from ragtime.userspace.runtime_service import UserSpaceRuntimeService
-from ragtime.userspace.service import UserSpaceService
+from ragtime.userspace.service import UserSpaceService, _GitCommandResult
 from runtime.worker.sandbox import SandboxSpec
 from runtime.worker.service import WorkerService, WorkerSession
 
@@ -207,12 +207,66 @@ class _MountListService(UserSpaceService):
         return False
 
 
+class _GitCleanMountExclusionService(UserSpaceService):
+    def __init__(self, mount_paths: list[str]) -> None:
+        super().__init__()
+        self.mount_paths = mount_paths
+        self.git_calls: list[dict[str, Any]] = []
+
+    async def _list_workspace_mount_target_repo_paths(self, workspace_id: str) -> list[str]:
+        return self.mount_paths
+
+    async def _run_git(
+        self,
+        workspace_id: str,
+        args: list[str],
+        check: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> _GitCommandResult:
+        self.git_calls.append(
+            {
+                "workspace_id": workspace_id,
+                "args": args,
+                "check": check,
+                "env": env,
+            }
+        )
+        return _GitCommandResult(returncode=0, stdout="", stderr="")
+
+
 class _FakeResolveWorkspaceMountDb:
     def __init__(self, rows: list[SimpleNamespace]) -> None:
         self.workspacemount = _FakeWorkspaceMountTable(rows)
 
 
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clean_workspace_untracked_files_excludes_mount_targets(self) -> None:
+        service = _GitCleanMountExclusionService(
+            [
+                "reconciliations",
+                "reports/archive",
+            ]
+        )
+
+        await service._clean_workspace_untracked_files("workspace-1", check=False)
+
+        self.assertEqual(
+            service.git_calls,
+            [
+                {
+                    "workspace_id": "workspace-1",
+                    "args": [
+                        "clean",
+                        "-fd",
+                        "--exclude=/reconciliations/",
+                        "--exclude=/reports/archive/",
+                    ],
+                    "check": False,
+                    "env": None,
+                }
+            ],
+        )
+
     async def test_runtime_mount_signature_refresh_skips_unchanged_specs(self) -> None:
         workspace_id = "workspace-1"
         session = UserSpaceRuntimeSession(
