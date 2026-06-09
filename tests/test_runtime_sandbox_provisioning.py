@@ -768,6 +768,39 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertFalse((rootfs_workspace / "package-lock.json").exists())
             self.assertTrue((rootfs_workspace / "package.json").exists())
 
+    def test_build_agent_process_environment_sets_runtime_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            rootfs.mkdir()
+            spec = self._chroot_spec(files, rootfs)
+            session = self._worker_session("session-1", spec, files, rootfs)
+            session.workspace_env = {"FOO": "bar", "PORT": "3000"}
+            session.devserver_port = 41237
+
+            environment = WorkerService().build_agent_process_environment(session)
+
+            self.assertEqual(environment.get("PORT"), "41237")
+            self.assertEqual(environment.get("FOO"), "bar")
+
+    def test_build_agent_process_environment_keeps_workspace_port_without_devserver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            rootfs.mkdir()
+            spec = self._chroot_spec(files, rootfs)
+            session = self._worker_session("session-1", spec, files, rootfs)
+            session.workspace_env = {"PORT": "3000"}
+            session.devserver_port = None
+
+            environment = WorkerService().build_agent_process_environment(session)
+
+            self.assertEqual(environment.get("PORT"), "3000")
+
     def test_devserver_error_compaction_preserves_missing_package(self) -> None:
         log = (
             "node:internal/modules/esm/resolve:873\n"

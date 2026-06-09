@@ -534,6 +534,10 @@ class WorkerService:
 
     def build_agent_process_environment(self, session: WorkerSession) -> dict[str, str]:
         environment = dict(session.workspace_env)
+        # Ensure ad-hoc agent/PTY execs target the same runtime-assigned
+        # devserver port as the launched workspace process.
+        if session.devserver_port:
+            environment["PORT"] = str(session.devserver_port)
         environment.update(self._object_storage_env_overrides.get(session.id, {}))
         environment.update(self.build_agent_shell_environment(session))
         return environment
