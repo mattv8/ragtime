@@ -8009,6 +8009,8 @@ class UserSpaceService:
             workspace_id,
             normalized_path,
         )
+        if await self._is_workspace_mount_owned_path(workspace_id, normalized_path):
+            raise HTTPException(status_code=404, detail="Snapshot diff file not found")
 
         await self._enforce_workspace_access(workspace_id, user_id)
         await self._ensure_workspace_git_repo(workspace_id)
@@ -8972,6 +8974,21 @@ class UserSpaceService:
         for mount_path in await self._list_workspace_mount_target_repo_paths(workspace_id):
             args.append(f"--exclude=/{mount_path.rstrip('/')}/")
         return await self._run_git(workspace_id, args, check=check)
+
+    async def _is_workspace_mount_owned_path(self, workspace_id: str, relative_path: str) -> bool:
+        normalized_path = self._normalize_workspace_relative_path(relative_path)
+        if not normalized_path:
+            return False
+        mount_paths = await self._list_workspace_mount_target_repo_paths(workspace_id)
+        return any(self._workspace_path_matches_mount_prefix(normalized_path, prefix) for prefix in mount_paths)
+
+    async def _filter_workspace_mount_owned_paths(self, workspace_id: str, relative_paths: list[str]) -> list[str]:
+        if not relative_paths:
+            return []
+        mount_paths = await self._list_workspace_mount_target_repo_paths(workspace_id)
+        if not mount_paths:
+            return relative_paths
+        return [path for path in relative_paths if not any(self._workspace_path_matches_mount_prefix(path, prefix) for prefix in mount_paths)]
 
     async def ensure_workspace_path_not_in_disabled_mount(
         self,
@@ -17236,7 +17253,8 @@ class UserSpaceService:
                 detail=f"Failed to compute workspace changedFile paths: {stderr or 'git status failed'}",
             )
 
-        return self._parse_git_status_changed_file_paths(status_result.stdout)
+        changed_paths = self._parse_git_status_changed_file_paths(status_result.stdout)
+        return await self._filter_workspace_mount_owned_paths(workspace_id, changed_paths)
 
     async def should_create_snapshot_for_workspace_chat_branch(
         self,

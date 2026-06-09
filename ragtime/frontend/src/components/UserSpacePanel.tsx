@@ -1449,6 +1449,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
     return paths;
   }, [mounts]);
+  const isPathInMountTarget = useCallback((path: string) => {
+    const normalized = normalizeWorkspacePath(path);
+    if (!normalized) return false;
+    for (const targetPath of mountTargetPaths.keys()) {
+      if (normalized === targetPath || normalized.startsWith(`${targetPath}/`)) {
+        return true;
+      }
+    }
+    return false;
+  }, [mountTargetPaths]);
   const workspaceMountTargetBrowserCacheKey = useMemo(
     () => `${activeWorkspaceId ?? 'no-workspace'}:${fileEntriesFingerprint(fileBrowserEntries)}`,
     [activeWorkspaceId, fileBrowserEntries]
@@ -1462,12 +1472,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const changedFilePaths = useMemo(() => {
     const paths = new Set<string>();
     for (const path of changedFiles) {
-      if (!acknowledgedFiles.has(path)) {
+      if (!acknowledgedFiles.has(path) && !isPathInMountTarget(path)) {
         paths.add(path);
       }
     }
     return paths;
-  }, [changedFiles, acknowledgedFiles]);
+  }, [changedFiles, acknowledgedFiles, isPathInMountTarget]);
 
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
@@ -6429,7 +6439,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       ? 'pending'
                       : 'error'
                 : 'live';
-          const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
+          const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p) && !isPathInMountTarget(p));
           rows.push(
             <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled || isMountDisconnected ? ' userspace-tree-mount-disabled' : ''}`}>
               <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
@@ -6517,7 +6527,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         ];
       }
 
-      const isFileChanged = changedFilePaths.has(node.path);
+      const isFileInMount = isPathInMountTarget(node.path);
+      const isFileChanged = changedFilePaths.has(node.path) && !isFileInMount;
 
       return [
         <div
@@ -6537,6 +6548,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 className="userspace-tree-file-changed-dot"
                 title="Changed since last snapshot"
               />
+            )}
+            {isFileInMount && (
+              <span
+                className="userspace-tree-file-untracked-badge"
+                title="Mounted file, not tracked in snapshots"
+              >
+                u
+              </span>
             )}
           </button>
           {canEditWorkspace && (
@@ -6575,7 +6594,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, isPathInMountTarget, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
 
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'

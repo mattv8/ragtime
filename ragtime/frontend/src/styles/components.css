@@ -1945,6 +1945,23 @@ textarea:focus {
   margin-left: 2px;
 }
 
+.userspace-tree-file-untracked-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 50%;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: lowercase;
+  flex-shrink: 0;
+}
+
 /* Mount folder styling — symlink-like appearance */
 .userspace-tree-mount-label {
   font-style: italic;

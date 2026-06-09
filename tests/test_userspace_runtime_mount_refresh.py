@@ -208,10 +208,30 @@ class _MountListService(UserSpaceService):
 
 
 class _GitCleanMountExclusionService(UserSpaceService):
-    def __init__(self, mount_paths: list[str]) -> None:
+    def __init__(self, mount_paths: list[str], git_stdout: str = "") -> None:
         super().__init__()
         self.mount_paths = mount_paths
+        self.git_stdout = git_stdout
         self.git_calls: list[dict[str, Any]] = []
+
+    async def _enforce_workspace_access(
+        self,
+        workspace_id: str,
+        user_id: str,
+        required_role: str | None = None,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspace:
+        return UserSpaceWorkspace(
+            id=workspace_id,
+            name="Workspace",
+            owner_user_id=user_id,
+            members=[],
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    async def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
+        return None
 
     async def _list_workspace_mount_target_repo_paths(self, workspace_id: str) -> list[str]:
         return self.mount_paths
@@ -231,7 +251,7 @@ class _GitCleanMountExclusionService(UserSpaceService):
                 "env": env,
             }
         )
-        return _GitCommandResult(returncode=0, stdout="", stderr="")
+        return _GitCommandResult(returncode=0, stdout=self.git_stdout, stderr="")
 
 
 class _FakeResolveWorkspaceMountDb:
@@ -261,6 +281,30 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
                         "--exclude=/reconciliations/",
                         "--exclude=/reports/archive/",
                     ],
+                    "check": False,
+                    "env": None,
+                }
+            ],
+        )
+
+    async def test_changed_file_state_excludes_mount_owned_paths(self) -> None:
+        service = _GitCleanMountExclusionService(
+            [
+                "reconciliations",
+                "reports/archive",
+            ],
+            git_stdout=("?? reconciliations/2026-05/source.xlsx\x00 M dashboard/main.ts\x00?? reports/archive/old.xlsx\x00?? notes.txt\x00"),
+        )
+
+        changed_paths = await service.list_workspace_changed_file_paths("workspace-1", "user-1")
+
+        self.assertEqual(changed_paths, ["dashboard/main.ts", "notes.txt"])
+        self.assertEqual(
+            service.git_calls,
+            [
+                {
+                    "workspace_id": "workspace-1",
+                    "args": ["status", "--porcelain=1", "-z", "--untracked-files=all"],
                     "check": False,
                     "env": None,
                 }
