@@ -2107,6 +2107,7 @@ class WorkerService:
         self._begin_operation(session, "queued")
         session.state = "starting"
         session.devserver_running = False
+        session.devserver_port = None
         session.last_error = None
         session.updated_at = utc_now()
         op_id = session.runtime_operation_id or ""
@@ -2227,8 +2228,7 @@ class WorkerService:
             if workspace_mounts is not None:
                 session.workspace_mounts = list(workspace_mounts)
             session.mount_targets_to_clear = previous_targets | self._mount_target_paths(session.workspace_mounts)
-            # Pick a fresh port to avoid TIME_WAIT "address already in use"
-            session.devserver_port = self._pick_free_port()
+            # _schedule_startup_locked clears devserver_port so the pipeline picks fresh
             self._schedule_startup_locked(session)
             session.updated_at = utc_now()
             return self._session_response(session)
