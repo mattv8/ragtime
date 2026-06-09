@@ -6763,6 +6763,7 @@ export function ChatPanel({
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
   const [editMessageAttachments, setEditMessageAttachments] = useState<AttachmentFile[]>([]);
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
 
   // Chat branching state
@@ -10962,7 +10963,8 @@ export function ChatPanel({
   }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, onSnapshotsMaybeChanged, refreshBranchPoints, workspaceId]);
 
   const submitEditMessage = async () => {
-    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
+    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0) || isSubmittingEdit) return;
+    setIsSubmittingEdit(true);
     shouldAutoScrollRef.current = true;
     const conversationId = activeConversation.id;
 
@@ -11069,6 +11071,8 @@ export function ChatPanel({
           console.error('Failed to refresh conversation after edit error:', refreshErr);
         }
       }
+    } finally {
+      setIsSubmittingEdit(false);
     }
   };
 
@@ -12255,7 +12259,9 @@ export function ChatPanel({
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' && !e.shiftKey) {
                                   e.preventDefault();
-                                  submitEditMessage();
+                                  if (!isSubmittingEdit) {
+                                    submitEditMessage();
+                                  }
                                 } else if (e.key === 'Escape') {
                                   cancelEditMessage();
                                 }
@@ -12557,7 +12563,7 @@ export function ChatPanel({
                             {isEditing ? (
                               <>
                                 <span className="chat-message-actions-spacer" />
-                                <button className="chat-action-text-btn primary" onClick={submitEditMessage}>Send</button>
+                                <button className="chat-action-text-btn primary" onClick={submitEditMessage} disabled={isSubmittingEdit}>Send</button>
                                 <button className="chat-action-text-btn" onClick={cancelEditMessage}>Cancel</button>
                                 <div className="chat-edit-attachments-wrapper">
                                   <FileAttachment

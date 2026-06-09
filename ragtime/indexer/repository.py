@@ -3952,6 +3952,104 @@ class IndexerRepository:
 
         return self._prisma_task_to_model(prisma_task)
 
+    async def add_user_message_and_create_chat_task_if_idle(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> tuple[Optional[Conversation], Optional[ChatTask], bool]:
+        """Atomically claim a conversation for generation, append the user message, and create a task.
+
+        Returns (updated_conversation, task, created). When another request has
+        already claimed the conversation, updated_conversation is None and task
+        is the active task that should be reused.
+        """
+        db = await self._get_db()
+        user_message = _sanitize_for_postgres(user_message)
+
+        async with db.tx() as tx:
+            prisma_conv = await tx.conversation.find_unique(
+                where={"id": conversation_id},
+                include={"user": True},
+            )
+            if not prisma_conv:
+                return None, None, False
+
+            active_task_id = getattr(prisma_conv, "activeTaskId", None)
+            if active_task_id:
+                active_task = await tx.chattask.find_unique(where={"id": active_task_id})
+                if active_task and active_task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
+                    return None, self._prisma_task_to_model(active_task), False
+
+            task_id = str(uuid.uuid4())
+            prisma_task = await tx.chattask.create(
+                data={  # type: ignore[arg-type]
+                    "id": task_id,
+                    "conversation": {"connect": {"id": conversation_id}},
+                    "status": _to_prisma_task_status(ChatTaskStatus.pending),
+                    "userMessage": user_message,
+                }
+            )
+
+            claim_guard = "active_task_id IS NULL"
+            if active_task_id:
+                claim_guard = f"active_task_id = {_sql_quote_literal(active_task_id)}"
+            claimed_rows = await tx.execute_raw(f"""
+                UPDATE conversations
+                SET active_task_id = {_sql_quote_literal(task_id)}, updated_at = {_sql_quote_literal(utc_now().isoformat())}::timestamp
+                WHERE id = {_sql_quote_literal(conversation_id)}
+                AND {claim_guard}
+                """)
+            if claimed_rows != 1:
+                await tx.chattask.update(
+                    where={"id": task_id},
+                    data={  # type: ignore[arg-type]
+                        "status": _to_prisma_task_status(ChatTaskStatus.cancelled),
+                        "completedAt": utc_now(),
+                        "lastUpdateAt": utc_now(),
+                    },
+                )
+                rows = await tx.query_raw(f"""
+                    SELECT active_task_id
+                    FROM conversations
+                    WHERE id = {_sql_quote_literal(conversation_id)}
+                    LIMIT 1
+                    """)
+                current_active_task_id = str((rows[0] or {}).get("active_task_id") or "") if rows else ""
+                if current_active_task_id:
+                    current_active_task = await tx.chattask.find_unique(where={"id": current_active_task_id})
+                    if current_active_task:
+                        return None, self._prisma_task_to_model(current_active_task), False
+                return None, None, False
+
+            claimed_conv = await tx.conversation.find_unique(
+                where={"id": conversation_id},
+                include={"user": True},
+            )
+            if not claimed_conv:
+                return None, None, False
+
+            messages: List[dict[str, Any]] = _normalize_message_payloads(claimed_conv.messages)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": user_message,
+                    "timestamp": utc_now().isoformat(),
+                    "message_id": str(uuid.uuid4()),
+                }
+            )
+            total_tokens = _estimate_effective_conversation_tokens(messages)
+            updated_conv = await tx.conversation.update(
+                where={"id": conversation_id},
+                data={
+                    "messages": Json(messages),
+                    "totalTokens": total_tokens,
+                    "updatedAt": utc_now(),
+                },
+                include={"user": True},
+            )
+
+            return self._prisma_conversation_to_model(updated_conv), self._prisma_task_to_model(prisma_task), True
+
     async def get_chat_task(self, task_id: str) -> Optional[ChatTask]:
         """Get a chat task by ID."""
         db = await self._get_db()

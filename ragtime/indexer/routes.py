@@ -7572,6 +7572,7 @@ async def _create_background_chat_task_after_user_message(
     blocked_tool_names: Optional[set[str]],
     workspace_context: Optional[dict[str, Any]],
     disabled_builtin_tool_ids: Optional[set[str]] = None,
+    existing_task_id: Optional[str] = None,
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
@@ -7585,14 +7586,25 @@ async def _create_background_chat_task_after_user_message(
             input_tokens=input_est,
         )
 
-        task_id = await background_task_service.start_task_async(
-            conversation_id,
-            user_message,
-            blocked_tool_names=blocked_tool_names,
-            workspace_context=workspace_context,
-            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
-            usage_attempt_id=attempt_id,
-        )
+        if existing_task_id:
+            task_id = background_task_service.start_task(
+                conversation_id,
+                user_message,
+                existing_task_id=existing_task_id,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                usage_attempt_id=attempt_id,
+            )
+        else:
+            task_id = await background_task_service.start_task_async(
+                conversation_id,
+                user_message,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                usage_attempt_id=attempt_id,
+            )
         task = await repository.get_chat_task(task_id)
         if not task:
             raise HTTPException(status_code=500, detail="Failed to create background task")
@@ -13177,30 +13189,40 @@ async def send_message_background(
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
 
-    # Check if there's already an active task
-    existing_task = await repository.get_active_task_for_conversation(conversation_id)
-    if existing_task:
-        # Return the existing task instead of creating a new one
-        return _to_chat_task_response(existing_task)
-
-    # Add user message to conversation first
-    updated_conversation = await repository.add_message(conversation_id, "user", user_message)
-    schedule_title_generation(conversation_id, user_message)
+    updated_conversation, claimed_task, created_task = await repository.add_user_message_and_create_chat_task_if_idle(
+        conversation_id,
+        user_message,
+    )
+    if claimed_task is None:
+        raise HTTPException(status_code=500, detail="Failed to create background task")
+    if not created_task:
+        return _to_chat_task_response(claimed_task)
     if updated_conversation is None:
         raise HTTPException(status_code=500, detail="Failed to add user message")
+
     conv = updated_conversation
+    schedule_title_generation(conversation_id, user_message)
 
-    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    try:
+        await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    except Exception:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
 
-    task = await _create_background_chat_task_after_user_message(
-        conversation_id=conversation_id,
-        user_message=user_message,
-        user=user,
-        conv=conv,
-        blocked_tool_names=blocked_tool_names,
-        workspace_context=workspace_context,
-        disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
-    )
+    try:
+        task = await _create_background_chat_task_after_user_message(
+            conversation_id=conversation_id,
+            user_message=user_message,
+            user=user,
+            conv=conv,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+            existing_task_id=claimed_task.id,
+        )
+    except Exception:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
 
     return _to_chat_task_response(task)
 
