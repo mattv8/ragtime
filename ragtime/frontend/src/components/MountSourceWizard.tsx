@@ -3,6 +3,7 @@ import { Icon } from './Icon';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
 import { ToolWizard } from './ToolWizard';
 import { Popover } from './Popover';
+import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { ExternalLink, Info, Trash2, X } from 'lucide-react';
 import { api } from '@/api';
@@ -50,6 +51,8 @@ export type MountSourceDraft = {
   access_user_ids: string[];
   access_group_identifiers: string[];
   sync_interval_seconds: number;
+  sync_start_minute: number | null;
+  sync_timezone: string | null;
 };
 
 export function createEmptyMountSourceDraft(): MountSourceDraft {
@@ -68,6 +71,8 @@ export function createEmptyMountSourceDraft(): MountSourceDraft {
     access_user_ids: [],
     access_group_identifiers: [],
     sync_interval_seconds: 30,
+    sync_start_minute: defaultScheduleStartMinute(),
+    sync_timezone: defaultScheduleTimezone(),
   };
 }
 
@@ -87,6 +92,8 @@ export function mountSourceToDraft(source: UserspaceMountSource): MountSourceDra
     access_user_ids: [...(source.access_user_ids || [])],
     access_group_identifiers: [...(source.access_group_identifiers || [])],
     sync_interval_seconds: source.sync_interval_seconds ?? 30,
+    sync_start_minute: source.sync_start_minute ?? null,
+    sync_timezone: source.sync_timezone ?? null,
   };
 }
 
@@ -713,6 +720,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           access_user_ids: accessUserIds,
           access_group_identifiers: accessGroupIdentifiers,
           sync_interval_seconds: draft.sync_interval_seconds,
+          sync_start_minute: draft.sync_start_minute ?? defaultScheduleStartMinute(),
+          sync_timezone: draft.sync_timezone ?? defaultScheduleTimezone(),
         });
         onSaved(saved);
       } else if (selectedCloudSource) {
@@ -734,6 +743,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           access_user_ids: accessUserIds,
           access_group_identifiers: accessGroupIdentifiers,
           sync_interval_seconds: draft.sync_interval_seconds,
+          sync_start_minute: draft.sync_start_minute ?? defaultScheduleStartMinute(),
+          sync_timezone: draft.sync_timezone ?? defaultScheduleTimezone(),
         });
         onSaved(saved);
       } else {
@@ -747,6 +758,8 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
           access_user_ids: accessUserIds,
           access_group_identifiers: accessGroupIdentifiers,
           sync_interval_seconds: draft.sync_interval_seconds,
+          sync_start_minute: draft.sync_start_minute ?? defaultScheduleStartMinute(),
+          sync_timezone: draft.sync_timezone ?? defaultScheduleTimezone(),
         });
         onSaved(saved);
       }
@@ -1122,6 +1135,14 @@ export function MountSourceWizard({ existingSource, existingNames = [], onClose,
             How often workspaces using this source check for changes when auto-sync is enabled.
             Lower values increase responsiveness but use more resources.
           </p>
+          <ScheduleStartTimeInput
+            enabled={draft.sync_interval_seconds > 0}
+            startMinute={draft.sync_start_minute}
+            timezone={draft.sync_timezone}
+            onStartMinuteChange={(val) => setDraft((d) => ({ ...d, sync_start_minute: val }))}
+            onTimezoneChange={(val) => setDraft((d) => ({ ...d, sync_timezone: val }))}
+            label="Start Time"
+          />
         </div>
       )}
     </div>

@@ -1459,7 +1459,15 @@ export const api = {
   /**
    * Discover Docker networks and containers
    */
-  async discoverDocker(): Promise<DockerDiscoveryResponse> {
+  async discoverDocker(sshConfig?: Partial<DockerSSHConfig>): Promise<DockerDiscoveryResponse> {
+    if (sshConfig?.docker_ssh_host) {
+      const response = await apiFetch(`${API_BASE}/docker/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sshConfig),
+      });
+      return handleResponse<DockerDiscoveryResponse>(response);
+    }
     const response = await apiFetch(`${API_BASE}/docker/discover`);
     return handleResponse<DockerDiscoveryResponse>(response);
   },
@@ -1992,6 +2000,45 @@ export const api = {
   async truncateConversation(conversationId: string, keepCount: number, workspaceId?: string): Promise<Conversation> {
     const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/truncate?keep_count=${keepCount}`, workspaceId), {
       method: 'POST',
+    });
+    return handleResponse<Conversation>(response);
+  },
+
+  /**
+   * Compact older conversation history for future model calls while keeping
+   * the full visible chat transcript intact.
+   */
+  async compactConversation(
+    conversationId: string,
+    workspaceId?: string,
+    keepRecentPairs = 4,
+    options?: { replaceMessageId?: string; replaceMessageIndex?: number; createRevisionBranch?: boolean },
+  ): Promise<import('@/types').ChatTask> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compact`, workspaceId), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keep_recent_pairs: keepRecentPairs,
+        replace_message_id: options?.replaceMessageId,
+        replace_message_index: options?.replaceMessageIndex,
+        create_revision_branch: options?.createRevisionBranch,
+      }),
+    });
+    return handleResponse<import('@/types').ChatTask>(response);
+  },
+
+  /**
+   * Update a persisted compaction marker summary.
+   */
+  async updateConversationCompactionMarker(
+    conversationId: string,
+    request: import('@/types').UpdateConversationCompactionRequest,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compaction-marker`, workspaceId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
     });
     return handleResponse<Conversation>(response);
   },
@@ -3397,6 +3444,30 @@ export const api = {
     return handleResponse<import('@/types').RefreshLiveVisualizationResponse>(response);
   },
 
+  async createConversationExport(
+    conversationId: string,
+    request: import('@/types').CreateConversationExportRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').CreateConversationExportResponse> {
+    const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
+    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/exports${suffix}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').CreateConversationExportResponse>(response);
+  },
+
+  async downloadConversationExport(
+    conversationId: string,
+    request: import('@/types').CreateConversationExportRequest,
+    workspaceId?: string,
+  ): Promise<void> {
+    const exportInfo = await this.createConversationExport(conversationId, request, workspaceId);
+    const response = await apiFetch(exportInfo.download_url);
+    await downloadBlobResponse(response, exportInfo.filename, 'Failed to download export');
+  },
+
   async listVisualizationBranches(
     conversationId: string,
     request: import('@/types').RefreshLiveVisualizationRequest,
@@ -3940,6 +4011,18 @@ export const api = {
 };
 
 // Docker discovery types
+export interface DockerSSHConfig {
+  docker_ssh_enabled?: boolean;
+  docker_ssh_host?: string;
+  docker_ssh_port?: number;
+  docker_ssh_user?: string;
+  docker_ssh_password?: string;
+  docker_ssh_key_path?: string;
+  docker_ssh_key_content?: string;
+  docker_ssh_key_passphrase?: string;
+  docker_ssh_public_key?: string;
+}
+
 export interface DockerNetwork {
   name: string;
   driver: string;

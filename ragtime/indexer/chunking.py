@@ -15,6 +15,7 @@ document_parser.py BEFORE this module is called. This module only chunks text.
 """
 
 import asyncio
+import contextlib
 import multiprocessing
 import os
 import warnings
@@ -169,12 +170,28 @@ def _get_process_pool() -> ProcessPoolExecutor:
     return _process_pool
 
 
-def shutdown_process_pool(wait: bool = True, cancel_futures: bool = False):
-    """Shutdown the process pool gracefully."""
+def shutdown_process_pool(wait: bool = True, cancel_futures: bool = False, terminate_workers: bool = False):
+    """Shutdown the process pool.
+
+    ``ProcessPoolExecutor.shutdown(wait=False, cancel_futures=True)`` does not
+    stop already-running child work on Python 3.12. During app shutdown or hot
+    reload, terminate active workers explicitly so CPU-bound chunking cannot
+    keep the old uvicorn process alive behind an open, unserved socket.
+    """
     global _process_pool
     if _process_pool is not None:
-        _process_pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+        pool = _process_pool
         _process_pool = None
+        worker_processes = list((getattr(pool, "_processes", None) or {}).values()) if terminate_workers else []
+        if terminate_workers:
+            for process in worker_processes:
+                if getattr(process, "is_alive", lambda: False)():
+                    process.terminate()
+        pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+        if terminate_workers:
+            for process in worker_processes:
+                with contextlib.suppress(Exception):
+                    process.join(timeout=0.2)
         logger.info("Chunking process pool shut down")
 
 
@@ -866,6 +883,12 @@ async def chunk_documents_parallel(
         # Await all futures in this wave concurrently
         try:
             results = await asyncio.gather(*futures)
+        except asyncio.CancelledError:
+            for future in futures:
+                future.cancel()
+            logger.info("Chunking cancelled; terminating active process pool workers")
+            shutdown_process_pool(wait=False, cancel_futures=True, terminate_workers=True)
+            raise
         except BrokenProcessPool as e:
             for future in futures:
                 future.cancel()
@@ -873,7 +896,7 @@ async def chunk_documents_parallel(
                 f"Chunking process pool broke while processing {len(wave_doc_data)} document(s); "
                 f"restarting the pool and retrying this wave one document at a time: {e}"
             )
-            shutdown_process_pool(wait=False, cancel_futures=True)
+            shutdown_process_pool(wait=False, cancel_futures=True, terminate_workers=True)
             results = await _retry_chunk_documents_individually(
                 wave_doc_data,
                 chunk_size,

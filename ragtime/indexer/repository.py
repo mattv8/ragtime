@@ -145,6 +145,13 @@ def _sql_quote_literal(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _sql_jsonb_literal(value: Any) -> str:
+    """Quote a JSON-compatible value as a PostgreSQL jsonb literal."""
+    sanitized = _sanitize_json_for_postgres(value)
+    payload = json.dumps(sanitized, default=str, ensure_ascii=False, separators=(",", ":"))
+    return f"{_sql_quote_literal(payload)}::jsonb"
+
+
 def _identifier_in_allowed_models(
     identifier: str,
     allowed_models: list[str],
@@ -387,6 +394,16 @@ def _estimate_message_tokens(message: dict[str, Any]) -> int:
 
 def _estimate_conversation_tokens(messages: list[dict[str, Any]]) -> int:
     return sum(_estimate_message_tokens(message) for message in messages)
+
+
+def _estimate_effective_conversation_tokens(messages: list[dict[str, Any]]) -> int:
+    last_compaction_index = -1
+    for idx, message in enumerate(messages):
+        if message.get("role") == "compaction":
+            last_compaction_index = idx
+    if last_compaction_index >= 0:
+        return _estimate_conversation_tokens(messages[last_compaction_index:])
+    return _estimate_conversation_tokens(messages)
 
 
 def _to_prisma_index_status(status: IndexStatus) -> PrismaIndexStatus:
@@ -1066,6 +1083,8 @@ class IndexerRepository:
             allowed_openapi_models=getattr(settings, "allowedOpenapiModels", None) or [],
             openapi_sync_chat_models=getattr(settings, "openapiSyncChatModels", True),
             max_iterations=settings.maxIterations,
+            chat_compaction_threshold_percent=getattr(settings, "chatCompactionThresholdPercent", 80),
+            chat_auto_compaction_threshold_percent=getattr(settings, "chatAutoCompactionThresholdPercent", 99),
             # Tool settings
             enabled_tools=settings.enabledTools,
             odoo_container=settings.odooContainer,
@@ -1143,6 +1162,16 @@ class IndexerRepository:
                 "userspaceMountSyncIntervalSeconds",
                 30,
             ),
+            userspace_mount_sync_start_minute=getattr(
+                settings,
+                "userspaceMountSyncStartMinute",
+                None,
+            ),
+            userspace_mount_sync_timezone=getattr(
+                settings,
+                "userspaceMountSyncTimezone",
+                None,
+            ),
             userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(getattr(settings, "userspaceSqliteImportMaxBytes", None)),
             updated_at=settings.updatedAt,
         )
@@ -1219,6 +1248,8 @@ class IndexerRepository:
             "allowed_openapi_models": "allowedOpenapiModels",
             "openapi_sync_chat_models": "openapiSyncChatModels",
             "max_iterations": "maxIterations",
+            "chat_compaction_threshold_percent": "chatCompactionThresholdPercent",
+            "chat_auto_compaction_threshold_percent": "chatAutoCompactionThresholdPercent",
             # Token optimization settings
             "max_tool_output_chars": "maxToolOutputChars",
             "scratchpad_window_size": "scratchpadWindowSize",
@@ -1275,6 +1306,8 @@ class IndexerRepository:
             "userspace_duplicate_copy_chats_default": "userspaceDuplicateCopyChatsDefault",
             "userspace_duplicate_copy_mounts_default": "userspaceDuplicateCopyMountsDefault",
             "userspace_mount_sync_interval_seconds": "userspaceMountSyncIntervalSeconds",
+            "userspace_mount_sync_start_minute": "userspaceMountSyncStartMinute",
+            "userspace_mount_sync_timezone": "userspaceMountSyncTimezone",
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
         }
 
@@ -2336,7 +2369,7 @@ class IndexerRepository:
         messages.append(new_message)
 
         # Recompute conversation token total from persisted messages (tiktoken-backed)
-        total_tokens = _estimate_conversation_tokens(messages)
+        total_tokens = _estimate_effective_conversation_tokens(messages)
 
         # Update conversation
         updated = await db.conversation.update(
@@ -2487,7 +2520,7 @@ class IndexerRepository:
             truncated = messages[:keep_count]
 
             # Recalculate tokens, including tool calls and events
-            total_tokens = _estimate_conversation_tokens(truncated)
+            total_tokens = _estimate_effective_conversation_tokens(truncated)
 
             updated = await db.conversation.update(
                 where={"id": conversation_id},
@@ -2501,6 +2534,290 @@ class IndexerRepository:
             return self._prisma_conversation_to_model(updated)
         except Exception as e:
             logger.warning(f"Failed to truncate conversation: {e}")
+            return None
+
+    async def compact_conversation(
+        self,
+        conversation_id: str,
+        compaction_index: int,
+        summary: str,
+        *,
+        expected_message_count: Optional[int] = None,
+        expected_tail_message_id: Optional[str] = None,
+        expected_active_task_id: Optional[str] = None,
+        snapshot_branch_kind: Optional[ConversationBranchKind] = None,
+        snapshot_user_id: Optional[str] = None,
+        snapshot_parent_branch_id: Optional[str] = None,
+        replace_message_id: Optional[str] = None,
+        replace_message_index: Optional[int] = None,
+    ) -> Optional[Conversation]:
+        """Insert or replace a compaction marker without removing visible history."""
+        db = await self._get_db()
+
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    if not prisma_conv:
+                        return None
+                    active_task_id = getattr(prisma_conv, "activeTaskId", None)
+                    if active_task_id and active_task_id != expected_active_task_id:
+                        return None
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    replacing_marker = bool(replace_message_id) or replace_message_index is not None
+                    if expected_message_count is not None:
+                        if replacing_marker and len(messages) != expected_message_count:
+                            return None
+                        if not replacing_marker and len(messages) < expected_message_count:
+                            return None
+                    if replacing_marker and expected_tail_message_id is not None:
+                        actual_tail_message_id = str(messages[-1].get("message_id") or "") if messages else ""
+                        if actual_tail_message_id != expected_tail_message_id:
+                            return None
+                    resolved_compaction_index = compaction_index
+                    replace_index: Optional[int] = None
+                    replacement_index = -1
+                    if replace_message_id:
+                        replace_index = next(
+                            (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == replace_message_id),
+                            None,
+                        )
+                    elif replace_message_index is not None and 0 <= replace_message_index < len(messages):
+                        replace_index = replace_message_index
+
+                    if replacing_marker:
+                        if replace_index is None:
+                            return None
+                        replacement_index = replace_index
+                        if messages[replace_index].get("role") != "compaction":
+                            return None
+                        if compaction_index < 0 or compaction_index > len(messages):
+                            return None
+                        resolved_compaction_index = compaction_index
+                    elif expected_tail_message_id is not None:
+                        expected_anchor_index = (expected_message_count - 1) if expected_message_count is not None else None
+                        anchor_index = next(
+                            (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == expected_tail_message_id),
+                            None,
+                        )
+                        if anchor_index is None:
+                            return None
+                        if expected_anchor_index is not None and anchor_index != expected_anchor_index:
+                            return None
+                        resolved_compaction_index = anchor_index + 1
+                    if resolved_compaction_index < 0 or resolved_compaction_index > len(messages):
+                        return None
+
+                    compacted_at = utc_now()
+                    if replacing_marker:
+                        existing_marker = messages[resolved_compaction_index]
+                        marker = {
+                            **existing_marker,
+                            "content": _sanitize_for_postgres(summary),
+                        }
+                    else:
+                        marker = {
+                            "role": "compaction",
+                            "content": _sanitize_for_postgres(summary),
+                            "timestamp": compacted_at.isoformat(),
+                            "message_id": str(uuid.uuid4()),
+                        }
+
+                    if replacing_marker:
+                        messages_without_replaced_marker = [
+                            *messages[:replacement_index],
+                            *messages[replacement_index + 1 :],
+                        ]
+                        token_insert_index = resolved_compaction_index
+                        if resolved_compaction_index > replacement_index:
+                            token_insert_index -= 1
+                        token_insert_index = max(0, min(token_insert_index, len(messages_without_replaced_marker)))
+                        updated_messages_for_tokens = [
+                            *messages_without_replaced_marker[:token_insert_index],
+                            marker,
+                            *messages_without_replaced_marker[token_insert_index:],
+                        ]
+                    else:
+                        updated_messages_for_tokens = [
+                            *messages[:resolved_compaction_index],
+                            marker,
+                            *messages[resolved_compaction_index:],
+                        ]
+                    total_tokens = _estimate_effective_conversation_tokens(updated_messages_for_tokens)
+                    active_task_clause = (
+                        f"AND (active_task_id IS NULL OR active_task_id = {_sql_quote_literal(expected_active_task_id)})"
+                        if expected_active_task_id
+                        else "AND active_task_id IS NULL"
+                    )
+                    message_count_clause = ""
+                    if expected_message_count is not None:
+                        operator = "=" if replacing_marker else ">="
+                        message_count_clause = f"AND jsonb_array_length(messages) {operator} {int(expected_message_count)}"
+                    tail_clause = ""
+                    if expected_message_count is not None and expected_tail_message_id is not None:
+                        tail_clause = f"AND messages -> {int(expected_message_count - 1)} ->> 'message_id' = {_sql_quote_literal(expected_tail_message_id)}"
+                    marker_json = _sql_jsonb_literal(marker)
+                    compacted_at_literal = _sql_quote_literal(compacted_at.isoformat())
+
+                    if snapshot_branch_kind is not None:
+                        branch_kind_literal = _sql_quote_literal(snapshot_branch_kind.value)
+                        inserted_branches = await tx.execute_raw(f"""
+                            INSERT INTO conversation_branches (
+                                id,
+                                conversation_id,
+                                parent_branch_id,
+                                branch_point_index,
+                                branch_kind,
+                                preserved_messages,
+                                associated_snapshot_id,
+                                created_by_user_id,
+                                created_at,
+                                updated_at
+                            )
+                            SELECT
+                                {_sql_quote_literal(str(uuid.uuid4()))},
+                                id,
+                                {_sql_quote_literal(snapshot_parent_branch_id)},
+                                0,
+                                {branch_kind_literal}::"ConversationBranchKind",
+                                messages,
+                                NULL,
+                                {_sql_quote_literal(snapshot_user_id)},
+                                {compacted_at_literal}::timestamp,
+                                {compacted_at_literal}::timestamp
+                            FROM conversations
+                            WHERE id = {_sql_quote_literal(conversation_id)}
+                            {active_task_clause}
+                            AND jsonb_typeof(messages) = 'array'
+                            {message_count_clause}
+                            {tail_clause}
+                            """)
+                        if inserted_branches == 0:
+                            return None
+
+                    if replacing_marker:
+                        marker_guard_clause = f"AND messages -> {int(replacement_index)} ->> 'role' = 'compaction'"
+                        if resolved_compaction_index == replacement_index:
+                            update_expression = f"jsonb_set(messages, ARRAY[{_sql_quote_literal(str(replacement_index))}]::text[], {marker_json}, false)"
+                        else:
+                            target_index = resolved_compaction_index
+                            if resolved_compaction_index > replacement_index:
+                                target_index -= 1
+                            target_index = max(0, min(target_index, len(messages) - 1))
+                            without_replaced_marker_expression = f"messages - {int(replacement_index)}"
+                            if target_index >= len(messages) - 1:
+                                update_expression = f"({without_replaced_marker_expression}) || jsonb_build_array({marker_json})"
+                            else:
+                                update_expression = (
+                                    f"jsonb_insert({without_replaced_marker_expression}, "
+                                    f"ARRAY[{_sql_quote_literal(str(target_index))}]::text[], {marker_json}, false)"
+                                )
+                    elif resolved_compaction_index >= len(messages):
+                        update_expression = f"messages || jsonb_build_array({marker_json})"
+                        marker_guard_clause = ""
+                    else:
+                        update_expression = f"jsonb_insert(messages, ARRAY[{_sql_quote_literal(str(resolved_compaction_index))}]::text[], {marker_json}, false)"
+                        marker_guard_clause = ""
+
+                    updated_rows = await tx.execute_raw(f"""
+                        UPDATE conversations
+                        SET
+                            messages = {update_expression},
+                            total_tokens = {int(total_tokens)},
+                            updated_at = {compacted_at_literal}::timestamp
+                        WHERE id = {_sql_quote_literal(conversation_id)}
+                        {active_task_clause}
+                        AND jsonb_typeof(messages) = 'array'
+                        {message_count_clause}
+                        {tail_clause}
+                        {marker_guard_clause}
+                        """)
+                    if updated_rows == 0:
+                        raise RuntimeError("Compaction marker update affected 0 rows")
+
+                    updated = await tx.conversation.find_unique(
+                        where={"id": conversation_id},
+                        include={"user": True},
+                    )
+                return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to compact conversation: {e}")
+            return None
+
+    async def update_compaction_marker_summary(
+        self,
+        conversation_id: str,
+        summary: str,
+        *,
+        message_id: Optional[str] = None,
+        message_index: Optional[int] = None,
+    ) -> Optional[Conversation]:
+        """Update one persisted compaction marker summary in a conversation."""
+        db = await self._get_db()
+
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                async with db.tx() as tx:
+                    prisma_conv = await tx.conversation.find_unique(where={"id": conversation_id})
+                    if not prisma_conv:
+                        return None
+
+                    messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                    resolved_index: Optional[int] = None
+                    if message_id:
+                        resolved_index = next(
+                            (idx for idx, message in enumerate(messages) if str(message.get("message_id") or "") == message_id),
+                            None,
+                        )
+                    elif message_index is not None and 0 <= message_index < len(messages):
+                        resolved_index = message_index
+
+                    if resolved_index is None:
+                        return None
+
+                    marker = messages[resolved_index]
+                    if marker.get("role") != "compaction":
+                        return None
+
+                    updated_marker = {
+                        **marker,
+                        "content": _sanitize_for_postgres(summary),
+                    }
+                    updated_messages = [*messages]
+                    updated_messages[resolved_index] = updated_marker
+                    total_tokens = _estimate_effective_conversation_tokens(updated_messages)
+                    updated_at = utc_now()
+
+                    message_id_clause = ""
+                    if message_id:
+                        message_id_clause = f"AND messages -> {int(resolved_index)} ->> 'message_id' = {_sql_quote_literal(message_id)}"
+                    updated_rows = await tx.execute_raw(f"""
+                        UPDATE conversations
+                        SET
+                            messages = jsonb_set(
+                                messages,
+                                ARRAY[{_sql_quote_literal(str(resolved_index))}]::text[],
+                                {_sql_jsonb_literal(updated_marker)},
+                                false
+                            ),
+                            total_tokens = {int(total_tokens)},
+                            updated_at = {_sql_quote_literal(updated_at.isoformat())}::timestamp
+                        WHERE id = {_sql_quote_literal(conversation_id)}
+                        AND jsonb_typeof(messages) = 'array'
+                        AND messages -> {int(resolved_index)} ->> 'role' = 'compaction'
+                        {message_id_clause}
+                        """)
+                    if updated_rows == 0:
+                        return None
+
+                    updated = await tx.conversation.find_unique(
+                        where={"id": conversation_id},
+                        include={"user": True},
+                    )
+                return self._prisma_conversation_to_model(updated)
+        except Exception as e:
+            logger.warning(f"Failed to update compaction marker summary: {e}")
             return None
 
     # -------------------------------------------------------------------------
@@ -2552,7 +2869,7 @@ class IndexerRepository:
                     )
 
                     truncated = messages[:branch_point_index]
-                    total_tokens = _estimate_conversation_tokens(truncated)
+                    total_tokens = _estimate_effective_conversation_tokens(truncated)
                     await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -2571,6 +2888,45 @@ class IndexerRepository:
                 return self._prisma_branch_to_model(created_branch)
         except Exception as e:
             logger.warning(f"Failed to create conversation branch: {e}")
+            return None
+
+    async def create_conversation_snapshot_branch(
+        self,
+        conversation_id: str,
+        branch_point_index: int,
+        branch_kind: Optional[ConversationBranchKind] = None,
+        user_id: Optional[str] = None,
+        parent_branch_id: Optional[str] = None,
+        associated_snapshot_id: Optional[str] = None,
+    ) -> Optional[ConversationBranch]:
+        """Create a branch preserving messages from branch_point_index onward without truncating the live conversation."""
+        db = await self._get_db()
+        try:
+            async with self._get_conversation_branch_lock(conversation_id):
+                prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
+                if not prisma_conv:
+                    return None
+
+                messages: List[dict[str, Any]] = _normalize_message_payloads(prisma_conv.messages)
+                if branch_point_index < 0 or branch_point_index > len(messages):
+                    return None
+
+                created = await db.conversationbranch.create(
+                    data={
+                        "id": str(uuid.uuid4()),
+                        "conversationId": conversation_id,
+                        "parentBranchId": parent_branch_id,
+                        "branchPointIndex": branch_point_index,
+                        "branchKind": cast(Any, branch_kind.value if branch_kind else None),
+                        "preservedMessages": Json(list(messages[branch_point_index:])),
+                        "associatedSnapshotId": associated_snapshot_id,
+                        "createdByUserId": user_id,
+                    },
+                    include={"createdByUser": True},
+                )
+                return self._prisma_branch_to_model(created)
+        except Exception as e:
+            logger.warning(f"Failed to create conversation snapshot branch: {e}")
             return None
 
     async def switch_conversation_branch(
@@ -2656,7 +3012,7 @@ class IndexerRepository:
                     base_messages = messages[:branch_point]
                     target_preserved: List[dict[str, Any]] = _normalize_message_payloads(target_branch.preservedMessages)
                     new_messages = base_messages + target_preserved
-                    total_tokens = _estimate_conversation_tokens(new_messages)
+                    total_tokens = _estimate_effective_conversation_tokens(new_messages)
 
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
@@ -2830,7 +3186,7 @@ class IndexerRepository:
                         return None, [], None
                     refreshed_event["output"] = new_output
 
-                    total_tokens = _estimate_conversation_tokens(refreshed_messages)
+                    total_tokens = _estimate_effective_conversation_tokens(refreshed_messages)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -2970,7 +3326,7 @@ class IndexerRepository:
                         data={"active": True},
                     )
 
-                    total_tokens = _estimate_conversation_tokens(refreshed_messages)
+                    total_tokens = _estimate_effective_conversation_tokens(refreshed_messages)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -3087,7 +3443,7 @@ class IndexerRepository:
                     if live_branch:
                         target_preserved = _normalize_message_payloads(live_branch.preservedMessages)
                         new_messages = messages[:branch_point] + target_preserved
-                        total_tokens = _estimate_conversation_tokens(new_messages)
+                        total_tokens = _estimate_effective_conversation_tokens(new_messages)
                         updated = await tx.conversation.update(
                             where={"id": conversation_id},
                             data={
@@ -3101,7 +3457,7 @@ class IndexerRepository:
                         return self._prisma_conversation_to_model(updated)
 
                     truncated = messages[:branch_point]
-                    total_tokens = _estimate_conversation_tokens(truncated)
+                    total_tokens = _estimate_effective_conversation_tokens(truncated)
                     updated = await tx.conversation.update(
                         where={"id": conversation_id},
                         data={
@@ -3595,6 +3951,104 @@ class IndexerRepository:
         await db.conversation.update(where={"id": conversation_id}, data={"activeTaskId": prisma_task.id})
 
         return self._prisma_task_to_model(prisma_task)
+
+    async def add_user_message_and_create_chat_task_if_idle(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> tuple[Optional[Conversation], Optional[ChatTask], bool]:
+        """Atomically claim a conversation for generation, append the user message, and create a task.
+
+        Returns (updated_conversation, task, created). When another request has
+        already claimed the conversation, updated_conversation is None and task
+        is the active task that should be reused.
+        """
+        db = await self._get_db()
+        user_message = _sanitize_for_postgres(user_message)
+
+        async with db.tx() as tx:
+            prisma_conv = await tx.conversation.find_unique(
+                where={"id": conversation_id},
+                include={"user": True},
+            )
+            if not prisma_conv:
+                return None, None, False
+
+            active_task_id = getattr(prisma_conv, "activeTaskId", None)
+            if active_task_id:
+                active_task = await tx.chattask.find_unique(where={"id": active_task_id})
+                if active_task and active_task.status in {PrismaChatTaskStatus.pending, PrismaChatTaskStatus.running}:
+                    return None, self._prisma_task_to_model(active_task), False
+
+            task_id = str(uuid.uuid4())
+            prisma_task = await tx.chattask.create(
+                data={  # type: ignore[arg-type]
+                    "id": task_id,
+                    "conversation": {"connect": {"id": conversation_id}},
+                    "status": _to_prisma_task_status(ChatTaskStatus.pending),
+                    "userMessage": user_message,
+                }
+            )
+
+            claim_guard = "active_task_id IS NULL"
+            if active_task_id:
+                claim_guard = f"active_task_id = {_sql_quote_literal(active_task_id)}"
+            claimed_rows = await tx.execute_raw(f"""
+                UPDATE conversations
+                SET active_task_id = {_sql_quote_literal(task_id)}, updated_at = {_sql_quote_literal(utc_now().isoformat())}::timestamp
+                WHERE id = {_sql_quote_literal(conversation_id)}
+                AND {claim_guard}
+                """)
+            if claimed_rows != 1:
+                await tx.chattask.update(
+                    where={"id": task_id},
+                    data={  # type: ignore[arg-type]
+                        "status": _to_prisma_task_status(ChatTaskStatus.cancelled),
+                        "completedAt": utc_now(),
+                        "lastUpdateAt": utc_now(),
+                    },
+                )
+                rows = await tx.query_raw(f"""
+                    SELECT active_task_id
+                    FROM conversations
+                    WHERE id = {_sql_quote_literal(conversation_id)}
+                    LIMIT 1
+                    """)
+                current_active_task_id = str((rows[0] or {}).get("active_task_id") or "") if rows else ""
+                if current_active_task_id:
+                    current_active_task = await tx.chattask.find_unique(where={"id": current_active_task_id})
+                    if current_active_task:
+                        return None, self._prisma_task_to_model(current_active_task), False
+                return None, None, False
+
+            claimed_conv = await tx.conversation.find_unique(
+                where={"id": conversation_id},
+                include={"user": True},
+            )
+            if not claimed_conv:
+                return None, None, False
+
+            messages: List[dict[str, Any]] = _normalize_message_payloads(claimed_conv.messages)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": user_message,
+                    "timestamp": utc_now().isoformat(),
+                    "message_id": str(uuid.uuid4()),
+                }
+            )
+            total_tokens = _estimate_effective_conversation_tokens(messages)
+            updated_conv = await tx.conversation.update(
+                where={"id": conversation_id},
+                data={
+                    "messages": Json(messages),
+                    "totalTokens": total_tokens,
+                    "updatedAt": utc_now(),
+                },
+                include={"user": True},
+            )
+
+            return self._prisma_conversation_to_model(updated_conv), self._prisma_task_to_model(prisma_task), True
 
     async def get_chat_task(self, task_id: str) -> Optional[ChatTask]:
         """Get a chat task by ID."""

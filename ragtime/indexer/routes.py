@@ -39,11 +39,10 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
 from pydantic import BaseModel, Field
-from starlette.responses import StreamingResponse
 
 from ragtime.chat_runtime.payloads import (
     build_chat_diagnostic_command_payload,
@@ -63,6 +62,7 @@ from ragtime.core.copilot_auth import (
     exchange_github_token_for_copilot_token,
     is_copilot_token_refresh_in_progress,
 )
+from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.embedding_models import (
     OPENAI_EMBEDDING_PRIORITY,
     get_embedding_models,
@@ -154,12 +154,24 @@ from ragtime.core.userspace_preview_sandbox import (
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_provider_vision_models, list_vision_models
 from ragtime.indexer.background_tasks import (
+    _find_compaction_split_index,
     background_task_service,
     parse_message_content,
     rebuild_tool_messages_from_events,
 )
 from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
+from ragtime.indexer.export_service import (
+    cleanup_expired_exports,
+    content_disposition,
+    content_source,
+    create_export_spec,
+    live_table_source,
+    load_export_spec,
+    render_export,
+    table_source,
+    verify_token,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
@@ -174,8 +186,10 @@ from ragtime.indexer.models import (
     ChatTaskResponse,
     ChatTaskStatus,
     CheckRepoVisibilityRequest,
+    CompactConversationRequest,
     ConfigurationWarning,
     Conversation,
+    ConversationBranchKind,
     ConversationBranchPointInfo,
     ConversationBranchSummary,
     ConversationCountResponse,
@@ -188,6 +202,8 @@ from ragtime.indexer.models import (
     ConversationShareSlugAvailabilityResponse,
     ConversationSummaryResponse,
     CreateConversationBranchRequest,
+    CreateConversationExportRequest,
+    CreateConversationExportResponse,
     CreateConversationRequest,
     CreateConversationShareLinkRequest,
     CreateIndexRequest,
@@ -242,6 +258,7 @@ from ragtime.indexer.models import (
     TriggerFilesystemIndexRequest,
     TriggerPdmIndexRequest,
     TriggerSchemaIndexRequest,
+    UpdateConversationCompactionRequest,
     UpdateConversationShareAccessRequest,
     UpdateConversationShareLinkRequest,
     UpdateSettingsRequest,
@@ -271,6 +288,8 @@ from ragtime.rag import rag
 from ragtime.tools.influxdb import test_influxdb_connection
 from ragtime.tools.mssql import test_mssql_connection
 from ragtime.tools.mysql import test_mysql_connection
+from ragtime.userspace.live_data import normalize_live_data_connection
+from ragtime.userspace.models import ExecuteComponentRequest
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
@@ -850,6 +869,8 @@ async def reindex_from_git(
         git_clone_timeout_minutes=config_data.get("git_clone_timeout_minutes", 5),
         git_history_depth=config_data.get("git_history_depth", 1),
         reindex_interval_hours=config_data.get("reindex_interval_hours", 0),
+        reindex_start_minute=config_data.get("reindex_start_minute"),
+        reindex_timezone=config_data.get("reindex_timezone"),
     )
 
     try:
@@ -1128,6 +1149,16 @@ class UpdateIndexConfigRequest(BaseModel):
         le=8760,
         description="Hours between automatic pull & re-index (0 = manual only)",
     )
+    reindex_start_minute: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=1439,
+        description="Optional local minutes-after-midnight anchor for automatic pull & re-index.",
+    )
+    reindex_timezone: Optional[str] = Field(
+        default=None,
+        description="IANA timezone used with reindex_start_minute.",
+    )
 
 
 @router.patch("/{name}/config")
@@ -1170,6 +1201,8 @@ async def update_index_config(
         "git_clone_timeout_minutes",
         "git_history_depth",
         "reindex_interval_hours",
+        "reindex_start_minute",
+        "reindex_timezone",
     ]:
         if key in existing_config:
             new_config[key] = existing_config[key]
@@ -1197,6 +1230,10 @@ async def update_index_config(
         new_config["git_history_depth"] = request.git_history_depth
     if request.reindex_interval_hours is not None:
         new_config["reindex_interval_hours"] = request.reindex_interval_hours
+    if "reindex_start_minute" in request.model_fields_set:
+        new_config["reindex_start_minute"] = request.reindex_start_minute
+    if "reindex_timezone" in request.model_fields_set:
+        new_config["reindex_timezone"] = request.reindex_timezone
 
     success = await repository.update_index_config(
         name=name,
@@ -1736,7 +1773,9 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
         "max_file_size_mb",
         "max_total_files",
         "schema_index_interval_hours",
+        "schema_index_start_minute",
         "reindex_interval_hours",
+        "reindex_start_minute",
     ]
 
     for field in int_fields:
@@ -1878,7 +1917,9 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
             "max_file_size_mb",
             "max_total_files",
             "schema_index_interval_hours",
+            "schema_index_start_minute",
             "reindex_interval_hours",
+            "reindex_start_minute",
         ]
 
         for field in int_fields:
@@ -3236,11 +3277,29 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
     password = config.get("password", "")
     database = config.get("database", "")
     container = config.get("container", "")
+    docker_ssh_config = docker_ssh_config_from_dict(config, timeout=10)
 
     tunnel: Optional["SSHTunnel"] = None
 
     try:
-        if host:
+        if container:
+            cmd = [
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "bash",
+                "-c",
+                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
+            ]
+            if docker_ssh_config:
+                result = await _run_remote_docker_command(docker_ssh_config, cmd, timeout=10.0)
+                if result.success:
+                    return ToolTestResponse(success=True, message="OK")
+                error = (result.stderr or result.stdout).strip()
+                return ToolTestResponse(success=False, message=(error or "Remote Docker PostgreSQL heartbeat failed")[:100])
+            env = None
+        elif host:
             tunnel, connect_host, connect_port = _start_ssh_tunnel_if_enabled(config, host, port)
 
             cmd = [
@@ -3257,17 +3316,6 @@ async def _heartbeat_postgres(config: dict) -> ToolTestResponse:
                 "SELECT 1;",
             ]
             env = {"PGPASSWORD": password}
-        elif container:
-            cmd = [
-                "docker",
-                "exec",
-                "-i",
-                container,
-                "bash",
-                "-c",
-                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
-            ]
-            env = None
         else:
             return ToolTestResponse(success=False, message="No connection configured")
 
@@ -3298,7 +3346,46 @@ async def _heartbeat_mysql(config: dict) -> ToolTestResponse:
     if not host and not container:
         return ToolTestResponse(success=False, message="MySQL not configured")
 
-    ssh_tunnel_config = build_ssh_tunnel_config(config, host, port)
+    if container:
+        docker_ssh_config = docker_ssh_config_from_dict(config, timeout=10)
+        if docker_ssh_config:
+            user_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_USER"],
+                timeout=10.0,
+            )
+            root_password_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_ROOT_PASSWORD"],
+                timeout=10.0,
+            )
+            password_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_PASSWORD"],
+                timeout=10.0,
+            )
+            database_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_DATABASE"],
+                timeout=10.0,
+            )
+            db_user = user_result.stdout.strip() if user_result.success and user_result.stdout.strip() else "root"
+            db_password = root_password_result.stdout.strip() if db_user == "root" else password_result.stdout.strip()
+            db_name = database or (database_result.stdout.strip() if database_result.success else "")
+
+            cmd = ["docker", "exec", container, "mysql", f"-u{db_user}", f"-p{db_password}", "-N", "-e", "SELECT 1"]
+            if db_name:
+                cmd.append(db_name)
+
+            result = await _run_remote_docker_command(docker_ssh_config, cmd, timeout=10.0)
+            if result.success:
+                return ToolTestResponse(success=True, message="OK")
+            error = (result.stderr or result.stdout).strip()
+            return ToolTestResponse(success=False, message=(error or "Remote Docker MySQL heartbeat failed")[:100])
+
+        ssh_tunnel_config = None
+    else:
+        ssh_tunnel_config = build_ssh_tunnel_config(config, host, port)
 
     success, message, _ = await test_mysql_connection(
         host=host,
@@ -3417,12 +3504,26 @@ async def _heartbeat_odoo(config: dict) -> ToolTestResponse:
     else:
         # Docker mode - check container is running
         container = config.get("container", "")
+        docker_ssh_config = docker_ssh_config_from_dict(config, timeout=10)
         if not container:
             return ToolTestResponse(success=False, message="No container configured")
 
-        cmd = ["docker", "exec", "-i", container, "echo", "OK"]
-
         try:
+            if docker_ssh_config:
+                result = await _run_remote_docker_command(
+                    docker_ssh_config,
+                    ["docker", "inspect", "-f", "{{.State.Running}}", container],
+                    timeout=10.0,
+                )
+                if not result.success:
+                    error = (result.stderr or result.stdout).strip()
+                    return ToolTestResponse(success=False, message=(error or "Remote Docker container not accessible")[:100])
+                return ToolTestResponse(
+                    success=result.stdout.strip().lower() == "true",
+                    message="OK" if result.stdout.strip().lower() == "true" else "Container not running",
+                )
+
+            cmd = ["docker", "exec", "-i", container, "echo", "OK"]
             process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _stdout, stderr = await process.communicate()
 
@@ -3642,7 +3743,31 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
     ssh_tunnel_enabled = config.get("ssh_tunnel_enabled", False)
 
     try:
-        if ssh_tunnel_enabled:
+        if container:
+            # Docker container test. Container mode takes precedence over any
+            # stale SSH tunnel flags left in the config.
+            docker_ssh_config = docker_ssh_config_from_dict(config, timeout=30)
+            cmd = [
+                "docker",
+                "exec",
+                "-i",
+                container,
+                "bash",
+                "-c",
+                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
+            ]
+            if docker_ssh_config:
+                result = await _run_remote_docker_command(docker_ssh_config, cmd, timeout=35.0)
+                if result.success:
+                    return ToolTestResponse(
+                        success=True,
+                        message="PostgreSQL connection successful (remote Docker)",
+                        details={"host": container, "database": database, "mode": "docker_ssh"},
+                    )
+                error = (result.stderr or result.stdout).strip()
+                return ToolTestResponse(success=False, message=f"Connection failed: {error}")
+            env = None
+        elif ssh_tunnel_enabled:
             # SSH tunnel mode - requires psycopg2
             ssh_tunnel_host = config.get("ssh_tunnel_host", "")
             ssh_tunnel_user = config.get("ssh_tunnel_user", "")
@@ -3758,18 +3883,6 @@ async def _test_postgres_connection(config: dict) -> ToolTestResponse:
                 "SELECT 1;",
             ]
             env = {"PGPASSWORD": password}
-        elif container:
-            # Docker container test
-            cmd = [
-                "docker",
-                "exec",
-                "-i",
-                container,
-                "bash",
-                "-c",
-                'PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c "SELECT 1;"',
-            ]
-            env = None
         else:
             return ToolTestResponse(
                 success=False,
@@ -3880,9 +3993,49 @@ async def _test_mysql_connection(config: dict) -> ToolTestResponse:
         # Docker container mode
         docker_network = config.get("docker_network", "")
         database = config.get("database", "")
+        docker_ssh_config = docker_ssh_config_from_dict(config, timeout=30)
 
         if not database:
             return ToolTestResponse(success=False, message="Database is required")
+
+        if docker_ssh_config:
+            user_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_USER"],
+                timeout=10.0,
+            )
+            root_password_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_ROOT_PASSWORD"],
+                timeout=10.0,
+            )
+            password_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "printenv", "MYSQL_PASSWORD"],
+                timeout=10.0,
+            )
+            db_user = user_result.stdout.strip() if user_result.success and user_result.stdout.strip() else "root"
+            db_password = root_password_result.stdout.strip() if db_user == "root" else password_result.stdout.strip()
+
+            test_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", container, "mysql", f"-u{db_user}", f"-p{db_password}", "-N", "-e", "SELECT VERSION()", database],
+                timeout=35.0,
+            )
+            if test_result.success:
+                return ToolTestResponse(
+                    success=True,
+                    message=f"Connected to {database} in remote container {container}",
+                    details={
+                        "version": test_result.stdout.strip() or "Unknown",
+                        "database": database,
+                        "container": container,
+                        "docker_network": docker_network,
+                        "mode": "docker_ssh",
+                    },
+                )
+            error = (test_result.stderr or test_result.stdout).strip()
+            return ToolTestResponse(success=False, message=f"Connection failed: {error}")
 
         success, message, details = await test_mysql_connection(
             container=container,
@@ -4062,34 +4215,44 @@ async def _test_odoo_ssh_connection(config: dict) -> ToolTestResponse:
                 message=f"SSH connection failed: {ssh_result.stderr or ssh_result.stdout}",
             )
 
-        # Build Odoo shell command
-        odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
-        if config_path:
-            odoo_cmd = f"{odoo_cmd} -c {config_path}"
+        version_cmd_parts = shlex.split(odoo_bin_path) + ["--version"]
+        version_cmd = shlex.join(version_cmd_parts)
         if run_as_user:
-            odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
+            version_cmd = f"sudo -u {shlex.quote(run_as_user)} {version_cmd}"
         if working_directory:
-            odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
+            version_cmd = f"cd {shlex.quote(working_directory)} && {version_cmd}"
 
-        # Test Odoo shell with heredoc
-        test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
-        full_command = f"{odoo_cmd} <<'ODOO_EOF'\n{test_input}ODOO_EOF"
-
-        odoo_result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, full_command))
-
-        if "ODOO_TEST_SUCCESS" in odoo_result.output:
+        version_result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, version_cmd))
+        if version_result.success:
+            version = version_result.stdout.strip() or "unknown"
             return ToolTestResponse(
                 success=True,
-                message="Odoo shell accessible via SSH",
-                details={"host": ssh_host, "database": database, "mode": "ssh"},
+                message=f"Odoo command accessible via SSH: {version}",
+                details={"host": ssh_host, "database": database, "version": version, "mode": "ssh"},
             )
-        else:
-            output_snippet = odoo_result.output[-500:] if len(odoo_result.output) > 500 else odoo_result.output
+
+        executable = shlex.split(odoo_bin_path)[0] if shlex.split(odoo_bin_path) else "odoo-bin"
+        which_cmd = f"command -v {shlex.quote(executable)}"
+        if run_as_user:
+            which_cmd = f"sudo -u {shlex.quote(run_as_user)} {which_cmd}"
+        if working_directory:
+            which_cmd = f"cd {shlex.quote(working_directory)} && {which_cmd}"
+        which_result = await loop.run_in_executor(None, lambda: execute_ssh_command(ssh_config, which_cmd))
+
+        if which_result.success:
             return ToolTestResponse(
-                success=False,
-                message="Odoo shell test failed via SSH",
-                details={"output_tail": output_snippet},
+                success=True,
+                message="Odoo command accessible via SSH",
+                details={"host": ssh_host, "database": database, "version": "detected (custom wrapper)", "mode": "ssh"},
             )
+
+        output = version_result.output or which_result.output
+        output_snippet = output[-500:] if len(output) > 500 else output
+        return ToolTestResponse(
+            success=False,
+            message="Odoo command not found via SSH",
+            details={"output_tail": output_snippet},
+        )
 
     except Exception as e:
         return ToolTestResponse(success=False, message=f"SSH test failed: {str(e)}")
@@ -4101,11 +4264,53 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
     database = config.get("database", "odoo")
     config_path = config.get("config_path", "")
     docker_network = config.get("docker_network", "")
+    docker_ssh_config = docker_ssh_config_from_dict(config, timeout=120)
 
     if not container:
         return ToolTestResponse(success=False, message="Container name is required")
 
     try:
+        if docker_ssh_config:
+            inspect_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "inspect", "-f", "{{.State.Running}}", container],
+                timeout=15.0,
+            )
+            if not inspect_result.success:
+                return ToolTestResponse(success=False, message=f"Container '{container}' not found or not accessible on remote host")
+            if inspect_result.stdout.strip().lower() != "true":
+                return ToolTestResponse(success=False, message=f"Container '{container}' is not running")
+
+            version = "unknown"
+            version_result = await _run_remote_docker_command(
+                docker_ssh_config,
+                ["docker", "exec", "-i", container, "odoo", "--version"],
+                timeout=15.0,
+            )
+            if version_result.success:
+                version = version_result.stdout.strip()
+            else:
+                which_result = await _run_remote_docker_command(
+                    docker_ssh_config,
+                    ["docker", "exec", "-i", container, "which", "odoo"],
+                    timeout=10.0,
+                )
+                if not which_result.success:
+                    return ToolTestResponse(success=False, message="Odoo command not found in remote container")
+                version = "detected (custom wrapper)"
+
+            return ToolTestResponse(
+                success=True,
+                message=f"Odoo command accessible on remote Docker host: {version}",
+                details={
+                    "container": container,
+                    "database": database,
+                    "version": version,
+                    "docker_network": docker_network,
+                    "mode": "docker_ssh",
+                },
+            )
+
         # Test if container is running
         cmd = ["docker", "inspect", "-f", "{{.State.Running}}", container]
         process = await asyncio.wait_for(
@@ -4151,66 +4356,22 @@ async def _test_odoo_docker_connection(config: dict) -> ToolTestResponse:
             # odoo exists, but --version not supported (custom wrapper)
             version = "detected (custom wrapper)"
 
-        # Test shell execution with stdin pipe (standard approach)
-        cmd = [
-            "docker",
-            "exec",
-            "-i",
-            container,
-            "odoo",
-            "shell",
-            "--no-http",
-            "-d",
-            database,
-        ]
-        if config_path:
-            cmd.extend(["-c", config_path])
-
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            ),
-            timeout=120.0,  # Shell initialization can take 10-60+ seconds
+        return ToolTestResponse(
+            success=True,
+            message=f"Odoo command accessible: {version}",
+            details={
+                "container": container,
+                "database": database,
+                "version": version,
+                "docker_network": docker_network,
+                "mode": "docker",
+            },
         )
-
-        test_input = "print('ODOO_TEST_SUCCESS')\nexit()\n"
-        stdout, _ = await process.communicate(input=test_input.encode())
-        output = stdout.decode()
-
-        if "ODOO_TEST_SUCCESS" in output:
-            return ToolTestResponse(
-                success=True,
-                message=f"Odoo shell accessible: {version}",
-                details={
-                    "container": container,
-                    "database": database,
-                    "version": version,
-                    "docker_network": docker_network,
-                    "mode": "docker",
-                },
-            )
-        else:
-            # Check for common errors in output
-            if "database" in output.lower() and "not exist" in output.lower():
-                return ToolTestResponse(
-                    success=False,
-                    message=f"Database '{database}' does not exist in container",
-                )
-            # Include some output context for debugging
-            output_snippet = output[-500:] if len(output) > 500 else output
-            return ToolTestResponse(
-                success=False,
-                message="Odoo shell test failed - could not verify shell access",
-                details={"output_tail": output_snippet},
-            )
 
     except asyncio.TimeoutError:
         return ToolTestResponse(
             success=False,
-            message="Connection timed out (shell initialization may need >2 minutes)",
+            message="Connection timed out",
         )
     except FileNotFoundError:
         return ToolTestResponse(success=False, message="Docker command not found")
@@ -4296,6 +4457,182 @@ class DockerDiscoveryResponse(BaseModel):
     containers: List[DockerContainer] = []
     current_network: Optional[str] = None
     current_container: Optional[str] = None
+
+
+class DockerDiscoverRequest(BaseModel):
+    """Optional SSH target for Docker discovery."""
+
+    docker_ssh_host: Optional[str] = None
+    docker_ssh_port: Optional[int] = 22
+    docker_ssh_user: Optional[str] = None
+    docker_ssh_password: Optional[str] = None
+    docker_ssh_key_path: Optional[str] = None
+    docker_ssh_key_content: Optional[str] = None
+    docker_ssh_key_passphrase: Optional[str] = None
+
+
+async def _run_remote_docker_command(
+    ssh_config: SSHConfig,
+    command: list[str],
+    timeout: float = 10.0,
+    input_data: str | None = None,
+):
+    """Run a Docker command on a remote host without blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await asyncio.wait_for(
+        loop.run_in_executor(None, lambda: execute_docker_command_on_remote_host(ssh_config, command, input_data=input_data)),
+        timeout=timeout,
+    )
+
+
+async def _discover_remote_docker_resources(request: DockerDiscoverRequest) -> DockerDiscoveryResponse:
+    """Discover Docker resources on a remote host over SSH."""
+    ssh_config = docker_ssh_config_from_dict(request.model_dump(exclude_none=True), timeout=15)
+    if not ssh_config:
+        return DockerDiscoveryResponse(success=False, message="Remote Docker SSH host and user are required")
+
+    networks: list[DockerNetwork] = []
+    containers_by_name: dict[str, DockerContainer] = {}
+    container_parse_errors = 0
+
+    async def inspect_container(container_name: str) -> DockerContainer | None:
+        inspect_result = await _run_remote_docker_command(
+            ssh_config,
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{.Name}}|{{.Config.Image}}|{{.State.Status}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}",
+                container_name,
+            ],
+            timeout=10.0,
+        )
+        if not inspect_result.success:
+            return None
+        name, image, status, network_text = (inspect_result.stdout.strip().split("|", 3) + ["", "", "", ""])[:4]
+        normalized_name = name.strip().lstrip("/") or container_name
+        container_networks = network_text.strip().split()
+        has_odoo = False
+        if "odoo" in image.lower() or "odoo" in normalized_name.lower():
+            has_odoo = True
+        return DockerContainer(
+            name=normalized_name,
+            image=image.strip(),
+            status=status.strip(),
+            networks=container_networks,
+            has_odoo=has_odoo,
+        )
+
+    try:
+        # Verify Docker is callable before returning an empty discovery result.
+        version_result = await _run_remote_docker_command(ssh_config, ["docker", "version", "--format", "{{.Server.Version}}"], timeout=20.0)
+        if not version_result.success:
+            message = version_result.stderr or version_result.stdout or "Docker command failed on remote host"
+            return DockerDiscoveryResponse(success=False, message=message.strip())
+
+        networks_result = await _run_remote_docker_command(
+            ssh_config,
+            ["docker", "network", "ls", "--format", "{{json .}}"],
+            timeout=15.0,
+        )
+        if not networks_result.success:
+            message = networks_result.stderr or networks_result.stdout or "Docker network discovery failed on remote host"
+            return DockerDiscoveryResponse(success=False, message=message.strip())
+
+        for line in networks_result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                net = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if net.get("Name") not in ["bridge", "host", "none"]:
+                networks.append(
+                    DockerNetwork(
+                        name=net.get("Name", ""),
+                        driver=net.get("Driver", ""),
+                        scope=net.get("Scope", ""),
+                    )
+                )
+
+        containers_result = await _run_remote_docker_command(
+            ssh_config,
+            ["docker", "ps", "--format", "{{json .}}"],
+            timeout=15.0,
+        )
+        if not containers_result.success:
+            message = containers_result.stderr or containers_result.stdout or "Docker container discovery failed on remote host"
+            return DockerDiscoveryResponse(success=False, message=message.strip())
+
+        for line in containers_result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            try:
+                cont = json.loads(line)
+            except json.JSONDecodeError:
+                container_parse_errors += 1
+                continue
+
+            container_name = cont.get("Names", "")
+            inspected = await inspect_container(container_name)
+            if inspected:
+                # Preserve the friendlier Status text from `docker ps` when available.
+                inspected.status = cont.get("Status", inspected.status)
+                inspected.image = cont.get("Image", inspected.image)
+                if "odoo" in inspected.image.lower() or "odoo" in inspected.name.lower():
+                    inspected.has_odoo = True
+                containers_by_name[inspected.name] = inspected
+
+        for network in networks:
+            network_result = await _run_remote_docker_command(
+                ssh_config,
+                ["docker", "network", "inspect", network.name, "--format", "{{json .Containers}}"],
+                timeout=10.0,
+            )
+            if not network_result.success or not network_result.stdout.strip():
+                continue
+            try:
+                attached_containers = json.loads(network_result.stdout.strip()) or {}
+            except json.JSONDecodeError:
+                continue
+            for attached in attached_containers.values():
+                if not isinstance(attached, dict):
+                    continue
+                attached_name = str(attached.get("Name") or "")
+                if not attached_name or attached_name in containers_by_name:
+                    continue
+                inspected = await inspect_container(attached_name)
+                if inspected:
+                    containers_by_name[inspected.name] = inspected
+
+        containers = list(containers_by_name.values())
+        for network in networks:
+            network.containers = [c.name for c in containers if network.name in c.networks]
+
+        parse_note = f" ({container_parse_errors} docker ps row(s) could not be parsed)" if container_parse_errors else ""
+        return DockerDiscoveryResponse(
+            success=True,
+            message=f"Found {len(networks)} networks and {len(containers)} containers on remote Docker host{parse_note}",
+            networks=networks,
+            containers=containers,
+            current_network=None,
+            current_container=None,
+        )
+    except asyncio.TimeoutError:
+        return DockerDiscoveryResponse(success=False, message="Remote Docker discovery timed out")
+    except Exception as e:
+        return DockerDiscoveryResponse(success=False, message=f"Remote Docker discovery failed: {str(e)}")
+
+
+@router.post("/docker/discover", response_model=DockerDiscoveryResponse, tags=["Tools"])
+async def discover_docker_resources_with_options(
+    request: DockerDiscoverRequest | None = Body(default=None),
+    _user: User = Depends(require_admin),
+):
+    """Discover local Docker resources, or remote Docker resources via SSH."""
+    if request and request.docker_ssh_host:
+        return await _discover_remote_docker_resources(request)
+    return await discover_docker_resources(_user)
 
 
 @router.get("/docker/discover", response_model=DockerDiscoveryResponse, tags=["Tools"])
@@ -6650,6 +6987,96 @@ def _build_discovered_model_identifiers(models: List[AvailableModel]) -> List[st
     return list(dict.fromkeys(_build_scoped_model_identifier(model) for model in models))
 
 
+def _split_scoped_model_identifier(identifier: str) -> tuple[Optional[str], str]:
+    """Split provider-scoped identifiers while tolerating legacy bare model IDs."""
+    raw = str(identifier or "").strip()
+    if not raw:
+        return None, ""
+    if "::" not in raw:
+        return None, raw
+    provider, _, model_id = raw.partition("::")
+    provider = normalize_provider_name(provider)
+    model_id = model_id.strip()
+    if not provider or not model_id:
+        return None, raw
+    return provider, model_id
+
+
+def _prune_stale_allowed_models(
+    allowed_models: List[str],
+    discovered_model_identifiers: List[str],
+    refreshed_providers: set[str],
+) -> tuple[List[str], List[str]]:
+    """Drop provider-scoped allowlist entries removed from successfully refreshed providers."""
+    discovered_by_provider: dict[str, list[set[str]]] = defaultdict(list)
+    for identifier in discovered_model_identifiers:
+        provider, model_id = _split_scoped_model_identifier(identifier)
+        if provider and model_id:
+            discovered_by_provider[provider].append({variant.casefold() for variant in _model_id_variants(model_id)})
+
+    reconciled: List[str] = []
+    removed: List[str] = []
+    seen: set[str] = set()
+
+    for value in allowed_models:
+        candidate = str(value or "").strip()
+        if not candidate:
+            continue
+        folded = candidate.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+
+        provider, model_id = _split_scoped_model_identifier(candidate)
+        if provider and provider in refreshed_providers:
+            candidate_variants = {variant.casefold() for variant in _model_id_variants(model_id)}
+            if not any(candidate_variants.intersection(discovered_variants) for discovered_variants in discovered_by_provider.get(provider, [])):
+                removed.append(candidate)
+                continue
+
+        reconciled.append(candidate)
+
+    return reconciled, removed
+
+
+async def _reconcile_allowed_models_with_discovery(
+    app_settings: AppSettings,
+    *,
+    settings_attr: str,
+    update_key: str,
+    label: str,
+    discovered_model_identifiers: List[str],
+    refreshed_providers: set[str],
+) -> List[str]:
+    """Persist allowlist cleanup after a successful provider refresh pass."""
+    allowed_models = [str(value).strip() for value in (getattr(app_settings, settings_attr, None) or []) if str(value).strip()]
+    if not allowed_models or not refreshed_providers:
+        return allowed_models
+
+    reconciled, removed = _prune_stale_allowed_models(
+        allowed_models,
+        discovered_model_identifiers,
+        refreshed_providers,
+    )
+    if not removed:
+        return allowed_models
+
+    try:
+        await repository.update_settings({update_key: reconciled})
+        invalidate_settings_cache()
+        logger.info(
+            "Pruned %d stale %s model allowlist entr%s: %s",
+            len(removed),
+            label,
+            "y" if len(removed) == 1 else "ies",
+            removed,
+        )
+        return reconciled
+    except Exception as exc:
+        logger.warning("Failed to persist stale allowlist cleanup: %s", exc)
+        return allowed_models
+
+
 def _model_id_variants(model_id: str) -> set[str]:
     """Return comparable model ID variants for publisher-prefixed IDs."""
     raw = str(model_id or "").strip().lstrip("/")
@@ -7145,6 +7572,7 @@ async def _create_background_chat_task_after_user_message(
     blocked_tool_names: Optional[set[str]],
     workspace_context: Optional[dict[str, Any]],
     disabled_builtin_tool_ids: Optional[set[str]] = None,
+    existing_task_id: Optional[str] = None,
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
@@ -7158,14 +7586,25 @@ async def _create_background_chat_task_after_user_message(
             input_tokens=input_est,
         )
 
-        task_id = await background_task_service.start_task_async(
-            conversation_id,
-            user_message,
-            blocked_tool_names=blocked_tool_names,
-            workspace_context=workspace_context,
-            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
-            usage_attempt_id=attempt_id,
-        )
+        if existing_task_id:
+            task_id = background_task_service.start_task(
+                conversation_id,
+                user_message,
+                existing_task_id=existing_task_id,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                usage_attempt_id=attempt_id,
+            )
+        else:
+            task_id = await background_task_service.start_task_async(
+                conversation_id,
+                user_message,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                usage_attempt_id=attempt_id,
+            )
         task = await repository.get_chat_task(task_id)
         if not task:
             raise HTTPException(status_code=500, detail="Failed to create background task")
@@ -8972,6 +9411,7 @@ async def get_available_chat_models():
 
     # --- Await all provider fetches in parallel ---
     results: list[tuple[str, LLMModelsResponse]] = []
+    successful_discovery_providers: set[str] = set()
     if tasks:
         results = await asyncio.gather(*tasks)
 
@@ -8987,6 +9427,8 @@ async def get_available_chat_models():
                 if any(code in (result.message or "") for code in ["401", "403"]):
                     state.connected = False
             continue
+
+        successful_discovery_providers.add(normalized_provider)
 
         if state:
             state.available = bool(result.models)
@@ -9059,9 +9501,26 @@ async def get_available_chat_models():
 
     discovered_model_identifiers = _build_discovered_model_identifiers(all_models)
 
+    allowed_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_chat_models",
+        update_key="allowed_chat_models",
+        label="chat",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
+
+    allowed_openapi_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_openapi_models",
+        update_key="allowed_openapi_models",
+        label="OpenAPI",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
+
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
-    allowed_models = [str(value).strip() for value in (app_settings.allowed_chat_models or []) if str(value).strip()]
     if allowed_models:
         all_models = [model for model in all_models if _identifier_in_allowed_models(_build_scoped_model_identifier(model), allowed_models)]
 
@@ -9098,7 +9557,7 @@ async def get_available_chat_models():
         current_model=current_model,
         discovered_model_identifiers=discovered_model_identifiers,
         allowed_models=allowed_models,
-        allowed_openapi_models=app_settings.allowed_openapi_models or [],
+        allowed_openapi_models=allowed_openapi_models,
         models_loading=models_loading,
         copilot_refresh_in_progress=copilot_refresh_in_progress,
         provider_states=list(provider_states.values()),
@@ -9246,6 +9705,7 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
 
     # --- Await all provider fetches in parallel ---
     results: list[tuple[str, LLMModelsResponse | None]] = []
+    successful_discovery_providers: set[str] = set()
     if tasks:
         results = await asyncio.gather(*tasks)
 
@@ -9253,6 +9713,8 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
     for provider_key, result in results:
         if not result or not result.success:
             continue
+
+        successful_discovery_providers.add(_normalize_provider_alias(provider_key))
 
         for m in result.models:
             if provider_key == "github_copilot":
@@ -9305,8 +9767,25 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
                 )
             )
 
-    # Get currently allowed models from settings
-    allowed_models = app_settings.allowed_chat_models or []
+    discovered_model_identifiers = _build_discovered_model_identifiers(all_models)
+
+    allowed_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_chat_models",
+        update_key="allowed_chat_models",
+        label="chat",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
+
+    allowed_openapi_models = await _reconcile_allowed_models_with_discovery(
+        app_settings,
+        settings_attr="allowed_openapi_models",
+        update_key="allowed_openapi_models",
+        label="OpenAPI",
+        discovered_model_identifiers=discovered_model_identifiers,
+        refreshed_providers=successful_discovery_providers,
+    )
 
     # Assign groups to models for UI organization
     await ensure_model_metadata_loaded()
@@ -9316,9 +9795,9 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
         models=all_models,
         default_model=app_settings.llm_model,
         current_model=app_settings.llm_model,
-        discovered_model_identifiers=_build_discovered_model_identifiers(all_models),
+        discovered_model_identifiers=discovered_model_identifiers,
         allowed_models=allowed_models,
-        allowed_openapi_models=app_settings.allowed_openapi_models or [],
+        allowed_openapi_models=allowed_openapi_models,
     )
 
 
@@ -9340,6 +9819,45 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         created_at=conv.created_at,
         updated_at=conv.updated_at,
     )
+
+
+def _compaction_system_content(summary: str) -> str:
+    return (
+        "Earlier conversation history has been compacted. Use this continuity summary as the authoritative context "
+        "for messages before this point, then continue with the uncompressed messages that follow.\n\n"
+        f"{summary}"
+    )
+
+
+async def _build_chat_history_for_conversation(
+    messages: list[ChatMessage],
+    *,
+    conversation_id: str,
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+    model_id: str,
+) -> list[BaseMessage]:
+    chat_history: list[BaseMessage] = []
+    for msg_idx, msg in enumerate(messages):
+        if msg.role == "compaction":
+            chat_history = [SystemMessage(content=_compaction_system_content(msg.content))]
+        elif msg.role == "user":
+            parsed_content = parse_message_content(msg.content)
+            if not isinstance(parsed_content, str):
+                parsed_content, _ = await rag.preprocess_message_content_async(
+                    parsed_content,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    model_id=model_id,
+                )
+            chat_history.append(HumanMessage(content=parsed_content))
+        elif msg.role == "assistant":
+            if msg.events:
+                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
+            elif msg.content and msg.content.strip():
+                chat_history.append(AIMessage(content=msg.content))
+    return chat_history
 
 
 async def _to_shared_conversation_response(
@@ -9537,24 +10055,13 @@ async def _send_message_to_loaded_conversation(
 
     await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
-    chat_history: list[BaseMessage] = []
-    for msg_idx, msg in enumerate(conv.messages[:-1]):
-        if msg.role == "user":
-            parsed_content = parse_message_content(msg.content)
-            if not isinstance(parsed_content, str):
-                parsed_content, _ = await rag.preprocess_message_content_async(
-                    parsed_content,
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    workspace_id=workspace_id,
-                    model_id=conv.model,
-                )
-            chat_history.append(HumanMessage(content=parsed_content))
-        elif msg.role == "assistant":
-            if msg.events:
-                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
-            else:
-                chat_history.append(AIMessage(content=msg.content))
+    chat_history = await _build_chat_history_for_conversation(
+        conv.messages[:-1],
+        conversation_id=conversation_id,
+        user_id=user.id,
+        workspace_id=workspace_id,
+        model_id=conv.model,
+    )
 
     current_user_message = parse_message_content(user_message)
     if not isinstance(current_user_message, str):
@@ -11142,6 +11649,158 @@ async def truncate_conversation(
     return _to_conversation_response(conv)
 
 
+@router.post("/conversations/{conversation_id}/compact", response_model=ChatTaskResponse)
+async def compact_conversation(
+    conversation_id: str,
+    request: CompactConversationRequest = Body(default_factory=CompactConversationRequest),
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+) -> ChatTaskResponse:
+    """Compact provider context in a linked background task."""
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conv.active_task_id:
+        raise HTTPException(status_code=409, detail="Conversation is currently processing")
+
+    snapshot_message_count = len(conv.messages)
+    snapshot_tail_message_id = conv.messages[-1].message_id if conv.messages else None
+
+    replace_marker_index: Optional[int] = None
+    if request.replace_message_id:
+        replace_marker_index = next(
+            (idx for idx, message in enumerate(conv.messages) if (message.message_id or "") == request.replace_message_id),
+            None,
+        )
+    elif request.replace_message_index is not None and 0 <= request.replace_message_index < len(conv.messages):
+        replace_marker_index = request.replace_message_index
+
+    if request.replace_message_id or request.replace_message_index is not None:
+        if replace_marker_index is None:
+            raise HTTPException(status_code=404, detail="Compaction marker not found")
+        if conv.messages[replace_marker_index].role != "compaction":
+            raise HTTPException(status_code=400, detail="Selected message is not a compaction marker")
+        if request.create_revision_branch:
+            branch = await repository.create_conversation_snapshot_branch(
+                conversation_id=conversation_id,
+                branch_point_index=replace_marker_index,
+                branch_kind=ConversationBranchKind.EDIT,
+                user_id=user.id,
+                parent_branch_id=conv.active_branch_id,
+            )
+            if not branch:
+                raise HTTPException(status_code=500, detail="Failed to create compaction revision branch")
+        previous_marker_index = max(
+            (idx for idx, message in enumerate(conv.messages[:replace_marker_index]) if message.role == "compaction"),
+            default=-1,
+        )
+        split_index, messages_to_summarize = _find_compaction_split_index(
+            conv.messages[:replace_marker_index],
+            request.keep_recent_pairs,
+        )
+        if not messages_to_summarize:
+            split_index = replace_marker_index
+            summarize_start = previous_marker_index if previous_marker_index >= 0 else 0
+            messages_to_summarize = conv.messages[summarize_start:replace_marker_index]
+    else:
+        split_index, messages_to_summarize = _find_compaction_split_index(conv.messages, request.keep_recent_pairs)
+
+    if len(messages_to_summarize) < 2:
+        raise HTTPException(status_code=400, detail="Conversation does not have enough uncompacted history to compact")
+
+    task_id = await background_task_service.start_compaction_async(
+        conversation_id,
+        model=conv.model,
+        messages_to_summarize=messages_to_summarize,
+        compaction_index=split_index,
+        snapshot_message_count=snapshot_message_count,
+        snapshot_tail_message_id=snapshot_tail_message_id,
+        snapshot_user_id=user.id,
+        snapshot_parent_branch_id=conv.active_branch_id,
+        replace_message_id=request.replace_message_id,
+        replace_message_index=replace_marker_index,
+    )
+    task = await repository.get_chat_task(task_id)
+    if not task:
+        raise HTTPException(status_code=500, detail="Failed to start compaction task")
+    return _to_chat_task_response(task)
+
+
+@router.patch("/conversations/{conversation_id}/compaction-marker", response_model=ConversationResponse)
+async def update_conversation_compaction_marker(
+    conversation_id: str,
+    request: UpdateConversationCompactionRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+) -> ConversationResponse:
+    """Update a persisted compaction marker summary."""
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    summary = request.summary.strip()
+    if not summary:
+        raise HTTPException(status_code=400, detail="Compaction summary cannot be empty")
+    if not request.message_id and request.message_index is None:
+        raise HTTPException(status_code=400, detail="message_id or message_index is required")
+
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    target_index: Optional[int] = None
+    if request.message_id:
+        target_index = next(
+            (idx for idx, message in enumerate(conv.messages) if (message.message_id or "") == request.message_id),
+            None,
+        )
+    elif request.message_index is not None and 0 <= request.message_index < len(conv.messages):
+        target_index = request.message_index
+
+    if target_index is None:
+        raise HTTPException(status_code=404, detail="Compaction marker not found")
+    if conv.messages[target_index].role != "compaction":
+        raise HTTPException(status_code=400, detail="Selected message is not a compaction marker")
+
+    if request.create_revision_branch:
+        branch = await repository.create_conversation_snapshot_branch(
+            conversation_id=conversation_id,
+            branch_point_index=target_index,
+            branch_kind=ConversationBranchKind.EDIT,
+            user_id=user.id,
+            parent_branch_id=conv.active_branch_id,
+        )
+        if not branch:
+            raise HTTPException(status_code=500, detail="Failed to create compaction revision branch")
+
+    updated = await repository.update_compaction_marker_summary(
+        conversation_id,
+        summary,
+        message_id=request.message_id,
+        message_index=target_index,
+    )
+    if not updated:
+        raise HTTPException(status_code=409, detail="Conversation changed while saving compaction marker")
+
+    return _to_conversation_response(updated)
+
+
 @router.post(
     "/conversations/{conversation_id}/messages/{message_id}/restore-snapshot",
     response_model=MessageSnapshotRestoreResponse,
@@ -11572,24 +12231,13 @@ async def send_message_stream(
     await _validate_generation_ready_after_user_message(conversation_id, conv.model)
 
     # Build chat history for RAG
-    chat_history: list[BaseMessage] = []
-    for msg_idx, msg in enumerate(conv.messages[:-1]):  # Exclude current message
-        if msg.role == "user":
-            parsed_content = parse_message_content(msg.content)
-            if not isinstance(parsed_content, str):
-                parsed_content, _ = await rag.preprocess_message_content_async(
-                    parsed_content,
-                    conversation_id=conversation_id,
-                    user_id=user.id,
-                    workspace_id=workspace_id,
-                    model_id=conv.model,
-                )
-            chat_history.append(HumanMessage(content=parsed_content))
-        elif msg.role == "assistant":
-            if msg.events:
-                chat_history.extend(rebuild_tool_messages_from_events(msg.events, msg_idx))
-            else:
-                chat_history.append(AIMessage(content=msg.content))
+    chat_history = await _build_chat_history_for_conversation(
+        conv.messages[:-1],
+        conversation_id=conversation_id,
+        user_id=user.id,
+        workspace_id=workspace_id,
+        model_id=conv.model,
+    )
 
     current_user_message = parse_message_content(user_message)
     if not isinstance(current_user_message, str):
@@ -11995,6 +12643,177 @@ def _active_visualization_branch_id(branches: list[Any]) -> str | None:
     return None
 
 
+async def _assert_conversation_download_access(
+    conversation_id: str,
+    user: User,
+    workspace_id: Optional[str],
+) -> Conversation:
+    await _assert_workspace_access(workspace_id, user, _workspace_chat_required_role(workspace_id))
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+def _build_export_source_from_request(request: CreateConversationExportRequest) -> dict[str, Any]:
+    if request.source_kind == "binary":
+        return content_source(content_base64=request.content_base64, mime_type=request.mime_type)
+    if request.source_kind == "content":
+        return content_source(text=request.text, content_base64=request.content_base64, mime_type=request.mime_type)
+    if request.source_kind == "live_table":
+        if not isinstance(request.data_connection, dict):
+            raise HTTPException(status_code=400, detail="data_connection is required for live_table exports")
+        table = request.table
+        return live_table_source(
+            request.data_connection,
+            columns=(table.columns if table else None),
+            rows=(table.rows if table else None),
+        )
+    if request.source_kind == "chart":
+        payload = request.visualization_payload
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="visualization_payload is required for chart exports")
+        return {"kind": "chart_snapshot", "payload": payload}
+    if request.source_kind == "datatable":
+        payload = request.visualization_payload
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="visualization_payload is required for datatable exports")
+        return {"kind": "datatable_snapshot", "payload": payload}
+    if not request.table:
+        raise HTTPException(status_code=400, detail="table data is required for table exports")
+    return table_source(request.table.columns, request.table.rows)
+
+
+async def _resolve_live_export_table(source: dict[str, Any], selected_tool_ids: set[str]) -> tuple[list[str], list[list[Any]]]:
+    connection = source.get("data_connection")
+    try:
+        normalized = normalize_live_data_connection(
+            connection,
+            require_component_id=True,
+            require_request=True,
+            include_mappings=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert normalized is not None
+    component_request = ExecuteComponentRequest(
+        component_id=str(normalized["component_id"]),
+        request=normalized["request"],
+    )
+    component_response = await userspace_service.execute_component_for_selected_tools(
+        set(selected_tool_ids),
+        component_request,
+        error_log_prefix="Conversation export live query failed",
+    )
+    if component_response.error:
+        raise HTTPException(status_code=400, detail=component_response.error)
+    columns = list(component_response.columns or [])
+    rows_raw = list(component_response.rows or [])
+    if not columns and rows_raw and isinstance(rows_raw[0], dict):
+        columns = list(rows_raw[0].keys())
+    if not columns:
+        raise HTTPException(status_code=400, detail="Live export returned no columns")
+    rows: list[list[Any]] = []
+    for row in rows_raw:
+        if isinstance(row, dict):
+            rows.append([row.get(column) for column in columns])
+        elif isinstance(row, (list, tuple)):
+            rows.append(list(row))
+        else:
+            rows.append([row])
+    return columns, rows
+
+
+@router.post(
+    "/conversations/{conversation_id}/exports",
+    response_model=CreateConversationExportResponse,
+)
+async def create_conversation_export(
+    conversation_id: str,
+    request: CreateConversationExportRequest,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Create a short-lived authenticated download link for a conversation export."""
+    cleanup_expired_exports()
+    conversation = await repository.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    effective_workspace_id = (workspace_id or conversation.workspace_id or "").strip() or None
+    await _assert_conversation_download_access(conversation_id, user, effective_workspace_id)
+
+    source = _build_export_source_from_request(request)
+    spec = create_export_spec(
+        conversation_id=conversation_id,
+        filename=request.filename,
+        export_format=request.format,
+        source=source,
+        workspace_id=effective_workspace_id,
+        title=request.title,
+        mime_type=request.mime_type,
+        expires_in_seconds=request.expires_in_seconds,
+    )
+    return CreateConversationExportResponse(
+        export_id=str(spec["id"]),
+        filename=str(spec["filename"]),
+        format=str(spec["format"]),
+        download_url=str(spec["download_url"]),
+        markdown_link=f"[{spec['filename']}]({spec['download_url']})",
+        expires_at=datetime.fromisoformat(str(spec["expires_at"])),
+        source_kind=str(source.get("kind") or request.source_kind),
+    )
+
+
+@router.get("/conversations/{conversation_id}/exports/{export_id}/{filename}")
+async def download_conversation_export(
+    conversation_id: str,
+    export_id: str,
+    filename: str,
+    token: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Render and stream a short-lived conversation export just in time."""
+    verify_token(token, conversation_id, export_id, filename)
+    spec = load_export_spec(conversation_id, export_id)
+    if spec.get("filename") != filename:
+        raise HTTPException(status_code=403, detail="Invalid export link")
+    spec_workspace_id = str(spec.get("workspace_id") or "").strip() or None
+    effective_workspace_id = (workspace_id or spec_workspace_id or "").strip() or None
+    conversation = await _assert_conversation_download_access(conversation_id, user, effective_workspace_id)
+    _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
+        conversation,
+        user,
+        effective_workspace_id,
+        _workspace_chat_required_role(effective_workspace_id),
+    )
+
+    async def live_resolver(source: dict[str, Any]) -> tuple[list[str], list[list[Any]]]:
+        return await _resolve_live_export_table(source, selected_tool_ids)
+
+    try:
+        data, media_type = await render_export(spec, live_table_resolver=live_resolver)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to render conversation export %s: %s", export_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to render export") from exc
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=media_type,
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
 @router.post(
     "/conversations/{conversation_id}/visualizations/refresh-live-data",
     response_model=RefreshLiveVisualizationResponse,
@@ -12370,27 +13189,40 @@ async def send_message_background(
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
 
-    # Check if there's already an active task
-    existing_task = await repository.get_active_task_for_conversation(conversation_id)
-    if existing_task:
-        # Return the existing task instead of creating a new one
-        return _to_chat_task_response(existing_task)
+    updated_conversation, claimed_task, created_task = await repository.add_user_message_and_create_chat_task_if_idle(
+        conversation_id,
+        user_message,
+    )
+    if claimed_task is None:
+        raise HTTPException(status_code=500, detail="Failed to create background task")
+    if not created_task:
+        return _to_chat_task_response(claimed_task)
+    if updated_conversation is None:
+        raise HTTPException(status_code=500, detail="Failed to add user message")
 
-    # Add user message to conversation first
-    await repository.add_message(conversation_id, "user", user_message)
+    conv = updated_conversation
     schedule_title_generation(conversation_id, user_message)
 
-    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    try:
+        await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    except Exception:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
 
-    task = await _create_background_chat_task_after_user_message(
-        conversation_id=conversation_id,
-        user_message=user_message,
-        user=user,
-        conv=conv,
-        blocked_tool_names=blocked_tool_names,
-        workspace_context=workspace_context,
-        disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
-    )
+    try:
+        task = await _create_background_chat_task_after_user_message(
+            conversation_id=conversation_id,
+            user_message=user_message,
+            user=user,
+            conv=conv,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
+            existing_task_id=claimed_task.id,
+        )
+    except Exception:
+        await repository.cancel_chat_task(claimed_task.id)
+        raise
 
     return _to_chat_task_response(task)
 

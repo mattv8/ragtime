@@ -8,7 +8,7 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch } from 'lucide-react';
+import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch, Download } from 'lucide-react';
 import { api } from '@/api';
 import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
@@ -78,6 +78,29 @@ const CHAT_BUILT_IN_TOOL_IDS = CHAT_BUILT_IN_TOOLS.map((tool) => tool.id);
 const CHAT_BUILT_IN_TOOL_ID_SET = new Set(CHAT_BUILT_IN_TOOL_IDS);
 const WEB_BROWSE_TOOL_ID = 'web_browse';
 const WEB_READ_PDF_TOOL_ID = 'web_read_pdf';
+const COMPACTION_TASK_USER_MESSAGE = '__ragtime_compaction__';
+
+function isCompactionTask(task: ChatTask | null | undefined): boolean {
+  return task?.user_message === COMPACTION_TASK_USER_MESSAGE;
+}
+
+interface QueuedCompactionMessage {
+  id: string;
+  conversationId: string;
+  compactionStatus: 'compacting' | 'compacted';
+  serializedMessage: string;
+  displayContent: string | ContentPart[];
+  inputText: string;
+  attachments: AttachmentFile[];
+  timestamp: string;
+}
+
+interface CompactionReviewMarker {
+  messageIndex: number;
+  messageId?: string;
+  summary: string;
+  timestamp?: string;
+}
 const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_read_pdf', 'web_browse']);
 const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id));
 const VISIBLE_CHAT_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => tool.id !== WEB_READ_PDF_TOOL_ID);
@@ -669,6 +692,138 @@ const PreBlock = ({ children, ...rest }: React.HTMLAttributes<HTMLPreElement> & 
   return <pre {...rest}>{children}</pre>;
 };
 
+type MarkdownTableSnapshot = {
+  columns: string[];
+  rows: string[][];
+};
+
+function normalizeMarkdownTableCell(value: string | null | undefined): string {
+  return (value || '').replace(/\s+/g, ' ').trim();
+}
+
+function extractMarkdownTableSnapshot(tableElement: HTMLTableElement | null): MarkdownTableSnapshot | null {
+  if (!tableElement) return null;
+
+  const headerCells = Array.from(tableElement.querySelectorAll('thead tr:first-child th'));
+  const bodyRows = Array.from(tableElement.querySelectorAll('tbody tr'));
+  const rows = bodyRows.map((row) => Array.from(row.querySelectorAll('td, th')).map((cell) => normalizeMarkdownTableCell(cell.textContent)));
+
+  let columns = headerCells.map((cell) => normalizeMarkdownTableCell(cell.textContent));
+  if (columns.length === 0 && rows.length > 0) {
+    columns = rows[0].map((_, index) => `Column ${index + 1}`);
+  }
+  if (columns.length === 0) return null;
+
+  const width = columns.length;
+  const normalizedRows = rows.map((row) => {
+    if (row.length < width) return [...row, ...Array.from({ length: width - row.length }, () => '')];
+    return row.slice(0, width);
+  });
+  return { columns, rows: normalizedRows };
+}
+
+type MarkdownTableProps = React.TableHTMLAttributes<HTMLTableElement> & {
+  children?: ReactNode;
+  conversationId?: string;
+  workspaceId?: string;
+  enableExport?: boolean;
+  node?: unknown;
+};
+
+const MarkdownTable = memo(function MarkdownTable({
+  children,
+  conversationId,
+  workspaceId,
+  enableExport = false,
+  node: _node,
+  ...tableProps
+}: MarkdownTableProps) {
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [isExportingXlsx, setIsExportingXlsx] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const getSnapshot = useCallback(() => extractMarkdownTableSnapshot(tableRef.current), []);
+  const exportFilenameBase = 'markdown-table';
+
+  const handleDownloadMarkdownTableCsv = useCallback(() => {
+    const snapshot = getSnapshot();
+    if (!snapshot) return;
+    downloadCsv(snapshot.columns, snapshot.rows, sanitizeDownloadFilename(exportFilenameBase, 'csv'));
+  }, [getSnapshot]);
+
+  const handleDownloadMarkdownTableXlsx = useCallback(async () => {
+    if (!conversationId || isExportingXlsx) return;
+    const snapshot = getSnapshot();
+    if (!snapshot) return;
+    setIsExportingXlsx(true);
+    try {
+      await api.downloadConversationExport(
+        conversationId,
+        {
+          filename: sanitizeDownloadFilename(exportFilenameBase, 'xlsx'),
+          format: 'xlsx',
+          title: 'Markdown table',
+          source_kind: 'table',
+          table: snapshot,
+        },
+        workspaceId,
+      );
+    } catch (err) {
+      console.error('Failed to download markdown table XLSX export:', err);
+    } finally {
+      setIsExportingXlsx(false);
+    }
+  }, [conversationId, getSnapshot, isExportingXlsx, workspaceId]);
+
+  useEffect(() => {
+    const table = tableRef.current;
+    if (!table) return;
+
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+    const rows = Array.from(table.querySelectorAll('tbody tr'));
+    for (const row of rows) {
+      const rowText = normalizeMarkdownTableCell(row.textContent).toLowerCase();
+      const matches = !normalizedSearch || rowText.includes(normalizedSearch);
+      (row as HTMLTableRowElement).style.display = matches ? '' : 'none';
+    }
+
+    return () => {
+      for (const row of rows) {
+        (row as HTMLTableRowElement).style.display = '';
+      }
+    };
+  }, [searchQuery, children]);
+
+  const exportControls = enableExport ? (
+    <div className="viz-version-anchor markdown-table-export-anchor">
+      <div className="datatable-controls">
+        <input
+          type="search"
+          className="dt-input datatable-search-input"
+          placeholder="Search table..."
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          aria-label="Search markdown table"
+        />
+      </div>
+      <VisualizationExportControls
+        onCsv={handleDownloadMarkdownTableCsv}
+        onXlsx={conversationId ? handleDownloadMarkdownTableXlsx : undefined}
+        isExportingXlsx={isExportingXlsx}
+      />
+    </div>
+  ) : null;
+
+  return (
+    <div className="markdown-table-export-wrapper">
+      {exportControls}
+      <div className="markdown-table-scroll">
+        <table {...tableProps} ref={tableRef}>{children}</table>
+      </div>
+    </div>
+  );
+});
+
 const markdownComponents: Components = {
   pre: PreBlock,
 };
@@ -701,13 +856,35 @@ function normalizeMarkdownMathFences(content: string): string {
 
 // Memoized markdown component to prevent re-parsing on every render
 // Only re-renders when content actually changes
-export const MemoizedMarkdown = memo(function MemoizedMarkdown({ content }: { content: string }) {
+export const MemoizedMarkdown = memo(function MemoizedMarkdown({
+  content,
+  conversationId,
+  workspaceId,
+  enableTableExports = false,
+}: {
+  content: string;
+  conversationId?: string;
+  workspaceId?: string;
+  enableTableExports?: boolean;
+}) {
   const normalized = useMemo(() => normalizeMarkdownMathFences(content), [content]);
+  const components = useMemo<Components>(() => ({
+    ...markdownComponents,
+    table: ({ node, ...props }) => (
+      <MarkdownTable
+        {...props}
+        node={node}
+        conversationId={conversationId}
+        workspaceId={workspaceId}
+        enableExport={enableTableExports}
+      />
+    ),
+  }), [conversationId, enableTableExports, workspaceId]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
-      components={markdownComponents}
+      components={components}
     >
       {normalized}
     </ReactMarkdown>
@@ -722,6 +899,7 @@ export interface ActiveToolCall {
   presentation?: {
     kind?: string;
     rerun_kind?: string;
+    visibility?: string;
   };
   connection?: {
     tool_config_id: string;
@@ -890,11 +1068,16 @@ function parseTableMetadata(output: string): { tableData: TableData | null; disp
     return { tableData: null, displayText: output };
   }
 
+  const withoutMalformedMetadata = () => {
+    const lineEndIdx = output.indexOf('\n');
+    return lineEndIdx === -1 ? '' : output.slice(lineEndIdx + 1).replace(/^\r?\n/, '');
+  };
+
   const lineEndIdx = output.indexOf('\n');
   const metadataSearchEnd = lineEndIdx === -1 ? output.length - 1 : lineEndIdx - 1;
   const endIdx = output.lastIndexOf(endMarker, metadataSearchEnd);
   if (endIdx < startMarker.length) {
-    return { tableData: null, displayText: output };
+    return { tableData: null, displayText: withoutMalformedMetadata() };
   }
 
   const jsonStr = output.substring(startMarker.length, endIdx);
@@ -911,7 +1094,7 @@ function parseTableMetadata(output: string): { tableData: TableData | null; disp
     const displayText = output.slice(contentStart);
     return { tableData, displayText };
   } catch {
-    return { tableData: null, displayText: output };
+    return { tableData: null, displayText: output.slice(endIdx + endMarker.length).replace(/^\r?\n/, '') };
   }
 }
 
@@ -1123,6 +1306,70 @@ function parseDataTableData(output: string): DataTableData | null {
   return null;
 }
 
+function sanitizeDownloadFilename(filename: string, extension: string): string {
+  const safeExtension = extension.replace(/[^a-z0-9]+/gi, '').toLowerCase() || 'txt';
+  const raw = (filename || 'export').trim().replace(/[\\/]+/g, '_');
+  const safe = raw
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9._ -]/g, '_')
+    .replace(/^[. _-]+|[. _-]+$/g, '') || 'export';
+  const withoutExtension = safe.replace(/\.[A-Za-z0-9]+$/, '');
+  return `${withoutExtension || 'export'}.${safeExtension}`;
+}
+
+function spreadsheetSafeValue(value: unknown): string {
+  if (value == null) return '';
+  const text = typeof value === 'string' ? value : String(value);
+  return /^[=+\-@]/.test(text) ? `\t${text}` : text;
+}
+
+function serializeCsv(columns: unknown[], rows: unknown[][]): string {
+  const escapeCell = (value: unknown) => {
+    const text = spreadsheetSafeValue(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return [columns, ...rows]
+    .map((row) => row.map(escapeCell).join(','))
+    .join('\r\n') + '\r\n';
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function downloadCsv(columns: unknown[], rows: unknown[][], filename: string): void {
+  downloadBlob(
+    new Blob([`\ufeff${serializeCsv(columns, rows)}`], { type: 'text/csv;charset=utf-8' }),
+    sanitizeDownloadFilename(filename, 'csv'),
+  );
+}
+
+function getDataTableColumns(tableData: DataTableData): string[] {
+  return (tableData.config.columns || []).map((column, index) => {
+    if (typeof column === 'string') return column;
+    return String((column as { title?: unknown }).title || `Column ${index + 1}`);
+  });
+}
+
+function getChartTable(chartData: ChartData): { columns: string[]; rows: unknown[][] } {
+  const labels = Array.isArray(chartData.config.data.labels) ? chartData.config.data.labels : [];
+  const datasets = Array.isArray(chartData.config.data.datasets) ? chartData.config.data.datasets : [];
+  const columns = ['Label', ...datasets.map((dataset, index) => dataset.label || `Dataset ${index + 1}`)];
+  const rows = labels.map((label, rowIndex) => [
+    label,
+    ...datasets.map((dataset) => Array.isArray(dataset.data) ? dataset.data[rowIndex] ?? '' : ''),
+  ]);
+  return { columns, rows };
+}
+
 function validateDataTableData(tableData: DataTableData): string | null {
   const columns = tableData.config.columns;
   const rows = tableData.config.data;
@@ -1293,6 +1540,149 @@ const VisualizationVersionAnchor = memo(function VisualizationVersionAnchor({
   );
 });
 
+const VisualizationExportControls = memo(function VisualizationExportControls({
+  onCsv,
+  onXlsx,
+  onPng,
+  disabled = false,
+  isExportingXlsx = false,
+}: {
+  onCsv?: () => void;
+  onXlsx?: () => void;
+  onPng?: () => void;
+  disabled?: boolean;
+  isExportingXlsx?: boolean;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const hoverTimerRef = useRef<number | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current != null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleMenuOpen = useCallback(() => {
+    if (disabled) return;
+    clearHoverTimer();
+    clearCloseTimer();
+    hoverTimerRef.current = window.setTimeout(() => {
+      setIsMenuOpen(true);
+      hoverTimerRef.current = null;
+    }, 300);
+  }, [clearCloseTimer, clearHoverTimer, disabled]);
+
+  const scheduleMenuClose = useCallback(() => {
+    clearHoverTimer();
+    clearCloseTimer();
+    closeTimerRef.current = window.setTimeout(() => {
+      setIsMenuOpen(false);
+      closeTimerRef.current = null;
+    }, 220);
+  }, [clearCloseTimer, clearHoverTimer]);
+
+  const closeMenu = useCallback(() => {
+    clearHoverTimer();
+    clearCloseTimer();
+    setIsMenuOpen(false);
+  }, [clearCloseTimer, clearHoverTimer]);
+
+  const handleButtonClick = useCallback(() => {
+    if (disabled) return;
+    clearHoverTimer();
+    clearCloseTimer();
+    setIsMenuOpen((current) => !current);
+  }, [clearCloseTimer, clearHoverTimer, disabled]);
+
+  const handleOptionClick = useCallback((handler?: () => void) => {
+    if (!handler || disabled) return;
+    handler();
+    closeMenu();
+  }, [closeMenu, disabled]);
+
+  useEffect(() => () => {
+    clearHoverTimer();
+    clearCloseTimer();
+  }, [clearCloseTimer, clearHoverTimer]);
+
+  if (!onCsv && !onXlsx && !onPng) return null;
+  return (
+    <div
+      className="visualization-export-controls"
+      aria-label="Export visualization"
+      onMouseEnter={scheduleMenuOpen}
+      onMouseLeave={scheduleMenuClose}
+      onFocus={scheduleMenuOpen}
+      onBlur={scheduleMenuClose}
+    >
+      <button
+        type="button"
+        className="visualization-export-btn"
+        onClick={handleButtonClick}
+        disabled={disabled}
+        title="Download export"
+        aria-label="Download export"
+        aria-haspopup="menu"
+        aria-expanded={isMenuOpen}
+      >
+        {isExportingXlsx ? <MiniLoadingSpinner variant="icon" size={12} /> : <Download size={12} />}
+      </button>
+      {isMenuOpen && (
+        <div
+          className="visualization-export-menu"
+          role="menu"
+          aria-label="Export formats"
+          onMouseEnter={scheduleMenuOpen}
+          onMouseLeave={scheduleMenuClose}
+        >
+      {onCsv && (
+        <button
+          type="button"
+          className="visualization-export-menu-item"
+          onClick={() => handleOptionClick(onCsv)}
+          disabled={disabled}
+          role="menuitem"
+        >
+          <span>CSV</span>
+        </button>
+      )}
+      {onXlsx && (
+        <button
+          type="button"
+          className="visualization-export-menu-item"
+          onClick={() => handleOptionClick(onXlsx)}
+          disabled={disabled || isExportingXlsx}
+          role="menuitem"
+        >
+          <span>XLSX</span>
+        </button>
+      )}
+      {onPng && (
+        <button
+          type="button"
+          className="visualization-export-menu-item"
+          onClick={() => handleOptionClick(onPng)}
+          disabled={disabled}
+          role="menuitem"
+        >
+          <span>PNG</span>
+        </button>
+      )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 const ChartDisplay = memo(function ChartDisplay({
   chartData,
   canRefresh = false,
@@ -1310,6 +1700,7 @@ const ChartDisplay = memo(function ChartDisplay({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartInstanceRef = useRef<ChartInstance | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const chartFilenameBase = chartData.description?.trim() || 'chart';
 
   // Get theme colors from CSS variables
   const getThemeColors = useCallback(() => {
@@ -1411,6 +1802,20 @@ const ChartDisplay = memo(function ChartDisplay({
     };
   }, [chartData, createChart]);
 
+  const handleDownloadChartCsv = useCallback(() => {
+    const { columns, rows } = getChartTable(chartData);
+    downloadCsv(columns, rows, sanitizeDownloadFilename(chartFilenameBase, 'csv'));
+  }, [chartData, chartFilenameBase]);
+
+  const handleDownloadChartPng = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const filename = sanitizeDownloadFilename(chartFilenameBase, 'png');
+    canvas.toBlob((blob) => {
+      if (blob) downloadBlob(blob, filename);
+    }, 'image/png');
+  }, [chartFilenameBase]);
+
   return (
     <div className={`chart-with-anchor${isExpanded ? ' chart-with-anchor-expanded' : ''}`}>
       <div className={`chart-container${isExpanded ? ' chart-container-expanded' : ''}`} ref={containerRef}>
@@ -1439,6 +1844,12 @@ const ChartDisplay = memo(function ChartDisplay({
         activeBranchId={activeBranchId}
         isSwitchingBranch={isSwitchingBranch}
         onSelectBranch={onSelectBranch}
+        extraControls={(
+          <VisualizationExportControls
+            onCsv={handleDownloadChartCsv}
+            onPng={handleDownloadChartPng}
+          />
+        )}
       />
     </div>
   );
@@ -1536,6 +1947,8 @@ const DataTableControls = memo(function DataTableControls({
 
 const DataTableDisplay = memo(function DataTableDisplay({
   tableData,
+  conversationId,
+  workspaceId,
   canRefresh = false,
   isRefreshDisabled = false,
   refreshDisabledReason = null,
@@ -1547,7 +1960,7 @@ const DataTableDisplay = memo(function DataTableDisplay({
   isSwitchingBranch = false,
   onSelectBranch,
   onDisplayError,
-}: { tableData: DataTableData; onDisplayError?: (message: string) => void } & LiveRefreshControlsProps) {
+}: { tableData: DataTableData; conversationId?: string; workspaceId?: string; onDisplayError?: (message: string) => void } & LiveRefreshControlsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tableInstanceRef = useRef<unknown>(null);
   const lastNotifiedErrorRef = useRef<string | null>(null);
@@ -1559,6 +1972,7 @@ const DataTableDisplay = memo(function DataTableDisplay({
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [pageInfo, setPageInfo] = useState<DataTablePageInfo>({ page: 0, pages: 1, recordsDisplay: 0 });
+  const [isExportingXlsx, setIsExportingXlsx] = useState(false);
 
   const rowCount = Array.isArray(tableData.config.data) ? tableData.config.data.length : 0;
   const configuredPageLength = Number((tableData.config as any).pageLength);
@@ -1586,6 +2000,46 @@ const DataTableDisplay = memo(function DataTableDisplay({
       (tableInstanceRef.current as any).page(page).draw('page');
     } catch { /* ignore */ }
   }, []);
+
+  const exportFilenameBase = tableData.title?.trim() || 'table-data';
+  const handleDownloadDataTableCsv = useCallback(() => {
+    downloadCsv(getDataTableColumns(tableData), tableData.config.data || [], sanitizeDownloadFilename(exportFilenameBase, 'csv'));
+  }, [exportFilenameBase, tableData]);
+
+  const handleDownloadDataTableXlsx = useCallback(async () => {
+    if (!conversationId || isExportingXlsx) return;
+    setIsExportingXlsx(true);
+    try {
+      await api.downloadConversationExport(
+        conversationId,
+        {
+          filename: sanitizeDownloadFilename(exportFilenameBase, 'xlsx'),
+          format: 'xlsx',
+          title: tableData.title || 'Table data',
+          source_kind: 'datatable',
+          table: {
+            columns: getDataTableColumns(tableData),
+            rows: tableData.config.data || [],
+          },
+          visualization_payload: tableData as unknown as Record<string, unknown>,
+          data_connection: tableData.data_connection as Record<string, unknown> | undefined,
+        },
+        workspaceId,
+      );
+    } catch (err) {
+      console.error('Failed to download XLSX export:', err);
+    } finally {
+      setIsExportingXlsx(false);
+    }
+  }, [conversationId, exportFilenameBase, isExportingXlsx, tableData, workspaceId]);
+
+  const renderExportControls = () => (
+    <VisualizationExportControls
+      onCsv={handleDownloadDataTableCsv}
+      onXlsx={conversationId ? handleDownloadDataTableXlsx : undefined}
+      isExportingXlsx={isExportingXlsx}
+    />
+  );
 
   useEffect(() => {
     lastNotifiedErrorRef.current = null;
@@ -1823,20 +2277,24 @@ const DataTableDisplay = memo(function DataTableDisplay({
           activeBranchId={activeBranchId}
           isSwitchingBranch={isSwitchingBranch}
           onSelectBranch={onSelectBranch}
+          extraControls={renderExportControls()}
         />
       </>
     );
   }
 
   const renderControls = () => (
-    <DataTableControls
-      searchingEnabled={searchingEnabled}
-      pagingEnabled={pagingEnabled}
-      searchQuery={searchQuery}
-      onSearchChange={setSearchQuery}
-      pageInfo={pageInfo}
-      onPage={handlePage}
-    />
+    <>
+      <DataTableControls
+        searchingEnabled={searchingEnabled}
+        pagingEnabled={pagingEnabled}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        pageInfo={pageInfo}
+        onPage={handlePage}
+      />
+      {renderExportControls()}
+    </>
   );
   const hasMultiplePages = pagingEnabled && pageInfo.pages > 1;
   const headerHasAnchor = searchingEnabled || hasMultiplePages || !!(canRefresh && onRefresh) || !!(branches && branches.length >= 2 && onSelectBranch) || !!refreshError;
@@ -2858,6 +3316,7 @@ const TERMINAL_PRESENTATION_KIND = 'terminal';
 const USERSPACE_EXEC_RERUN_KIND = 'userspace_exec';
 const CONVERSATION_TOOL_RERUN_KIND = 'conversation_tool';
 const CHAT_DIAGNOSTIC_RERUN_KIND = 'chat_diagnostic';
+const HIDDEN_TOOL_VISIBILITY = 'hidden';
 const TERMINAL_RERUN_KINDS = new Set([
   USERSPACE_EXEC_RERUN_KIND,
   CONVERSATION_TOOL_RERUN_KIND,
@@ -2881,6 +3340,10 @@ function isTerminalToolCall(toolCall: ActiveToolCall): boolean {
     (toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
     || (toolType === 'odoo_shell' && connectionMode === 'ssh')
   );
+}
+
+function isHiddenToolCall(toolCall: Pick<ActiveToolCall, 'presentation'>): boolean {
+  return normalizedPresentationValue(toolCall.presentation?.visibility) === HIDDEN_TOOL_VISIBILITY;
 }
 
 function isSqlToolCall(toolCall: ActiveToolCall): boolean {
@@ -3773,6 +4236,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (!effectiveOutput) return { tableData: null, displayText: '' };
     return parseTableMetadata(effectiveOutput);
   }, [effectiveOutput]);
+  const handleDownloadResultTableCsv = useCallback(() => {
+    if (!tableData) return;
+    downloadCsv(tableData.columns, tableData.rows, sanitizeDownloadFilename(`${toolCall.tool || 'results'}-results`, 'csv'));
+  }, [tableData, toolCall.tool]);
   const visibleDisplayText = toolCall.tool === WEB_READ_PDF_TOOL_ID
     ? maskHiddenToolNames(displayText)
     : displayText;
@@ -4102,6 +4569,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // Special rendering for chart tool - show chart inline without collapsible.
   // Keep these returns after every hook in this component so tool-call output
   // transitions cannot change the hook count between renders.
+  if (isHiddenToolCall(toolCall)) {
+    return null;
+  }
+
   if (chartData) {
     const canRefreshChart = hasRefreshableVisualizationConnection(chartData.data_connection, 'chart')
       && Boolean(conversationId);
@@ -4132,6 +4603,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       <div className="tool-call tool-call-datatable tool-call-complete">
         <DataTableDisplay
           tableData={datatableData}
+          conversationId={conversationId}
+          workspaceId={workspaceId}
           canRefresh={canRefreshTable}
           isRefreshDisabled={!hasPersistedVisualizationContext}
           refreshDisabledReason={refreshDisabledReason}
@@ -5009,13 +5482,25 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           <div className="tool-call-section">
             <div className="tool-call-section-header">
               <span className="tool-call-section-label">Result:</span>
-              <button
-                className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'tool-default-result')}
-                title="Copy result"
-              >
-                {isCopiedButton('result', 'tool-default-result') ? <Check size={12} /> : <Copy size={12} />}
-              </button>
+              <div className="tool-call-terminal-header-actions">
+                {tableData && (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={handleDownloadResultTableCsv}
+                    title="Download CSV"
+                    aria-label="Download CSV"
+                  >
+                    <Download size={12} />
+                  </button>
+                )}
+                <button
+                  className="tool-call-copy-btn"
+                  onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'tool-default-result')}
+                  title="Copy result"
+                >
+                  {isCopiedButton('result', 'tool-default-result') ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
             </div>
             {tableData ? (
               <DataTable data={tableData} />
@@ -5321,13 +5806,13 @@ interface StreamingSegment {
 // Memoized component for rendering streaming segments efficiently
 // Collapsible reasoning/thinking display
 
-interface ReasoningPart {
+export interface ReasoningPart {
   type: 'text' | 'tool';
   text?: string;
   toolCall?: ActiveToolCall;
 }
 
-const ReasoningDisplay = memo(function ReasoningDisplay({
+export const ReasoningDisplay = memo(function ReasoningDisplay({
   content,
   isComplete,
   parts,
@@ -5632,7 +6117,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
         inChatSearchOptions={inChatSearchOptions}
       />
     );
-  } else if (segment.type === 'tool' && segment.toolCall && showToolCalls) {
+  } else if (segment.type === 'tool' && segment.toolCall && showToolCalls && !isHiddenToolCall(segment.toolCall)) {
     return (
       <div className="chat-tool-calls">
         <ToolCallDisplay
@@ -5651,7 +6136,12 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
     // The final saved message will be properly rendered with markdown
     return (
       <div className="chat-message-text markdown-content">
-        <MemoizedMarkdown content={segment.content} />
+        <MemoizedMarkdown
+          content={segment.content}
+          conversationId={conversationId}
+          workspaceId={workspaceId}
+          enableTableExports
+        />
       </div>
     );
   }
@@ -5661,6 +6151,86 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
 // Default context limit fallback when model not found in API response
 const DEFAULT_CONTEXT_LIMIT = 8192;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isAttachmentContentPart(value: unknown): value is ContentPart {
+  if (!isRecord(value)) return false;
+  return value.type === 'image_url' || value.type === 'file';
+}
+
+function isMultimodalContentPartArray(value: unknown[]): value is ContentPart[] {
+  return value.every((item) => isRecord(item) && (item.type === 'text' || item.type === 'image_url' || item.type === 'file'));
+}
+
+function isReasoningContentBlock(value: Record<string, unknown>): boolean {
+  const blockType = typeof value.type === 'string' ? value.type.toLowerCase() : '';
+  if (
+    blockType === 'thinking'
+    || blockType === 'reasoning'
+    || blockType === 'reasoning.text'
+    || blockType === 'reasoning_content'
+    || blockType === 'reasoning_summary'
+    || blockType === 'reasoning_text'
+    || blockType === 'reasoning.summary'
+    || blockType === 'reasoning_summary_text'
+    || blockType === 'redacted_thinking'
+    || blockType.endsWith('reasoning.delta')
+    || blockType.endsWith('thinking.delta')
+    || blockType.endsWith('reasoning_text.delta')
+    || blockType.endsWith('reasoning_summary_text.delta')
+  ) {
+    return true;
+  }
+
+  if (value.thought === true) return true;
+
+  return [
+    'thinking',
+    'reasoning',
+    'reasoning_text',
+    'reasoning_content',
+    'reasoning_summary',
+    'reasoning_summary_text',
+    'cot_summary',
+  ].some((key) => key in value);
+}
+
+function extractVisibleTextFromProviderContent(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractVisibleTextFromProviderContent).join('');
+  if (!isRecord(value)) return '';
+
+  const channel = getChatEventChannel({
+    type: typeof value.type === 'string' ? value.type : undefined,
+    channel: value.channel,
+  });
+  if (channel === 'analysis') return '';
+  if (isReasoningContentBlock(value)) return '';
+
+  const blockType = typeof value.type === 'string' ? value.type.toLowerCase() : '';
+  if (blockType === 'message') {
+    return extractVisibleTextFromProviderContent(value.content);
+  }
+  if (blockType === 'output_text' || blockType === 'text') {
+    return typeof value.text === 'string' ? value.text : '';
+  }
+  if (blockType === 'output_refusal' || blockType === 'refusal') {
+    return extractVisibleTextFromProviderContent(value.refusal ?? value.text);
+  }
+
+  if (channel === 'final' || channel === 'commentary') {
+    const nested = value.text ?? value.content ?? value.refusal;
+    const nestedText = extractVisibleTextFromProviderContent(nested);
+    if (nestedText) return nestedText;
+  }
+
+  if (typeof value.text === 'string') return value.text;
+  if ('content' in value) return extractVisibleTextFromProviderContent(value.content);
+  return '';
+}
+
 // Helper to extract text and attachments from message content
 export function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
   if (typeof content === 'string') {
@@ -5668,12 +6238,21 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
     try {
       const parsed = JSON.parse(content);
       if (Array.isArray(parsed)) {
+        if (!isMultimodalContentPartArray(parsed)) {
+          return {
+            text: extractVisibleTextFromProviderContent(parsed),
+            attachments: parsed.filter(isAttachmentContentPart),
+          };
+        }
         const text = parsed
           .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
           .map(p => p.text)
           .join('\n');
         const attachments = parsed.filter((p): p is ContentPart => p.type !== 'text');
         return { text, attachments };
+      }
+      if (isRecord(parsed)) {
+        return { text: extractVisibleTextFromProviderContent(parsed), attachments: [] };
       }
     } catch {
       // Not JSON, treat as plain text
@@ -5688,6 +6267,37 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
     .join('\n');
   const attachments = content.filter((p): p is ContentPart => p.type !== 'text');
   return { text, attachments };
+}
+
+function extractCompactionSummary(content: ChatMessage['content']): string {
+  const parsed = parseMessageContent(content);
+  let summary = parsed.text.trim();
+  let textContent = '';
+
+  try {
+    const parsedJson = JSON.parse(summary);
+    if (Array.isArray(parsedJson)) {
+      for (const item of parsedJson) {
+        if (!item || typeof item !== 'object') continue;
+        if (item.type === 'text' && item.text) {
+          textContent += item.text;
+        } else if (item.type === 'content' && item.content) {
+          textContent += item.content;
+        }
+      }
+    }
+  } catch {
+    const textMatch = summary.match(/['"]text['"]: ['"](.+?)['"]/s);
+    if (textMatch) {
+      textContent = textMatch[1];
+    }
+  }
+
+  if (textContent) {
+    summary = textContent.trim();
+  }
+
+  return summary.replace(/\\n/g, '\n');
 }
 
 // Component to display message attachments
@@ -6027,6 +6637,8 @@ interface ChatPanelProps {
   currentUser: User;
   debugMode?: boolean;
   initialConversationId?: string | null;
+  chatCompactionThresholdPercent?: number;
+  chatAutoCompactionThresholdPercent?: number;
   workspaceId?: string;
   workspaceChatState?: WorkspaceChatStateResponse | null;
   workspaceAvailableTools?: UserSpaceAvailableTool[];
@@ -6072,6 +6684,8 @@ export function ChatPanel({
   currentUser,
   debugMode = false,
   initialConversationId,
+  chatCompactionThresholdPercent = 80,
+  chatAutoCompactionThresholdPercent = 99,
   workspaceId,
   workspaceChatState,
   workspaceAvailableTools,
@@ -6103,6 +6717,8 @@ export function ChatPanel({
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
   const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id);
+  const compactThresholdPercent = clampNumber(chatCompactionThresholdPercent, 1, 100);
+  const autoCompactThresholdPercent = clampNumber(chatAutoCompactionThresholdPercent, 1, 100);
 
   const [toasts, toastActions] = useToast();
 
@@ -6113,6 +6729,21 @@ export function ChatPanel({
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
+  const [compactingConversationId, setCompactingConversationId] = useState<string | null>(null);
+  const [queuedCompactionMessage, setQueuedCompactionMessage] = useState<QueuedCompactionMessage | null>(null);
+  const [compactionReviewMarker, setCompactionReviewMarker] = useState<CompactionReviewMarker | null>(null);
+  const [retryingCompactionMarker, setRetryingCompactionMarker] = useState<{
+    conversationId: string;
+    messageId?: string;
+    messageIndex: number;
+  } | null>(null);
+  const [isEditingCompactionReview, setIsEditingCompactionReview] = useState(false);
+  const [compactionReviewDraft, setCompactionReviewDraft] = useState('');
+  const [compactionReviewError, setCompactionReviewError] = useState<string | null>(null);
+  const [isSavingCompactionReview, setIsSavingCompactionReview] = useState(false);
+  const [compactionReviewOriginalSummary, setCompactionReviewOriginalSummary] = useState<string>('');
+
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -6132,6 +6763,7 @@ export function ChatPanel({
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
   const [editMessageAttachments, setEditMessageAttachments] = useState<AttachmentFile[]>([]);
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
 
   // Chat branching state
@@ -6165,6 +6797,7 @@ export function ChatPanel({
   const branchSearchPreviewRestoreRef = useRef<BranchSearchPreviewRestore | null>(null);
   const [copiedMessageIdx, setCopiedMessageIdx] = useState<number | null>(null);
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
+  const autoCompactionTriggerKeyRef = useRef<string | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
   const branchGroupsByIndex = useMemo(() => {
     const messageCount = activeConversation?.messages.length ?? 0;
@@ -6218,6 +6851,45 @@ export function ChatPanel({
     () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
     [branchPoints],
   );
+
+  useEffect(() => {
+    if (!activeConversation || !compactionReviewMarker || isEditingCompactionReview || isSavingCompactionReview) return;
+
+    let nextIndex: number | null = null;
+    if (compactionReviewMarker.messageId) {
+      const foundIndex = activeConversation.messages.findIndex(
+        (message) => message.message_id === compactionReviewMarker.messageId,
+      );
+      nextIndex = foundIndex >= 0 ? foundIndex : null;
+    }
+    if (nextIndex === null && compactionReviewMarker.messageIndex >= 0 && compactionReviewMarker.messageIndex < activeConversation.messages.length) {
+      nextIndex = compactionReviewMarker.messageIndex;
+    }
+    if (nextIndex === null) return;
+
+    const message = activeConversation.messages[nextIndex];
+    if (message.role !== 'compaction') return;
+
+    const nextSummary = extractCompactionSummary(message.content);
+    if (
+      nextSummary === compactionReviewMarker.summary
+      && nextIndex === compactionReviewMarker.messageIndex
+      && message.message_id === compactionReviewMarker.messageId
+      && message.timestamp === compactionReviewMarker.timestamp
+    ) {
+      return;
+    }
+
+    setCompactionReviewMarker({
+      messageIndex: nextIndex,
+      messageId: message.message_id,
+      summary: nextSummary,
+      timestamp: message.timestamp,
+    });
+    setCompactionReviewDraft(nextSummary);
+    setCompactionReviewOriginalSummary(nextSummary);
+    setCompactionReviewError(null);
+  }, [activeConversation, compactionReviewMarker, isEditingCompactionReview, isSavingCompactionReview]);
 
   useEffect(() => {
     if (!branchSearchAnchorHint || activeConversationId !== branchSearchAnchorHint.conversationId) return;
@@ -6682,6 +7354,15 @@ export function ChatPanel({
   const isAdmin = currentUser.role === 'admin';
   const isReadOnly = readOnly && !(allowAdminReadOnlyBypass && isAdmin);
   const effectiveReadOnlyMessage = readOnlyMessage || 'Workspace is read-only. Viewers can review messages but cannot send prompts.';
+  const isActiveConversationCompacting = Boolean(
+    isCompacting
+    && activeConversation
+    && compactingConversationId === activeConversation.id,
+  );
+  const hasQueuedCompactionMessageForActiveConversation = Boolean(
+    activeConversation
+    && queuedCompactionMessage?.conversationId === activeConversation.id,
+  );
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -7026,6 +7707,37 @@ export function ChatPanel({
     return [...promptDebugRecords].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   }, [promptDebugRecords]);
 
+  const promptDebugCompactionMarker = useMemo(() => {
+    if (!activeConversation) return null;
+    for (let idx = activeConversation.messages.length - 1; idx >= 0; idx--) {
+      const message = activeConversation.messages[idx];
+      if (message.role !== 'compaction') continue;
+
+      return {
+        messageIndex: idx,
+        messageId: message.message_id,
+        summary: extractCompactionSummary(message.content),
+        timestamp: message.timestamp,
+      };
+    }
+    return null;
+  }, [activeConversation]);
+
+  const latestCompactionReviewMarker = useMemo<CompactionReviewMarker | null>(() => {
+    if (!activeConversation) return null;
+    for (let idx = activeConversation.messages.length - 1; idx >= 0; idx--) {
+      const message = activeConversation.messages[idx];
+      if (message.role !== 'compaction') continue;
+      return {
+        messageIndex: idx,
+        messageId: message.message_id,
+        summary: extractCompactionSummary(message.content),
+        timestamp: message.timestamp,
+      };
+    }
+    return null;
+  }, [activeConversation]);
+
   useEffect(() => {
     if (!showPromptDebugModal || promptDebugMessageIndex === null) return;
     void loadPromptDebugRecords(promptDebugMessageIndex);
@@ -7036,6 +7748,11 @@ export function ChatPanel({
 
   // Keep latest conversation available to long-lived async callbacks.
   const activeConversationRef = useRef<Conversation | null>(null);
+  const compactingConversationIdRef = useRef<string | null>(null);
+  const queuedCompactionMessageRef = useRef<QueuedCompactionMessage | null>(null);
+  const sendQueuedAfterCompactionRef = useRef<((conversation: Conversation) => void) | null>(null);
+  const settledCompactionTaskIdsRef = useRef<Set<string>>(new Set());
+  const notifiedCompactionTaskIdsRef = useRef<Set<string>>(new Set());
   const streamingEventsRef = useRef<StreamingRenderEvent[]>([]);
   const streamingContentRef = useRef('');
 
@@ -7048,6 +7765,14 @@ export function ChatPanel({
   useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
+
+  useEffect(() => {
+    queuedCompactionMessageRef.current = queuedCompactionMessage;
+  }, [queuedCompactionMessage]);
+
+  useEffect(() => {
+    compactingConversationIdRef.current = compactingConversationId;
+  }, [compactingConversationId]);
 
   useEffect(() => {
     onActiveConversationChange?.(activeConversation?.id ?? null);
@@ -7065,9 +7790,14 @@ export function ChatPanel({
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const userspaceConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
+  const autoScrollFrameRef = useRef<number | null>(null);
+  const programmaticScrollRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const compactionAbortControllerRef = useRef<AbortController | null>(null);
+  const compactionTaskRef = useRef<string | null>(null);
   const processingTaskRef = useRef<string | null>(null);
+  const taskStreamVersionRef = useRef<Map<string, number>>(new Map());
   // Tracks which streaming `create_userspace_snapshot` tool_end events have
   // already triggered an `onSnapshotsMaybeChanged` notification, keyed by
   // a stable string per (taskId, eventIndex). Cleared when the task ends.
@@ -7078,6 +7808,7 @@ export function ChatPanel({
   // as soon as a task_started event arrives, without waiting for the
   // periodic task-state poll.
   const connectTaskStreamRef = useRef<((taskId: string) => void) | null>(null);
+  const watchCompactionTaskRef = useRef<((taskId: string, conversationId: string) => void) | null>(null);
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
   const selectConversationRequestIdRef = useRef(0);
@@ -7545,13 +8276,18 @@ export function ChatPanel({
   // Memoized consolidated segments for streaming. Ordinary tool calls can stay
   // inline inside active reasoning; visualization artifacts render standalone.
   const consolidatedSegments = useMemo((): StreamingSegment[] => {
-    if (!streamingEvents.length) return [];
+    if (!streamingEvents.length) {
+      return streamingContent.trim()
+        ? [{ type: 'content', content: streamingContent }]
+        : [];
+    }
 
     const segments: StreamingSegment[] = [];
     let currentContent = '';
     let currentReasoning = '';
     let currentReasoningParts: ReasoningPart[] = [];
     let currentReasoningDurationSeconds: number | undefined;
+    let hasFinalContentEvent = false;
 
     // Flush accumulated reasoning into a NEW reasoning segment (adjacent reasoning merges, non-adjacent stays separate)
     const flushReasoning = (isComplete: boolean) => {
@@ -7594,6 +8330,7 @@ export function ChatPanel({
           currentReasoningDurationSeconds = durationSeconds;
         }
       } else if (channel === 'final' && ev.type === 'content') {
+        hasFinalContentEvent = true;
         // Flush any pending reasoning — it's now complete since content follows
         flushReasoning(true);
         // Accumulate content
@@ -7611,11 +8348,14 @@ export function ChatPanel({
 
     // Flush remaining reasoning (still streaming, not yet complete)
     flushReasoning(false);
+    if (!hasFinalContentEvent && streamingContent.trim()) {
+      currentContent += streamingContent;
+    }
     // Flush remaining content
     flushContent();
 
     return segments;
-  }, [streamingEvents]);
+  }, [streamingContent, streamingEvents]);
 
   // Save showToolCalls preference to localStorage
   useEffect(() => {
@@ -7658,18 +8398,54 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
-  // Auto-scroll to bottom when messages change
+  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
+    if (autoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollFrameRef.current);
+    }
+
+    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
+      autoScrollFrameRef.current = null;
+      const messagesRoot = chatMessagesRef.current;
+      if (!messagesRoot || !shouldAutoScrollRef.current) return;
+
+      programmaticScrollRef.current = true;
+      if (behavior === 'auto') {
+        messagesRoot.scrollTop = messagesRoot.scrollHeight;
+      } else {
+        messagesRoot.scrollTo({
+          top: messagesRoot.scrollHeight,
+          behavior,
+        });
+      }
+
+      window.requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollFrameRef.current);
+        autoScrollFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  // Auto-scroll to bottom when messages change. Streaming uses an immediate
+  // scroll so rapid token updates cannot queue competing smooth animations.
   useEffect(() => {
     if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
-
-    chatMessagesRef.current.scrollTo({
-      top: chatMessagesRef.current.scrollHeight,
-      behavior: 'smooth',
-    });
-  }, [activeConversation?.messages, streamingContent, consolidatedSegments]);
+    scheduleScrollToBottom(isStreaming ? 'auto' : 'smooth');
+  }, [activeConversation?.messages, consolidatedSegments, isStreaming, scheduleScrollToBottom, streamingContent]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
+    if (programmaticScrollRef.current) {
+      shouldAutoScrollRef.current = true;
+      return;
+    }
     const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
     // Use a small threshold to account for fractional pixels
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
@@ -7767,14 +8543,22 @@ export function ChatPanel({
     if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
       setActiveTask(activeT);
       setInterruptedTask(null);
+      if (isCompactionTask(activeT)) {
+        setIsCompacting(true);
+        setCompactingConversationId(selectedConversationId);
+      }
       syncConversationActiveTaskId(selectedConversationId, activeT.id);
       return;
     }
 
     setActiveTask(null);
+    if (compactingConversationId === selectedConversationId) {
+      setIsCompacting(false);
+      setCompactingConversationId(null);
+    }
     setInterruptedTask(interruptedT ?? null);
     syncConversationActiveTaskId(selectedConversationId, null);
-  }, [archiveAgeDays, syncConversationActiveTaskId]);
+  }, [archiveAgeDays, compactingConversationId, syncConversationActiveTaskId]);
 
   const loadConversations = async () => {
     setIsConversationListLoading(true);
@@ -8438,6 +9222,12 @@ export function ChatPanel({
           // newly-running task immediately instead of waiting for the
           // periodic /task-state poll, which makes streaming feel instant.
           if (data.event === 'task_started' && data.task_id) {
+            if (data.task_kind === 'compaction') {
+              setIsCompacting(true);
+              setCompactingConversationId(conversationId);
+              syncConversationActiveTaskId(conversationId, data.task_id);
+              return;
+            }
             connectTaskStreamRef.current?.(data.task_id);
             return;
           }
@@ -8473,7 +9263,7 @@ export function ChatPanel({
     } catch (e) {
       console.error("Failed to start conversation event stream", e);
     }
-  }, [workspaceId]);
+  }, [syncConversationActiveTaskId, workspaceId]);
 
   // Only subscribe to title events for the ACTIVE conversation to avoid
   // saturating the browser's 6-connection-per-origin limit with idle SSE streams.
@@ -8524,7 +9314,8 @@ export function ChatPanel({
     setIsStreaming(false);
     setStreamingContent('');
     setStreamingEvents([]);
-  }, [stopTaskStreaming]);
+    syncConversationActiveTaskId(activeConversationRef.current?.id ?? '', null);
+  }, [stopTaskStreaming, syncConversationActiveTaskId]);
 
   const connectTaskStream = useCallback(async (taskId: string) => {
     // Prevent duplicate connection for same task
@@ -8541,10 +9332,11 @@ export function ChatPanel({
     // Create new abort controller for this stream
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
-    lastSeenVersionRef.current = 0;
+    const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
+    lastSeenVersionRef.current = sinceVersion;
 
     try {
-      const stream = api.streamChatTask(taskId, 0, abortController.signal, workspaceId);
+      const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
 
       for await (const data of stream) {
         // Handle explicit completion event
@@ -8564,7 +9356,10 @@ export function ChatPanel({
         if (state && typeof state === 'object') {
            const { content, events, version, hit_max_iterations } = state;
 
-           if (version !== undefined) lastSeenVersionRef.current = version;
+           if (version !== undefined) {
+             lastSeenVersionRef.current = version;
+             taskStreamVersionRef.current.set(taskId, version);
+           }
 
            if (content !== undefined) {
              setStreamingContent(prev => prev === content ? prev : content);
@@ -8573,7 +9368,8 @@ export function ChatPanel({
            if (events && Array.isArray(events)) {
              setStreamingEvents(prev => {
                 // Skip update if events haven't changed (simple length + last event check)
-                if (prev.length === events.length && prev.length > 0) {
+                if (prev.length === events.length) {
+                    if (events.length === 0) return prev;
                     const lastP = prev[prev.length - 1];
                     const lastN = events[events.length - 1];
                     // Simple check on last item to avoid unnecessary re-renders
@@ -8630,6 +9426,7 @@ export function ChatPanel({
             setIsStreaming(false);
             setStreamingContent('');
             setStreamingEvents([]);
+            taskStreamVersionRef.current.delete(taskId);
 
             // Notify parent that the task finished (e.g. refresh workspace preview)
             if (onTaskComplete) {
@@ -8639,9 +9436,120 @@ export function ChatPanel({
     }
   }, [applyFallbackAssistantIfNeeded, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
 
-  const startTaskAndStream = useCallback(async (conversationId: string, message: string) => {
-    const previousConversation = activeConversation?.id === conversationId
-      ? activeConversation
+  const watchCompactionTask = useCallback(async (taskId: string, conversationId: string) => {
+    if (settledCompactionTaskIdsRef.current.has(taskId)) return;
+    if (compactionTaskRef.current === taskId) return;
+
+    if (compactionAbortControllerRef.current) {
+      compactionAbortControllerRef.current.abort();
+    }
+
+    compactionTaskRef.current = taskId;
+    setIsCompacting(true);
+    setCompactingConversationId(conversationId);
+
+    const abortController = new AbortController();
+    compactionAbortControllerRef.current = abortController;
+    const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
+
+    let terminalStatus: string | null = null;
+    let terminalError: string | null = null;
+    let streamError: string | null = null;
+
+    try {
+      const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
+      for await (const data of stream) {
+        if (data.type === 'completion' || data.completed) {
+          terminalStatus = data.status || (data.completed ? 'completed' : 'unknown');
+          terminalError = data.error || null;
+          break;
+        }
+        const state = data.type === 'state' ? data.state : data;
+        const version = state && typeof state === 'object' ? state.version : undefined;
+        if (version !== undefined) {
+          taskStreamVersionRef.current.set(taskId, version);
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        console.error('Compaction task stream error:', err);
+        streamError = err instanceof Error ? err.message : 'Lost connection to compaction updates';
+      }
+    } finally {
+      if (compactionTaskRef.current !== taskId) return;
+
+      compactionTaskRef.current = null;
+      compactionAbortControllerRef.current = null;
+      taskStreamVersionRef.current.delete(taskId);
+      setIsCompacting(false);
+      setCompactingConversationId(null);
+      setRetryingCompactionMarker((current) => (
+        current?.conversationId === conversationId ? null : current
+      ));
+      setActiveTask(current => current?.id === taskId ? null : current);
+      syncConversationActiveTaskId(conversationId, null);
+
+      let refreshedConversation: Conversation | null = null;
+      try {
+        const updated = await api.getConversation(conversationId, workspaceId);
+        refreshedConversation = updated;
+        setActiveConversation(prev => prev && prev.id === conversationId ? updated : prev);
+        setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, ...updated } : c));
+        void refreshBranchPoints(conversationId);
+      } catch (e) {
+        console.error(e);
+      }
+
+      if (!terminalStatus && streamError) {
+        terminalStatus = 'failed';
+        terminalError = streamError;
+      }
+
+      if (terminalStatus && terminalStatus !== 'completed') {
+        const queued = queuedCompactionMessageRef.current;
+        if (queued?.conversationId === conversationId) {
+          setQueuedCompactionMessage(null);
+          if (activeConversationRef.current?.id === conversationId) {
+            setInputValue(queued.inputText);
+            setAttachments(queued.attachments);
+          }
+        }
+      }
+
+      if (terminalStatus && terminalStatus !== 'completed' && terminalStatus !== 'cancelled') {
+        const message = terminalError || 'Failed to compact conversation';
+        setError(message);
+        toastActions.error(message);
+      } else if (terminalStatus === 'completed') {
+        settledCompactionTaskIdsRef.current.add(taskId);
+        if (!notifiedCompactionTaskIdsRef.current.has(taskId)) {
+          notifiedCompactionTaskIdsRef.current.add(taskId);
+          toastActions.success('Conversation context compacted');
+        }
+        if (queuedCompactionMessageRef.current?.conversationId === conversationId) {
+          setQueuedCompactionMessage((current) => (
+            current?.conversationId === conversationId
+              ? { ...current, compactionStatus: 'compacted' }
+              : current
+          ));
+        }
+        if (refreshedConversation) {
+          window.setTimeout(() => {
+            sendQueuedAfterCompactionRef.current?.(refreshedConversation);
+          }, queuedCompactionMessageRef.current?.conversationId === conversationId ? 250 : 0);
+        }
+      }
+
+      if (onTaskComplete) {
+        try { onTaskComplete(); } catch (e) { console.error(e); }
+      }
+    }
+  }, [onTaskComplete, refreshBranchPoints, syncConversationActiveTaskId, toastActions, workspaceId]);
+
+  const startTaskAndStream = useCallback(async (conversationId: string, message: string, conversationOverride?: Conversation | null) => {
+    const baseConversation = conversationOverride ?? (activeConversation?.id === conversationId ? activeConversation : null);
+    const previousConversation = baseConversation?.id === conversationId
+      ? baseConversation
       : null;
 
     // 1. Optimistic update (User message)
@@ -8661,12 +9569,12 @@ export function ChatPanel({
       timestamp: new Date().toISOString()
     };
 
-    if (activeConversation) {
+    if (baseConversation) {
       const updatedWithUser = {
-        ...activeConversation,
-        messages: [...activeConversation.messages, optimisticMsg]
+        ...baseConversation,
+        messages: [...baseConversation.messages, optimisticMsg]
       };
-      setActiveConversation(updatedWithUser);
+      setActiveConversation(prev => prev?.id === conversationId ? updatedWithUser : prev);
       setConversations(prev => prev.map(c => c.id === conversationId ? updatedWithUser : c));
     }
 
@@ -8713,8 +9621,12 @@ export function ChatPanel({
   useEffect(() => {
     if (!activeTask) return;
     if (activeTask.status !== 'pending' && activeTask.status !== 'running') return;
+    if (isCompactionTask(activeTask)) {
+      void watchCompactionTask(activeTask.id, activeTask.conversation_id);
+      return;
+    }
     void connectTaskStream(activeTask.id);
-  }, [activeTask?.id, activeTask?.status, connectTaskStream]);
+  }, [activeTask?.id, activeTask?.status, activeTask?.conversation_id, activeTask?.user_message, connectTaskStream, watchCompactionTask]);
 
   // Expose connectTaskStream via ref so the conversation event SSE handler
   // (declared earlier in the component) can trigger task streaming the moment
@@ -8723,6 +9635,13 @@ export function ChatPanel({
     connectTaskStreamRef.current = (taskId: string) => { void connectTaskStream(taskId); };
     return () => { connectTaskStreamRef.current = null; };
   }, [connectTaskStream]);
+
+  useEffect(() => {
+    watchCompactionTaskRef.current = (taskId: string, conversationId: string) => {
+      void watchCompactionTask(taskId, conversationId);
+    };
+    return () => { watchCompactionTaskRef.current = null; };
+  }, [watchCompactionTask]);
 
   // Check for active/interrupted background task when conversation changes
   useEffect(() => {
@@ -8759,8 +9678,15 @@ export function ChatPanel({
             setInterruptedTask(null);
             syncConversationActiveTaskId(activeConversation.id, activeT.id);
 
+            if (isCompactionTask(activeT)) {
+              setIsCompacting(true);
+              setCompactingConversationId(activeConversation.id);
+              watchCompactionTaskRef.current?.(activeT.id, activeConversation.id);
+              return;
+            }
+
             // Connect to stream if not already processing this task
-            connectTaskStream(activeT.id);
+            connectTaskStreamRef.current?.(activeT.id);
         } else {
             // No active task for this conversation.
             // If we are streaming something that is NOT this task, we should stop?
@@ -8770,6 +9696,10 @@ export function ChatPanel({
             // If we were processing a task that just finished, connectTaskStream finally block clears it.
             if (!activeT) {
                  setActiveTask(null);
+                if (compactingConversationIdRef.current === activeConversation.id) {
+                  setIsCompacting(false);
+                  setCompactingConversationId(null);
+                }
                 setInterruptedTask(interruptedT ?? null);
                 syncConversationActiveTaskId(activeConversation.id, null);
             }
@@ -8794,12 +9724,13 @@ export function ChatPanel({
         // Stop streaming when conversation ID changes (unmounting this effect instance)
         stopTaskStreaming();
     };
-  }, [activeConversation?.id, connectTaskStream, stopTaskStreaming, syncConversationActiveTaskId, workspaceChatState, workspaceId]);
+  }, [activeConversation?.id, stopTaskStreaming, syncConversationActiveTaskId, workspaceChatState, workspaceId]);
 
   // Cleanup on component unmount
   useEffect(() => {
     return () => {
       stopTaskStreaming();
+      compactionAbortControllerRef.current?.abort();
     };
   }, [stopTaskStreaming]);
 
@@ -9051,8 +9982,12 @@ export function ChatPanel({
   }, [availableModels, awaitModelsReady, isModelsLoading, modelsMeta]);
 
   // Direct message send - bypasses inputValue state for programmatic sending
-  const sendMessageDirect = async (message: string) => {
-    if (!message.trim() || !activeConversation || isStreaming || isReadOnly) return;
+  const sendMessageDirect = async (
+    message: string,
+    options?: { allowDuringCompaction?: boolean; conversationOverride?: Conversation | null },
+  ) => {
+    const conversation = options?.conversationOverride ?? activeConversation;
+    if (!message.trim() || !conversation || isStreaming || (!options?.allowDuringCompaction && isActiveConversationCompacting) || isReadOnly) return;
     shouldAutoScrollRef.current = true;
 
     const userMessage = message.trim();
@@ -9061,10 +9996,10 @@ export function ChatPanel({
     setIsConnectionError(false);
     setLastSentMessage(userMessage);
 
-    const contextLimit = getContextLimit(activeConversation.model);
+    const contextLimit = getContextLimit(conversation.model);
     const contextUsage = calculateConversationContextUsage({
-      messages: activeConversation.messages,
-      persistedConversationTokens: activeConversation.total_tokens,
+      messages: conversation.messages,
+      persistedConversationTokens: conversation.total_tokens,
       contextLimit,
       inputText: userMessage,
     });
@@ -9089,7 +10024,7 @@ export function ChatPanel({
 
     try {
       // Use background task streaming
-      await startTaskAndStream(activeConversation.id, userMessage);
+      await startTaskAndStream(conversation.id, userMessage, conversation);
       return true;
 
     } catch (err) {
@@ -9118,11 +10053,58 @@ export function ChatPanel({
     }
   };
 
+  useEffect(() => {
+    sendQueuedAfterCompactionRef.current = (conversation: Conversation) => {
+      const queued = queuedCompactionMessageRef.current;
+      if (!queued || queued.conversationId !== conversation.id) return;
+
+      setQueuedCompactionMessage(null);
+      void sendMessageDirect(queued.serializedMessage, {
+        allowDuringCompaction: true,
+        conversationOverride: conversation,
+      }).then((sent) => {
+        if (!sent) {
+          setInputValue(queued.inputText);
+          setAttachments(queued.attachments);
+        }
+      });
+    };
+    return () => {
+      sendQueuedAfterCompactionRef.current = null;
+    };
+  });
+
   const sendMessage = async () => {
     if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
+    if (hasQueuedCompactionMessageForActiveConversation) return;
 
     const userMessage = inputValue.trim();
     const messageAttachments = [...attachments];
+
+    if (isActiveConversationCompacting) {
+      const serializedMessage = messageAttachments.length > 0
+        ? JSON.stringify(attachmentsToContentParts(userMessage, messageAttachments))
+        : userMessage;
+      const displayContent = messageAttachments.length > 0
+        ? attachmentsToContentParts(userMessage, messageAttachments)
+        : userMessage;
+
+      setInputValue('');
+      setAttachments([]);
+      setShowSidebar(false);
+      setQueuedCompactionMessage({
+        id: `${Date.now()}-${Math.random()}`,
+        conversationId: activeConversation.id,
+        compactionStatus: 'compacting',
+        serializedMessage,
+        displayContent,
+        inputText: userMessage,
+        attachments: messageAttachments,
+        timestamp: new Date().toISOString(),
+      });
+      shouldAutoScrollRef.current = true;
+      return;
+    }
 
     setInputValue('');
     setAttachments([]);
@@ -9149,7 +10131,7 @@ export function ChatPanel({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (isReadOnly) return;
     if (e.key === 'Enter' && !e.shiftKey) {
-      if (isStreaming) return; // Allow typing while a response streams
+      if (isStreaming) return;
 
       e.preventDefault();
       sendMessage();
@@ -9405,6 +10387,199 @@ export function ChatPanel({
       setBranchSwitching(false);
     }
   }, [activeConversation, branchSwitching, workspaceId, branchesById, refreshBranchPoints, onBranchSwitch]);
+
+  const renderBranchNavStack = useCallback((groups: BranchRenderGroup[], conversation: Conversation) => {
+    if (groups.length === 0) return null;
+    const activeBranchId = conversation.active_branch_id;
+
+    return (
+      <span className="chat-branch-nav-stack">
+        {groups.map((group) => {
+          const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
+          const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
+          const hasLivePathOption = !storedLivePathBranch;
+          const allOptions = [
+            ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
+            ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+          ];
+          const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
+          const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
+          const branchIdsInGroup = new Set(group.branches.map(b => b.id));
+          let lineageBranchId: string | null = null;
+          if (activeBranchId) {
+            const visited = new Set<string>();
+            let curr: string | null = activeBranchId;
+            while (curr && !visited.has(curr)) {
+              visited.add(curr);
+              if (branchIdsInGroup.has(curr)) {
+                lineageBranchId = curr;
+                break;
+              }
+              const parent = branchesById.get(curr);
+              curr = parent?.parent_branch_id ?? null;
+            }
+          }
+
+          let matchIdx = lineageBranchId
+            ? allOptions.findIndex(o => o.id === lineageBranchId)
+            : -1;
+          if (matchIdx < 0 && !activeBranchId) {
+            if (hasLivePathOption) {
+              matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+            } else if (storedLivePathBranch) {
+              matchIdx = allOptions.length - 1;
+            }
+          }
+          if (matchIdx < 0 && branchSelections[group.selectionKey]) {
+            matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
+          }
+          if (matchIdx < 0 && inferredCurrentBranchId) {
+            matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
+          }
+          const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+          const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === conversation.id
+            && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
+
+          return (
+            <span
+              key={group.selectionKey}
+              className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
+              title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
+            >
+              <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id, conversation); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
+                <ChevronLeft size={12} />
+              </button>
+              <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
+              <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id, conversation); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
+                <ChevronRight size={12} />
+              </button>
+            </span>
+          );
+        })}
+      </span>
+    );
+  }, [branchSearchAnchorHint, branchSelections, branchSwitching, branchesById, switchBranch]);
+
+  const compactActiveConversation = useCallback(async (replaceMarker?: CompactionReviewMarker | null) => {
+    if (!activeConversation || isActiveConversationCompacting || isStreaming || isReadOnly) return;
+    setIsCompacting(true);
+    setCompactingConversationId(activeConversation.id);
+    setError(null);
+    toastActions.info(replaceMarker ? 'Retrying conversation compaction...' : 'Compacting conversation context...');
+    try {
+      const task = await api.compactConversation(
+        activeConversation.id,
+        workspaceId,
+        4,
+        replaceMarker
+          ? {
+              replaceMessageId: replaceMarker.messageId,
+              replaceMessageIndex: replaceMarker.messageIndex,
+              createRevisionBranch: true,
+            }
+          : undefined,
+      );
+      if (replaceMarker) {
+        void refreshBranchPoints(activeConversation.id);
+      }
+      setActiveTask(task);
+      syncConversationActiveTaskId(activeConversation.id, task.id);
+      void watchCompactionTask(task.id, activeConversation.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to compact conversation';
+      setError(message);
+      toastActions.error(message);
+      setIsCompacting(false);
+      setCompactingConversationId(null);
+      if (replaceMarker) {
+        setRetryingCompactionMarker((current) => (
+          current?.conversationId === activeConversation.id
+          && current.messageIndex === replaceMarker.messageIndex
+          && (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
+            ? null
+            : current
+        ));
+      }
+    }
+  }, [activeConversation, isActiveConversationCompacting, isReadOnly, isStreaming, refreshBranchPoints, syncConversationActiveTaskId, toastActions, watchCompactionTask, workspaceId]);
+
+  const openCompactionReview = useCallback((marker: CompactionReviewMarker | null) => {
+    if (!marker) return;
+    setCompactionReviewMarker(marker);
+    setCompactionReviewDraft(marker.summary);
+    setCompactionReviewOriginalSummary(marker.summary);
+    setCompactionReviewError(null);
+    setIsEditingCompactionReview(false);
+  }, []);
+
+  const closeCompactionReview = useCallback(() => {
+    if (isSavingCompactionReview) return;
+    setCompactionReviewMarker(null);
+    setCompactionReviewDraft('');
+    setCompactionReviewOriginalSummary('');
+    setCompactionReviewError(null);
+    setIsEditingCompactionReview(false);
+  }, [isSavingCompactionReview]);
+
+  const retryCompactionReview = useCallback(() => {
+    if (!compactionReviewMarker || !activeConversation) return;
+    const marker = compactionReviewMarker;
+    closeCompactionReview();
+
+    setRetryingCompactionMarker({
+      conversationId: activeConversation.id,
+      messageId: marker.messageId,
+      messageIndex: marker.messageIndex,
+    });
+
+    void compactActiveConversation(marker);
+  }, [activeConversation, closeCompactionReview, compactActiveConversation, compactionReviewMarker]);
+
+  const saveCompactionReview = useCallback(async () => {
+    if (!activeConversation || !compactionReviewMarker || isSavingCompactionReview || isReadOnly) return;
+    const summary = compactionReviewDraft.trim();
+    if (!summary) {
+      setCompactionReviewError('Compaction summary cannot be empty.');
+      return;
+    }
+
+    // Only save if there are actual changes
+    if (summary === compactionReviewOriginalSummary) {
+      setIsEditingCompactionReview(false);
+      return;
+    }
+
+    setIsSavingCompactionReview(true);
+    setCompactionReviewError(null);
+    try {
+      const updated = await api.updateConversationCompactionMarker(
+        activeConversation.id,
+        {
+          message_id: compactionReviewMarker.messageId,
+          message_index: compactionReviewMarker.messageIndex,
+          summary,
+          create_revision_branch: true,
+        },
+        workspaceId,
+      );
+      setActiveConversation(updated);
+      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+      void refreshBranchPoints(updated.id);
+      setCompactionReviewMarker({
+        ...compactionReviewMarker,
+        summary,
+      });
+      setCompactionReviewOriginalSummary(summary);
+      setIsEditingCompactionReview(false);
+      toastActions.success('Compaction summary updated');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update compaction summary';
+      setCompactionReviewError(message);
+      toastActions.error(message);
+    } finally {
+      setIsSavingCompactionReview(false);
+    }
+  }, [activeConversation, compactionReviewDraft, compactionReviewMarker, compactionReviewOriginalSummary, isReadOnly, isSavingCompactionReview, refreshBranchPoints, toastActions, workspaceId]);
 
   const applyBranchSearchPreview = useCallback((
     conversation: Conversation,
@@ -9682,6 +10857,14 @@ export function ChatPanel({
       syncConversationActiveTaskId(conversationId, task.id);
       await connectTaskStream(task.id);
 
+      const replayResult = activeConversationRef.current;
+      if (replayBranch && replayResult?.id === conversationId && replayResult.messages.length <= truncateAt) {
+        const restored = await api.switchConversationBranch(conversationId, replayBranch.id, workspaceId);
+        setActiveConversation(restored);
+        setConversations(prev => prev.map(c => c.id === restored.id ? restored : c));
+        syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
+      }
+
       // Refresh branch points after the branch was created
       void refreshBranchPoints(conversationId);
     } catch (err) {
@@ -9780,7 +10963,8 @@ export function ChatPanel({
   }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, onSnapshotsMaybeChanged, refreshBranchPoints, workspaceId]);
 
   const submitEditMessage = async () => {
-    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0)) return;
+    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0) || isSubmittingEdit) return;
+    setIsSubmittingEdit(true);
     shouldAutoScrollRef.current = true;
     const conversationId = activeConversation.id;
 
@@ -9887,6 +11071,8 @@ export function ChatPanel({
           console.error('Failed to refresh conversation after edit error:', refreshErr);
         }
       }
+    } finally {
+      setIsSubmittingEdit(false);
     }
   };
 
@@ -9914,6 +11100,46 @@ export function ChatPanel({
       streamingContent,
     });
   }, [activeConversation, defaultContextLimit, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
+
+  useEffect(() => {
+    if (!activeConversation) {
+      autoCompactionTriggerKeyRef.current = null;
+      return;
+    }
+
+    if (
+      autoCompactThresholdPercent >= 100
+      || isReadOnly
+      || isStreaming
+      || isActiveConversationCompacting
+      || hasQueuedCompactionMessageForActiveConversation
+      || contextUsage.contextUsagePercent < autoCompactThresholdPercent
+    ) {
+      return;
+    }
+
+    const lastMessage = activeConversation.messages[activeConversation.messages.length - 1];
+    if (lastMessage?.role === 'compaction') {
+      return;
+    }
+
+    const triggerKey = `${activeConversation.id}:${lastMessage?.message_id ?? lastMessage?.timestamp ?? 'none'}:${activeConversation.messages.length}`;
+    if (autoCompactionTriggerKeyRef.current === triggerKey) {
+      return;
+    }
+
+    autoCompactionTriggerKeyRef.current = triggerKey;
+    void compactActiveConversation();
+  }, [
+    activeConversation,
+    autoCompactThresholdPercent,
+    compactActiveConversation,
+    contextUsage.contextUsagePercent,
+    hasQueuedCompactionMessageForActiveConversation,
+    isActiveConversationCompacting,
+    isReadOnly,
+    isStreaming,
+  ]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
   const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
@@ -10863,7 +12089,10 @@ export function ChatPanel({
                   currentTokens={contextUsage.currentTokens}
                   totalTokens={contextUsage.totalTokens}
                   contextLimit={contextUsage.contextLimit}
+                  compactThresholdPercent={compactThresholdPercent}
                   loading={isModelsLoading}
+                  onCompact={contextUsage.contextUsagePercent >= compactThresholdPercent && !isStreaming && !isReadOnly && !isActiveConversationCompacting ? compactActiveConversation : undefined}
+                  isCompacting={isActiveConversationCompacting}
                 />
                 <button
                   className={`btn btn-secondary btn-sm btn-icon chat-in-chat-search-trigger chat-in-chat-search-trigger-mobile${inChatSearchOpen ? ' active' : ''}`}
@@ -10975,6 +12204,38 @@ export function ChatPanel({
               ) : (
                 <>
                   {activeConversation.messages.map((msg, idx) => {
+                    if (msg.role === 'compaction') {
+                      const summary = extractCompactionSummary(msg.content);
+                      const marker: CompactionReviewMarker = {
+                        messageIndex: idx,
+                        messageId: msg.message_id,
+                        summary,
+                        timestamp: msg.timestamp,
+                      };
+                      const isRetryingThisCompaction = Boolean(
+                        retryingCompactionMarker
+                        && retryingCompactionMarker.conversationId === activeConversation.id
+                        && retryingCompactionMarker.messageIndex === idx
+                        && (!retryingCompactionMarker.messageId || retryingCompactionMarker.messageId === msg.message_id)
+                        && isActiveConversationCompacting,
+                      );
+                      return (
+                        <div key={`msg-${idx}`} className="chat-compaction-divider" title={summary || undefined}>
+                          {isRetryingThisCompaction ? (
+                            <span className="chat-compaction-divider-label">Chat compacting</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="chat-compaction-divider-label chat-compaction-divider-button"
+                              onClick={() => openCompactionReview(marker)}
+                              aria-label="Review chat compaction"
+                            >
+                              Chat compacted
+                            </button>
+                          )}
+                        </div>
+                      );
+                    }
                     const branchGroups = branchGroupsByIndex.get(idx) ?? [];
                     const hasBranches = branchGroups.length > 0;
                     const msgKey = `msg-${idx}`;
@@ -10998,7 +12259,9 @@ export function ChatPanel({
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' && !e.shiftKey) {
                                   e.preventDefault();
-                                  submitEditMessage();
+                                  if (!isSubmittingEdit) {
+                                    submitEditMessage();
+                                  }
                                 } else if (e.key === 'Escape') {
                                   cancelEditMessage();
                                 }
@@ -11126,7 +12389,12 @@ export function ChatPanel({
                                       } else if (channel === 'final' && ev.type === 'content') {
                                         result.push(
                                           <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
-                                            <MemoizedMarkdown content={ev.content} />
+                                            <MemoizedMarkdown
+                                              content={ev.content}
+                                              conversationId={activeConversation.id}
+                                              workspaceId={workspaceId}
+                                              enableTableExports
+                                            />
                                           </div>
                                         );
                                       } else if (ev.type === 'error') {
@@ -11165,7 +12433,12 @@ export function ChatPanel({
                                   </>
                                 ) : (
                                   <div className="chat-message-text markdown-content">
-                                    <MemoizedMarkdown content={parseMessageContent(msg.content).text} />
+                                    <MemoizedMarkdown
+                                      content={parseMessageContent(msg.content).text}
+                                      conversationId={activeConversation.id}
+                                      workspaceId={workspaceId}
+                                      enableTableExports
+                                    />
                                   </div>
                                 )}
                               </>
@@ -11290,7 +12563,7 @@ export function ChatPanel({
                             {isEditing ? (
                               <>
                                 <span className="chat-message-actions-spacer" />
-                                <button className="chat-action-text-btn primary" onClick={submitEditMessage}>Send</button>
+                                <button className="chat-action-text-btn primary" onClick={submitEditMessage} disabled={isSubmittingEdit}>Send</button>
                                 <button className="chat-action-text-btn" onClick={cancelEditMessage}>Cancel</button>
                                 <div className="chat-edit-attachments-wrapper">
                                   <FileAttachment
@@ -11418,6 +12691,52 @@ export function ChatPanel({
                   );
                   })}
 
+                  {queuedCompactionMessage?.conversationId === activeConversation.id && (
+                    <>
+                      <div className="chat-compaction-divider chat-compaction-divider-pending">
+                        {queuedCompactionMessage.compactionStatus === 'compacted' ? (
+                          <button
+                            type="button"
+                            className="chat-compaction-divider-label chat-compaction-divider-button"
+                            onClick={() => openCompactionReview(latestCompactionReviewMarker)}
+                            disabled={!latestCompactionReviewMarker}
+                            aria-label="Review chat compaction"
+                          >
+                            Chat compacted
+                          </button>
+                        ) : (
+                          <span className="chat-compaction-divider-label">Chat compacting</span>
+                        )}
+                      </div>
+                      {(queuedCompactionMessage.displayContent || queuedCompactionMessage.attachments.length > 0) && (
+                        <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
+                          <div className="chat-message chat-message-user chat-message-queued">
+                            <div className="chat-message-content">
+                              {(() => {
+                                const { text, attachments: queuedAttachments } = parseMessageContent(queuedCompactionMessage.displayContent);
+                                return (
+                                  <>
+                                    {queuedAttachments.length > 0 && <MessageAttachments attachments={queuedAttachments} onImageClick={setModalImageUrl} />}
+                                    {text && (
+                                      <div className="chat-message-text chat-message-user-text">
+                                        <LinkifiedText text={text} />
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                              <div className="chat-message-footer">
+                                <span className="chat-message-time">
+                                  {formatChatTimestamp(queuedCompactionMessage.timestamp)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+
                   {/* Streaming assistant message - uses consolidated segments for performance */}
                   {isStreaming && consolidatedSegments.length > 0 && (
                     <div className="chat-message chat-message-assistant chat-message-streaming-active">
@@ -11540,7 +12859,7 @@ export function ChatPanel({
                   onAttachmentsChange={setAttachments}
                   conversationId={activeConversation?.id}
                   workspaceId={workspaceId}
-                  disabled={isReadOnly || isStreaming}
+                  disabled={isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation}
                 />
                 <textarea
                   ref={inputRef}
@@ -11609,7 +12928,7 @@ export function ChatPanel({
                           type="button"
                           className="btn chat-send-btn-inline"
                           onClick={sendMessage}
-                          disabled={!activeConversation || !contextUsage.hasHeadroom}
+                          disabled={!activeConversation || !contextUsage.hasHeadroom || hasQueuedCompactionMessageForActiveConversation}
                           title={contextUsage.hasHeadroom
                               ? 'Send message'
                               : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
@@ -11695,9 +13014,30 @@ export function ChatPanel({
                 <div className="chat-error" style={{ marginBottom: 12 }}>{promptDebugError}</div>
               )}
 
+              {promptDebugCompactionMarker && (
+                <div style={{ marginBottom: 16, border: '1px solid #fcd34d', borderRadius: 8, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#fffbeb' }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: '#92400e' }}>
+                      COMPACTION MARKER
+                    </span>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                      Message {promptDebugCompactionMarker.messageIndex + 1}
+                    </span>
+                    {promptDebugCompactionMarker.timestamp && (
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+                        {new Date(promptDebugCompactionMarker.timestamp).toLocaleString()}
+                      </span>
+                    )}
+                  </div>
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>
+                    {promptDebugCompactionMarker.summary || '(empty compaction summary)'}
+                  </pre>
+                </div>
+              )}
+
               {!promptDebugLoading && chronologicalPromptDebugRecords.length === 0 && !promptDebugError && (
                 <div style={{ fontSize: '0.95rem', opacity: 0.8 }}>
-                  No prompt-debug records yet for this conversation.
+                  No prompt-debug records yet for this message.
                 </div>
               )}
 
@@ -11729,6 +13069,11 @@ export function ChatPanel({
                       <span style={{ fontSize: 12, color: 'var(--color-text-muted)', background: 'var(--color-surface-hover)', padding: '3px 8px', borderRadius: 4 }}>
                         {record.request_kind}
                       </span>
+                      {Boolean(record.debug_metadata?.has_compaction_context) && (
+                        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: '#92400e', background: '#fef3c7', padding: '3px 8px', borderRadius: 4 }}>
+                          Compacted history
+                        </span>
+                      )}
                       <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
                         {createdAt}
                       </span>
@@ -11740,33 +13085,42 @@ export function ChatPanel({
                     </div>
                     {renderedMessages.map((message, messageIdx) => {
                       const messageRole = String((message as Record<string, unknown>)?.role ?? 'unknown').toLowerCase();
-                      const messageLabel = messageRole.toUpperCase();
                       const messageContent = formatPromptMessageContent((message as Record<string, unknown>)?.content);
+                      const _COMPACTION_PREFIX = 'Earlier conversation history has been compacted.';
+                      const isCompactionSystemMessage = messageRole === 'system' && messageIdx === 0
+                        && typeof messageContent === 'string' && messageContent.startsWith(_COMPACTION_PREFIX);
+                      const messageLabel = isCompactionSystemMessage ? 'COMPACTION CONTEXT' : messageRole.toUpperCase();
                       const lineCount = messageContent ? messageContent.split('\n').length : 0;
                       const messageKey = `${record.id}-${messageIdx}`;
                       const copied = copiedPromptMessageKey === messageKey;
 
-                      const badgeColor = messageRole === 'system'
-                        ? '#6b3fa0'
-                        : messageRole === 'user'
-                          ? '#2451a6'
-                          : messageRole === 'assistant'
-                            ? '#1d6a41'
-                            : 'var(--color-text-muted)';
-                      const borderColor = messageRole === 'system'
-                        ? '#dccff0'
-                        : messageRole === 'user'
-                          ? '#c8d6ec'
-                          : messageRole === 'assistant'
-                            ? '#c4ddd0'
-                            : 'var(--color-border)';
-                      const headerBg = messageRole === 'system'
-                        ? '#f5f0fa'
-                        : messageRole === 'user'
-                          ? '#eef2f8'
-                          : messageRole === 'assistant'
-                            ? '#edf7f1'
-                            : 'var(--color-surface-hover)';
+                      const badgeColor = isCompactionSystemMessage
+                        ? '#92400e'
+                        : messageRole === 'system'
+                          ? '#6b3fa0'
+                          : messageRole === 'user'
+                            ? '#2451a6'
+                            : messageRole === 'assistant'
+                              ? '#1d6a41'
+                              : 'var(--color-text-muted)';
+                      const borderColor = isCompactionSystemMessage
+                        ? '#fcd34d'
+                        : messageRole === 'system'
+                          ? '#dccff0'
+                          : messageRole === 'user'
+                            ? '#c8d6ec'
+                            : messageRole === 'assistant'
+                              ? '#c4ddd0'
+                              : 'var(--color-border)';
+                      const headerBg = isCompactionSystemMessage
+                        ? '#fffbeb'
+                        : messageRole === 'system'
+                          ? '#f5f0fa'
+                          : messageRole === 'user'
+                            ? '#eef2f8'
+                            : messageRole === 'assistant'
+                              ? '#edf7f1'
+                              : 'var(--color-surface-hover)';
 
                       /* System and tool messages are collapsible to reduce noise. */
                       if (messageRole === 'system' || messageRole === 'tool') {
@@ -11848,6 +13202,99 @@ export function ChatPanel({
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {compactionReviewMarker && (
+        <div
+          className="modal-overlay"
+          onClick={closeCompactionReview}
+          onKeyDown={(e) => e.key === 'Escape' && closeCompactionReview()}
+          role="presentation"
+        >
+          <div
+            className="modal modal-large chat-compaction-review-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="chat-compaction-review-title"
+          >
+            <div className="modal-header">
+              <h3 id="chat-compaction-review-title">Compaction Result</h3>
+              <button className="modal-close" onClick={closeCompactionReview} aria-label="Close compaction review modal">
+                &times;
+              </button>
+            </div>
+            <div className="modal-body chat-compaction-review-body">
+              <div className="chat-compaction-review-meta">
+                <span>Message {compactionReviewMarker.messageIndex + 1}</span>
+                {compactionReviewMarker.timestamp && (
+                  <span>{new Date(compactionReviewMarker.timestamp).toLocaleString()}</span>
+                )}
+                {!isEditingCompactionReview && (
+                  <span className="chat-compaction-review-meta-actions">
+                    {activeConversation && renderBranchNavStack(
+                      branchGroupsByIndex.get(compactionReviewMarker.messageIndex) ?? [],
+                      activeConversation,
+                    )}
+                    <span className="chat-message-hover-actions">
+                      <button
+                        type="button"
+                        className="chat-action-icon-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsEditingCompactionReview(true);
+                        }}
+                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        aria-label="Edit compaction summary"
+                        title="Edit"
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="chat-action-icon-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          retryCompactionReview();
+                        }}
+                        disabled={isReadOnly || isActiveConversationCompacting || isStreaming}
+                        aria-label="Regenerate compaction"
+                        title="Try Again"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    </span>
+                  </span>
+                )}
+              </div>
+              {compactionReviewError && (
+                <div className="chat-error chat-compaction-review-error">{compactionReviewError}</div>
+              )}
+              {isEditingCompactionReview ? (
+                <textarea
+                  className="chat-compaction-review-editor"
+                  value={compactionReviewDraft}
+                  onChange={(e) => {
+                    setCompactionReviewDraft(e.target.value);
+                  }}
+                  onBlur={() => void saveCompactionReview()}
+                  autoFocus
+                  aria-label="Edit compaction summary"
+                />
+              ) : (
+                <div
+                  className="chat-compaction-review-summary-container"
+                  onClick={() => !isReadOnly && !isActiveConversationCompacting && !isStreaming && setIsEditingCompactionReview(true)}
+                  style={{ cursor: (!isReadOnly && !isActiveConversationCompacting && !isStreaming) ? 'text' : 'default' }}
+                >
+                  <pre className="chat-compaction-review-summary">
+                    {compactionReviewMarker.summary || '(empty compaction summary)'}
+                  </pre>
+                </div>
+              )}
             </div>
           </div>
         </div>

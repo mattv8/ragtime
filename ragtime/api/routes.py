@@ -12,7 +12,7 @@ from typing import Any, Optional
 import psutil
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ragtime import __version__
 from ragtime.config import settings
@@ -27,7 +27,7 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
 )
 from ragtime.core.security import get_current_user_optional
-from ragtime.indexer.background_tasks import rebuild_tool_messages_from_events
+from ragtime.indexer.background_tasks import compaction_system_content, rebuild_tool_messages_from_events
 from ragtime.indexer.routes import AvailableModel, get_available_chat_models
 from ragtime.models import (
     ChatChoice,
@@ -428,6 +428,9 @@ async def _get_openapi_model_entries(
 
         try:
             available = await get_available_chat_models()
+            if not sync_chat:
+                allowed_openapi = {str(value).strip() for value in (available.allowed_openapi_models or []) if str(value).strip()}
+                collapse_cross_provider_duplicates = not allowed_openapi
 
             for model in available.models:
                 if not str(model.id or "").strip():
@@ -690,7 +693,9 @@ async def chat_completions(request: ChatCompletionRequest):
     # Build chat history for context (convert to LangChain format)
     chat_history: list[BaseMessage] = []
     for msg in request.messages[:-1]:  # Exclude the current message
-        if msg.role == "user":
+        if msg.role == "compaction":
+            chat_history = [SystemMessage(content=compaction_system_content(msg.get_text_content()))]
+        elif msg.role == "user":
             chat_history.append(HumanMessage(content=await rag._convert_message_to_langchain_async(msg)))
         elif msg.role == "assistant":
             message_events = getattr(msg, "events", None)
@@ -801,8 +806,19 @@ async def _stream_response_tokens(
     """
     chunk_id = f"chatcmpl-{int(time.time())}"
 
-    def make_chunk(content: str, finish_reason: str | None = None) -> str:
-        """Create an SSE chunk with the given content."""
+    def make_chunk(
+        content: str | None = None,
+        finish_reason: str | None = None,
+        *,
+        reasoning_content: str | None = None,
+    ) -> str:
+        """Create an OpenAI-compatible SSE chunk with the given delta fields."""
+        delta: dict[str, str] = {}
+        if content:
+            delta["content"] = content
+        if reasoning_content:
+            delta["reasoning_content"] = reasoning_content
+
         chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
@@ -811,7 +827,7 @@ async def _stream_response_tokens(
             "choices": [
                 {
                     "index": 0,
-                    "delta": {"content": content} if content else {},
+                    "delta": delta,
                     "finish_reason": finish_reason,
                 }
             ],
@@ -893,11 +909,12 @@ async def _stream_response_tokens(
                 yield make_chunk("\n\n> **Note:** Reached maximum tool iterations\n")
 
             elif event_type == "reasoning":
-                # Reasoning/thinking content - emit as collapsible details block
+                # Reasoning/thinking content belongs in a dedicated delta field.
+                # OpenAI-compatible clients such as Open WebUI render this as a
+                # single thinking block instead of treating it as assistant text.
                 reasoning_text = event.get("content", "")
                 if reasoning_text:
-                    block = f'\n<details type="reasoning">\n<summary>Thinking...</summary>\n\n{reasoning_text}\n\n</details>\n'
-                    yield make_chunk(block)
+                    yield make_chunk(reasoning_content=str(reasoning_text))
 
         else:
             # Plain string content - stream directly

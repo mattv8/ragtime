@@ -36,6 +36,7 @@ export { WarningsBanner } from './WarningsBanner';
 export { OcrVectorStoreFields } from './OcrVectorStoreFields';
 export { IndexConfigFields } from './IndexConfigFields';
 export { ReindexIntervalSelect } from './ReindexIntervalSelect';
+export { ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 export { ContextUsagePie } from './shared/ContextUsagePie';
 export { AgentAccessButton } from './shared/AgentAccessButton';
 export { AgentAccessModal } from './shared/AgentAccessModal';

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import ragtime.indexer.background_tasks as background_tasks
@@ -237,15 +239,10 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Tool query_production_infoscan_database took too long and timed out", output)
         self.assertIn("Treat this as a failed tool result", output)
 
-    async def test_process_query_stream_synthesizes_active_tool_timeout_result(self) -> None:
-        from ragtime.rag import components
-
-        rag_components = components.RAGComponents()
-        executor = _ActiveToolTimeoutExecutor()
-        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
-        request_tool_state: dict[str, object] = {}
-        request_context = {
-            "prompt_is_ui": True,
+    @staticmethod
+    def _request_context(request_tool_state: dict[str, object], *, is_ui: bool) -> dict[str, object]:
+        return {
+            "prompt_is_ui": is_ui,
             "mode": "chat",
             "allowed_tool_config_ids": set(),
             "runtime_tools": [],
@@ -257,36 +254,68 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
             "userspace_runtime_status_turn_hint": "",
             "workspace_id": None,
         }
+
+    async def _process_query_outputs(
+        self,
+        components_module: Any,
+        rag_components: Any,
+        llm_resolution: Any,
+        request_context: dict[str, object],
+        *,
+        is_ui: bool,
+        executor: object | None = None,
+        extra_patches: tuple[Any, ...] = (),
+    ) -> list[object]:
+        async def collect_outputs() -> list[object]:
+            outputs: list[object] = []
+            async for item in rag_components.process_query_stream("hello", is_ui=is_ui):
+                outputs.append(item)
+            return outputs
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")))
+            stack.enter_context(mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)))
+            stack.enter_context(mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)))
+            stack.enter_context(mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"))
+            stack.enter_context(mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""))
+            stack.enter_context(mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")))
+            stack.enter_context(mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))))
+            stack.enter_context(mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()))
+            if executor is not None:
+                stack.enter_context(mock.patch.object(rag_components, "_build_runtime_executor", return_value=executor))
+            for patcher in extra_patches:
+                stack.enter_context(patcher)
+            return await asyncio.wait_for(collect_outputs(), timeout=1.0)
+
+    async def test_process_query_stream_synthesizes_active_tool_timeout_result(self) -> None:
+        from ragtime.rag import components
+
+        rag_components = components.RAGComponents()
+        executor = _ActiveToolTimeoutExecutor()
+        rag_components.agent_executor_ui = executor  # type: ignore[assignment]
+        request_tool_state: dict[str, object] = {}
+        request_context = self._request_context(request_tool_state, is_ui=True)
         llm_resolution = components.RequestLLMResolution(
             llm=object(),
             provider="test_provider",
             model="test-model",
         )
-
-        async def collect_outputs() -> list[object]:
-            outputs: list[object] = []
-            async for item in rag_components.process_query_stream("hello", is_ui=True):
-                outputs.append(item)
-            return outputs
-
-        with (
-            mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")),
-            mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)),
-            mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)),
-            mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
-            mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
-            mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
-            mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))),
-            mock.patch.object(rag_components, "_build_runtime_executor", return_value=executor),
-            mock.patch.object(
-                rag_components,
-                "_get_tool_connection_metadata",
-                return_value={"timeout_max_seconds": "1"},
+        outputs = await self._process_query_outputs(
+            components,
+            rag_components,
+            llm_resolution,
+            request_context,
+            is_ui=True,
+            executor=executor,
+            extra_patches=(
+                mock.patch.object(
+                    rag_components,
+                    "_get_tool_connection_metadata",
+                    return_value={"timeout_max_seconds": "1"},
+                ),
+                mock.patch.object(components, "AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS", 0.05),
             ),
-            mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()),
-            mock.patch.object(components, "AGENT_STREAM_INACTIVITY_TIMEOUT_SECONDS", 0.05),
-        ):
-            outputs = await asyncio.wait_for(collect_outputs(), timeout=1.0)
+        )
 
         self.assertTrue(executor.closed.is_set())
         self.assertIsInstance(outputs[0], dict)
@@ -308,44 +337,21 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
         executor = _ProviderFailureAfterToolExecutor()
         rag_components.agent_executor_ui = executor  # type: ignore[assignment]
         request_tool_state: dict[str, object] = {}
-        request_context = {
-            "prompt_is_ui": True,
-            "mode": "chat",
-            "allowed_tool_config_ids": set(),
-            "runtime_tools": [],
-            "request_tool_state": request_tool_state,
-            "prompt_additions": "",
-            "user_identity_turn_line": "",
-            "include_sqlite_persistence": False,
-            "userspace_env_var_turn_hint": "",
-            "userspace_runtime_status_turn_hint": "",
-            "workspace_id": None,
-        }
+        request_context = self._request_context(request_tool_state, is_ui=True)
         llm_resolution = components.RequestLLMResolution(
             llm=_SynthesisLLM(),
             provider="openrouter",
             model="deepseek/deepseek-v4-pro",
             attempted_providers=("openrouter",),
         )
-
-        async def collect_outputs() -> list[object]:
-            outputs: list[object] = []
-            async for item in rag_components.process_query_stream("hello", is_ui=True):
-                outputs.append(item)
-            return outputs
-
-        with (
-            mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")),
-            mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)),
-            mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)),
-            mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
-            mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
-            mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
-            mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))),
-            mock.patch.object(rag_components, "_build_runtime_executor", return_value=executor),
-            mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()),
-        ):
-            outputs = await asyncio.wait_for(collect_outputs(), timeout=1.0)
+        outputs = await self._process_query_outputs(
+            components,
+            rag_components,
+            llm_resolution,
+            request_context,
+            is_ui=True,
+            executor=executor,
+        )
 
         self.assertTrue(executor.closed.is_set())
         tool_start = outputs[0]
@@ -364,43 +370,20 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
         rag_components = components.RAGComponents()
         request_llm = _FirstChunkRetryLLM()
         request_tool_state: dict[str, object] = {}
-        request_context = {
-            "prompt_is_ui": False,
-            "mode": "chat",
-            "allowed_tool_config_ids": set(),
-            "runtime_tools": [],
-            "request_tool_state": request_tool_state,
-            "prompt_additions": "",
-            "user_identity_turn_line": "",
-            "include_sqlite_persistence": False,
-            "userspace_env_var_turn_hint": "",
-            "userspace_runtime_status_turn_hint": "",
-            "workspace_id": None,
-        }
+        request_context = self._request_context(request_tool_state, is_ui=False)
         llm_resolution = components.RequestLLMResolution(
             llm=request_llm,
             provider="openrouter",
             model="deepseek/deepseek-v4-pro",
             attempted_providers=("openrouter",),
         )
-
-        async def collect_outputs() -> list[object]:
-            outputs: list[object] = []
-            async for item in rag_components.process_query_stream("hello", is_ui=False):
-                outputs.append(item)
-            return outputs
-
-        with (
-            mock.patch.object(rag_components, "_convert_message_to_langchain_async", mock.AsyncMock(return_value="hello")),
-            mock.patch.object(rag_components, "_get_request_scoped_llm", mock.AsyncMock(return_value=llm_resolution)),
-            mock.patch.object(rag_components, "_build_request_runtime_context", mock.AsyncMock(return_value=request_context)),
-            mock.patch.object(rag_components, "_build_request_system_prompt", return_value="system"),
-            mock.patch.object(rag_components, "_build_turn_reminder_text", return_value=""),
-            mock.patch.object(rag_components, "_build_context_headroom_prompt", mock.AsyncMock(return_value="")),
-            mock.patch.object(rag_components, "_prepare_chat_context_window", mock.AsyncMock(return_value=(llm_resolution, [], ""))),
-            mock.patch.object(rag_components, "_persist_provider_prompt_debug_record", mock.AsyncMock()),
-        ):
-            outputs = await asyncio.wait_for(collect_outputs(), timeout=1.0)
+        outputs = await self._process_query_outputs(
+            components,
+            rag_components,
+            llm_resolution,
+            request_context,
+            is_ui=False,
+        )
 
         self.assertEqual(request_llm.calls, 2)
         self.assertEqual(outputs, ["Retried answer."])

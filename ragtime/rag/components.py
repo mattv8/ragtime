@@ -72,6 +72,7 @@ from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
+from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
 from ragtime.core.file_constants import (
     USERSPACE_MODULE_SOURCE_EXTENSIONS,
@@ -121,8 +122,12 @@ from ragtime.core.security import (
     validate_ssh_command,
 )
 from ragtime.core.sql_utils import (
+    DB_TYPE_MYSQL,
+    TABLE_METADATA_END,
     TABLE_METADATA_START,
     add_table_metadata_to_psql_output,
+    enforce_max_results,
+    format_query_result,
     strip_table_metadata,
 )
 from ragtime.core.ssh import (
@@ -137,6 +142,15 @@ from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata
 from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
+from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.indexer.export_service import (
+    chart_to_table,
+    content_source,
+    create_export_spec,
+    datatable_to_table,
+    live_table_source,
+    table_source,
+)
 from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
@@ -187,7 +201,7 @@ from ragtime.tools.git_history import (
 from ragtime.tools.influxdb import create_influxdb_tool
 from ragtime.tools.mssql import create_mssql_tool
 from ragtime.tools.mysql import create_mysql_tool
-from ragtime.tools.odoo_shell import filter_odoo_output
+from ragtime.tools.odoo_shell import build_docker_shell_command, build_odoo_shell_args, build_shell_input, filter_odoo_output
 from ragtime.userspace.models import (
     ArtifactType,
     UpsertWorkspaceEnvVarRequest,
@@ -204,6 +218,7 @@ CHAT_CONTEXT_SAFETY_MARGIN_TOKENS = 1024
 CHAT_CONTEXT_PREFERRED_MIN_COMPLETION_TOKENS = 512
 CHAT_CONTEXT_ABSOLUTE_MIN_COMPLETION_TOKENS = 128
 DEFAULT_THINKING_BUDGET_TOKENS = 16384
+CREATE_DOWNLOAD_LINK_TOOL_ID = "create_download_link"
 
 
 @dataclass(frozen=True)
@@ -283,6 +298,19 @@ async def _terminate_subprocess_after_timeout(
         await process.wait()
     except ProcessLookupError:
         pass
+
+
+async def _execute_remote_docker_command(
+    ssh_config: SSHConfig,
+    command: list[str],
+    input_data: str | None = None,
+):
+    """Run a Docker CLI command on a remote host over SSH without blocking the loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: execute_docker_command_on_remote_host(ssh_config, command, input_data=input_data),
+    )
 
 
 # Maximum timeout for any tool execution (5 minutes)
@@ -431,6 +459,13 @@ def truncate_tool_output(output: str, max_chars: int) -> str:
     """
     if max_chars <= 0 or len(output) <= max_chars:
         return output
+
+    # If we must truncate, discard UI-only TABLEDATA so the LLM gets more
+    # actual content (e.g. ASCII table) and doesn't get confused by broken JSON.
+    if output.lstrip().startswith(TABLE_METADATA_START):
+        output = strip_table_metadata(output)
+        if len(output) <= max_chars:
+            return output
 
     try:
         structured_output = json.loads(output)
@@ -4534,9 +4569,11 @@ class RAGComponents:
 
         host = conn_config.get("host", "")
         port = conn_config.get("port", 5432)
+        container = conn_config.get("container", "")
 
-        # Build SSH tunnel config if enabled
-        ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
+        # Build SSH tunnel config if enabled. Docker container mode takes
+        # precedence when both container and stale SSH tunnel fields are present.
+        ssh_tunnel_config = None if container else build_ssh_tunnel_config(conn_config, host, port)
 
         # Create input schema with captured timeout value
         _default_timeout = timeout_max_seconds  # Capture for closure
@@ -4689,6 +4726,30 @@ class RAGComponents:
                     "-c",
                     f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \'{escaped_query}\'',
                 ]
+                docker_ssh_config = docker_ssh_config_from_dict(conn_config, timeout=effective_timeout if effective_timeout > 0 else 30)
+                if docker_ssh_config:
+                    try:
+                        if effective_timeout > 0:
+                            result = await asyncio.wait_for(
+                                _execute_remote_docker_command(docker_ssh_config, cmd),
+                                timeout=effective_timeout + 5,
+                            )
+                        else:
+                            result = await _execute_remote_docker_command(docker_ssh_config, cmd)
+
+                        if not result.success:
+                            return f"Error: {(result.stderr or result.stdout).strip()}"
+
+                        output = result.stdout.strip()
+                        if not output:
+                            return "Query executed successfully (no results)"
+                        if not include_metadata and "(0 rows)" in output[-20:]:
+                            return "Query executed successfully (no results)"
+                        output = add_table_metadata_to_psql_output(output, include_metadata=include_metadata)
+                        return sanitize_output(output)
+                    except asyncio.TimeoutError:
+                        return f"Error: Query timed out after {effective_timeout}s"
+
                 env = None
             else:
                 return "Error: No connection configured"
@@ -4808,6 +4869,132 @@ class RAGComponents:
         user = conn_config.get("user", "")
         password = conn_config.get("password", "")
         database = conn_config.get("database", "")
+        container = conn_config.get("container", "")
+
+        if container:
+            _default_timeout = timeout_max_seconds
+
+            class MysqlContainerInput(BaseModel):
+                query: str = Field(
+                    default="",
+                    description="SQL query to execute. Must include LIMIT clause.",
+                )
+                reason: str = Field(default="", description="Brief description of what this query retrieves")
+
+            mysql_args_schema = self._add_timeout_field_to_schema(
+                MysqlContainerInput,
+                timeout_max_seconds=timeout_max_seconds,
+                timeout_label="Query",
+            )
+
+            async def get_container_env_var(var_name: str, docker_ssh_config: SSHConfig | None) -> str:
+                cmd = ["docker", "exec", container, "printenv", var_name]
+                if docker_ssh_config:
+                    result = await _execute_remote_docker_command(docker_ssh_config, cmd)
+                    return result.stdout.strip() if result.success else ""
+                process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, _stderr = await process.communicate()
+                return stdout.decode("utf-8", errors="replace").strip() if process.returncode == 0 else ""
+
+            async def execute_query(query: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any) -> str:
+                if not query or not query.strip():
+                    return "Error: 'query' parameter is required. Provide a SQL query to execute."
+                if not reason:
+                    reason = "SQL query"
+
+                logger.info(f"[{tool_name}] MySQL container query: {reason}")
+                effective_timeout = resolve_effective_timeout(timeout, timeout_max_seconds)
+
+                is_safe, validation_reason = validate_sql_query(
+                    query,
+                    enable_write=allow_write,
+                )
+                if not is_safe:
+                    return f"Error: {validation_reason}"
+
+                query_to_run = enforce_max_results(query, max_results, db_type=DB_TYPE_MYSQL)
+                docker_ssh_config = docker_ssh_config_from_dict(conn_config, timeout=effective_timeout if effective_timeout > 0 else 30)
+
+                try:
+                    db_user = await get_container_env_var("MYSQL_USER", docker_ssh_config) or "root"
+                    db_password = (
+                        await get_container_env_var("MYSQL_ROOT_PASSWORD", docker_ssh_config)
+                        if db_user == "root"
+                        else await get_container_env_var("MYSQL_PASSWORD", docker_ssh_config)
+                    )
+                    db_name = database or await get_container_env_var("MYSQL_DATABASE", docker_ssh_config)
+                    if not db_name:
+                        return "Error: No database specified and MYSQL_DATABASE is not set in container"
+
+                    cmd = [
+                        "docker",
+                        "exec",
+                        container,
+                        "mysql",
+                        f"-u{db_user}",
+                        f"-p{db_password}",
+                        "--batch",
+                        "--raw",
+                        "-e",
+                        query_to_run,
+                        db_name,
+                    ]
+
+                    if docker_ssh_config:
+                        if effective_timeout > 0:
+                            result = await asyncio.wait_for(
+                                _execute_remote_docker_command(docker_ssh_config, cmd),
+                                timeout=effective_timeout + 5,
+                            )
+                        else:
+                            result = await _execute_remote_docker_command(docker_ssh_config, cmd)
+                        stdout = result.stdout
+                        stderr = result.stderr
+                        returncode = result.exit_code
+                    else:
+                        process = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if effective_timeout > 0:
+                            try:
+                                stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=effective_timeout)
+                            except asyncio.TimeoutError:
+                                await _terminate_subprocess_after_timeout(process)
+                                raise
+                        else:
+                            stdout_bytes, stderr_bytes = await process.communicate()
+                        stdout = stdout_bytes.decode("utf-8", errors="replace")
+                        stderr = stderr_bytes.decode("utf-8", errors="replace")
+                        returncode = process.returncode
+
+                    if returncode != 0:
+                        return f"Error: {stderr.strip() or stdout.strip()}"
+
+                    output = stdout.strip()
+                    if not output:
+                        return "Query executed successfully (no results)"
+
+                    lines = output.splitlines()
+                    columns = lines[0].split("\t") if lines else []
+                    rows = [dict(zip(columns, line.split("\t"))) for line in lines[1:]] if columns else []
+                    if not rows and not columns:
+                        return "Query executed successfully (no results)"
+                    return format_query_result(list(rows), columns, include_metadata=include_metadata)
+                except asyncio.TimeoutError:
+                    return f"Error: Query timed out after {effective_timeout}s"
+                except Exception as e:
+                    logger.exception("Unexpected error in MySQL container query")
+                    return f"Error: {str(e)}"
+
+            tool_description = f"Query the {config.get('name', 'MySQL/MariaDB')} database using SQL."
+            if description:
+                tool_description += f" This database contains: {description}"
+            tool_description += " Include LIMIT clause to restrict results. SELECT queries only unless writes are enabled."
+
+            return StructuredTool.from_function(
+                coroutine=execute_query,
+                name=f"query_{tool_name}",
+                description=tool_description,
+                args_schema=mysql_args_schema,
+            )
 
         # Build SSH tunnel config if enabled
         ssh_tunnel_config = build_ssh_tunnel_config(conn_config, host, port)
@@ -4899,23 +5086,6 @@ class RAGComponents:
             timeout_label="Execution",
         )
 
-        def _build_docker_command(container: str, database: str, config_path: str) -> list:
-            """Build Docker exec command for Odoo shell."""
-            cmd = [
-                "docker",
-                "exec",
-                "-i",
-                container,
-                "odoo",
-                "shell",
-                "--no-http",
-                "-d",
-                database,
-            ]
-            if config_path:
-                cmd.extend(["-c", config_path])
-            return cmd
-
         async def execute_odoo(code: str = "", reason: str = "", timeout: int = _default_timeout, **_: Any) -> str:
             """Execute Odoo shell command using this tool's configuration."""
             # Validate required fields
@@ -4936,20 +5106,25 @@ class RAGComponents:
             database = conn_config.get("database", "odoo")
             config_path = conn_config.get("config_path", "")
 
-            # Wrap user code with env setup and error handling
-            wrapped_code = f"""
-env = self.env
-try:
-{chr(10).join("    " + line for line in code.strip().split(chr(10)))}
-except Exception as e:
-    print(f"ODOO_ERROR: {{type(e).__name__}}: {{e}}")
-"""
-            # Add exit command
-            full_input = wrapped_code + "\nexit()\n"
+            full_input = build_shell_input(code)
 
-            async def _run_with_cmd(cmd: list) -> str:
+            async def _run_with_cmd(cmd: list, docker_ssh_config: SSHConfig | None = None) -> str:
                 """Execute command and return filtered output."""
                 try:
+                    if docker_ssh_config:
+                        if effective_timeout > 0:
+                            result = await asyncio.wait_for(
+                                _execute_remote_docker_command(docker_ssh_config, cmd, input_data=full_input),
+                                timeout=effective_timeout + 5,
+                            )
+                        else:
+                            result = await _execute_remote_docker_command(docker_ssh_config, cmd, input_data=full_input)
+                        output = result.output
+                        if not result.success and "ODOO_ERROR" not in output:
+                            return f"Error: {(result.stderr or result.stdout).strip()}"
+                        filtered = filter_odoo_output(output)
+                        return sanitize_output(filtered) if filtered else "Query executed successfully (no output)"
+
                     process = await asyncio.create_subprocess_exec(
                         *cmd,
                         stdin=subprocess.PIPE,
@@ -5003,13 +5178,12 @@ except Exception as e:
                 working_directory = conn_config.get("working_directory", "")
                 run_as_user = conn_config.get("run_as_user", "")
 
-                odoo_cmd = f"{odoo_bin_path} shell --no-http -d {database}"
-                if odoo_config_path:
-                    odoo_cmd = f"{odoo_cmd} -c {odoo_config_path}"
+                odoo_cmd_parts = shlex.split(odoo_bin_path) + build_odoo_shell_args(database, odoo_config_path, shell_interface="python")
+                odoo_cmd = shlex.join(odoo_cmd_parts)
                 if run_as_user:
-                    odoo_cmd = f"sudo -u {run_as_user} {odoo_cmd}"
+                    odoo_cmd = f"sudo -u {shlex.quote(run_as_user)} {odoo_cmd}"
                 if working_directory:
-                    odoo_cmd = f"cd {working_directory} && {odoo_cmd}"
+                    odoo_cmd = f"cd {shlex.quote(working_directory)} && {odoo_cmd}"
 
                 # Use heredoc to pass code to shell
                 remote_command = f"{odoo_cmd} <<'ODOO_EOF'\n{full_input}ODOO_EOF"
@@ -5056,8 +5230,9 @@ except Exception as e:
                 container = conn_config.get("container", "")
                 if not container:
                     return "Error: No container configured"
-                cmd = _build_docker_command(container, database, config_path)
-                return await _run_with_cmd(cmd)
+                cmd = build_docker_shell_command(container, database, config_path, shell_interface="python")
+                docker_ssh_config = docker_ssh_config_from_dict(conn_config, timeout=effective_timeout if effective_timeout > 0 else 30)
+                return await _run_with_cmd(cmd, docker_ssh_config=docker_ssh_config)
 
         mode_label = "SSH" if mode == "ssh" else "Docker"
         tool_description = f"Query {config.get('name', 'Odoo')} ERP using Python ORM code ({mode_label} connection)."
@@ -5756,6 +5931,17 @@ except Exception as e:
         """Persist a provider input debug row when DEBUG_MODE is enabled."""
         if not settings.debug_mode or not conversation_id:
             return
+
+        # Stamp compaction metadata when the first history message is a compaction SystemMessage.
+        _COMPACTION_PREFIX = "Earlier conversation history has been compacted."
+        if chat_history:
+            first = chat_history[0]
+            if isinstance(first, SystemMessage):
+                first_content = first.content if isinstance(first.content, str) else ""
+                if first_content.startswith(_COMPACTION_PREFIX):
+                    debug_metadata = dict(debug_metadata or {})
+                    debug_metadata["has_compaction_context"] = True
+                    debug_metadata["compaction_summary_chars"] = len(first_content)
 
         rendered_user_input_serialized = self._serialize_prompt_content(rendered_user_input)
         if isinstance(rendered_user_input_serialized, str):
@@ -6586,68 +6772,110 @@ except Exception as e:
         return combined, ""
 
     @staticmethod
+    def _visible_output_channels() -> tuple[str, ...]:
+        return ("final", "commentary")
+
+    @classmethod
+    def _is_reasoning_content_block(cls, block: dict[str, Any]) -> bool:
+        block_type = str(block.get("type", "")).lower()
+        reasoning_block_types = {
+            "thinking",
+            "reasoning",
+            "reasoning.text",
+            "reasoning_content",
+            "reasoning_summary",
+            "reasoning_text",
+            "reasoning.summary",
+            "reasoning_summary_text",
+            "redacted_thinking",
+        }
+        reasoning_delta_suffixes = (
+            "reasoning.delta",
+            "thinking.delta",
+            "reasoning_text.delta",
+            "reasoning_summary_text.delta",
+        )
+        if block_type in reasoning_block_types or any(block_type.endswith(suffix) for suffix in reasoning_delta_suffixes):
+            return True
+        if block.get("thought") is True:
+            return True
+        return any(
+            key in block
+            for key in (
+                "thinking",
+                "reasoning",
+                "reasoning_text",
+                "reasoning_content",
+                "reasoning_summary",
+                "reasoning_summary_text",
+                "cot_summary",
+            )
+        )
+
+    @classmethod
+    def _extract_visible_text_from_content(cls, content: Any) -> str:
+        """Extract assistant-visible text while excluding analysis/reasoning blocks."""
+        if not content:
+            return ""
+
+        if isinstance(content, str):
+            return cls._strip_lmstudio_channel_headers(content)
+
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                parts.append(cls._extract_visible_text_from_content(item))
+            return "".join(parts)
+
+        if not isinstance(content, dict):
+            return cls._strip_lmstudio_channel_headers(str(content))
+
+        channel = str(content.get("channel", "")).strip().lower()
+        if channel and channel not in cls._visible_output_channels():
+            return ""
+
+        if cls._is_reasoning_content_block(content):
+            return ""
+
+        item_type = str(content.get("type", "")).lower()
+        if item_type == "message":
+            return cls._extract_visible_text_from_content(content.get("content"))
+
+        if item_type in {"output_text", "text"}:
+            return cls._strip_lmstudio_channel_headers(str(content.get("text") or ""))
+
+        if item_type in {"output_refusal", "refusal"}:
+            return cls._strip_lmstudio_channel_headers(str(content.get("refusal") or content.get("text") or ""))
+
+        if channel in cls._visible_output_channels():
+            for key in ("text", "content", "refusal"):
+                value = content.get(key)
+                if isinstance(value, (str, list, dict)):
+                    text = cls._extract_visible_text_from_content(value)
+                    if text:
+                        return text
+
+        if "text" in content and isinstance(content.get("text"), str):
+            return cls._strip_lmstudio_channel_headers(str(content.get("text") or ""))
+
+        nested_content = content.get("content")
+        if isinstance(nested_content, (str, list, dict)):
+            return cls._extract_visible_text_from_content(nested_content)
+
+        return ""
+
+    @staticmethod
     def _extract_text_from_stream_content(content: Any) -> str:
         """Extract plain text from streaming content payloads."""
         if not content:
             return ""
 
-        if isinstance(content, str):
-            return RAGComponents._strip_lmstudio_channel_headers(content)
+        return RAGComponents._extract_visible_text_from_content(content)
 
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for block in content:
-                if isinstance(block, dict):
-                    text_parts.append(RAGComponents._strip_lmstudio_channel_headers(str(block.get("text", ""))))
-                else:
-                    text_parts.append(RAGComponents._strip_lmstudio_channel_headers(str(block)))
-            return "".join(text_parts)
-
-        return RAGComponents._strip_lmstudio_channel_headers(str(content))
-
-    @staticmethod
-    def _extract_text_from_responses_output_items(output_items: Any) -> str:
+    @classmethod
+    def _extract_text_from_responses_output_items(cls, output_items: Any) -> str:
         """Extract assistant-visible text from Responses API output items."""
-        if not isinstance(output_items, list):
-            return ""
-
-        text_parts: list[str] = []
-        for item in output_items:
-            if not isinstance(item, dict):
-                continue
-
-            item_type = str(item.get("type", "")).lower()
-
-            if item_type == "message":
-                content_blocks = item.get("content")
-                if not isinstance(content_blocks, list):
-                    continue
-
-                for block in content_blocks:
-                    if not isinstance(block, dict):
-                        continue
-
-                    block_type = str(block.get("type", "")).lower()
-                    if block_type in {"output_text", "text"}:
-                        text = block.get("text")
-                        if text:
-                            text_parts.append(str(text))
-                    elif block_type in {"output_refusal", "refusal"}:
-                        refusal = block.get("refusal") or block.get("text")
-                        if refusal:
-                            text_parts.append(str(refusal))
-                continue
-
-            if item_type in {"output_text", "text"}:
-                text = item.get("text")
-                if text:
-                    text_parts.append(str(text))
-            elif item_type in {"output_refusal", "refusal"}:
-                refusal = item.get("refusal") or item.get("text")
-                if refusal:
-                    text_parts.append(str(refusal))
-
-        return "".join(text_parts)
+        return cls._extract_visible_text_from_content(output_items)
 
     @classmethod
     def _extract_reasoning_text_from_content_list(cls, content: Any) -> str:
@@ -6817,7 +7045,7 @@ except Exception as e:
             return ""
 
         if hasattr(output, "content"):
-            return cls._extract_text_from_stream_content(output.content)
+            return cls._extract_visible_text_from_content(output.content)
 
         if isinstance(output, dict):
             # Responses API often places final assistant text under output[] items.
@@ -10939,6 +11167,326 @@ except Exception as e:
         continuity += self._build_cross_workspace_access_summary(accessible_workspace_modes or {})
         return continuity
 
+    def _build_export_context_from_visualization_output(
+        self,
+        *,
+        tool_name: str,
+        tool_args: Any,
+        tool_output: Any,
+    ) -> dict[str, Any] | None:
+        """Extract reusable export context from chart/datatable tool output."""
+        if tool_name not in {"create_chart", "create_datatable"}:
+            return None
+        payload = self._parse_json_object(tool_output)
+        if not payload:
+            return None
+
+        data_connection = payload.get("data_connection")
+        if not isinstance(data_connection, dict) or not data_connection.get("component_id") or "request" not in data_connection:
+            return None
+
+        try:
+            if tool_name == "create_chart" and payload.get("__chart__"):
+                columns, rows = chart_to_table(payload)
+                source_tool = "create_chart"
+            elif tool_name == "create_datatable" and payload.get("__datatable__"):
+                columns, rows = datatable_to_table(payload)
+                source_tool = "create_datatable"
+            else:
+                return None
+        except Exception as exc:
+            logger.debug("Could not extract export table from %s output: %s", tool_name, _format_exception_message(exc))
+            return None
+
+        title = str(payload.get("title") or "").strip()
+        if not title and isinstance(tool_args, dict):
+            title = str(tool_args.get("title") or "").strip()
+        return {
+            "source_tool": source_tool,
+            "title": title,
+            "data_connection": data_connection,
+            "columns": columns,
+            "rows": rows,
+        }
+
+    @staticmethod
+    def _extract_table_metadata_from_tool_output(tool_output: Any) -> tuple[list[str], list[list[Any]]] | None:
+        if not isinstance(tool_output, str):
+            return None
+        output = tool_output.strip()
+        if not output.startswith(TABLE_METADATA_START):
+            return None
+        line_end = output.find("\n")
+        metadata_search_end = len(output) if line_end == -1 else line_end
+        metadata_end = output.rfind(TABLE_METADATA_END, len(TABLE_METADATA_START), metadata_search_end)
+        if metadata_end == -1:
+            return None
+        raw_metadata = output[len(TABLE_METADATA_START) : metadata_end]
+        try:
+            metadata = json.loads(raw_metadata)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        columns = metadata.get("columns")
+        rows = metadata.get("rows")
+        if not isinstance(columns, list) or not columns or not isinstance(rows, list):
+            return None
+        return [str(column) for column in columns], [list(row) if isinstance(row, (list, tuple)) else [row] for row in rows]
+
+    def _build_export_context_from_query_output(
+        self,
+        *,
+        tool_name: str,
+        tool_args: Any,
+        tool_output: Any,
+    ) -> dict[str, Any] | None:
+        """Extract reusable export context from a configured query tool output."""
+        connection_meta = self._get_tool_connection_metadata(tool_name)
+        if not connection_meta or not tool_name.startswith("query_"):
+            return None
+        table = self._extract_table_metadata_from_tool_output(tool_output)
+        if table is None:
+            return None
+        columns, rows = table
+        if isinstance(tool_args, dict):
+            request_payload: Any = dict(tool_args)
+        else:
+            query_text = self._extract_query_text_from_tool_call((tool_args,), {}) if tool_args is not None else None
+            request_payload = {"query": query_text} if query_text else {}
+        if not request_payload:
+            return None
+        data_connection: dict[str, Any] = {
+            "component_kind": "tool_config",
+            "component_id": connection_meta["tool_config_id"],
+            "request": request_payload,
+        }
+        if connection_meta.get("tool_config_name"):
+            data_connection["component_name"] = connection_meta["tool_config_name"]
+        if connection_meta.get("tool_type"):
+            data_connection["component_type"] = connection_meta["tool_type"]
+        return {
+            "source_tool": tool_name,
+            "title": connection_meta.get("tool_config_name") or "Query export",
+            "data_connection": data_connection,
+            "columns": columns,
+            "rows": rows,
+        }
+
+    def _seed_latest_export_context_from_chat_history(
+        self,
+        chat_history: list[Any],
+        export_context: dict[str, Any] | None,
+    ) -> None:
+        """Seed export context from the latest reconstructed chart/datatable tool pair."""
+        if export_context is None or export_context.get("latest"):
+            return
+        pending_tool: dict[str, Any] | None = None
+        latest_context: dict[str, Any] | None = None
+        for message in chat_history:
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if tool_calls:
+                first_call = tool_calls[0]
+                if isinstance(first_call, dict):
+                    pending_tool = {
+                        "name": str(first_call.get("name") or ""),
+                        "args": first_call.get("args") if isinstance(first_call.get("args"), dict) else {},
+                    }
+                else:
+                    pending_tool = None
+                continue
+
+            tool_call_id = getattr(message, "tool_call_id", None)
+            if tool_call_id and pending_tool:
+                context = self._build_export_context_from_visualization_output(
+                    tool_name=str(pending_tool.get("name") or ""),
+                    tool_args=pending_tool.get("args") or {},
+                    tool_output=getattr(message, "content", ""),
+                )
+                if context is None:
+                    context = self._build_export_context_from_query_output(
+                        tool_name=str(pending_tool.get("name") or ""),
+                        tool_args=pending_tool.get("args") or {},
+                        tool_output=getattr(message, "content", ""),
+                    )
+                if context:
+                    latest_context = context
+                pending_tool = None
+
+        if latest_context:
+            export_context["latest"] = latest_context
+
+    def _wrap_tools_with_export_context_tracking(
+        self,
+        tools: list[Any],
+        export_context: dict[str, Any] | None,
+    ) -> list[Any]:
+        """Track latest exportable visualization output without changing tool behavior."""
+        if export_context is None or not tools:
+            return tools
+
+        wrapped_tools: list[Any] = []
+        for tool in tools:
+            tool_name = getattr(tool, "name", "")
+            original_coroutine = getattr(tool, "coroutine", None)
+            is_visualization_tool = tool_name in {"create_chart", "create_datatable"}
+            is_query_tool = tool_name.startswith("query_") and self._get_tool_connection_metadata(tool_name) is not None
+            if (not is_visualization_tool and not is_query_tool) or original_coroutine is None:
+                wrapped_tools.append(tool)
+                continue
+
+            async def tracking_coroutine(
+                *args: Any,
+                _tool_name: str = tool_name,
+                _orig=original_coroutine,
+                **kwargs: Any,
+            ) -> Any:
+                result = await _orig(*args, **kwargs)
+                if kwargs:
+                    tool_args: Any = kwargs
+                elif args and isinstance(args[0], BaseModel):
+                    tool_args = args[0].model_dump(mode="python")
+                elif args and isinstance(args[0], dict):
+                    tool_args = args[0]
+                else:
+                    tool_args = {}
+                context = self._build_export_context_from_visualization_output(
+                    tool_name=_tool_name,
+                    tool_args=tool_args,
+                    tool_output=result,
+                )
+                if context is None:
+                    context = self._build_export_context_from_query_output(
+                        tool_name=_tool_name,
+                        tool_args=tool_args,
+                        tool_output=result,
+                    )
+                if context:
+                    export_context["latest"] = context
+                return result
+
+            wrapped_tools.append(
+                self._clone_structured_tool(
+                    tool,
+                    coroutine=tracking_coroutine,
+                    func=getattr(tool, "func", None),
+                )
+            )
+
+        return wrapped_tools
+
+    def _build_conversation_export_tool(
+        self,
+        *,
+        conversation_id: Optional[str],
+        workspace_id: Optional[str],
+        export_context: dict[str, Any] | None = None,
+    ) -> StructuredTool | None:
+        """Build the hidden request-scoped tool that creates export links."""
+        if not conversation_id:
+            return None
+
+        class _CreateDownloadLinkInput(BaseModel):
+            filename: str = Field(
+                description=(
+                    "The exact download filename to show to the user, including extension "
+                    "such as prospects.xlsx, report.pdf, list.csv, brief.docx, or notes.txt."
+                )
+            )
+            format: str = Field(
+                default="csv",
+                description=(
+                    "Requested file extension/format. Supported generated formats include csv, tsv, xlsx, xls, json, txt, md, html, xml, pdf, doc, and docx. "
+                    "For other common filetypes, provide content_base64 and the matching filename extension."
+                ),
+            )
+            columns: list[Any] = Field(default_factory=list, description="Optional table column names or column metadata objects.")
+            rows: list[Any] = Field(default_factory=list, description="Optional table rows as arrays or objects.")
+            text: str = Field(default="", description="Optional text content for document-style exports such as pdf, doc, docx, txt, md, html, or json.")
+            content_base64: str = Field(default="", description="Optional base64-encoded binary content for arbitrary filetypes or prebuilt files.")
+            mime_type: str = Field(default="", description="Optional MIME type for base64 or text content.")
+            data_connection: dict[str, Any] | None = Field(
+                default=None,
+                description=(
+                    "Optional live data connection metadata with component_id and request. "
+                    "When provided, the file is queried just in time when the user clicks the link."
+                ),
+            )
+            expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="How long the download link remains valid.")
+
+        async def _create_download_link(
+            filename: str,
+            format: str = "csv",
+            columns: list[Any] | None = None,
+            rows: list[Any] | None = None,
+            text: str = "",
+            content_base64: str = "",
+            mime_type: str = "",
+            data_connection: dict[str, Any] | None = None,
+            expires_in_seconds: int = 3600,
+        ) -> str:
+            resolved_data_connection = data_connection
+            resolved_columns = columns
+            resolved_rows = rows
+            reused_context = False
+            latest_export_context = export_context.get("latest") if isinstance(export_context, dict) else None
+            if not resolved_data_connection and not rows and not columns and not text and not content_base64 and isinstance(latest_export_context, dict):
+                candidate_connection = latest_export_context.get("data_connection")
+                if isinstance(candidate_connection, dict):
+                    resolved_data_connection = candidate_connection
+                    resolved_columns = list(latest_export_context.get("columns") or [])
+                    resolved_rows = list(latest_export_context.get("rows") or [])
+                    reused_context = True
+
+            if resolved_data_connection:
+                source = live_table_source(resolved_data_connection, columns=resolved_columns or None, rows=resolved_rows or None)
+                source_kind = "live_table"
+            elif rows or columns:
+                source = table_source(rows=rows or [], columns=columns or [])
+                source_kind = "table_snapshot"
+            else:
+                source = content_source(text=text, content_base64=(content_base64 or None), mime_type=(mime_type or None))
+                source_kind = source.get("kind", "content_snapshot")
+
+            spec = create_export_spec(
+                conversation_id=conversation_id,
+                filename=filename,
+                export_format=format,
+                source=source,
+                workspace_id=workspace_id,
+                mime_type=mime_type or None,
+                expires_in_seconds=expires_in_seconds,
+            )
+            payload = {
+                "tool": CREATE_DOWNLOAD_LINK_TOOL_ID,
+                "status": "ok",
+                "filename": spec["filename"],
+                "format": spec["format"],
+                "source_kind": source_kind,
+                "reused_previous_source": reused_context,
+                "download_url": spec["download_url"],
+                "markdown_link": f"[{spec['filename']}]({spec['download_url']})",
+                "expires_at": spec["expires_at"],
+                "instruction": "In your final answer, show the markdown_link exactly as a normal download link.",
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
+        return StructuredTool.from_function(
+            coroutine=_create_download_link,
+            name=CREATE_DOWNLOAD_LINK_TOOL_ID,
+            description=(
+                "Create a short-lived authenticated download link for a file the user asked to export. "
+                "Use this when the user asks for Excel/XLSX, CSV, PDF, DOC/DOCX, or another downloadable file. "
+                "If the user asks to export the immediately previous live chart/table/query, you may omit rows/text/content and this tool will reuse the latest exportable live source. "
+                "Pass data_connection explicitly when the user refers to a different result or when you need to override that default so the file is queried just in time on click; "
+                "otherwise pass rows/columns for table exports, text for generated documents, or content_base64 for an already-built binary file. "
+                "After this tool returns, include only the markdown_link in the final response using the filename.extension as the visible link text."
+            ),
+            args_schema=_CreateDownloadLinkInput,
+            handle_tool_error=True,
+            handle_validation_error=True,
+        )
+
     def _build_chat_diagnostic_tools(
         self,
         *,
@@ -11459,6 +12007,7 @@ except Exception as e:
             "internal_continue_stop_reason": "",
             "tool_free_synthesis_used": False,
         }
+        export_context: dict[str, Any] = {}
 
         workspace_id = (workspace_context or {}).get("workspace_id", "")
         if not isinstance(workspace_id, str):
@@ -11525,6 +12074,11 @@ except Exception as e:
                     value_str = "read"
                 accessible_workspace_modes[key_str] = value_str
         has_workspace_context = bool(workspace_id and request_user_id)
+        conversation_export_tool = self._build_conversation_export_tool(
+            conversation_id=conversation_id,
+            workspace_id=workspace_id or None,
+            export_context=export_context,
+        )
 
         if has_workspace_context:
             workspace = await userspace_service.get_workspace(
@@ -11612,6 +12166,8 @@ except Exception as e:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in {"create_chart", "create_datatable"}]
             runtime_tools.extend(userspace_tools)
             runtime_tools.extend(workspace_builtin_tools)
+            if conversation_export_tool is not None:
+                runtime_tools.append(conversation_export_tool)
             runtime_tools = self._apply_mode_specific_tool_description_overrides(
                 runtime_tools,
                 mode="userspace",
@@ -11679,6 +12235,13 @@ except Exception as e:
             )
             prompt_additions += self._build_userspace_object_storage_prompt_fragment(object_storage_config)
             prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
+            if conversation_export_tool is not None:
+                prompt_additions += (
+                    "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
+                    "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
+                    "pass data_connection only when overriding the default or targeting a different result. "
+                    "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
+                )
         else:
             has_workspace_payload = workspace_context is not None
             has_inline_viz_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in runtime_tools)
@@ -11715,6 +12278,17 @@ except Exception as e:
                         include_web_browse=(CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids),
                         include_web_read_pdf=(CHAT_WEB_READ_PDF_TOOL_ID in enabled_builtin_tool_ids),
                     )
+            if conversation_export_tool is not None:
+                runtime_tools.append(conversation_export_tool)
+                prompt_additions += (
+                    "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
+                    "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
+                    "pass data_connection only when overriding the default or targeting a different result. "
+                    "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
+                )
+
+        if conversation_export_tool is not None:
+            runtime_tools = self._wrap_tools_with_export_context_tracking(runtime_tools, export_context)
 
         if user_identity_prompt_fragment:
             prompt_additions = user_identity_prompt_fragment + prompt_additions
@@ -11740,6 +12314,7 @@ except Exception as e:
             "userspace_runtime_status_turn_hint": userspace_runtime_status_turn_hint,
             "user_identity_turn_line": user_identity_turn_line,
             "request_tool_state": request_tool_state,
+            "export_context": export_context,
             "workspace_id": workspace_id or None,
         }
 
@@ -12451,6 +13026,293 @@ except Exception as e:
             error_message=error_message,
         )
 
+    def _parse_compaction_content_parts(self, content: Any) -> Any:
+        if not isinstance(content, str):
+            return content
+
+        trimmed = content.lstrip()
+        if not trimmed or trimmed[0] not in "[{":
+            return content
+
+        try:
+            parsed: Any = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return content
+
+        if isinstance(parsed, list):
+            if parsed and isinstance(parsed[0], dict) and "type" in parsed[0]:
+                return parsed
+            return content
+
+        if isinstance(parsed, dict):
+            if parsed.get("type"):
+                return [parsed]
+            inner = parsed.get("content")
+            if isinstance(inner, list):
+                return inner
+            if isinstance(inner, str) and inner != content:
+                return self._parse_compaction_content_parts(inner)
+
+        return content
+
+    @staticmethod
+    def _image_part_placeholder_for_compaction(part: dict[str, Any]) -> str:
+        image_url = part.get("image_url")
+        detail = ""
+        media_type = "image"
+        if isinstance(image_url, dict):
+            detail_value = image_url.get("detail")
+            if detail_value:
+                detail = f" detail={detail_value}"
+            url = image_url.get("url")
+        else:
+            url = image_url
+        if isinstance(url, str) and url.startswith("data:"):
+            media_type = url.split(";", 1)[0].removeprefix("data:") or "image"
+        return f"[Image attachment: {media_type}{detail}; image data omitted from compaction.]"
+
+    @staticmethod
+    def _decode_image_data_url_for_compaction(part: dict[str, Any]) -> tuple[bytes, str] | None:
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+        if not isinstance(url, str) or not url.lower().startswith("data:image/"):
+            return None
+
+        header, separator, payload = url.partition(",")
+        if not separator or not payload or ";base64" not in header.lower():
+            return None
+
+        media_type = header.split(";", 1)[0].removeprefix("data:").lower()
+        subtype = media_type.split("/", 1)[1] if "/" in media_type else "png"
+        suffix = ".jpg" if subtype == "jpeg" else f".{re.sub(r'[^a-z0-9]+', '', subtype) or 'png'}"
+        try:
+            return base64.b64decode(payload, validate=False), suffix
+        except Exception:
+            return None
+
+    async def _extract_image_text_for_compaction(self, part: dict[str, Any]) -> str:
+        decoded = self._decode_image_data_url_for_compaction(part)
+        if decoded is None:
+            return ""
+
+        image_bytes, suffix = decoded
+        app_settings = await get_app_settings()
+        ocr_mode = str(app_settings.get("default_ocr_mode") or app_settings.get("defaultOcrMode") or "disabled").strip().lower()
+        ocr_provider = str(app_settings.get("default_ocr_provider") or app_settings.get("defaultOcrProvider") or "").strip().lower() or None
+        ocr_vision_model = str(app_settings.get("default_ocr_vision_model") or app_settings.get("defaultOcrVisionModel") or "").strip() or None
+
+        if ocr_mode == "vision" and ocr_provider and ocr_vision_model:
+            try:
+                return (
+                    await extract_text_from_file_async(
+                        Path(f"compaction-image{suffix}"),
+                        content=image_bytes,
+                        ocr_mode="vision",
+                        ocr_provider=ocr_provider,
+                        ocr_vision_model=ocr_vision_model,
+                        vision_base_url=resolve_provider_base_url(app_settings, ocr_provider, "llm"),
+                        vision_api_key=resolve_provider_api_key(app_settings, ocr_provider, "llm"),
+                    )
+                ).strip()
+            except Exception as exc:
+                logger.info("Vision OCR fallback failed for compaction image via %s/%s: %s", ocr_provider, ocr_vision_model, exc)
+
+        try:
+            return (
+                await extract_text_from_file_async(
+                    Path(f"compaction-image{suffix}"),
+                    content=image_bytes,
+                    enable_ocr=True,
+                    ocr_mode="tesseract",
+                )
+            ).strip()
+        except Exception as exc:
+            logger.debug("Could not OCR image attachment for compaction: %s", exc)
+            return ""
+
+    async def _describe_image_part_for_compaction(self, part: dict[str, Any], request_llm: Optional[Any]) -> str:
+        fallback = self._image_part_placeholder_for_compaction(part)
+
+        if request_llm is not None:
+            try:
+                normalized_part = await self._normalize_image_part_async(part)
+                response = await request_llm.ainvoke(
+                    [
+                        HumanMessage(
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "For conversation compaction, analyze this attached image. "
+                                        "Extract any visible text exactly when it is legible and provide a concise, factual image description. "
+                                        "Do not infer facts beyond the image. Return plain text with these headings: "
+                                        "Image description; Visible text."
+                                    ),
+                                },
+                                normalized_part,
+                            ]
+                        )
+                    ]
+                )
+                content = response.content
+                text = content if isinstance(content, str) else str(content)
+                text = text.strip()
+                if text:
+                    return f"[Image attachment analyzed for compaction; image data omitted.]\n{text}"
+            except Exception as exc:
+                logger.info("Could not analyze image attachment for compaction; trying OCR fallback: %s", exc)
+
+        ocr_text = await self._extract_image_text_for_compaction(part)
+        if ocr_text:
+            return f"[Image attachment OCR text extracted for compaction; image data omitted.]\nVisible text:\n{ocr_text}"
+
+        return fallback
+
+    async def _content_to_text_for_compaction(
+        self,
+        content: Any,
+        request_llm: Optional[Any],
+        conversation_model: Optional[str],
+    ) -> str:
+        parsed_content = self._parse_compaction_content_parts(content)
+        if parsed_content is None:
+            return ""
+        if isinstance(parsed_content, str):
+            return parsed_content
+
+        if isinstance(parsed_content, list):
+            processed_content, attachment_stats = await self.preprocess_message_content_async(
+                parsed_content,
+                model_id=conversation_model,
+            )
+            if attachment_stats:
+                logger.debug(
+                    "Expanded chat attachments during compaction files=%d included_chunks=%d",
+                    attachment_stats.get("file_count", 0),
+                    attachment_stats.get("included_chunk_count", 0),
+                )
+            if not isinstance(processed_content, list):
+                return str(processed_content or "")
+
+            chunks: list[str] = []
+            for item in processed_content:
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type == "text":
+                        text = str(item.get("text") or "").strip()
+                        if text:
+                            chunks.append(text)
+                    elif item_type == "image_url":
+                        chunks.append(await self._describe_image_part_for_compaction(item, request_llm))
+                    elif item_type == "file":
+                        filename = str(item.get("filename") or "attachment")
+                        chunks.append(f'[Attached file "{filename}" was present but readable text was not available during compaction.]')
+                    else:
+                        chunks.append(self._content_to_text_for_token_count([item]))
+                else:
+                    chunks.append(str(item))
+            return "\n\n".join(chunk for chunk in chunks if chunk.strip())
+
+        return self._content_to_text_for_token_count(parsed_content)
+
+    async def _format_message_for_compaction(
+        self,
+        message: Any,
+        index: int,
+        request_llm: Optional[Any],
+        conversation_model: Optional[str],
+    ) -> str:
+        role = str(getattr(message, "role", "message") or "message")
+        content = getattr(message, "content", "")
+        content_text = await self._content_to_text_for_compaction(content, request_llm, conversation_model)
+
+        events = getattr(message, "events", None)
+        if role == "assistant" and events:
+            event_lines: list[str] = []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "content":
+                    event_lines.append(str(event.get("content", "")))
+                elif event.get("type") == "tool":
+                    tool_name = str(event.get("tool") or "unknown")
+                    tool_output = str(event.get("output") or "")
+                    if len(tool_output) > 1200:
+                        tool_output = tool_output[:900] + "\n...[truncated]...\n" + tool_output[-300:]
+                    event_lines.append(f"[tool:{tool_name}] {tool_output}")
+            if event_lines:
+                content_text = "\n".join(line for line in event_lines if line)
+
+        return f"[{index + 1}] {role.upper()}:\n{content_text}".strip()
+
+    async def summarize_for_compaction(self, messages: list[Any], conversation_model: Optional[str]) -> str:
+        """Summarize older conversation history for transparent context compaction."""
+        if not messages:
+            raise ValueError("No messages were provided for compaction")
+
+        llm_resolution = await self._get_request_scoped_llm(conversation_model)
+        if llm_resolution.llm is None:
+            raise RuntimeError(self._no_llm_configured_message(llm_resolution))
+
+        request_resolution = llm_resolution
+        # Reasoning models (Responses API with reasoning enabled) consume part of
+        # the output token budget for internal reasoning tokens before emitting
+        # visible text.  A 1200-token cap causes gpt-5.4 and similar models to
+        # exhaust the budget entirely on reasoning, producing an empty summary.
+        # Use a larger cap whenever the LLM has a reasoning config attached.
+        _is_reasoning_llm = bool(getattr(llm_resolution.llm, "reasoning", None))
+        _compaction_token_cap = 4096 if _is_reasoning_llm else 1200
+        requested_output_tokens = min(llm_resolution.max_tokens or _compaction_token_cap, _compaction_token_cap)
+        if requested_output_tokens > 0:
+            request_resolution = await self._cap_request_llm_output_tokens(llm_resolution, requested_output_tokens)
+
+        formatted_messages: list[str] = []
+        for idx, message in enumerate(messages):
+            formatted_messages.append(
+                await self._format_message_for_compaction(
+                    message,
+                    idx,
+                    request_resolution.llm,
+                    conversation_model,
+                )
+            )
+        transcript = "\n\n".join(formatted_messages)
+        provider = request_resolution.provider
+        model = request_resolution.model or conversation_model or ""
+        if provider and model:
+            context_limit = await self._resolve_chat_context_limit(provider, model)
+            max_input_tokens = max(1024, context_limit - requested_output_tokens - CHAT_CONTEXT_SAFETY_MARGIN_TOKENS)
+            transcript_tokens = self._count_text_tokens_for_chat_budget(transcript)
+            if transcript_tokens > max_input_tokens:
+                chars_per_token = 4
+                max_chars = max_input_tokens * chars_per_token
+                head_chars = int(max_chars * 0.6)
+                tail_chars = max_chars - head_chars
+                transcript = transcript[:head_chars] + "\n\n...[middle of transcript omitted for compaction budget]...\n\n" + transcript[-tail_chars:]
+
+        system_prompt = (
+            "You compact an ongoing assistant conversation. Produce a concise but complete continuity summary. "
+            "Preserve user goals, decisions, constraints, open tasks, important facts, files or systems mentioned, "
+            "tool results, errors, and the assistant's latest working assumptions. Do not add new facts. "
+            "When image attachments have extracted text or descriptions in the transcript, preserve the relevant details. "
+            "Do not include image data URLs, base64 payloads, or raw binary data. "
+            "Write in neutral third person, optimized for another assistant continuing the conversation."
+        )
+        user_prompt = (
+            "Compact this earlier conversation history. The visible chat transcript will remain available to the user, "
+            "but future model calls will receive your summary plus the recent uncompressed messages.\n\n"
+            f"{transcript}"
+        )
+        request_llm = request_resolution.llm
+        if request_llm is None:
+            raise RuntimeError(self._no_llm_configured_message(request_resolution))
+        response = await request_llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+        summary = self._extract_text_from_chat_model_output(response)
+        summary = summary.strip()
+        if not summary:
+            raise RuntimeError("Compaction summary was empty")
+        return summary
+
     @staticmethod
     def _get_llm_output_token_limit(llm: Optional[Any]) -> Optional[int]:
         """Return the configured output-token cap for a chat model when available."""
@@ -12913,6 +13775,10 @@ except Exception as e:
                 user_content=langchain_content,
                 tools=context_tools,
             )
+            self._seed_latest_export_context_from_chat_history(
+                chat_history,
+                request_context.get("export_context"),
+            )
             request_llm = llm_resolution.llm
 
             if runtime_tools:
@@ -13168,6 +14034,10 @@ except Exception as e:
                 chat_history=chat_history,
                 user_content=langchain_content,
                 tools=context_tools,
+            )
+            self._seed_latest_export_context_from_chat_history(
+                chat_history,
+                request_context.get("export_context"),
             )
         except Exception as e:
             logger.exception("Error fitting streaming query to context window")

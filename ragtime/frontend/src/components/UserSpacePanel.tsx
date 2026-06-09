@@ -27,6 +27,7 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
+import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 import type { BrowseResponse, CloudOAuthProviderStatus, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserCloudOAuthAccount, UserCloudOAuthProvider, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, UserspaceMountSource, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import {
@@ -833,6 +834,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [createMountDescription, setCreateMountDescription] = useState('');
   const [createMountSyncMode, setCreateMountSyncMode] = useState<WorkspaceMountSyncMode>('merge');
   const [createMountSyncIntervalSeconds, setCreateMountSyncIntervalSeconds] = useState<number | null>(null);
+  const [createMountSyncStartMinute, setCreateMountSyncStartMinute] = useState<number | null>(null);
+  const [createMountSyncTimezone, setCreateMountSyncTimezone] = useState<string | null>(null);
   const [createMountActiveSourceTab, setCreateMountActiveSourceTab] = useState('');
   const [createMountBrowserPathDisplayMap, setCreateMountBrowserPathDisplayMap] = useState<BrowserPathDisplayMap>(createBrowserPathDisplayMap());
   const [savingMount, setSavingMount] = useState(false);
@@ -1050,8 +1053,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const codeEditorRef = useRef<HTMLDivElement>(null);
 
+  // Live-value refs for drag — updated imperatively to avoid React re-renders.
+  // JSX inline styles read from these refs, so streaming-chat re-renders
+  // pick up the correct live width/fraction.
+  const sidebarWidthLiveRef = useRef(sidebarWidth);
+  const leftPaneFractionLiveRef = useRef(leftPaneFraction);
+  const editorFractionLiveRef = useRef(editorFraction);
+
+  // DOM refs for imperative style manipulation during drag
+  const fileSidebarRef = useRef<HTMLDivElement>(null);
+  const editorSectionRef = useRef<HTMLDivElement>(null);
+  const chatSectionRef = useRef<HTMLDivElement>(null);
+
   // Collapse state: track which panes are collapsed + their last size for restore
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false);
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
   const [editorChatCollapsedSide, setEditorChatCollapsedSide] = useState<'before' | 'after' | null>(null);
   const prevSidebarWidth = useRef(180);
@@ -1060,83 +1076,184 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const skipNextLayoutPersistRef = useRef(true);
   const skipNextFullscreenPersistRef = useRef(true);
 
+  const rightPaneRef = useRef<HTMLDivElement>(null);
+
   const SIDEBAR_COLLAPSE_THRESHOLD = 60;
   const MAIN_COLLAPSE_LEFT_THRESHOLD = 0.08;
   const MAIN_COLLAPSE_RIGHT_THRESHOLD = 0.92;
   const EDITOR_COLLAPSE_TOP_THRESHOLD = 0.08;
   const EDITOR_COLLAPSE_BOTTOM_THRESHOLD = 0.92;
 
+  // ── Sidebar resize ──────────────────────────────────────────
+  // During drag: update live ref + DOM imperatively (no React state).
   const handleResizeSidebar = useCallback((delta: number) => {
-    setSidebarWidth((prev) => {
-      const next = prev + delta;
-      if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
-        prevSidebarWidth.current = prev > SIDEBAR_COLLAPSE_THRESHOLD ? prev : prevSidebarWidth.current;
-        setSidebarCollapsed(true);
-        return 0;
+    const prev = sidebarWidthLiveRef.current;
+    let next = prev + delta;
+
+    if (next < SIDEBAR_COLLAPSE_THRESHOLD) {
+      if (prev >= SIDEBAR_COLLAPSE_THRESHOLD) prevSidebarWidth.current = prev;
+      next = 0;
+    } else {
+      next = Math.min(400, next);
+    }
+
+    sidebarWidthLiveRef.current = next;
+    const el = fileSidebarRef.current;
+    if (el) {
+      if (next === 0) el.style.display = 'none';
+      else {
+        el.style.display = '';
+        el.style.width = `${next}px`;
       }
-      setSidebarCollapsed(false);
-      return Math.min(400, next);
-    });
+    }
   }, []);
 
+  // Commit final width to React state (triggers one re-render + persist).
+  const commitSidebarWidth = useCallback(() => {
+    const width = sidebarWidthLiveRef.current;
+    if (width === 0) {
+      setSidebarCollapsed(true);
+      setSidebarWidth(0);
+    } else {
+      setSidebarCollapsed(false);
+      setSidebarWidth(width);
+    }
+  }, []);
+
+  // ── Main-split resize (left pane | right pane) ──────────────
   const handleResizeMainSplit = useCallback((delta: number) => {
     const el = contentRef.current;
     if (!el) return;
     const totalWidth = el.offsetWidth;
     if (totalWidth === 0) return;
-    setLeftPaneFraction((prev) => {
-      const next = prev + delta / totalWidth;
-      if (next > MAIN_COLLAPSE_RIGHT_THRESHOLD) {
-        prevLeftPaneFraction.current = prev < MAIN_COLLAPSE_RIGHT_THRESHOLD ? prev : prevLeftPaneFraction.current;
-        setRightPaneCollapsed(true);
-        return 1;
-      }
-      if (next < MAIN_COLLAPSE_LEFT_THRESHOLD) {
-        prevLeftPaneFraction.current = prev > MAIN_COLLAPSE_LEFT_THRESHOLD ? prev : prevLeftPaneFraction.current;
-        // Left pane collapse not implemented (keep at min)
-        return 0.05;
-      }
-      setRightPaneCollapsed(false);
-      return next;
-    });
+    const prev = leftPaneFractionLiveRef.current;
+    let next = prev + delta / totalWidth;
+
+    if (next > MAIN_COLLAPSE_RIGHT_THRESHOLD) {
+      if (prev <= MAIN_COLLAPSE_RIGHT_THRESHOLD) prevLeftPaneFraction.current = prev;
+      next = 1;
+    } else if (next < MAIN_COLLAPSE_LEFT_THRESHOLD) {
+      if (prev >= MAIN_COLLAPSE_LEFT_THRESHOLD) prevLeftPaneFraction.current = prev;
+      next = 0;
+    }
+
+    leftPaneFractionLiveRef.current = next;
+    el.style.gridTemplateColumns = next === 1
+      ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
+      : next === 0
+        ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
+        : `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
+
+    if (next === 0 && leftPaneRef.current) leftPaneRef.current.style.display = 'none';
+    else if (leftPaneRef.current) leftPaneRef.current.style.display = '';
+
+    if (next === 1 && rightPaneRef.current) rightPaneRef.current.style.display = 'none';
+    else if (rightPaneRef.current) rightPaneRef.current.style.display = '';
   }, []);
 
+  const commitMainSplitFraction = useCallback(() => {
+    const fraction = leftPaneFractionLiveRef.current;
+    if (fraction === 1) {
+      setRightPaneCollapsed(true);
+      setLeftPaneCollapsed(false);
+      setLeftPaneFraction(1);
+    } else if (fraction === 0) {
+      setRightPaneCollapsed(false);
+      setLeftPaneCollapsed(true);
+      setLeftPaneFraction(0);
+    } else {
+      setRightPaneCollapsed(false);
+      setLeftPaneCollapsed(false);
+      setLeftPaneFraction(fraction);
+    }
+  }, []);
+
+  // ── Editor-chat vertical split ──────────────────────────────
   const handleResizeEditorChat = useCallback((delta: number) => {
     const el = leftPaneRef.current;
     if (!el) return;
     const totalHeight = el.offsetHeight;
     if (totalHeight === 0) return;
-    setEditorFraction((prev) => {
-      const next = prev + delta / totalHeight;
-      if (next < EDITOR_COLLAPSE_TOP_THRESHOLD) {
-        prevEditorFraction.current = prev > EDITOR_COLLAPSE_TOP_THRESHOLD ? prev : prevEditorFraction.current;
-        setEditorChatCollapsedSide('before');
-        return 0;
-      }
-      if (next > EDITOR_COLLAPSE_BOTTOM_THRESHOLD) {
-        prevEditorFraction.current = prev < EDITOR_COLLAPSE_BOTTOM_THRESHOLD ? prev : prevEditorFraction.current;
-        setEditorChatCollapsedSide('after');
-        return 1;
-      }
+    const prev = editorFractionLiveRef.current;
+    let next = prev + delta / totalHeight;
+
+    if (next < EDITOR_COLLAPSE_TOP_THRESHOLD) {
+      if (prev >= EDITOR_COLLAPSE_TOP_THRESHOLD) prevEditorFraction.current = prev;
+      next = 0;
+    } else if (next > EDITOR_COLLAPSE_BOTTOM_THRESHOLD) {
+      if (prev <= EDITOR_COLLAPSE_BOTTOM_THRESHOLD) prevEditorFraction.current = prev;
+      next = 1;
+    } else {
+      next = Math.min(0.9, Math.max(0.1, next));
+    }
+
+    editorFractionLiveRef.current = next;
+
+    // Imperatively update flex on both children
+    const editorEl = editorSectionRef.current;
+    const chatEl = chatSectionRef.current;
+    if (next === 0) {
+      if (editorEl) editorEl.style.display = 'none';
+      if (chatEl) { chatEl.style.display = ''; chatEl.style.flex = '1'; }
+    } else if (next === 1) {
+      if (editorEl) { editorEl.style.display = ''; editorEl.style.flex = '1'; }
+      if (chatEl) chatEl.style.display = 'none';
+    } else {
+      if (editorEl) { editorEl.style.display = ''; editorEl.style.flex = String(next); }
+      if (chatEl) { chatEl.style.display = ''; chatEl.style.flex = String(1 - next); }
+    }
+  }, []);
+
+  const commitEditorChatFraction = useCallback(() => {
+    const fraction = editorFractionLiveRef.current;
+    if (fraction === 0) {
+      setEditorChatCollapsedSide('before');
+    } else if (fraction === 1) {
+      setEditorChatCollapsedSide('after');
+    } else {
       setEditorChatCollapsedSide(null);
-      return Math.min(0.9, Math.max(0.1, next));
-    });
+      setEditorFraction(fraction);
+    }
   }, []);
 
   const expandSidebar = useCallback(() => {
+    const width = prevSidebarWidth.current || 180;
+    sidebarWidthLiveRef.current = width;
+    const el = fileSidebarRef.current;
+    if (el) el.style.width = `${width}px`;
     setSidebarCollapsed(false);
-    setSidebarWidth(prevSidebarWidth.current || 180);
+    setSidebarWidth(width);
+  }, []);
+
+  const expandLeftPane = useCallback(() => {
+    const fraction = prevLeftPaneFraction.current || 0.5;
+    leftPaneFractionLiveRef.current = fraction;
+    const root = contentRef.current;
+    if (root) root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+    if (leftPaneRef.current) leftPaneRef.current.style.display = '';
+    setLeftPaneCollapsed(false);
+    setLeftPaneFraction(fraction);
   }, []);
 
   const expandRightPane = useCallback(() => {
+    const fraction = prevLeftPaneFraction.current || 0.5;
+    leftPaneFractionLiveRef.current = fraction;
+    const root = contentRef.current;
+    if (root) root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+    if (rightPaneRef.current) rightPaneRef.current.style.display = '';
     setRightPaneCollapsed(false);
-    setLeftPaneFraction(prevLeftPaneFraction.current || 0.5);
+    setLeftPaneFraction(fraction);
   }, []);
 
   const expandChat = useCallback(() => {
+    const fraction = Math.min(0.9, Math.max(0.1, prevEditorFraction.current || 0.6));
+    editorFractionLiveRef.current = fraction;
+    const editorEl = editorSectionRef.current;
+    const chatEl = chatSectionRef.current;
+    if (editorEl) editorEl.style.flex = String(fraction);
+    if (chatEl) chatEl.style.flex = String(1 - fraction);
     setEditorChatCollapsedSide(null);
-    const restored = prevEditorFraction.current || 0.6;
-    setEditorFraction(Math.min(0.9, Math.max(0.1, restored)));
+    setEditorFraction(fraction);
   }, []);
 
   const isCodeEditorFocused = useCallback(() => {
@@ -1152,13 +1269,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const stored = readStoredUserSpaceLayout(userSpaceLayoutCookieName);
 
     if (!stored) {
-      setSidebarWidth(180);
+      const defW = 180;
+      sidebarWidthLiveRef.current = defW;
+      leftPaneFractionLiveRef.current = 0.5;
+      editorFractionLiveRef.current = 0.6;
+      setSidebarWidth(defW);
       setSidebarCollapsed(false);
       setLeftPaneFraction(0.5);
       setRightPaneCollapsed(false);
       setEditorFraction(0.6);
       setEditorChatCollapsedSide(null);
-      prevSidebarWidth.current = 180;
+      prevSidebarWidth.current = defW;
       prevLeftPaneFraction.current = 0.5;
       prevEditorFraction.current = 0.6;
       return;
@@ -1167,6 +1288,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const restoredSidebarWidth = clampNumber(stored.sidebarWidth, SIDEBAR_COLLAPSE_THRESHOLD, 400);
     const restoredLeftPaneFraction = clampNumber(stored.leftPaneFraction, 0.1, 0.9);
     const restoredEditorFraction = clampNumber(stored.editorFraction, 0.1, 0.9);
+
+    sidebarWidthLiveRef.current = stored.sidebarCollapsed ? 0 : restoredSidebarWidth;
+    leftPaneFractionLiveRef.current = stored.rightPaneCollapsed ? 1 : restoredLeftPaneFraction;
+    editorFractionLiveRef.current = stored.editorChatCollapsedSide === 'before' ? 0
+      : stored.editorChatCollapsedSide === 'after' ? 1
+      : restoredEditorFraction;
 
     setSidebarCollapsed(stored.sidebarCollapsed);
     setSidebarWidth(stored.sidebarCollapsed ? 0 : restoredSidebarWidth);
@@ -1322,6 +1449,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
     return paths;
   }, [mounts]);
+  const isPathInMountTarget = useCallback((path: string) => {
+    const normalized = normalizeWorkspacePath(path);
+    if (!normalized) return false;
+    for (const targetPath of mountTargetPaths.keys()) {
+      if (normalized === targetPath || normalized.startsWith(`${targetPath}/`)) {
+        return true;
+      }
+    }
+    return false;
+  }, [mountTargetPaths]);
   const workspaceMountTargetBrowserCacheKey = useMemo(
     () => `${activeWorkspaceId ?? 'no-workspace'}:${fileEntriesFingerprint(fileBrowserEntries)}`,
     [activeWorkspaceId, fileBrowserEntries]
@@ -1335,12 +1472,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const changedFilePaths = useMemo(() => {
     const paths = new Set<string>();
     for (const path of changedFiles) {
-      if (!acknowledgedFiles.has(path)) {
+      if (!acknowledgedFiles.has(path) && !isPathInMountTarget(path)) {
         paths.add(path);
       }
     }
     return paths;
-  }, [changedFiles, acknowledgedFiles]);
+  }, [changedFiles, acknowledgedFiles, isPathInMountTarget]);
 
   const activeWorkspaceRole = useMemo(() => {
     if (!activeWorkspace) return 'viewer';
@@ -4632,42 +4769,52 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       }
       await loadWorkspaceData(activeWorkspaceId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete file');
+      const message = getApiErrorMessage(err, 'Failed to delete file');
+      setError(message);
+      toast.error(message, 8000);
     }
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath, toast]);
 
   const handleDeleteFolder = useCallback(async (folderPath: string) => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
 
-    const normalizedFolderPath = normalizeWorkspacePath(folderPath);
-    const descendants = files.filter((file) => file.path.startsWith(`${normalizedFolderPath}/`));
-    if (descendants.length === 0) {
+    try {
+      const normalizedFolderPath = normalizeWorkspacePath(folderPath);
+      const descendants = files.filter((file) => file.path.startsWith(`${normalizedFolderPath}/`));
+      if (descendants.length === 0) {
+        setDeleteConfirmFolderPath(null);
+        setError('Folder is empty; no files to delete');
+        return;
+      }
+
+      const results = await Promise.allSettled(
+        descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path))
+      );
+      const failures = results.filter((result) => result.status === 'rejected').length;
+
       setDeleteConfirmFolderPath(null);
-      setError('Folder is empty; no files to delete');
-      return;
-    }
+      // Clean up changed/acknowledged markers for all deleted descendants.
+      const deletedPaths = new Set(descendants.map((file) => file.path));
+      setChangedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
+      setAcknowledgedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
+      if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
+        setSelectedFilePath('');
+        setFileContent('');
+        setFileDirty(false);
+      }
+      await loadWorkspaceData(activeWorkspaceId);
 
-    const results = await Promise.allSettled(
-      descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path))
-    );
-    const failures = results.filter((result) => result.status === 'rejected').length;
-
-    setDeleteConfirmFolderPath(null);
-    // Clean up changed/acknowledged markers for all deleted descendants.
-    const deletedPaths = new Set(descendants.map((file) => file.path));
-    setChangedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
-    setAcknowledgedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
-    if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
-      setSelectedFilePath('');
-      setFileContent('');
-      setFileDirty(false);
+      if (failures > 0) {
+        const message = `Deleted folder contents with ${failures} failure(s)`;
+        setError(message);
+        toast.error(message, 8000);
+      }
+    } catch (err) {
+      const message = getApiErrorMessage(err, 'Failed to delete folder');
+      setError(message);
+      toast.error(message, 8000);
     }
-    await loadWorkspaceData(activeWorkspaceId);
-
-    if (failures > 0) {
-      setError(`Deleted folder contents with ${failures} failure(s)`);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath]);
+  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath, toast]);
 
   const handleToggleFolder = useCallback((folderPath: string) => {
     setExpandedFolders((current) => {
@@ -5278,6 +5425,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         target_directory_to_create: targetDirectoryToCreate,
         auto_sync_enabled: false,
         sync_interval_seconds: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncIntervalSeconds : null,
+        sync_start_minute: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && createMountSyncIntervalSeconds != null
+          ? (createMountSyncStartMinute ?? defaultScheduleStartMinute())
+          : null,
+        sync_timezone: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && createMountSyncIntervalSeconds != null
+          ? (createMountSyncTimezone ?? defaultScheduleTimezone())
+          : null,
         sync_mode: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncMode : 'merge',
         description: createMountDescription.trim() || null,
       });
@@ -5294,6 +5447,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setCreateMountDescription('');
       setCreateMountSyncMode('merge');
       setCreateMountSyncIntervalSeconds(null);
+      setCreateMountSyncStartMinute(null);
+      setCreateMountSyncTimezone(null);
       setError(created.sync_notice || null);
       if (targetDirectoryToCreate) {
         await loadWorkspaceData(activeWorkspaceId);
@@ -5303,7 +5458,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setSavingMount(false);
     }
-  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountSourceScope, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncIntervalSeconds, createMountSyncMode, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
+  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountSourceScope, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncIntervalSeconds, createMountSyncMode, createMountSyncStartMinute, createMountSyncTimezone, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
 
   const handleSaveMountDescription = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
@@ -5575,12 +5730,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError]);
 
-  const handleUpdateMountSyncInterval = useCallback(async (mount: WorkspaceMount, intervalSeconds: number | null) => {
+  const handleUpdateMountSyncInterval = useCallback(async (
+    mount: WorkspaceMount,
+    intervalSeconds: number | null,
+    startMinute: number | null = mount.sync_start_minute,
+    timezone: string | null = mount.sync_timezone,
+  ) => {
     if (!activeWorkspaceId || !isOwner) return;
     setSavingMountIntervalId(mount.id);
     try {
       const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
         sync_interval_seconds: intervalSeconds,
+        sync_start_minute: intervalSeconds == null ? null : (startMinute ?? defaultScheduleStartMinute()),
+        sync_timezone: intervalSeconds == null ? null : (timezone ?? defaultScheduleTimezone()),
       });
       setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
       setError(null);
@@ -6277,7 +6439,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       ? 'pending'
                       : 'error'
                 : 'live';
-          const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p));
+          const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p) && !isPathInMountTarget(p));
           rows.push(
             <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled || isMountDisconnected ? ' userspace-tree-mount-disabled' : ''}`}>
               <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
@@ -6365,7 +6527,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         ];
       }
 
-      const isFileChanged = changedFilePaths.has(node.path);
+      const isFileInMount = isPathInMountTarget(node.path);
+      const isFileChanged = changedFilePaths.has(node.path) && !isFileInMount;
 
       return [
         <div
@@ -6385,6 +6548,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 className="userspace-tree-file-changed-dot"
                 title="Changed since last snapshot"
               />
+            )}
+            {isFileInMount && (
+              <span
+                className="userspace-tree-file-untracked-badge"
+                title="Mounted file, not tracked in snapshots"
+              >
+                u
+              </span>
             )}
           </button>
           {canEditWorkspace && (
@@ -6423,7 +6594,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
+  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, isPathInMountTarget, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
 
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'
@@ -7111,14 +7282,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       )}
 
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
-      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: rightPaneCollapsed ? '1fr 16px 0fr' : `${leftPaneFraction}fr 4px ${1 - leftPaneFraction}fr` }}>
+      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: rightPaneCollapsed ? 'minmax(0, 1fr) 16px minmax(0, 0fr)' : leftPaneCollapsed ? 'minmax(0, 0fr) 16px minmax(0, 1fr)' : `minmax(0, ${leftPaneFractionLiveRef.current}fr) 4px minmax(0, ${1 - leftPaneFractionLiveRef.current}fr)` }}>
         {/* Left pane */}
-        <div className="userspace-left-pane" ref={leftPaneRef}>
-          {editorChatCollapsedSide !== 'before' && (
-          <div className="userspace-editor-section" style={{ flex: editorFraction }}>
+        <div className="userspace-left-pane" ref={leftPaneRef} style={{ display: leftPaneCollapsed ? 'none' : undefined }}>
+          <div className="userspace-editor-section" ref={editorSectionRef} style={{ display: editorChatCollapsedSide === 'before' ? 'none' : undefined, flex: editorFractionLiveRef.current }}>
             {/* File sidebar */}
             {!sidebarCollapsed && (
-            <div className="userspace-file-sidebar" style={{ width: sidebarWidth }}>
+            <div className="userspace-file-sidebar" ref={fileSidebarRef} style={{ width: sidebarWidthLiveRef.current }}>
               <div className="userspace-file-sidebar-header">
                 <h4><File size={14} /> Files</h4>
               </div>
@@ -7161,7 +7331,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             </div>
             )}
 
-            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
+            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} onResizeEnd={commitSidebarWidth} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
 
             {/* Code editor */}
             <div className="userspace-code-editor" ref={codeEditorRef}>
@@ -7218,18 +7388,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               )}
             </div>
           </div>
-          )}
 
           <ResizeHandle
             direction="vertical"
             onResize={handleResizeEditorChat}
+            onResizeEnd={commitEditorChatFraction}
             collapsed={editorChatCollapsedSide ?? undefined}
             onExpand={expandChat}
           />
 
           {/* Chat section */}
-          {editorChatCollapsedSide !== 'after' && (
-          <div className="userspace-chat-section" style={{ flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFraction }}>
+          <div className="userspace-chat-section" ref={chatSectionRef} style={{ display: editorChatCollapsedSide === 'after' ? 'none' : undefined, flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current }}>
             {activeWorkspaceId ? (
               <ChatPanel
                 key={activeWorkspaceId}
@@ -7273,14 +7442,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               </div>
             )}
           </div>
-          )}
         </div>
 
-        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} collapsed={rightPaneCollapsed ? 'after' : undefined} onExpand={expandRightPane} />
+        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} onResizeEnd={commitMainSplitFraction} collapsed={rightPaneCollapsed ? 'after' : leftPaneCollapsed ? 'before' : undefined} onExpand={leftPaneCollapsed ? expandLeftPane : expandRightPane} />
 
         {/* Right pane */}
-        {!rightPaneCollapsed && (
-        <div className="userspace-right-pane">
+        <div
+          className="userspace-right-pane"
+          ref={rightPaneRef}
+          style={{ display: rightPaneCollapsed ? 'none' : undefined }}
+        >
           {activeRightTab === 'preview' ? (
             <div className="userspace-preview-section">
               <UserSpaceArtifactPreview
@@ -7691,7 +7862,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             )}
           </div>
         </div>
-        )}
       </div>
 
       <FileDiffOverlay
@@ -8083,7 +8253,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                   onClick={() => {
                                                     setExpandedMountIntervalMenuId(null);
                                                     setMountIntervalMenuRect(null);
-                                                    void handleUpdateMountSyncInterval(mount, seconds);
+                                                    void handleUpdateMountSyncInterval(mount, seconds, mount.sync_start_minute, mount.sync_timezone);
                                                   }}
                                                 >
                                                   <span>Every {formatMountSyncInterval(seconds)}</span>
@@ -8097,7 +8267,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                   onClick={() => {
                                                     setExpandedMountIntervalMenuId(null);
                                                     setMountIntervalMenuRect(null);
-                                                    void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds);
+                                                    void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, mount.sync_timezone);
                                                   }}
                                                 >
                                                   <span>Every {formatMountSyncInterval(mount.sync_interval_seconds)}</span>
@@ -8108,6 +8278,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                           </>
                                         )}
                                       </div>
+                                    )}
+                                    {mount.auto_sync_enabled && mount.sync_interval_seconds != null && (
+                                      <ScheduleStartTimeInput
+                                        enabled={true}
+                                        startMinute={mount.sync_start_minute}
+                                        timezone={mount.sync_timezone}
+                                        onStartMinuteChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, value, mount.sync_timezone)}
+                                        onTimezoneChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, value)}
+                                        disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
+                                        label="Start Time"
+                                        style={{ marginBottom: 0, minWidth: 220 }}
+                                      />
                                     )}
                                     <button
                                       className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
@@ -8617,6 +8799,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 const value = e.target.value;
                                 if (value === 'custom') return;
                                 setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
+                                if (value === 'inherit') {
+                                  setCreateMountSyncStartMinute(null);
+                                  setCreateMountSyncTimezone(null);
+                                } else {
+                                  setCreateMountSyncStartMinute((current) => current ?? defaultScheduleStartMinute());
+                                  setCreateMountSyncTimezone((current) => current ?? defaultScheduleTimezone());
+                                }
                               }}
                               title="How often Auto Sync checks this mount"
                               style={{
@@ -8636,6 +8825,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 </option>
                               ))}
                             </select>
+                            <ScheduleStartTimeInput
+                              enabled={createMountSyncIntervalSeconds != null}
+                              startMinute={createMountSyncStartMinute}
+                              timezone={createMountSyncTimezone}
+                              onStartMinuteChange={setCreateMountSyncStartMinute}
+                              onTimezoneChange={setCreateMountSyncTimezone}
+                              label="Start Time"
+                            />
                           </label>
                         </div>
                         );

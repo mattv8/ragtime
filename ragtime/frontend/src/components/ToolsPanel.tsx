@@ -11,6 +11,7 @@ import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
+import { Popover } from './Popover';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -89,9 +90,10 @@ interface ToolCardProps {
   activeSchemaJob?: SchemaIndexJob | null;
   schemaStats?: SchemaIndexStats | null;
   onInlineUpdate?: (toolId: string, updates: { name?: string; description?: string }) => Promise<void>;
+  onToggleWrite?: (toolId: string, allowWrite: boolean) => void;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate }: ToolCardProps) {
+function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate, onToggleWrite }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
   const workingDirectory = getToolWorkingDirectory(tool);
@@ -284,7 +286,9 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
                 </div>
               ) : (
                 <div className="editable-field-wrapper name-wrapper" onClick={() => handleStartEdit('name')}>
-                  <h3>{tool.name}</h3>
+                  <Popover className="tool-title-popover" content={tool.name} position="top" trigger="hover">
+                    <h3>{tool.name}</h3>
+                  </Popover>
                   <button
                     type="button"
                     className="inline-edit-btn"
@@ -369,27 +373,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      {(tool.allow_write || workingDirectory || activeSchemaJob) && (
-        <div className="tool-card-constraints">
-          <IndexingPill
-            activeJob={activeSchemaJob}
-            progressLabelPrefix="Indexing"
-          />
-          {tool.allow_write && (
-            <span className="write-enabled-pill">
-              <Icon name="alert-triangle" size={12} />
-              Write enabled
-            </span>
-          )}
-          {workingDirectory && (
-            <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
-              <Icon name="folder" size={14} />
-              <span className="path-text">{workingDirectory}</span>
-            </span>
-          )}
-        </div>
-      )}
-
       {/* Schema index stats */}
       {hasSchemaIndexing && schemaStats && schemaStats.embedding_count > 0 && (
         <div className="tool-card-schema-stats">
@@ -405,60 +388,88 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
         </div>
       )}
 
-      <div className="tool-card-actions">
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => onTest(tool.id)}
-          disabled={testing}
-        >
-          {testing ? 'Testing...' : 'Test'}
-        </button>
-        {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
-          <>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => onPdmReindex(tool.id, false)}
-              disabled={pdmIndexing}
-              title="Index new and changed documents"
-            >
-              {pdmIndexing ? 'Indexing...' : 'Index'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => onPdmReindex(tool.id, true)}
-              disabled={pdmIndexing}
-              title="Re-index all documents from scratch"
-            >
-              Full Re-index
-            </button>
-          </>
-        )}
-        {hasSchemaIndexing && onSchemaReindex && (
+      <div className="tool-card-footer">
+        <div className="tool-card-constraints">
+          {onToggleWrite && (
+            <div className={`write-mode-toggle ${tool.allow_write ? 'active' : ''}`} title="Quick toggle write access">
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={tool.allow_write}
+                  onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+              <span>{tool.allow_write ? 'Allow Write' : 'Read Only'}</span>
+            </div>
+          )}
+          <IndexingPill
+            activeJob={activeSchemaJob}
+            progressLabelPrefix="Indexing"
+          />
+          {workingDirectory && (
+            <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
+              <Icon name="folder" size={14} />
+              <span className="path-text">{workingDirectory}</span>
+            </span>
+          )}
+        </div>
+
+        <div className="tool-card-actions">
           <button
             type="button"
             className="btn btn-sm"
-            onClick={() => onSchemaReindex(tool.id, true)}
-            disabled={schemaIndexing}
-            title="Re-index database schema"
+            onClick={() => onTest(tool.id)}
+            disabled={testing}
           >
-            {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+            {testing ? 'Testing...' : 'Test'}
           </button>
-        )}
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => onEdit(tool)}
-        >
-          Edit
-        </button>
-        <DeleteConfirmButton
-          onDelete={() => onDelete(tool.id)}
-          className="btn btn-sm btn-danger"
-          title="Delete tool"
-        />
+          {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
+            <>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onPdmReindex(tool.id, false)}
+                disabled={pdmIndexing}
+                title="Index new and changed documents"
+              >
+                {pdmIndexing ? 'Indexing...' : 'Index'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onPdmReindex(tool.id, true)}
+                disabled={pdmIndexing}
+                title="Re-index all documents from scratch"
+              >
+                Full Re-index
+              </button>
+            </>
+          )}
+          {hasSchemaIndexing && onSchemaReindex && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => onSchemaReindex(tool.id, true)}
+              disabled={schemaIndexing}
+              title="Re-index database schema"
+            >
+              {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => onEdit(tool)}
+          >
+            Edit
+          </button>
+          <DeleteConfirmButton
+            onDelete={() => onDelete(tool.id)}
+            className="btn btn-sm btn-danger"
+            title="Delete tool"
+          />
+        </div>
       </div>
     </div>
   );
@@ -503,6 +514,57 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     affected: MountSourceAffectedWorkspacesResponse | null;
     loading: boolean;
   } | null>(null);
+  const [writeConfirmTool, setWriteConfirmTool] = useState<ToolConfig | null>(null);
+
+  // Selected group tab (null = show ungrouped / all)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const groupContentRef = useRef<HTMLDivElement>(null);
+
+  // Group the tools for display — include ALL groups (even empty) as drop targets
+  const { allGroups, ungroupedTools } = useMemo(() => {
+    const grouped = new Map<string, { group: ToolGroup; tools: ToolConfig[] }>();
+    const ungrouped: ToolConfig[] = [];
+
+    for (const g of groups) {
+      grouped.set(g.id, { group: g, tools: [] });
+    }
+
+    for (const tool of tools) {
+      if (tool.group_id && grouped.has(tool.group_id)) {
+        grouped.get(tool.group_id)!.tools.push(tool);
+      } else {
+        ungrouped.push(tool);
+      }
+    }
+
+    return {
+      allGroups: Array.from(grouped.values()),
+      ungroupedTools: ungrouped,
+    };
+  }, [tools, groups]);
+
+  const activeSchemaJobsByToolId = useMemo(() => {
+    const jobsByToolId: Record<string, SchemaIndexJob> = {};
+
+    for (const job of schemaJobs) {
+      if ((job.status === 'pending' || job.status === 'indexing') && !jobsByToolId[job.tool_config_id]) {
+        jobsByToolId[job.tool_config_id] = job;
+      }
+    }
+
+    return jobsByToolId;
+  }, [schemaJobs]);
+
+  const selectedGroup = useMemo(() => {
+    if (!selectedGroupId) {
+      return null;
+    }
+
+    return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
+  }, [allGroups, selectedGroupId]);
+
+  const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
+  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
 
   const loadTools = useCallback(async () => {
     try {
@@ -626,15 +688,15 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     toast.success('Tool configuration saved successfully');
   };
 
-  const patchToolInState = (toolId: string, updates: Partial<ToolConfig>) => {
+  const patchToolInState = useCallback((toolId: string, updates: Partial<ToolConfig>) => {
     setTools((current) =>
       current.map((tool) => tool.id === toolId ? { ...tool, ...updates } : tool)
     );
-  };
+  }, []);
 
-  const replaceToolInState = (updatedTool: ToolConfig) => {
+  const replaceToolInState = useCallback((updatedTool: ToolConfig) => {
     setTools((current) => current.map((tool) => tool.id === updatedTool.id ? updatedTool : tool));
-  };
+  }, []);
 
   const startEditingGroup = useCallback((groupId: string, name: string) => {
     setEditingGroupId(groupId);
@@ -682,6 +744,38 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       toast.error(err instanceof Error ? err.message : 'Failed to toggle tool');
     }
   };
+
+  const handleToggleWrite = async (toolId: string, allowWrite: boolean) => {
+    if (allowWrite) {
+      const tool = tools.find((t) => t.id === toolId);
+      if (tool) {
+        setWriteConfirmTool(tool);
+      }
+      return;
+    }
+
+    try {
+      const updatedTool = await api.updateToolConfig(toolId, { allow_write: false });
+      replaceToolInState(updatedTool);
+      toast.success('Write access disabled');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to disable write access');
+    }
+  };
+
+  const handleConfirmWriteEnable = useCallback(async () => {
+    if (!writeConfirmTool) return;
+    const toolId = writeConfirmTool.id;
+    setWriteConfirmTool(null);
+
+    try {
+      const updatedTool = await api.updateToolConfig(toolId, { allow_write: true });
+      replaceToolInState(updatedTool);
+      toast.success('Write access enabled');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to enable write access');
+    }
+  }, [writeConfirmTool, replaceToolInState, toast]);
 
   const handleTestTool = async (toolId: string) => {
     try {
@@ -792,69 +886,6 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   };
 
-  const handleAssignGroup = async (toolId: string, groupId: string | null) => {
-    try {
-      const previousTool = tools.find((tool) => tool.id === toolId);
-      const previousGroupId = previousTool?.group_id ?? null;
-      const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
-      replaceToolInState(updatedTool);
-
-      await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to assign group');
-    }
-  };
-
-  // Group the tools for display — include ALL groups (even empty) as drop targets
-  const { allGroups, ungroupedTools } = useMemo(() => {
-    const grouped = new Map<string, { group: ToolGroup; tools: ToolConfig[] }>();
-    const ungrouped: ToolConfig[] = [];
-
-    for (const g of groups) {
-      grouped.set(g.id, { group: g, tools: [] });
-    }
-
-    for (const tool of tools) {
-      if (tool.group_id && grouped.has(tool.group_id)) {
-        grouped.get(tool.group_id)!.tools.push(tool);
-      } else {
-        ungrouped.push(tool);
-      }
-    }
-
-    return {
-      allGroups: Array.from(grouped.values()),
-      ungroupedTools: ungrouped,
-    };
-  }, [tools, groups]);
-
-  const activeSchemaJobsByToolId = useMemo(() => {
-    const jobsByToolId: Record<string, SchemaIndexJob> = {};
-
-    for (const job of schemaJobs) {
-      if ((job.status === 'pending' || job.status === 'indexing') && !jobsByToolId[job.tool_config_id]) {
-        jobsByToolId[job.tool_config_id] = job;
-      }
-    }
-
-    return jobsByToolId;
-  }, [schemaJobs]);
-
-  // Selected group tab (null = show ungrouped / all)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
-  const groupContentRef = useRef<HTMLDivElement>(null);
-
-  const selectedGroup = useMemo(() => {
-    if (!selectedGroupId) {
-      return null;
-    }
-
-    return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
-  }, [allGroups, selectedGroupId]);
-
-  const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
-  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
-
   const deleteEmptyGroupIfNeeded = useCallback(async (toolId: string, previousGroupId: string | null, nextGroupId: string | null | undefined) => {
     if (!previousGroupId || previousGroupId === nextGroupId) {
       return;
@@ -875,6 +906,19 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       setSelectedGroupId(null);
     }
   }, [tools, selectedGroupId]);
+
+  const handleAssignGroup = useCallback(async (toolId: string, groupId: string | null) => {
+    try {
+      const previousTool = tools.find((tool) => tool.id === toolId);
+      const previousGroupId = previousTool?.group_id ?? null;
+      const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
+      replaceToolInState(updatedTool);
+
+      await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to assign group');
+    }
+  }, [tools, replaceToolInState, deleteEmptyGroupIfNeeded, toast]);
 
   // Click outside the group content area clears the selected group
   useEffect(() => {
@@ -1339,30 +1383,47 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleToolCardDrop = useCallback(async (e: React.DragEvent, targetToolId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    const draggedId = e.dataTransfer.getData('text/plain');
+    const draggedId = e.dataTransfer.getData('text/plain') || dragToolId;
 
     const localDragOverId = dragOverToolId;
     const localInsertBefore = localDragOverId ? dragInsertBefore : true;
     const localGroupTarget = dragGroupTargetId;
+
+    // Re-detect center zone during drop to ensure grouping intent is captured even if state was cleared
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width;
+    const relY = (e.clientY - rect.top) / rect.height;
+    const isCenterZone = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
 
     clearDragPreview();
     setDragToolId(null);
 
     if (!draggedId || draggedId === targetToolId) return;
 
-    // Center drop → create a new group containing both tools
-    if (localGroupTarget === targetToolId) {
+    // Center drop or localGroupTarget match → group tools
+    if (isCenterZone || localGroupTarget === targetToolId) {
       try {
-        const targetTool = tools.find((tool) => tool.id === targetToolId) ?? null;
-        const { created: newGroup } = await createSuggestedGroup(targetTool);
-        // Assign both tools to the new group (target first so it retains lower sort_order)
-        await Promise.all([
-          handleAssignGroup(targetToolId, newGroup.id),
-          handleAssignGroup(draggedId, newGroup.id),
-        ]);
-        setSelectedGroupId(newGroup.id);
+        const targetTool = tools.find((tool) => tool.id === targetToolId);
+        if (!targetTool) return;
+
+        const targetGroupId = targetTool.group_id;
+
+        if (targetGroupId) {
+          // Target is already in a group, just add dragged tool to it
+          await handleAssignGroup(draggedId, targetGroupId);
+          setSelectedGroupId(targetGroupId);
+        } else {
+          // Target is not in a group, create a new suggested group for both
+          const { created: newGroup } = await createSuggestedGroup(targetTool);
+          // Assign both tools to the new group (target first so it retains lower sort_order)
+          await Promise.all([
+            handleAssignGroup(targetToolId, newGroup.id),
+            handleAssignGroup(draggedId, newGroup.id),
+          ]);
+          setSelectedGroupId(newGroup.id);
+        }
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to create group');
+        toast.error(err instanceof Error ? err.message : 'Failed to group tools');
       }
       return;
     }
@@ -1373,7 +1434,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     if (toIdx < 0) return;
     const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
     await reorderVisibleTools(draggedId, insertIdx);
-  }, [visibleTools, dragOverToolId, dragInsertBefore, dragGroupTargetId, reorderVisibleTools, clearDragPreview, handleAssignGroup, toast]);
+  }, [visibleTools, tools, dragToolId, dragOverToolId, dragInsertBefore, dragGroupTargetId, reorderVisibleTools, clearDragPreview, handleAssignGroup, createSuggestedGroup, setSelectedGroupId, toast]);
 
   const handleSlotDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
@@ -1475,6 +1536,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
           schemaStats={schemaStats[tool.id] || null}
           onInlineUpdate={handleInlineUpdate}
+          onToggleWrite={handleToggleWrite}
         />
       </div>
     );
@@ -1902,6 +1964,39 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                 disabled={disableConfirmation.loading}
               >
                 Disable Mount Source
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Write Access Enable Confirmation Modal */}
+      {writeConfirmTool && (
+        <div className="modal-overlay" onClick={() => setWriteConfirmTool(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Enable Write Access</h3>
+              <button className="modal-close" onClick={() => setWriteConfirmTool(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                Are you sure you want to enable write access for <strong>{writeConfirmTool.name}</strong>?
+              </p>
+              <p className="field-help" style={{ marginTop: 8 }}>
+                This allows the AI to modify data, run destructive queries, and make changes to the connected system.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setWriteConfirmTool(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => void handleConfirmWriteEnable()}
+              >
+                Enable Write Access
               </button>
             </div>
           </div>

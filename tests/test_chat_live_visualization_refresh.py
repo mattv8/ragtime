@@ -5,7 +5,9 @@ import json
 import sys
 import types
 import unittest
+from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import cast
 from unittest.mock import patch
 
 inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
@@ -26,8 +28,8 @@ from ragtime.indexer.live_visualizations import (
     build_component_request_from_visualization,
     render_refreshed_visualization,
 )
-from ragtime.tools.chart import CreateLiveChartInput, create_chart
-from ragtime.tools.datatable import CreateLiveDataTableInput, create_datatable
+from ragtime.tools.chart import CreateLiveChartInput, create_chart, create_chart_tool
+from ragtime.tools.datatable import CreateLiveDataTableInput, create_datatable, create_datatable_tool
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspace
 from ragtime.userspace.service import UserSpaceService
 
@@ -83,6 +85,44 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
 
         self.assertEqual(payload.data_connection["component_id"], "tool-1")
 
+    def test_live_datatable_schema_merges_columns_into_source_data(self) -> None:
+        payload = CreateLiveDataTableInput.model_validate(
+            {
+                "title": "Accounts",
+                "columns": ["name"],
+                "source_data": {"rows": [["A"]]},
+                "data_connection": {
+                    "component_id": "tool-1",
+                    "request": {"query": "select name from accounts limit 10"},
+                },
+            }
+        )
+
+        self.assertEqual(payload.source_data, {"columns": ["name"], "rows": [["A"]]})
+
+    def test_live_datatable_validation_feedback_names_connection_fields(self) -> None:
+        with self.assertRaises(ValidationError) as raised:
+            CreateLiveDataTableInput.model_validate(
+                {
+                    "title": "Accounts",
+                    "source_data": {"columns": ["name"], "rows": [["A"]]},
+                    "data_connection": {
+                        "component_kind": "web_research",
+                        "research_dates": "Nov-Feb",
+                    },
+                }
+            )
+
+        error_text = str(raised.exception)
+        self.assertIn("data_connection.component_id is required", error_text)
+        self.assertIn("data_connection.request is required", error_text)
+        handler = cast(Callable[[Exception], str], create_datatable_tool.handle_validation_error)
+        feedback = handler(raised.exception)
+        self.assertIn("Tool input validation error for create_datatable", feedback)
+        self.assertIn("component_id", feedback)
+        self.assertIn("request", feedback)
+        self.assertIn("render a markdown table", feedback)
+
     def test_live_chart_schema_requires_result_mapping(self) -> None:
         with self.assertRaises(ValidationError):
             CreateLiveChartInput.model_validate(
@@ -121,6 +161,29 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
         )
 
         self.assertEqual(payload.data_connection["component_id"], "tool-1")
+
+    def test_live_chart_validation_feedback_names_mapping_fields(self) -> None:
+        with self.assertRaises(ValidationError) as raised:
+            CreateLiveChartInput.model_validate(
+                {
+                    "chart_type": "bar",
+                    "title": "Revenue",
+                    "source_data": {
+                        "columns": ["month", "revenue"],
+                        "rows": [["Jan", 12]],
+                    },
+                    "data_connection": {
+                        "component_id": "tool-1",
+                        "request": {"query": "select month, revenue from sales limit 10"},
+                    },
+                }
+            )
+
+        self.assertIn("data_connection.result_mapping is required for live charts", str(raised.exception))
+        handler = cast(Callable[[Exception], str], create_chart_tool.handle_validation_error)
+        feedback = handler(raised.exception)
+        self.assertIn("Tool input validation error for create_chart", feedback)
+        self.assertIn("result_mapping", feedback)
 
     def test_live_chart_schema_accepts_dataset_field_alias(self) -> None:
         payload = CreateLiveChartInput.model_validate(

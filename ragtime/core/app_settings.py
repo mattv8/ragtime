@@ -291,6 +291,8 @@ class SettingsCache:
                 "allowed_openapi_models": getattr(prisma_settings, "allowedOpenapiModels", None) or [],
                 "openapi_sync_chat_models": getattr(prisma_settings, "openapiSyncChatModels", True),
                 "max_iterations": prisma_settings.maxIterations,
+                "chat_compaction_threshold_percent": getattr(prisma_settings, "chatCompactionThresholdPercent", 80),
+                "chat_auto_compaction_threshold_percent": getattr(prisma_settings, "chatAutoCompactionThresholdPercent", 99),
                 # Embedding settings
                 "embedding_provider": prisma_settings.embeddingProvider,
                 "embedding_model": prisma_settings.embeddingModel,
@@ -317,6 +319,16 @@ class SettingsCache:
                     prisma_settings,
                     "userspaceMountSyncIntervalSeconds",
                     30,
+                ),
+                "userspace_mount_sync_start_minute": getattr(
+                    prisma_settings,
+                    "userspaceMountSyncStartMinute",
+                    None,
+                ),
+                "userspace_mount_sync_timezone": getattr(
+                    prisma_settings,
+                    "userspaceMountSyncTimezone",
+                    None,
                 ),
             }
             return self._settings
@@ -382,6 +394,8 @@ class SettingsCache:
                 "allowed_openapi_models": [],
                 "openapi_sync_chat_models": True,
                 "max_iterations": 15,
+                "chat_compaction_threshold_percent": 80,
+                "chat_auto_compaction_threshold_percent": 99,
                 # Embedding settings
                 "embedding_provider": "ollama",
                 "embedding_model": "nomic-embed-text",
@@ -405,6 +419,8 @@ class SettingsCache:
                 # User Space configuration
                 "userspace_preview_sandbox_flags": list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
                 "userspace_mount_sync_interval_seconds": 30,
+                "userspace_mount_sync_start_minute": None,
+                "userspace_mount_sync_timezone": None,
             }
 
     async def get_tool_configs(self) -> List[dict]:

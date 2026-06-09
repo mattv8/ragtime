@@ -12,6 +12,26 @@ from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+ODOO_OUTPUT_BEGIN_MARKER = "__RAGTIME_ODOO_OUTPUT_BEGIN__"
+ODOO_OUTPUT_END_MARKER = "__RAGTIME_ODOO_OUTPUT_END__"
+ODOO_TEST_MARKER = "__RAGTIME_ODOO_TEST_SUCCESS__"
+
+
+def _extract_marker_output(output: str) -> str | None:
+    """Extract user output between Ragtime output markers, if present."""
+    lines = output.splitlines()
+    start_idx = next((i for i, line in enumerate(lines) if line.strip() == ODOO_OUTPUT_BEGIN_MARKER), None)
+    if start_idx is None:
+        return None
+
+    end_idx = next((i for i in range(start_idx + 1, len(lines)) if lines[i].strip() == ODOO_OUTPUT_END_MARKER), len(lines))
+    marker_output = "\n".join(line.rstrip() for line in lines[start_idx + 1 : end_idx]).strip()
+
+    if "ODOO_ERROR:" in marker_output:
+        error_idx = marker_output.index("ODOO_ERROR:")
+        return f"Error: {marker_output[error_idx + 11 :].strip()}"
+    return marker_output
+
 
 def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
     """Filter Odoo shell initialization noise from output.
@@ -35,36 +55,18 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
     Returns:
         Filtered output containing only the relevant command results
     """
-    # For SSH mode, the Odoo shell properly separates stdout (user output)
-    # from stderr (initialization logs). We just need to strip STDERR section.
+    # For SSH mode, the Odoo shell often separates stdout from stderr. Strip the
+    # synthetic STDERR section first, then use the same marker/prompt logic as
+    # Docker mode so logs do not leak into tool output.
     if ssh_mode or "\n\nSTDERR:\n" in output:
-        # Split at STDERR marker and take only stdout portion
         if "\n\nSTDERR:\n" in output:
             output = output.split("\n\nSTDERR:\n")[0]
-        # Also strip any trailing "STDERR:" at the end
         if output.endswith("\nSTDERR:"):
             output = output[:-8]
 
-        # For SSH mode, the stdout should be clean - just return it
-        # (after checking for errors)
-        clean_output = output.strip()
-
-        # Check for error marker in the clean output
-        if "ODOO_ERROR:" in clean_output:
-            error_idx = clean_output.index("ODOO_ERROR:")
-            error_part = clean_output[error_idx + 11 :].strip()
-            return f"Error: {error_part}"
-
-        # Check for Python exceptions
-        if re.match(r"^Traceback \(most recent call last\):", clean_output):
-            return clean_output
-
-        # Return the clean stdout
-        if clean_output:
-            return clean_output
-
-        # If stdout is empty but no error, the command likely succeeded with no output
-        return ""
+    marker_output = _extract_marker_output(output)
+    if marker_output is not None:
+        return marker_output
 
     # Docker mode: need to parse through initialization noise to find user output
     lines = output.split("\n")
@@ -239,6 +241,17 @@ def filter_odoo_output(output: str, ssh_mode: bool = False) -> str:
     result = re.sub(r"^Out\[\d+\]:\s*", "", result, flags=re.MULTILINE)
     result = re.sub(r"^\.\.\.:?\s*", "", result, flags=re.MULTILINE)
 
+    if not result and ssh_mode:
+        fallback_lines = []
+        for line in output.splitlines():
+            line_stripped = line.rstrip()
+            if not line_stripped:
+                continue
+            if any(re.match(pattern, line_stripped) for pattern in noise_patterns):
+                continue
+            fallback_lines.append(line_stripped)
+        result = "\n".join(fallback_lines).strip()
+
     return result
 
 
@@ -255,13 +268,44 @@ def build_wrapped_code(code: str) -> str:
     indented_code = "\n".join("    " + line for line in code.strip().split("\n"))
 
     wrapped_code = f"""
+print('{ODOO_OUTPUT_BEGIN_MARKER}')
 env = self.env
 try:
 {indented_code}
 except Exception as e:
     print(f"ODOO_ERROR: {{type(e).__name__}}: {{e}}")
+print('{ODOO_OUTPUT_END_MARKER}')
 """
     return wrapped_code
+
+
+def build_shell_input(code: str) -> str:
+    """Build stdin payload for Odoo shell execution."""
+    return build_wrapped_code(code).strip() + "\nexit()\n"
+
+
+def build_odoo_shell_args(database: str, config_path: Optional[str] = None, shell_interface: str = "python") -> list[str]:
+    """Build common Odoo shell arguments for deterministic stdin execution."""
+    args = [
+        "shell",
+        "--no-http",
+        "-d",
+        database,
+        f"--shell-interface={shell_interface}",
+    ]
+    if config_path:
+        args.extend(["-c", config_path])
+    return args
+
+
+def build_docker_shell_command(
+    container: str,
+    database: str,
+    config_path: Optional[str] = None,
+    shell_interface: str = "python",
+) -> list[str]:
+    """Build Docker exec command for Odoo shell execution."""
+    return ["docker", "exec", "-i", container, "odoo", *build_odoo_shell_args(database, config_path, shell_interface)]
 
 
 def build_local_shell_command(python_bin: str, odoo_bin: str, database: str, config_path: Optional[str] = None) -> list[str]:
@@ -279,14 +323,8 @@ def build_local_shell_command(python_bin: str, odoo_bin: str, database: str, con
     cmd = [
         python_bin,
         odoo_bin,
-        "shell",
-        "-d",
-        database,
-        "--no-http",
-        "--shell-interface=ipython",
+        *build_odoo_shell_args(database, config_path, shell_interface="python"),
     ]
-    if config_path:
-        cmd.extend(["-c", config_path])
     return cmd
 
 
@@ -316,9 +354,7 @@ def build_ssh_shell_command(
         Command list for subprocess execution
     """
     # Build remote odoo command
-    odoo_cmd = f"{remote_python} {remote_odoo_bin} shell -d {database} --no-http --shell-interface=ipython"
-    if config_path:
-        odoo_cmd += f" -c {config_path}"
+    odoo_cmd = " ".join([remote_python, remote_odoo_bin, *build_odoo_shell_args(database, config_path, shell_interface="python")])
 
     cmd = [
         "ssh",

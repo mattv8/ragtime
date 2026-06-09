@@ -1,8 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-type ToastType = 'success' | 'error';
+type ToastType = 'success' | 'error' | 'info';
 
 interface ToastItem {
   id: number;
@@ -13,12 +13,14 @@ interface ToastItem {
 interface ToastActions {
   success: (message: ReactNode, durationMs?: number) => void;
   error: (message: ReactNode, durationMs?: number) => void;
+  info: (message: ReactNode, durationMs?: number) => void;
   dismiss: (id: number) => void;
   clear: () => void;
 }
 
 const DEFAULT_SUCCESS_DURATION = 3000;
 const DEFAULT_ERROR_DURATION = 8000;
+const DEFAULT_INFO_DURATION = 3500;
 
 export function useToast(): [ToastItem[], ToastActions] {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -37,7 +39,13 @@ export function useToast(): [ToastItem[], ToastActions] {
   const add = useCallback((type: ToastType, message: ReactNode, durationMs?: number) => {
     const id = nextId.current++;
     setToasts((prev) => [...prev, { id, type, message }]);
-    const timeout = durationMs ?? (type === 'success' ? DEFAULT_SUCCESS_DURATION : DEFAULT_ERROR_DURATION);
+    const timeout = durationMs ?? (
+      type === 'success'
+        ? DEFAULT_SUCCESS_DURATION
+        : type === 'info'
+          ? DEFAULT_INFO_DURATION
+          : DEFAULT_ERROR_DURATION
+    );
     const timer = setTimeout(() => {
       timers.current.delete(id);
       setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -47,6 +55,7 @@ export function useToast(): [ToastItem[], ToastActions] {
 
   const success = useCallback((message: ReactNode, durationMs?: number) => add('success', message, durationMs), [add]);
   const error = useCallback((message: ReactNode, durationMs?: number) => add('error', message, durationMs), [add]);
+  const info = useCallback((message: ReactNode, durationMs?: number) => add('info', message, durationMs), [add]);
 
   const clear = useCallback(() => {
     for (const timer of timers.current.values()) clearTimeout(timer);
@@ -62,7 +71,15 @@ export function useToast(): [ToastItem[], ToastActions] {
     };
   }, []);
 
-  return [toasts, { success, error, dismiss, clear }];
+  const actions = useMemo<ToastActions>(() => ({
+    success,
+    error,
+    info,
+    dismiss,
+    clear,
+  }), [clear, dismiss, error, info, success]);
+
+  return [toasts, actions];
 }
 
 interface ToastContainerProps {

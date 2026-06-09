@@ -21,7 +21,7 @@ if "ragtime.rag.prompts" not in sys.modules:
 
 from ragtime.userspace.models import UpdateUserspaceMountSourceRequest, UserSpaceRuntimeSession, UserSpaceWorkspace
 from ragtime.userspace.runtime_service import UserSpaceRuntimeService
-from ragtime.userspace.service import UserSpaceService
+from ragtime.userspace.service import UserSpaceService, _GitCommandResult
 from runtime.worker.sandbox import SandboxSpec
 from runtime.worker.service import WorkerService, WorkerSession
 
@@ -207,7 +207,110 @@ class _MountListService(UserSpaceService):
         return False
 
 
+class _GitCleanMountExclusionService(UserSpaceService):
+    def __init__(self, mount_paths: list[str], git_stdout: str = "") -> None:
+        super().__init__()
+        self.mount_paths = mount_paths
+        self.git_stdout = git_stdout
+        self.git_calls: list[dict[str, Any]] = []
+
+    async def _enforce_workspace_access(
+        self,
+        workspace_id: str,
+        user_id: str,
+        required_role: str | None = None,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspace:
+        return UserSpaceWorkspace(
+            id=workspace_id,
+            name="Workspace",
+            owner_user_id=user_id,
+            members=[],
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+    async def _ensure_workspace_git_repo(self, workspace_id: str) -> None:
+        return None
+
+    async def _list_workspace_mount_target_repo_paths(self, workspace_id: str) -> list[str]:
+        return self.mount_paths
+
+    async def _run_git(
+        self,
+        workspace_id: str,
+        args: list[str],
+        check: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> _GitCommandResult:
+        self.git_calls.append(
+            {
+                "workspace_id": workspace_id,
+                "args": args,
+                "check": check,
+                "env": env,
+            }
+        )
+        return _GitCommandResult(returncode=0, stdout=self.git_stdout, stderr="")
+
+
+class _FakeResolveWorkspaceMountDb:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self.workspacemount = _FakeWorkspaceMountTable(rows)
+
+
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clean_workspace_untracked_files_excludes_mount_targets(self) -> None:
+        service = _GitCleanMountExclusionService(
+            [
+                "reconciliations",
+                "reports/archive",
+            ]
+        )
+
+        await service._clean_workspace_untracked_files("workspace-1", check=False)
+
+        self.assertEqual(
+            service.git_calls,
+            [
+                {
+                    "workspace_id": "workspace-1",
+                    "args": [
+                        "clean",
+                        "-fd",
+                        "--exclude=/reconciliations/",
+                        "--exclude=/reports/archive/",
+                    ],
+                    "check": False,
+                    "env": None,
+                }
+            ],
+        )
+
+    async def test_changed_file_state_excludes_mount_owned_paths(self) -> None:
+        service = _GitCleanMountExclusionService(
+            [
+                "reconciliations",
+                "reports/archive",
+            ],
+            git_stdout=("?? reconciliations/2026-05/source.xlsx\x00 M dashboard/main.ts\x00?? reports/archive/old.xlsx\x00?? notes.txt\x00"),
+        )
+
+        changed_paths = await service.list_workspace_changed_file_paths("workspace-1", "user-1")
+
+        self.assertEqual(changed_paths, ["dashboard/main.ts", "notes.txt"])
+        self.assertEqual(
+            service.git_calls,
+            [
+                {
+                    "workspace_id": "workspace-1",
+                    "args": ["status", "--porcelain=1", "-z", "--untracked-files=all"],
+                    "check": False,
+                    "env": None,
+                }
+            ],
+        )
+
     async def test_runtime_mount_signature_refresh_skips_unchanged_specs(self) -> None:
         workspace_id = "workspace-1"
         session = UserSpaceRuntimeSession(
@@ -589,6 +692,56 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(resolved.resolve(), source_file.resolve())
+
+    async def test_resolve_workspace_mounts_for_runtime_keeps_filesystem_live_binds_writable(self) -> None:
+        row = SimpleNamespace(
+            id="mount-1",
+            mountSource=SimpleNamespace(id="source-1"),
+            userMountSource=None,
+            enabled=True,
+            sourcePath="Reconciliations",
+            targetPath="/workspace/reconciliations",
+        )
+        service = UserSpaceService()
+        mount_source = SimpleNamespace(
+            id="source-1",
+            enabled=True,
+            source_type="filesystem",
+            mount_backend="live",
+            connection_config={"base_path": "/mnt/Accounting"},
+        )
+
+        with (
+            patch(
+                "ragtime.userspace.service.get_db",
+                AsyncMock(return_value=_FakeResolveWorkspaceMountDb([row])),
+            ),
+            patch.object(
+                service,
+                "_userspace_mount_source_from_record",
+                return_value=mount_source,
+            ),
+            patch.object(
+                service,
+                "_resolve_filesystem_mount_source_path",
+                return_value="/mnt/Accounting/Reconciliations",
+            ),
+        ):
+            specs = await service.resolve_workspace_mounts_for_runtime("workspace-1")
+
+        self.assertEqual(
+            specs,
+            [
+                {
+                    "source_local_path": "/mnt/Accounting/Reconciliations",
+                    "target_path": "/workspace/reconciliations",
+                    "source_type": "filesystem",
+                    "mount_backend": "live",
+                    "runtime_mount_mode": "live_bind",
+                    "read_only": False,
+                }
+            ],
+        )
 
     async def test_cleanup_interrupted_workspace_mount_syncs_marks_syncing_rows_error(self) -> None:
         table = _FakeWorkspaceMountTable([])

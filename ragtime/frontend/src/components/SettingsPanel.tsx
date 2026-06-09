@@ -16,6 +16,7 @@ import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
+import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
@@ -427,6 +428,8 @@ interface SettingsPanelProps {
   currentUser?: User | null;
   onServerNameChange?: (name: string) => void;
   onAuthenticatedWebglBackgroundChange?: (enabled: boolean) => void;
+  onChatCompactionThresholdChange?: (threshold: number) => void;
+  onChatAutoCompactionThresholdChange?: (threshold: number) => void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
   highlightSetting?: string | null;
   /** Called after highlight animation completes to clear the param */
@@ -435,7 +438,7 @@ interface SettingsPanelProps {
   authStatus?: AuthStatus | null;
 }
 
-export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
+export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, onChatCompactionThresholdChange, onChatAutoCompactionThresholdChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const initialSettingsFilterState = useMemo(() => readSettingsFilterStateFromUrl(), []);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -1200,14 +1203,35 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
   const initSelectedFromAllowed = (models: AvailableModel[], allowedModels: string[]): Set<string> => {
     const toScopedKey = (model: AvailableModel): string => `${model.provider}::${model.id}`;
+    const modelIdVariants = (modelId: string): Set<string> => {
+      const raw = modelId.trim().replace(/^\/+/, '').toLowerCase();
+      if (!raw) return new Set();
+      const variants = new Set([raw]);
+      if (raw.includes('/')) {
+        variants.add(raw.split('/').slice(1).join('/'));
+      }
+      return variants;
+    };
+    const scopedAllowedMatchesModel = (allowed: string, model: AvailableModel): boolean => {
+      const [allowedProvider, allowedModelId] = allowed.trim().split('::', 2);
+      if (normalizeLlmProvider(allowedProvider as LlmProviderWire) !== model.provider || !allowedModelId) return false;
+      const allowedVariants = modelIdVariants(allowedModelId);
+      return [...modelIdVariants(model.id)].some((variant) => allowedVariants.has(variant));
+    };
     if (allowedModels.length > 0) {
       const hasScopedEntries = allowedModels.some((value) => value.includes('::'));
       if (hasScopedEntries) {
-        return new Set(allowedModels);
+        return new Set(
+          models
+            .filter((model) => allowedModels.some((allowed) => scopedAllowedMatchesModel(allowed, model)))
+            .map((model) => toScopedKey(model))
+        );
       }
-      const legacyIds = new Set(allowedModels);
+      const legacyIds = new Set(allowedModels.map((value) => value.trim().toLowerCase()).filter(Boolean));
       return new Set(
-        models.filter((model) => legacyIds.has(model.id)).map((model) => toScopedKey(model))
+        models
+          .filter((model) => [...modelIdVariants(model.id)].some((variant) => legacyIds.has(variant)))
+          .map((model) => toScopedKey(model))
       );
     }
     return new Set(models.map((m) => toScopedKey(m)));
@@ -1367,6 +1391,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
         default_chat_model: data.default_chat_model ?? null,
         max_iterations: data.max_iterations,
+        chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent: data.chat_auto_compaction_threshold_percent,
         // Token optimization settings
         max_tool_output_chars: data.max_tool_output_chars,
         scratchpad_window_size: data.scratchpad_window_size,
@@ -1399,6 +1425,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_chats_default: data.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: data.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: data.userspace_mount_sync_interval_seconds,
+        userspace_mount_sync_start_minute: data.userspace_mount_sync_start_minute,
+        userspace_mount_sync_timezone: data.userspace_mount_sync_timezone,
         userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
 
         // OpenAPI model settings
@@ -1924,6 +1952,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         default_chat_model: formData.default_chat_model,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
+        chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
+        chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
         openapi_sync_chat_models: formData.openapi_sync_chat_models,
         // Token optimization settings
@@ -1991,6 +2021,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       }
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      onChatCompactionThresholdChange?.(updated.chat_compaction_threshold_percent ?? 80);
+      onChatAutoCompactionThresholdChange?.(updated.chat_auto_compaction_threshold_percent ?? 99);
       toast.success('LLM configuration saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
@@ -2274,6 +2306,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_chats_default: formData.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: formData.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: formData.userspace_mount_sync_interval_seconds,
+        userspace_mount_sync_start_minute: formData.userspace_mount_sync_start_minute ?? defaultScheduleStartMinute(),
+        userspace_mount_sync_timezone: formData.userspace_mount_sync_timezone ?? defaultScheduleTimezone(),
         userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
         http_proxy_safe_timeout_seconds: formData.http_proxy_safe_timeout_seconds,
       });
@@ -2286,6 +2320,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_duplicate_copy_chats_default: updated.userspace_duplicate_copy_chats_default,
         userspace_duplicate_copy_mounts_default: updated.userspace_duplicate_copy_mounts_default,
         userspace_mount_sync_interval_seconds: updated.userspace_mount_sync_interval_seconds,
+        userspace_mount_sync_start_minute: updated.userspace_mount_sync_start_minute,
+        userspace_mount_sync_timezone: updated.userspace_mount_sync_timezone,
         userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
         http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
@@ -2302,6 +2338,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.userspace_duplicate_copy_chats_default,
     formData.userspace_duplicate_copy_mounts_default,
     formData.userspace_mount_sync_interval_seconds,
+    formData.userspace_mount_sync_start_minute,
+    formData.userspace_mount_sync_timezone,
     formData.userspace_sqlite_import_max_bytes,
     formData.http_proxy_safe_timeout_seconds,
   ]);
@@ -3662,7 +3700,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Settings</summary>
 
             <div className="form-row">
-              <div className="form-group" style={{ flex: 2 }}>
+              <div className="form-group" style={{ flex: 1 }}>
                 <label>Max Output Tokens</label>
                 {(() => {
                   const selectedLlmModel = llmModels.find(m => m.id === formData.llm_model);
@@ -3742,6 +3780,63 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
             <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '1rem' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}>Compact Button Threshold</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="1"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={formData.chat_compaction_threshold_percent ?? 80}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chat_compaction_threshold_percent: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span style={{ minWidth: '44px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                        {formData.chat_compaction_threshold_percent ?? 80}%
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Show the compact button once effective conversation context reaches this percentage.
+                    </p>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}>Auto-Compact Threshold</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="1"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={formData.chat_auto_compaction_threshold_percent ?? 99}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chat_auto_compaction_threshold_percent: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span style={{ minWidth: '44px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                        {(formData.chat_auto_compaction_threshold_percent ?? 99) >= 100
+                          ? 'Never'
+                          : `${formData.chat_auto_compaction_threshold_percent ?? 99}%`}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Automatically compact once effective context reaches this percentage. Set to Never to disable it.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Width (px)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <input
@@ -3766,7 +3861,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Maximum width for inline image attachments before downsampling.
                 </p>
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Height (px)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3792,9 +3889,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Maximum height for inline image attachments before downsampling.
                 </p>
               </div>
-            </div>
 
-            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Pixels</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3820,7 +3915,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Total pixel budget (width x height). Images exceeding this are scaled down proportionally.
                 </p>
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Image Max Bytes</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3846,9 +3943,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Max encoded size of each image. Larger images are re-compressed with lower JPEG quality.
                 </p>
               </div>
-            </div>
 
-            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Max Tool Output (chars)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3875,7 +3970,9 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Lower values curb token growth during multi-step tool loops.
                 </p>
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Context Window (steps)</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -3902,33 +3999,33 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   Smaller windows reduce input tokens in long conversations.
                 </p>
               </div>
-            </div>
 
-            <div className="form-group">
-              <label>Context Token Budget</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="range"
-                  min="0"
-                  max="32000"
-                  step="500"
-                  style={{ flex: 1 }}
-                  value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      context_token_budget: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-                  {(formData.context_token_budget ?? settings?.context_token_budget ?? 4000) === 0 ? 'Off' : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
-                </span>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Context Token Budget</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="32000"
+                    step="500"
+                    style={{ flex: 1 }}
+                    value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        context_token_budget: parseInt(e.target.value, 10),
+                      })
+                    }
+                  />
+                  <span style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                    {(formData.context_token_budget ?? settings?.context_token_budget ?? 4000) === 0 ? 'Off' : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
+                  </span>
+                </div>
+                <p className="field-help">
+                  Cap on retrieved context tokens fed to the LLM per request (0 = unlimited).
+                  Lower values reduce input token usage; higher values give the model more knowledge to draw from.
+                </p>
               </div>
-              <p className="field-help">
-                Cap on retrieved context tokens fed to the LLM per request (0 = unlimited).
-                Lower values reduce input token usage; higher values give the model more knowledge to draw from.
-              </p>
             </div>
 
             {/* API Output Configuration */}
@@ -5862,6 +5959,15 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                           {formatMountSyncInterval(currentVal)}
                         </span>
                       </div>
+                      <ScheduleStartTimeInput
+                        enabled={currentVal > 0}
+                        startMinute={formData.userspace_mount_sync_start_minute ?? settings?.userspace_mount_sync_start_minute ?? null}
+                        timezone={formData.userspace_mount_sync_timezone ?? settings?.userspace_mount_sync_timezone ?? null}
+                        onStartMinuteChange={(value) => setFormData({ ...formData, userspace_mount_sync_start_minute: value })}
+                        onTimezoneChange={(value) => setFormData({ ...formData, userspace_mount_sync_timezone: value })}
+                        label="Start Time"
+                        style={{ marginTop: 10 }}
+                      />
                       <p className="field-help">
                         Range: 1 second to 30 days. Local workspace file changes still wake eligible mounts immediately.
                       </p>

@@ -45,15 +45,17 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (collapsed) return; // don't allow dragging when collapsed
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
       startPos.current = direction === 'horizontal' ? e.clientX : e.clientY;
       document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize';
       document.body.style.userSelect = 'none';
       isDragging.current = true;
+      if (collapsed) {
+        onExpand?.();
+      }
     },
-    [direction, collapsed],
+    [collapsed, direction, onExpand],
   );
 
   const handlePointerMove = useCallback(
@@ -70,50 +72,43 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
 
   const finishPointerDrag = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-      e.currentTarget.releasePointerCapture(e.pointerId);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      isDragging.current = false;
-      onResizeEnd?.();
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch (err) {
+        // Ignore capture release errors
+      }
+
+      if (isDragging.current) {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        isDragging.current = false;
+        onResizeEnd?.();
+      }
     },
     [onResizeEnd],
   );
 
   const cls = className ?? `resize-handle resize-handle-${direction}`;
-
-  if (collapsed) {
-    // Determine chevron icon: points toward the collapsed pane (click to expand it)
-    let Icon: typeof ChevronLeft;
-    if (direction === 'horizontal') {
-      Icon = collapsed === 'before' ? ChevronRight : ChevronLeft;
-    } else {
-      Icon = collapsed === 'before' ? ChevronDown : ChevronUp;
-    }
-
-    return (
-      <div
-        className={`${cls} resize-handle-collapsed`}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          onExpand?.();
-          onResizeEnd?.();
-        }}
-        title="Expand pane"
-      >
-        <Icon size={14} className="resize-handle-chevron" />
-      </div>
-    );
+  let CollapsedIcon: typeof ChevronLeft | null = null;
+  if (collapsed && direction === 'horizontal') {
+    CollapsedIcon = collapsed === 'before' ? ChevronRight : ChevronLeft;
+  } else if (collapsed) {
+    CollapsedIcon = collapsed === 'before' ? ChevronDown : ChevronUp;
   }
 
   return (
     <div
-      className={cls}
+      className={collapsed ? `${cls} resize-handle-collapsed` : cls}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={finishPointerDrag}
       onPointerCancel={finishPointerDrag}
+      title={collapsed ? 'Drag or click to expand pane' : undefined}
       style={{ touchAction: 'none' }}
-    />
+    >
+      {CollapsedIcon && <CollapsedIcon size={14} className="resize-handle-chevron" />}
+    </div>
   );
 }

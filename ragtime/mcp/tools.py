@@ -20,6 +20,7 @@ from typing import Any, Awaitable, Callable
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
+from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.indexer.schema_service import search_schema_index
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.rag import rag
@@ -27,6 +28,8 @@ from ragtime.rag.components import RAGComponents
 from ragtime.tools.git_history import search_git_history
 
 logger = get_logger(__name__)
+
+MCP_TOOL_TIMEOUT_GRACE_SECONDS = 10.0
 
 
 # Tool input schemas for MCP (JSON Schema format)
@@ -340,6 +343,7 @@ class MCPToolAdapter:
         self._last_heartbeat_check: datetime | None = None
         self._heartbeat_refresh_task: asyncio.Task[None] | None = None
         self._tool_executors: dict[str, Callable[..., Awaitable[str]]] = {}
+        self._tool_definitions: dict[str, MCPToolDefinition] = {}
 
     async def get_available_tools(
         self,
@@ -453,8 +457,10 @@ class MCPToolAdapter:
             Tool execution result as string
         """
         # Check if we have a cached executor
+        if tool_name in self._tool_definitions:
+            return await self._execute_tool_definition(self._tool_definitions[tool_name], arguments)
         if tool_name in self._tool_executors:
-            return await self._tool_executors[tool_name](**arguments)
+            return await self._execute_with_timeout(tool_name, self._tool_executors[tool_name], arguments)
 
         # Otherwise, we need to find and build the tool
         tool_configs = await get_tool_configs()
@@ -467,14 +473,16 @@ class MCPToolAdapter:
                 tool_def = await self._create_tool_definition(config)
                 if tool_def:
                     self._tool_executors[tool_name] = tool_def.execute_fn
-                    return await tool_def.execute_fn(**arguments)
+                    self._tool_definitions[tool_name] = tool_def
+                    return await self._execute_tool_definition(tool_def, arguments)
 
         # Check for knowledge search
         if tool_name == "search_knowledge":
             knowledge_tool = await self._create_knowledge_search_tool()
             if knowledge_tool:
                 self._tool_executors[tool_name] = knowledge_tool.execute_fn
-                return await knowledge_tool.execute_fn(**arguments)
+                self._tool_definitions[tool_name] = knowledge_tool
+                return await self._execute_tool_definition(knowledge_tool, arguments)
 
         # Check for schema search tools (pattern: search_<name>_schema)
         if tool_name.startswith("search_") and tool_name.endswith("_schema"):
@@ -484,7 +492,8 @@ class MCPToolAdapter:
                     schema_tool_def = await self._create_schema_search_tool_definition(config)
                     if schema_tool_def:
                         self._tool_executors[tool_name] = schema_tool_def.execute_fn
-                        return await schema_tool_def.execute_fn(**arguments)
+                        self._tool_definitions[tool_name] = schema_tool_def
+                        return await self._execute_tool_definition(schema_tool_def, arguments)
 
         # Check for per-index search tools (pattern: search_<index_name>)
         # These are created when aggregate_search is disabled
@@ -493,7 +502,8 @@ class MCPToolAdapter:
             for tool_def in per_index_tools:
                 if tool_def.name == tool_name:
                     self._tool_executors[tool_name] = tool_def.execute_fn
-                    return await tool_def.execute_fn(**arguments)
+                    self._tool_definitions[tool_name] = tool_def
+                    return await self._execute_tool_definition(tool_def, arguments)
 
         # Check for git history tools
         if tool_name == "search_git_history" or tool_name.startswith("search_git_history_"):
@@ -503,9 +513,58 @@ class MCPToolAdapter:
             for tool_def in git_tools:
                 if tool_def.name == tool_name:
                     self._tool_executors[tool_name] = tool_def.execute_fn
-                    return await tool_def.execute_fn(**arguments)
+                    self._tool_definitions[tool_name] = tool_def
+                    return await self._execute_tool_definition(tool_def, arguments)
 
         return f"Error: Unknown tool '{tool_name}'"
+
+    async def _execute_tool_definition(self, tool_def: MCPToolDefinition, arguments: dict[str, Any]) -> str:
+        return await self._execute_with_timeout(
+            tool_def.name,
+            tool_def.execute_fn,
+            arguments,
+            timeout_max_seconds=tool_def.tool_config.get("timeout_max_seconds"),
+            input_schema=tool_def.input_schema,
+        )
+
+    async def _execute_with_timeout(
+        self,
+        tool_name: str,
+        execute_fn: Callable[..., Awaitable[str]],
+        arguments: dict[str, Any],
+        *,
+        timeout_max_seconds: Any = None,
+        input_schema: dict | None = None,
+    ) -> str:
+        effective_timeout = self._resolve_mcp_call_timeout(arguments, timeout_max_seconds, input_schema)
+        if effective_timeout <= 0:
+            return await execute_fn(**arguments)
+
+        try:
+            return await asyncio.wait_for(
+                execute_fn(**arguments),
+                timeout=float(effective_timeout) + MCP_TOOL_TIMEOUT_GRACE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"MCP tool '{tool_name}' timed out after {effective_timeout}s")
+            return f"Error: Tool {tool_name} timed out after {effective_timeout} seconds"
+
+    @staticmethod
+    def _resolve_mcp_call_timeout(
+        arguments: dict[str, Any],
+        timeout_max_seconds: Any = None,
+        input_schema: dict | None = None,
+    ) -> int:
+        timeout_schema = (input_schema or {}).get("properties", {}).get("timeout")
+        if not timeout_schema:
+            return 0
+
+        configured_max = timeout_max_seconds
+        if configured_max is None:
+            configured_max = timeout_schema.get("default", 0)
+
+        requested_timeout = arguments.get("timeout") if "timeout" in arguments else None
+        return resolve_effective_tool_timeout(requested_timeout, int(configured_max or 0))
 
     async def is_tool_allowed_by_route_filter(self, tool_name: str, route_filter: McpRouteFilter) -> bool:
         """Return whether a tool name is selected by a route filter.

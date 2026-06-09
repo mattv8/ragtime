@@ -22,10 +22,12 @@ interface ChatPageProps {
   currentUser: User;
   debugMode?: boolean;
   initialConversationId?: string | null;
+  chatCompactionThresholdPercent?: number;
+  chatAutoCompactionThresholdPercent?: number;
   onFullscreenChange?: (isFullscreen: boolean) => void;
 }
 
-export function ChatPage({ currentUser, debugMode = false, initialConversationId, onFullscreenChange }: ChatPageProps) {
+export function ChatPage({ currentUser, debugMode = false, initialConversationId, chatCompactionThresholdPercent = 80, chatAutoCompactionThresholdPercent = 99, onFullscreenChange }: ChatPageProps) {
   const [toasts, toastActions] = useToast();
   const showSuccessToast = toastActions.success;
   const showErrorToast = toastActions.error;
@@ -630,6 +632,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
         currentUser={currentUser}
         debugMode={debugMode}
         initialConversationId={initialConversationId}
+        chatCompactionThresholdPercent={chatCompactionThresholdPercent}
+        chatAutoCompactionThresholdPercent={chatAutoCompactionThresholdPercent}
         onFullscreenChange={onFullscreenChange}
         onActiveConversationChange={setActiveConversationId}
         onOpenShareModal={handleOpenShareModal}
