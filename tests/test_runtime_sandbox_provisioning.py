@@ -24,6 +24,14 @@ class SandboxProvisioningTests(unittest.TestCase):
             mode="pivot_root",
         )
 
+    def _chroot_spec(self, files: Path, rootfs: Path) -> sandbox.SandboxSpec:
+        return sandbox.SandboxSpec(
+            workspace_id="workspace-1",
+            workspace_files_path=files,
+            rootfs_path=rootfs,
+            mode="chroot",
+        )
+
     def _pivot_root_caps(self) -> sandbox.SandboxCapabilities:
         return sandbox.SandboxCapabilities(
             has_cap_sys_admin=True,
@@ -39,6 +47,23 @@ class SandboxProvisioningTests(unittest.TestCase):
             can_mount=False,
             mode="chroot",
         )
+
+    def _service_with_session(
+        self,
+        root: Path,
+        spec: sandbox.SandboxSpec,
+        files: Path,
+        rootfs: Path,
+    ) -> WorkerService:
+        service = WorkerService()
+        service._root = root
+        service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
+        return service
+
+    @staticmethod
+    def _prepare_rootfs_dirs(rootfs: Path) -> None:
+        for relative in ("bin", "usr", "lib", "sbin", "workspace", "dev", "dev/pts", "dev/shm", "proc"):
+            (rootfs / relative).mkdir(parents=True, exist_ok=True)
 
     def test_provision_rootfs_skips_workspace_copy_when_bind_mount_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -322,21 +347,9 @@ class SandboxProvisioningTests(unittest.TestCase):
             (files / "dashboard").mkdir()
             (files / "dashboard" / "main.ts").write_text("export const value = 1;\n", encoding="utf-8")
             (rootfs / "workspace").mkdir(parents=True)
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
-            service = WorkerService()
-            service._root = tmp
-            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=True,
-                can_pivot_root=True,
-                can_mount=True,
-                mode="pivot_root",
-            )
+            spec = self._pivot_root_spec(files, rootfs)
+            service = self._service_with_session(tmp, spec, files, rootfs)
+            caps = self._pivot_root_caps()
 
             with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
                 response = asyncio.run(service.list_workspace_files("workspace-1", include_dirs=True))
@@ -356,21 +369,9 @@ class SandboxProvisioningTests(unittest.TestCase):
             rootfs_workspace = rootfs / "workspace"
             rootfs_workspace.mkdir(parents=True)
             (rootfs_workspace / "active-chroot.txt").write_text("active\n", encoding="utf-8")
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="chroot",
-            )
-            service = WorkerService()
-            service._root = tmp
-            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=False,
-                can_user_ns=False,
-                can_mount=False,
-                mode="chroot",
-            )
+            spec = self._chroot_spec(files, rootfs)
+            service = self._service_with_session(tmp, spec, files, rootfs)
+            caps = self._chroot_caps_no_mount()
 
             with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
                 response = asyncio.run(service.list_workspace_files("workspace-1", include_dirs=True))
@@ -390,21 +391,9 @@ class SandboxProvisioningTests(unittest.TestCase):
             rootfs_workspace = rootfs / "workspace"
             rootfs_workspace.mkdir(parents=True)
             (rootfs_workspace / "note.txt").write_text("stale-rootfs\n", encoding="utf-8")
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
-            service = WorkerService()
-            service._root = tmp
-            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=True,
-                can_pivot_root=True,
-                can_mount=True,
-                mode="pivot_root",
-            )
+            spec = self._pivot_root_spec(files, rootfs)
+            service = self._service_with_session(tmp, spec, files, rootfs)
+            caps = self._pivot_root_caps()
 
             with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
                 response = asyncio.run(service.read_file("session-1", "note.txt"))
@@ -421,21 +410,9 @@ class SandboxProvisioningTests(unittest.TestCase):
             files.mkdir(parents=True)
             rootfs_workspace = rootfs / "workspace"
             rootfs_workspace.mkdir(parents=True)
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="chroot",
-            )
-            service = WorkerService()
-            service._root = tmp
-            service._sessions["session-1"] = self._worker_session("session-1", spec, files, rootfs)
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=False,
-                can_user_ns=False,
-                can_mount=False,
-                mode="chroot",
-            )
+            spec = self._chroot_spec(files, rootfs)
+            service = self._service_with_session(tmp, spec, files, rootfs)
+            caps = self._chroot_caps_no_mount()
 
             with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
                 response = asyncio.run(service.write_file("session-1", "note.txt", "active\n"))
@@ -447,18 +424,8 @@ class SandboxProvisioningTests(unittest.TestCase):
     def test_ensure_sandbox_ready_syncs_chroot_system_dirs_before_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=tmp / "files",
-                rootfs_path=tmp / "rootfs",
-                mode="chroot",
-            )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=False,
-                can_user_ns=False,
-                can_mount=False,
-                mode="chroot",
-            )
+            spec = self._chroot_spec(tmp / "files", tmp / "rootfs")
+            caps = self._chroot_caps_no_mount()
 
             with (
                 mock.patch.object(sandbox, "provision_rootfs") as provision,
@@ -600,14 +567,8 @@ class SandboxProvisioningTests(unittest.TestCase):
             files = tmp / "files"
             rootfs = tmp / "rootfs"
             files.mkdir()
-            for relative in ("bin", "usr", "lib", "sbin", "workspace", "dev", "dev/pts", "dev/shm", "proc"):
-                (rootfs / relative).mkdir(parents=True, exist_ok=True)
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="chroot",
-            )
+            self._prepare_rootfs_dirs(rootfs)
+            spec = self._chroot_spec(files, rootfs)
 
             with mock.patch.object(sandbox, "_syscall_mount") as mount_call:
                 sandbox._setup_sandbox_mounts(spec, mount_proc=False)
@@ -620,14 +581,8 @@ class SandboxProvisioningTests(unittest.TestCase):
             files = tmp / "files"
             rootfs = tmp / "rootfs"
             files.mkdir()
-            for relative in ("bin", "usr", "lib", "sbin", "workspace", "dev", "dev/pts", "dev/shm", "proc"):
-                (rootfs / relative).mkdir(parents=True, exist_ok=True)
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
+            self._prepare_rootfs_dirs(rootfs)
+            spec = self._pivot_root_spec(files, rootfs)
 
             with mock.patch.object(sandbox, "_syscall_mount") as mount_call:
                 sandbox._setup_sandbox_mounts(spec, mount_proc=True)
@@ -643,18 +598,8 @@ class SandboxProvisioningTests(unittest.TestCase):
             source.mkdir()
             files.mkdir()
             (source / "ledger.txt").write_text("live\n", encoding="utf-8")
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=True,
-                can_pivot_root=True,
-                can_mount=True,
-                mode="pivot_root",
-            )
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
 
             with (
                 mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
@@ -686,18 +631,8 @@ class SandboxProvisioningTests(unittest.TestCase):
             source.mkdir()
             files.mkdir()
             (source / "ledger.txt").write_text("synced\n", encoding="utf-8")
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="pivot_root",
-            )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=True,
-                can_pivot_root=True,
-                can_mount=True,
-                mode="pivot_root",
-            )
+            spec = self._pivot_root_spec(files, rootfs)
+            caps = self._pivot_root_caps()
 
             with (
                 mock.patch.object(sandbox, "detect_capabilities", return_value=caps),

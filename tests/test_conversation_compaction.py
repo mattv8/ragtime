@@ -19,6 +19,20 @@ def _message(role: str, content: str) -> ChatMessage:
     return ChatMessage(role=role, content=content)
 
 
+class _ChannelContentLLM:
+    def __init__(self, channel: str, text: str) -> None:
+        self._channel = channel
+        self._text = text
+
+    async def ainvoke(self, _messages: Any) -> AIMessage:
+        return AIMessage(
+            content=[
+                {"type": "reasoning", "channel": "analysis", "text": "private chain of thought"},
+                {"type": "text", "channel": self._channel, "text": self._text},
+            ]
+        )
+
+
 class _FakeConversationDelegate:
     def __init__(self, initial: Any, updated: Any) -> None:
         self._initial = initial
@@ -60,6 +74,27 @@ class _FakeCompactionDb:
 
 
 class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
+    async def _summarize_with_channel_content(self, channel: str, text: str) -> str:
+        components = RAGComponents()
+        resolution = SimpleNamespace(llm=_ChannelContentLLM(channel, text), provider=None, model="test-model", max_tokens=1200)
+        messages = [_message("user", "Need a summary"), _message("assistant", "Working on it")]
+
+        with (
+            mock.patch.object(components, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
+            mock.patch.object(components, "_cap_request_llm_output_tokens", new=mock.AsyncMock(return_value=resolution)),
+        ):
+            return await components.summarize_for_compaction(messages, "test-model")
+
+    @staticmethod
+    def _repo_with_fake_compaction(
+        messages: list[dict[str, Any]],
+        active_task_id: str | None,
+    ) -> tuple[IndexerRepository, _FakeCompactionTransaction]:
+        initial = SimpleNamespace(messages=messages, activeTaskId=active_task_id)
+        updated = SimpleNamespace(messages=[*messages], activeTaskId=active_task_id)
+        fake_tx = _FakeCompactionTransaction(initial, updated)
+        return IndexerRepository(), fake_tx
+
     def test_effective_token_count_starts_at_latest_compaction_marker(self) -> None:
         messages = [
             {"role": "user", "content": "old raw text " * 100},
@@ -200,46 +235,12 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("abc123", formatted)
 
     async def test_summarize_for_compaction_prefers_final_over_analysis_blocks(self) -> None:
-        class FakeLLM:
-            async def ainvoke(self, messages):
-                return AIMessage(
-                    content=[
-                        {"type": "reasoning", "channel": "analysis", "text": "private chain of thought"},
-                        {"type": "text", "channel": "final", "text": "Continuity summary from final channel."},
-                    ]
-                )
-
-        components = RAGComponents()
-        resolution = SimpleNamespace(llm=FakeLLM(), provider=None, model="test-model", max_tokens=1200)
-        messages = [_message("user", "Need a summary"), _message("assistant", "Working on it")]
-
-        with (
-            mock.patch.object(components, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
-            mock.patch.object(components, "_cap_request_llm_output_tokens", new=mock.AsyncMock(return_value=resolution)),
-        ):
-            summary = await components.summarize_for_compaction(messages, "test-model")
+        summary = await self._summarize_with_channel_content("final", "Continuity summary from final channel.")
 
         self.assertEqual(summary, "Continuity summary from final channel.")
 
     async def test_summarize_for_compaction_accepts_commentary_when_final_missing(self) -> None:
-        class FakeLLM:
-            async def ainvoke(self, messages):
-                return AIMessage(
-                    content=[
-                        {"type": "reasoning", "channel": "analysis", "text": "private chain of thought"},
-                        {"type": "text", "channel": "commentary", "text": "Continuity summary from commentary channel."},
-                    ]
-                )
-
-        components = RAGComponents()
-        resolution = SimpleNamespace(llm=FakeLLM(), provider=None, model="test-model", max_tokens=1200)
-        messages = [_message("user", "Need a summary"), _message("assistant", "Working on it")]
-
-        with (
-            mock.patch.object(components, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=resolution)),
-            mock.patch.object(components, "_cap_request_llm_output_tokens", new=mock.AsyncMock(return_value=resolution)),
-        ):
-            summary = await components.summarize_for_compaction(messages, "test-model")
+        summary = await self._summarize_with_channel_content("commentary", "Continuity summary from commentary channel.")
 
         self.assertEqual(summary, "Continuity summary from commentary channel.")
 
@@ -249,10 +250,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": large_payload, "message_id": "m1"},
             {"role": "assistant", "content": "reply", "message_id": "tail-id"},
         ]
-        initial = SimpleNamespace(messages=messages, activeTaskId="task-1")
-        updated = SimpleNamespace(messages=[*messages], activeTaskId="task-1")
-        fake_tx = _FakeCompactionTransaction(initial, updated)
-        repo = IndexerRepository()
+        repo, fake_tx = self._repo_with_fake_compaction(messages, "task-1")
 
         with (
             mock.patch.object(
@@ -290,10 +288,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
             {"role": "compaction", "content": "old summary", "message_id": "marker-1"},
             {"role": "assistant", "content": "reply", "message_id": "m2"},
         ]
-        initial = SimpleNamespace(messages=messages, activeTaskId=None)
-        updated = SimpleNamespace(messages=[*messages], activeTaskId=None)
-        fake_tx = _FakeCompactionTransaction(initial, updated)
-        repo = IndexerRepository()
+        repo, fake_tx = self._repo_with_fake_compaction(messages, None)
 
         with (
             mock.patch.object(
@@ -325,10 +320,7 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
             {"role": "assistant", "content": "recent reply", "message_id": "m4"},
             {"role": "compaction", "content": "bad tail summary", "message_id": "marker-bad"},
         ]
-        initial = SimpleNamespace(messages=messages, activeTaskId="task-1")
-        updated = SimpleNamespace(messages=[*messages], activeTaskId="task-1")
-        fake_tx = _FakeCompactionTransaction(initial, updated)
-        repo = IndexerRepository()
+        repo, fake_tx = self._repo_with_fake_compaction(messages, "task-1")
 
         with (
             mock.patch.object(

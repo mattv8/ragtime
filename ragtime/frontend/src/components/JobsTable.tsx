@@ -61,6 +61,26 @@ function isTerminalJobStatus(status: string): boolean {
   return TERMINAL_JOB_STATUSES.has(status);
 }
 
+function getCommonIndexingJobPhase(
+  status: string,
+  cancelRequested?: boolean,
+  cancelProgress = 0,
+): { phase: string; progress: number } | null {
+  if (status === 'completed') {
+    return { phase: 'Complete', progress: 100 };
+  }
+  if (status === 'pending') {
+    return { phase: 'Queued', progress: 0 };
+  }
+  if (status === 'failed' || status === 'cancelled') {
+    return { phase: status === 'failed' ? 'Failed' : 'Cancelled', progress: 0 };
+  }
+  if (status === 'indexing' && cancelRequested) {
+    return { phase: 'Cancelling...', progress: cancelProgress };
+  }
+  return null;
+}
+
 /**
  * Get a human-readable status message for a processing job
  */
@@ -148,21 +168,12 @@ function toUnifiedFilesystemJob(job: FilesystemIndexJob): UnifiedJob {
   // Determine the phase and progress based on job state
   let phase = '';
   let progress = 0;
+  const commonPhase = getCommonIndexingJobPhase(job.status, job.cancel_requested, 5);
 
-  if (job.status === 'completed') {
-    phase = 'Complete';
-    progress = 100;
-  } else if (job.status === 'pending') {
-    phase = 'Queued';
-    progress = 0;
-  } else if (job.status === 'failed' || job.status === 'cancelled') {
-    phase = job.status === 'failed' ? 'Failed' : 'Cancelled';
-    progress = 0;
+  if (commonPhase) {
+    ({ phase, progress } = commonPhase);
   } else if (job.status === 'indexing') {
-    if (job.cancel_requested) {
-      phase = 'Cancelling...';
-      progress = Math.max(progress, 5);
-    } else if (job.total_files === 0 && job.files_scanned === 0) {
+    if (job.total_files === 0 && job.files_scanned === 0) {
       // Haven't started scanning yet
       phase = 'Starting...';
       progress = 0;
@@ -236,20 +247,12 @@ function toUnifiedSchemaJob(job: SchemaIndexJob): UnifiedJob {
   // Determine the phase and progress based on job state
   let phase = '';
   let progress = 0;
+  const commonPhase = getCommonIndexingJobPhase(job.status, job.cancel_requested);
 
-  if (job.status === 'completed') {
-    phase = 'Complete';
-    progress = 100;
-  } else if (job.status === 'pending') {
-    phase = 'Queued';
-    progress = 0;
-  } else if (job.status === 'failed' || job.status === 'cancelled') {
-    phase = job.status === 'failed' ? 'Failed' : 'Cancelled';
-    progress = 0;
+  if (commonPhase) {
+    ({ phase, progress } = commonPhase);
   } else if (job.status === 'indexing') {
-    if (job.cancel_requested) {
-      phase = 'Cancelling...';
-    } else if (job.total_tables === 0 && !job.status_detail) {
+    if (job.total_tables === 0 && !job.status_detail) {
       // Very early: haven't started introspection yet
       phase = 'Connecting to database...';
       progress = 2;
@@ -306,20 +309,12 @@ function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
   // Determine the phase and progress based on job state
   let phase = '';
   let progress = 0;
+  const commonPhase = getCommonIndexingJobPhase(job.status, job.cancel_requested);
 
-  if (job.status === 'completed') {
-    phase = 'Complete';
-    progress = 100;
-  } else if (job.status === 'pending') {
-    phase = 'Queued';
-    progress = 0;
-  } else if (job.status === 'failed' || job.status === 'cancelled') {
-    phase = job.status === 'failed' ? 'Failed' : 'Cancelled';
-    progress = 0;
+  if (commonPhase) {
+    ({ phase, progress } = commonPhase);
   } else if (job.status === 'indexing') {
-    if (job.cancel_requested) {
-      phase = 'Cancelling...';
-    } else if (job.total_documents === 0) {
+    if (job.total_documents === 0) {
       phase = 'Counting documents...';
       progress = 5;
     } else {
