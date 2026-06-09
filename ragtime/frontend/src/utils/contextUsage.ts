@@ -64,6 +64,35 @@ export function calculateEffectiveConversationTokens(messages: ChatMessage[]): n
   return calculateConversationTokens(getEffectiveContextMessages(messages));
 }
 
+export function canCompactConversation(messages: ChatMessage[], keepRecentPairs: number): boolean {
+  if (keepRecentPairs < 1) {
+    return messages.length >= 2;
+  }
+
+  let lastCompactionIndex = -1;
+  messages.forEach((message, index) => {
+    if (message.role === 'compaction') {
+      lastCompactionIndex = index;
+    }
+  });
+
+  const summaryStart = lastCompactionIndex >= 0 ? lastCompactionIndex : 0;
+  const uncompactedStart = lastCompactionIndex + 1;
+  let recentUserTurns = 0;
+
+  for (let index = messages.length - 1; index >= uncompactedStart; index -= 1) {
+    if (messages[index]?.role !== 'user') {
+      continue;
+    }
+    recentUserTurns += 1;
+    if (recentUserTurns >= keepRecentPairs) {
+      return messages.slice(summaryStart, index).length >= 2;
+    }
+  }
+
+  return false;
+}
+
 export type StreamingRenderEvent =
   | { type: 'content'; content: string }
   | { type: 'tool'; toolCall: { input?: Record<string, unknown>; output?: string } }

@@ -14,7 +14,7 @@ import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, Con
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
-import { calculateConversationContextUsage } from '@/utils/contextUsage';
+import { calculateConversationContextUsage, canCompactConversation } from '@/utils/contextUsage';
 import { fetchUserSpaceToolCatalog, getUserSpaceGroupToolIds } from '@/utils/userSpaceTools';
 import {
   KNOWN_PROVIDER_KEYS,
@@ -6716,6 +6716,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
+  const AUTO_COMPACTION_KEEP_RECENT_PAIRS = 4;
   const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id);
   const compactThresholdPercent = clampNumber(chatCompactionThresholdPercent, 1, 100);
   const autoCompactThresholdPercent = clampNumber(chatAutoCompactionThresholdPercent, 1, 100);
@@ -10470,7 +10471,7 @@ export function ChatPanel({
       const task = await api.compactConversation(
         activeConversation.id,
         workspaceId,
-        4,
+        AUTO_COMPACTION_KEEP_RECENT_PAIRS,
         replaceMarker
           ? {
               replaceMessageId: replaceMarker.messageId,
@@ -11120,6 +11121,10 @@ export function ChatPanel({
 
     const lastMessage = activeConversation.messages[activeConversation.messages.length - 1];
     if (lastMessage?.role === 'compaction') {
+      return;
+    }
+
+    if (!canCompactConversation(activeConversation.messages, AUTO_COMPACTION_KEEP_RECENT_PAIRS)) {
       return;
     }
 
