@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Waves } from 'lucide-react';
 import { api, onAuthExpired } from '@/api';
 import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPage, PublicSharedChatView, UserSpacePanel, LoginPage, OAuthLoginPage, OAuthCallbackError, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
 import WebGLGradient from '@/components/WebGLGradient';
@@ -138,6 +139,39 @@ export function App() {
   const [highlightToolsSection, setHighlightToolsSection] = useState<string | null>(null);
   const [serverName, setServerName] = useState<string>('Ragtime');
   const [authenticatedWebglBackgroundEnabled, setAuthenticatedWebglBackgroundEnabled] = useState(true);
+  const [webglBackgroundPausedForBattery, setWebglBackgroundPausedForBattery] = useState(false);
+
+  // Per-user motion background override (stored in localStorage)
+  const [webglBackgroundUserOverride, setWebglBackgroundUserOverride] = useState<boolean | null>(() => {
+    const stored = localStorage.getItem('ragtime-webgl-background');
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+    return null;
+  });
+
+  const toggleWebglBackground = useCallback(() => {
+    setWebglBackgroundUserOverride(prev => {
+      const next = prev === null ? false : !prev;
+      if (next === null) {
+        localStorage.removeItem('ragtime-webgl-background');
+      } else {
+        localStorage.setItem('ragtime-webgl-background', String(next));
+      }
+      return next;
+    });
+  }, []);
+
+  // User override takes precedence over the global setting
+  const effectiveWebglEnabled = webglBackgroundUserOverride !== null
+    ? webglBackgroundUserOverride
+    : authenticatedWebglBackgroundEnabled;
+
+  useEffect(() => {
+    if (!effectiveWebglEnabled) {
+      setWebglBackgroundPausedForBattery(false);
+    }
+  }, [effectiveWebglEnabled]);
+
   const [jobs, setJobs] = useState<IndexJob[]>([]);
   const [indexes, setIndexes] = useState<IndexInfo[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
@@ -737,12 +771,24 @@ export function App() {
   return (
     <AvailableModelsProvider>
     <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}${authenticatedWebglBackgroundEnabled ? ' app-shell-webgl-background' : ''}`}>
-      {authenticatedWebglBackgroundEnabled ? (
+      {effectiveWebglEnabled ? (
         <WebGLGradient
           className="app-background-gradient"
           fullscreen
           ignorePointerSelector=".topnav, .container, .modal, .modal-overlay, [role='dialog'], button, input, textarea, select, a"
+          onBatteryStatusChange={setWebglBackgroundPausedForBattery}
         />
+      ) : null}
+      {authenticatedWebglBackgroundEnabled && currentUser && !hideChrome && !webglBackgroundPausedForBattery ? (
+        <button
+          className="webgl-motion-toggle"
+          data-active={effectiveWebglEnabled}
+          onClick={toggleWebglBackground}
+          aria-label={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
+          title={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
+        >
+          <Waves size={14} />
+        </button>
       ) : null}
       <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
         <span className="topnav-brand"><BrandName name={serverName} /></span>

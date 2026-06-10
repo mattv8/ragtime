@@ -106,7 +106,7 @@ body.authenticated-webgl-background-active #root {
 
 .app-shell-webgl-background {
   isolation: isolate;
-  width: 100vw;
+  width: 100%;
   height: 100dvh;
   min-height: 0;
   padding: var(--space-sm) var(--space-lg) var(--space-lg);
@@ -180,6 +180,76 @@ body.authenticated-webgl-background-active #root {
 
 [data-theme="light"] .webgl-battery-notice {
   background: rgba(255, 255, 255, 0.72);
+}
+
+.app-shell > .webgl-motion-toggle {
+  position: fixed;
+  right: max(calc(var(--space-md) + 2px), calc(env(safe-area-inset-right) + 2px));
+  bottom: max(calc(var(--space-md) + 2px), calc(env(safe-area-inset-bottom) + 2px));
+  z-index: calc(var(--z-tooltip) + 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--color-text-muted);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+  opacity: 0.6;
+  backdrop-filter: blur(10px);
+}
+
+.app-shell > .webgl-motion-toggle[data-active="true"] {
+  border-color: transparent;
+  background: rgba(15, 23, 42, 0.35);
+  color: var(--color-text-muted);
+}
+
+.app-shell > .webgl-motion-toggle[data-active="false"] {
+  border-color: var(--color-warning-border);
+  background: rgba(15, 23, 42, 0.75);
+  color: var(--color-warning);
+}
+
+.app-shell > .webgl-motion-toggle:hover {
+  opacity: 1;
+}
+
+.app-shell > .webgl-motion-toggle[data-active="true"]:hover {
+  background: rgba(15, 23, 42, 0.55);
+  color: var(--color-text);
+}
+
+.app-shell > .webgl-motion-toggle[data-active="false"]:hover {
+  background: rgba(15, 23, 42, 0.85);
+}
+
+.webgl-motion-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="true"] {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="false"] {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: var(--color-warning-border);
+}
+
+[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="true"]:hover {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="false"]:hover {
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .app-shell-locked {

@@ -18,6 +18,7 @@ interface WebGLGradientProps {
   colorVariables?: readonly string[];
   fullscreen?: boolean;
   ignorePointerSelector?: string;
+  onBatteryStatusChange?: (disabled: boolean) => void;
 }
 
 interface BatteryManagerLike extends EventTarget {
@@ -36,6 +37,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
   colorVariables = DEFAULT_COLOR_VARIABLES,
   fullscreen = false,
   ignorePointerSelector,
+  onBatteryStatusChange,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -89,6 +91,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
   const updateBatteryFluidState = useCallback((disabled: boolean) => {
     fluidDisabledForBatteryRef.current = disabled;
     setFluidDisabledForBattery((current) => current === disabled ? current : disabled);
+    onBatteryStatusChange?.(disabled);
 
     if (disabled) {
       pointerStateRef.current.active = false;
