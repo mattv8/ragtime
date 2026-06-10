@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
 import html as _html
 import importlib
+import io
 import json
+import mimetypes
 import os
 import re
+import tarfile
+import uuid
+import zipfile
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import date, datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
@@ -23,6 +30,13 @@ from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional, get_session_token
+from ragtime.core.userspace_limits import (
+    USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
+    USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES,
+    clamp_userspace_primitive_archive_max_entries,
+    clamp_userspace_primitive_upload_max_bytes,
+)
+from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.userspace.models import (
     UserSpaceBrowserAuthorization,
     UserSpaceBrowserAuthRequest,
@@ -52,6 +66,15 @@ _PROXY_TIMEOUT_FLOOR = 300.0  # seconds — minimum proxy read/write timeout
 _PROXY_TIMEOUT_BUFFER = 20.0  # seconds — headroom above max tool timeout
 _USERSPACE_SURFACE_HEADER = "X-Ragtime-Userspace-Surface"
 _USERSPACE_PREVIEW_PROXY_HEADER = "X-Ragtime-Userspace-Preview-Proxy"
+_DOCUMENT_PARSE_UPLOAD_CHUNK_BYTES = 1024 * 1024
+_DOCUMENT_PARSE_MAX_BYTES = 25 * 1024 * 1024
+_PRIMITIVE_UPLOAD_CHUNK_BYTES = 1024 * 1024
+_PRIMITIVE_FILE_MAX_BYTES = USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES
+_PRIMITIVE_OBJECT_MAX_BYTES = USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES
+_PRIMITIVE_PROGRESS_STATES_MAX = 1000
+_PRIMITIVE_PROGRESS_STATES: dict[tuple[str, str], dict[str, Any]] = {}
+_PRIMITIVE_JOBS_MAX = 1000
+_PRIMITIVE_JOBS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 class _CancellationSafeStreamingResponse(StreamingResponse):
@@ -272,6 +295,902 @@ def _get_max_proxy_timeout() -> float:
 async def _safe_close_websocket(websocket: WebSocket, code: int) -> None:
     with contextlib.suppress(Exception):
         await websocket.close(code=code)
+
+
+def _safe_upload_filename(file: StarletteUploadFile) -> str:
+    raw_name = (file.filename or "upload").strip().replace("\\", "/")
+    filename = Path(raw_name).name or "upload"
+    if filename in {".", ".."}:
+        filename = "upload"
+    return filename
+
+
+async def _get_primitive_upload_max_bytes() -> int:
+    try:
+        app_settings = await get_app_settings()
+        return clamp_userspace_primitive_upload_max_bytes(app_settings.get("userspace_primitive_upload_max_bytes"))
+    except Exception:
+        return _PRIMITIVE_FILE_MAX_BYTES
+
+
+async def _get_primitive_archive_max_entries() -> int:
+    try:
+        app_settings = await get_app_settings()
+        return clamp_userspace_primitive_archive_max_entries(app_settings.get("userspace_primitive_archive_max_entries"))
+    except Exception:
+        return USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES
+
+
+def _format_limit_bytes(value: int) -> str:
+    if value % (1024 * 1024 * 1024) == 0:
+        return f"{value // (1024 * 1024 * 1024)} GB ({value:,} bytes)"
+    if value % (1024 * 1024) == 0:
+        return f"{value // (1024 * 1024)} MB ({value:,} bytes)"
+    return f"{value:,} bytes"
+
+
+def _limit_exceeded_detail(label: str, max_bytes: int, limit_name: str) -> str:
+    return f"{label} exceeds the {limit_name} of {_format_limit_bytes(max_bytes)}."
+
+
+def _archive_entry_limit_detail(max_entries: int) -> str:
+    return f"Archive contains more files than the configured User Space primitive archive file limit of {max_entries:,}."
+
+
+def _archive_extracted_bytes_limit_detail(max_bytes: int) -> str:
+    return f"Extracted archive content exceeds the configured User Space primitive upload size limit of {_format_limit_bytes(max_bytes)}."
+
+
+def _archive_member_bytes_limit_detail(max_bytes: int) -> str:
+    return f"Archive member exceeds the configured User Space primitive upload size limit of {_format_limit_bytes(max_bytes)}."
+
+
+async def _read_upload_bytes(
+    file: StarletteUploadFile,
+    *,
+    max_bytes: int,
+    label: str,
+    limit_name: str,
+) -> tuple[str, str | None, int, bytes]:
+    filename = _safe_upload_filename(file)
+
+    content_chunks: list[bytes] = []
+    total_bytes = 0
+    try:
+        while True:
+            chunk = await file.read(_PRIMITIVE_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=_limit_exceeded_detail(label, max_bytes, limit_name),
+                )
+            content_chunks.append(chunk)
+    finally:
+        with contextlib.suppress(Exception):
+            await file.close()
+
+    return filename, file.content_type or None, total_bytes, b"".join(content_chunks)
+
+
+async def _read_request_bytes(
+    request: Request,
+    *,
+    max_bytes: int,
+    label: str,
+    limit_name: str,
+) -> tuple[str | None, int, bytes]:
+    content_type = request.headers.get("content-type") or None
+    if content_type and content_type.lower().startswith("multipart/form-data"):
+        form = await request.form()
+        form_file = form.get("file")
+        if not isinstance(form_file, StarletteUploadFile):
+            raise HTTPException(status_code=400, detail="Multipart request must include file field")
+        _, upload_content_type, total_bytes, content = await _read_upload_bytes(
+            form_file,
+            max_bytes=max_bytes,
+            label=label,
+            limit_name=limit_name,
+        )
+        return upload_content_type, total_bytes, content
+
+    content_chunks: list[bytes] = []
+    total_bytes = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise HTTPException(status_code=413, detail=_limit_exceeded_detail(label, max_bytes, limit_name))
+        content_chunks.append(chunk)
+    return content_type, total_bytes, b"".join(content_chunks)
+
+
+async def _parse_uploaded_document_upload(file: UploadFile) -> dict[str, Any]:
+    filename, content_type, total_bytes, content = await _read_upload_bytes(
+        file,
+        max_bytes=_DOCUMENT_PARSE_MAX_BYTES,
+        label="Uploaded file",
+        limit_name="platform document parsing upload size limit",
+    )
+    extracted_text = await extract_text_from_file_async(
+        Path(filename),
+        content=content,
+    )
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": total_bytes,
+        "text": extracted_text,
+    }
+
+
+def _spreadsheet_cell_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _spreadsheet_text_from_sheets(sheets: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for sheet in sheets:
+        name = str(sheet.get("name") or "Sheet")
+        parts.append(f"## Sheet: {name}")
+        rows_value = sheet.get("rows")
+        rows = rows_value if isinstance(rows_value, list) else []
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            row_text = " | ".join(str(value) for value in row if value not in (None, ""))
+            if row_text:
+                parts.append(row_text)
+    return "\n".join(parts)
+
+
+def _extract_xlsx_sheets(content: bytes) -> list[dict[str, Any]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise HTTPException(status_code=415, detail="XLSX parsing requires openpyxl") from exc
+
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid XLSX workbook") from exc
+    try:
+        sheets: list[dict[str, Any]] = []
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+            rows: list[list[Any]] = []
+            for row in sheet.iter_rows(values_only=True):
+                values = [_spreadsheet_cell_value(value) for value in row]
+                while values and values[-1] is None:
+                    values.pop()
+                if values:
+                    rows.append(values)
+            sheets.append({"name": sheet_name, "rows": rows})
+        return sheets
+    finally:
+        workbook.close()
+
+
+def _extract_xls_sheets(content: bytes) -> list[dict[str, Any]]:
+    try:
+        import xlrd
+    except ImportError as exc:
+        raise HTTPException(status_code=415, detail="XLS parsing requires xlrd") from exc
+
+    try:
+        workbook = xlrd.open_workbook(file_contents=content)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid XLS workbook") from exc
+
+    sheets: list[dict[str, Any]] = []
+    for sheet in workbook.sheets():
+        rows: list[list[Any]] = []
+        for row_index in range(sheet.nrows):
+            values = [_spreadsheet_cell_value(sheet.cell_value(row_index, column_index)) for column_index in range(sheet.ncols)]
+            while values and values[-1] in (None, ""):
+                values.pop()
+            if values:
+                rows.append(values)
+        sheets.append({"name": sheet.name, "rows": rows})
+    return sheets
+
+
+def _extract_csv_sheet(content: bytes) -> list[dict[str, Any]]:
+    text = content.decode("utf-8-sig", errors="replace")
+    rows = [row for row in csv.reader(io.StringIO(text)) if any(cell for cell in row)]
+    return [{"name": "CSV", "rows": rows}]
+
+
+async def _parse_uploaded_spreadsheet_upload(file: UploadFile) -> dict[str, Any]:
+    filename, content_type, total_bytes, content = await _read_upload_bytes(
+        file,
+        max_bytes=_DOCUMENT_PARSE_MAX_BYTES,
+        label="Uploaded spreadsheet",
+        limit_name="platform spreadsheet parsing upload size limit",
+    )
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".xlsx":
+        sheets = await asyncio.to_thread(_extract_xlsx_sheets, content)
+    elif suffix == ".xls":
+        sheets = await asyncio.to_thread(_extract_xls_sheets, content)
+    elif suffix == ".csv":
+        sheets = await asyncio.to_thread(_extract_csv_sheet, content)
+    else:
+        raise HTTPException(status_code=415, detail="Supported spreadsheet formats are XLSX, XLS, and CSV")
+
+    return {
+        "filename": filename,
+        "content_type": content_type,
+        "size_bytes": total_bytes,
+        "sheets": sheets,
+        "text": _spreadsheet_text_from_sheets(sheets),
+    }
+
+
+def _infer_table_column_type(values: list[Any]) -> str:
+    typed_values = [value for value in values if value not in (None, "")]
+    if not typed_values:
+        return "empty"
+    if all(isinstance(value, bool) for value in typed_values):
+        return "boolean"
+    if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in typed_values):
+        return "number"
+    if all(isinstance(value, str) for value in typed_values):
+        return "string"
+    return "mixed"
+
+
+def _normalize_table_headers(first_row: list[Any], column_count: int) -> tuple[list[str], bool]:
+    raw_headers = [str(value or "").strip() for value in first_row[:column_count]]
+    seen: set[str] = set()
+    headers: list[str] = []
+    has_explicit_headers = bool(raw_headers) and all(raw_headers) and len(set(raw_headers)) == len(raw_headers)
+    for index in range(column_count):
+        candidate = raw_headers[index] if index < len(raw_headers) and raw_headers[index] else f"column_{index + 1}"
+        header = re.sub(r"\s+", "_", candidate.strip().lower()) or f"column_{index + 1}"
+        header = re.sub(r"[^a-z0-9_]+", "_", header).strip("_") or f"column_{index + 1}"
+        if header in seen:
+            suffix = 2
+            base = header
+            while f"{base}_{suffix}" in seen:
+                suffix += 1
+            header = f"{base}_{suffix}"
+        seen.add(header)
+        headers.append(header)
+    return headers, has_explicit_headers
+
+
+def _normalize_spreadsheet_tables(sheets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_sheets: list[dict[str, Any]] = []
+    for sheet in sheets:
+        rows_value = sheet.get("rows")
+        rows = [row for row in rows_value if isinstance(row, list)] if isinstance(rows_value, list) else []
+        column_count = max((len(row) for row in rows), default=0)
+        headers, has_explicit_headers = _normalize_table_headers(rows[0] if rows else [], column_count)
+        data_rows = rows[1:] if has_explicit_headers else rows
+        records: list[dict[str, Any]] = []
+        columns = [{"key": header, "label": header.replace("_", " ").title()} for header in headers]
+        for row in data_rows:
+            record: dict[str, Any] = {}
+            for index, header in enumerate(headers):
+                record[header] = row[index] if index < len(row) else None
+            if any(value not in (None, "") for value in record.values()):
+                records.append(record)
+        for column in columns:
+            key = str(column["key"])
+            column["type"] = _infer_table_column_type([record.get(key) for record in records])
+        normalized_sheets.append(
+            {
+                "name": str(sheet.get("name") or "Sheet"),
+                "has_header_row": has_explicit_headers,
+                "columns": columns,
+                "records": records,
+                "row_count": len(records),
+            }
+        )
+    return normalized_sheets
+
+
+async def _normalize_uploaded_table_upload(file: UploadFile) -> dict[str, Any]:
+    parsed = await _parse_uploaded_spreadsheet_upload(file)
+    sheets = parsed.get("sheets") if isinstance(parsed, dict) else []
+    parsed["tables"] = _normalize_spreadsheet_tables(sheets if isinstance(sheets, list) else [])
+    return parsed
+
+
+def _render_document_preview_html(filename: str, text: str) -> str:
+    title = _html.escape(filename or "Document preview")
+    escaped_text = _html.escape(text or "")
+    body = escaped_text.replace("\n", "<br>\n")
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        f"<title>{title}</title>"
+        "<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:24px;line-height:1.5;color:#222}"
+        "pre{white-space:pre-wrap;font:inherit}</style></head><body>"
+        f"<h1>{title}</h1><pre>{body}</pre></body></html>"
+    )
+
+
+async def _render_uploaded_document_preview_upload(file: UploadFile) -> dict[str, Any]:
+    parsed = await _parse_uploaded_document_upload(file)
+    filename = str(parsed.get("filename") or "upload")
+    text = str(parsed.get("text") or "")
+    return {
+        **parsed,
+        "format": "html",
+        "html": _render_document_preview_html(filename, text),
+    }
+
+
+def _normalize_archive_member_path(member_name: str) -> str:
+    raw_path = str(member_name or "").replace("\\", "/").strip("/")
+    parts = PurePosixPath(raw_path).parts
+    if not raw_path or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=400, detail="Archive contains an unsafe path")
+    return "/".join(parts)
+
+
+def _extract_archive_entries(content: bytes, *, max_entries: int, max_extracted_bytes: int) -> list[tuple[str, bytes]]:
+    entries: list[tuple[str, bytes]] = []
+    extracted_bytes = 0
+
+    def _append_entry(name: str, payload: bytes) -> None:
+        nonlocal extracted_bytes
+        if len(entries) >= max_entries:
+            raise HTTPException(status_code=413, detail=_archive_entry_limit_detail(max_entries))
+        extracted_bytes += len(payload)
+        if extracted_bytes > max_extracted_bytes:
+            raise HTTPException(status_code=413, detail=_archive_extracted_bytes_limit_detail(max_extracted_bytes))
+        entries.append((_normalize_archive_member_path(name), payload))
+
+    buffer = io.BytesIO(content)
+    if zipfile.is_zipfile(buffer):
+        with zipfile.ZipFile(buffer) as zip_archive:
+            for info in zip_archive.infolist():
+                if info.is_dir():
+                    continue
+                if info.file_size > max_extracted_bytes:
+                    raise HTTPException(status_code=413, detail=_archive_member_bytes_limit_detail(max_extracted_bytes))
+                _append_entry(info.filename, zip_archive.read(info))
+        return entries
+
+    buffer.seek(0)
+    try:
+        with tarfile.open(fileobj=buffer, mode="r:*") as tar_archive:
+            for member in tar_archive.getmembers():
+                if not member.isfile():
+                    continue
+                if member.size > max_extracted_bytes:
+                    raise HTTPException(status_code=413, detail=_archive_member_bytes_limit_detail(max_extracted_bytes))
+                member_file = tar_archive.extractfile(member)
+                if member_file is None:
+                    continue
+                _append_entry(member.name, member_file.read())
+        return entries
+    except tarfile.TarError as exc:
+        raise HTTPException(status_code=415, detail="Supported archive formats are ZIP, TAR, TAR.GZ, and TGZ") from exc
+
+
+def _join_primitive_relative_path(base_path: str, member_path: str) -> str:
+    normalized_base = str(base_path or "").replace("\\", "/").strip("/")
+    if not normalized_base:
+        return member_path
+    base_parts = PurePosixPath(normalized_base).parts
+    if any(part in {"", ".", ".."} for part in base_parts):
+        raise HTTPException(status_code=400, detail="Destination path must be relative")
+    return "/".join([*base_parts, member_path])
+
+
+async def _primitive_archive_extract(
+    workspace_id: str,
+    request: Request,
+    user_id: str,
+    *,
+    target: str = "files",
+    destination_path: str = "",
+    bucket_name: str | None = None,
+) -> dict[str, Any]:
+    userspace_service = _userspace_service()
+    await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    max_entries = await _get_primitive_archive_max_entries()
+    content_type, total_bytes, content = await _read_request_bytes(
+        request,
+        max_bytes=max_upload_bytes,
+        label="Uploaded archive",
+        limit_name="configured User Space primitive upload size limit",
+    )
+    entries = await asyncio.to_thread(
+        _extract_archive_entries,
+        content,
+        max_entries=max_entries,
+        max_extracted_bytes=max_upload_bytes,
+    )
+    normalized_target = str(target or "files").strip().lower()
+    written: list[dict[str, Any]] = []
+    if normalized_target == "files":
+        for member_path, payload in entries:
+            output_path = _join_primitive_relative_path(destination_path, member_path)
+            result = await _primitive_workspace_file_write_content(
+                workspace_id,
+                output_path,
+                mimetypes.guess_type(output_path)[0] or "application/octet-stream",
+                len(payload),
+                payload,
+                user_id,
+            )
+            written.append(result)
+    elif normalized_target == "objects":
+        bucket = str(bucket_name or "").strip()
+        if not bucket:
+            raise HTTPException(status_code=400, detail="bucket is required when target=objects")
+        for member_path, payload in entries:
+            object_path = _join_primitive_relative_path(destination_path, member_path)
+            result = await _primitive_object_write_content(
+                workspace_id,
+                bucket,
+                object_path,
+                mimetypes.guess_type(object_path)[0] or "application/octet-stream",
+                len(payload),
+                payload,
+                user_id,
+            )
+            written.append(result)
+    else:
+        raise HTTPException(status_code=400, detail="target must be 'files' or 'objects'")
+    return {
+        "target": normalized_target,
+        "content_type": content_type,
+        "archive_size_bytes": total_bytes,
+        "extracted_count": len(written),
+        "max_entries": max_entries,
+        "items": written,
+    }
+
+
+def _normalize_primitive_object_key(object_path: str) -> str:
+    raw_path = str(object_path or "").replace("\\", "/").strip("/")
+    parts = PurePosixPath(raw_path).parts
+    if not raw_path or not parts or any(part in {"", ".", ".."} for part in parts):
+        raise HTTPException(status_code=400, detail="Object key must be a relative path")
+    return "/".join(parts)
+
+
+def _normalize_progress_task_id(task_id: str) -> str:
+    normalized = str(task_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", normalized):
+        raise HTTPException(status_code=400, detail="Progress task id is invalid")
+    return normalized
+
+
+async def _primitive_workspace_file_response(workspace_id: str, file_path: str, user_id: str) -> Response:
+    userspace_service = _userspace_service()
+    await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+    normalized_path = _runtime_service()._normalize_file_path(file_path)
+    normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(workspace_id, normalized_path)
+    if await userspace_service._is_workspace_mount_owned_path(workspace_id, normalized_path):
+        raise HTTPException(status_code=409, detail="Binary file primitive does not read mounted paths")
+    root = Path(userspace_service._workspace_files_dir(workspace_id)).resolve()
+    target = (root / normalized_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="File path must stay inside the workspace") from exc
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    content = await asyncio.to_thread(target.read_bytes)
+    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"X-Ragtime-File-Path": normalized_path},
+    )
+
+
+async def _primitive_workspace_file_write(
+    workspace_id: str,
+    file_path: str,
+    file: UploadFile,
+    user_id: str,
+) -> dict[str, Any]:
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    _, content_type, total_bytes, content = await _read_upload_bytes(
+        file,
+        max_bytes=max_upload_bytes,
+        label="Uploaded workspace file",
+        limit_name="configured User Space primitive upload size limit",
+    )
+    return await _primitive_workspace_file_write_content(
+        workspace_id,
+        file_path,
+        content_type,
+        total_bytes,
+        content,
+        user_id,
+    )
+
+
+async def _primitive_workspace_file_write_request(
+    workspace_id: str,
+    file_path: str,
+    request: Request,
+    user_id: str,
+) -> dict[str, Any]:
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    content_type, total_bytes, content = await _read_request_bytes(
+        request,
+        max_bytes=max_upload_bytes,
+        label="Uploaded workspace file",
+        limit_name="configured User Space primitive upload size limit",
+    )
+    return await _primitive_workspace_file_write_content(
+        workspace_id,
+        file_path,
+        content_type,
+        total_bytes,
+        content,
+        user_id,
+    )
+
+
+async def _primitive_workspace_file_write_content(
+    workspace_id: str,
+    file_path: str,
+    content_type: str | None,
+    total_bytes: int,
+    content: bytes,
+    user_id: str,
+) -> dict[str, Any]:
+    userspace_service = _userspace_service()
+    await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
+    normalized_path = _runtime_service()._normalize_file_path(file_path)
+    normalized_path = await userspace_service.ensure_workspace_path_not_in_disabled_mount(workspace_id, normalized_path)
+    if await userspace_service._is_workspace_mount_owned_path(workspace_id, normalized_path):
+        raise HTTPException(status_code=409, detail="Binary file primitive does not write mounted paths")
+    root = Path(userspace_service._workspace_files_dir(workspace_id)).resolve()
+    target = (root / normalized_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="File path must stay inside the workspace") from exc
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(target.write_bytes, content)
+    await userspace_service.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(workspace_id, [normalized_path])
+    await userspace_service.touch_workspace(workspace_id)
+    return {
+        "path": normalized_path,
+        "size_bytes": total_bytes,
+        "content_type": content_type,
+    }
+
+
+def _object_storage_target(workspace_id: str, bucket_name: str, object_path: str) -> tuple[str, str, Path]:
+    userspace_service = _userspace_service()
+    bucket = userspace_service._normalize_object_storage_bucket_name(bucket_name)
+    key = _normalize_primitive_object_key(object_path)
+    payload = userspace_service._ensure_object_storage_config(workspace_id)
+    buckets_value = payload.get("buckets") if isinstance(payload, dict) else []
+    buckets = buckets_value if isinstance(buckets_value, list) else []
+    if not any(isinstance(item, dict) and str(item.get("name") or "") == bucket for item in buckets if item):
+        raise HTTPException(status_code=404, detail="Object storage bucket not found")
+    root = Path(userspace_service._workspace_object_storage_buckets_dir(workspace_id)).resolve()
+    target = (root / bucket / key).resolve()
+    try:
+        target.relative_to(root / bucket)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Object key must stay inside the bucket") from exc
+    return bucket, key, target
+
+
+def _primitive_object_url(bucket: str, key: str) -> str:
+    return f"/__ragtime/objects/{quote(bucket, safe='')}/{quote(key, safe='/')}"
+
+
+def _runtime_primitive_file_url(workspace_id: str, file_path: str) -> str:
+    return f"/indexes/userspace/runtime/workspaces/{quote(workspace_id, safe='')}/primitives/files/{quote(file_path, safe='/')}"
+
+
+def _runtime_primitive_object_url(workspace_id: str, bucket: str, key: str) -> str:
+    return f"/indexes/userspace/runtime/workspaces/{quote(workspace_id, safe='')}/primitives/objects/{quote(bucket, safe='')}/{quote(key, safe='/')}"
+
+
+async def _primitive_object_response(workspace_id: str, bucket_name: str, object_path: str, user_id: str) -> Response:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "viewer")
+    bucket, key, target = _object_storage_target(workspace_id, bucket_name, object_path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Object not found")
+    content = await asyncio.to_thread(target.read_bytes)
+    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "X-Ragtime-Object-Bucket": bucket,
+            "X-Ragtime-Object-Key": key,
+        },
+    )
+
+
+async def _primitive_object_write(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    file: UploadFile,
+    user_id: str,
+) -> dict[str, Any]:
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    _, content_type, total_bytes, content = await _read_upload_bytes(
+        file,
+        max_bytes=max_upload_bytes,
+        label="Uploaded object",
+        limit_name="configured User Space primitive upload size limit",
+    )
+    return await _primitive_object_write_content(
+        workspace_id,
+        bucket_name,
+        object_path,
+        content_type,
+        total_bytes,
+        content,
+        user_id,
+    )
+
+
+async def _primitive_object_write_request(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    request: Request,
+    user_id: str,
+) -> dict[str, Any]:
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    content_type, total_bytes, content = await _read_request_bytes(
+        request,
+        max_bytes=max_upload_bytes,
+        label="Uploaded object",
+        limit_name="configured User Space primitive upload size limit",
+    )
+    return await _primitive_object_write_content(
+        workspace_id,
+        bucket_name,
+        object_path,
+        content_type,
+        total_bytes,
+        content,
+        user_id,
+    )
+
+
+async def _primitive_object_write_content(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    content_type: str | None,
+    total_bytes: int,
+    content: bytes,
+    user_id: str,
+) -> dict[str, Any]:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+    bucket, key, target = _object_storage_target(workspace_id, bucket_name, object_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(target.write_bytes, content)
+    await _userspace_service().touch_workspace(workspace_id)
+    return {
+        "bucket": bucket,
+        "key": key,
+        "size_bytes": total_bytes,
+        "content_type": content_type,
+        "url": _primitive_object_url(bucket, key),
+    }
+
+
+async def _primitive_progress_get(workspace_id: str, task_id: str, user_id: str) -> dict[str, Any]:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "viewer")
+    normalized_task_id = _normalize_progress_task_id(task_id)
+    state = _PRIMITIVE_PROGRESS_STATES.get((workspace_id, normalized_task_id))
+    if state is None:
+        raise HTTPException(status_code=404, detail="Progress task not found")
+    return dict(state)
+
+
+async def _primitive_progress_put(
+    workspace_id: str,
+    task_id: str,
+    payload: dict[str, Any],
+    user_id: str,
+) -> dict[str, Any]:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+    normalized_task_id = _normalize_progress_task_id(task_id)
+    raw_progress = payload.get("progress") if isinstance(payload, dict) else None
+    progress = None
+    if raw_progress is not None:
+        try:
+            progress = max(0.0, min(1.0, float(raw_progress)))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Progress must be a number between 0 and 1") from exc
+    if len(_PRIMITIVE_PROGRESS_STATES) >= _PRIMITIVE_PROGRESS_STATES_MAX:
+        oldest_key = min(_PRIMITIVE_PROGRESS_STATES, key=lambda key: str(_PRIMITIVE_PROGRESS_STATES[key].get("updated_at") or ""))
+        _PRIMITIVE_PROGRESS_STATES.pop(oldest_key, None)
+    state = {
+        "workspace_id": workspace_id,
+        "task_id": normalized_task_id,
+        "phase": str(payload.get("phase") or "running") if isinstance(payload, dict) else "running",
+        "progress": progress,
+        "message": str(payload.get("message") or "") if isinstance(payload, dict) else "",
+        "data": payload.get("data") if isinstance(payload, dict) else None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _PRIMITIVE_PROGRESS_STATES[(workspace_id, normalized_task_id)] = state
+    return dict(state)
+
+
+def _normalize_job_id(job_id: str) -> str:
+    normalized = str(job_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", normalized):
+        raise HTTPException(status_code=400, detail="Job id is invalid")
+    return normalized
+
+
+async def _primitive_job_get(workspace_id: str, job_id: str, user_id: str) -> dict[str, Any]:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "viewer")
+    normalized_job_id = _normalize_job_id(job_id)
+    job = _PRIMITIVE_JOBS.get((workspace_id, normalized_job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return dict(job)
+
+
+async def _primitive_job_put(workspace_id: str, job_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+    normalized_job_id = _normalize_job_id(job_id)
+    if len(_PRIMITIVE_JOBS) >= _PRIMITIVE_JOBS_MAX and (workspace_id, normalized_job_id) not in _PRIMITIVE_JOBS:
+        oldest_key = min(_PRIMITIVE_JOBS, key=lambda key: str(_PRIMITIVE_JOBS[key].get("updated_at") or ""))
+        _PRIMITIVE_JOBS.pop(oldest_key, None)
+    existing = _PRIMITIVE_JOBS.get((workspace_id, normalized_job_id), {})
+    now = datetime.now(timezone.utc).isoformat()
+    job = {
+        "workspace_id": workspace_id,
+        "job_id": normalized_job_id,
+        "kind": str(payload.get("kind") or existing.get("kind") or "generic") if isinstance(payload, dict) else "generic",
+        "status": str(payload.get("status") or existing.get("status") or "running") if isinstance(payload, dict) else "running",
+        "progress": payload.get("progress", existing.get("progress")) if isinstance(payload, dict) else existing.get("progress"),
+        "message": str(payload.get("message") or "") if isinstance(payload, dict) else "",
+        "data": payload.get("data") if isinstance(payload, dict) else None,
+        "result": payload.get("result") if isinstance(payload, dict) else None,
+        "error": payload.get("error") if isinstance(payload, dict) else None,
+        "created_at": existing.get("created_at") or now,
+        "updated_at": now,
+    }
+    _PRIMITIVE_JOBS[(workspace_id, normalized_job_id)] = job
+    return dict(job)
+
+
+async def _primitive_job_create(workspace_id: str, payload: dict[str, Any], user_id: str) -> dict[str, Any]:
+    requested_id = str(payload.get("job_id") or "").strip() if isinstance(payload, dict) else ""
+    job_id = requested_id or f"job-{uuid.uuid4().hex[:16]}"
+    return await _primitive_job_put(workspace_id, job_id, payload if isinstance(payload, dict) else {}, user_id)
+
+
+async def _primitive_upload_target(
+    workspace_id: str,
+    payload: dict[str, Any],
+    user_id: str,
+    *,
+    preview_origin: bool,
+) -> dict[str, Any]:
+    await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+    target = str(payload.get("target") or payload.get("storage") or "files").strip().lower()
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    if target == "files":
+        raw_path = str(payload.get("path") or payload.get("file_path") or "").strip()
+        if not raw_path:
+            raise HTTPException(status_code=400, detail="path is required for file upload targets")
+        normalized_path = _runtime_service()._normalize_file_path(raw_path)
+        normalized_path = await _userspace_service().ensure_workspace_path_not_in_disabled_mount(workspace_id, normalized_path)
+        if await _userspace_service()._is_workspace_mount_owned_path(workspace_id, normalized_path):
+            raise HTTPException(status_code=409, detail="Upload target cannot point at mounted paths")
+        url = f"/__ragtime/files/{quote(normalized_path, safe='/')}" if preview_origin else _runtime_primitive_file_url(workspace_id, normalized_path)
+        return {
+            "target": "files",
+            "method": "PUT",
+            "url": url,
+            "path": normalized_path,
+            "max_bytes": max_upload_bytes,
+            "headers": {},
+        }
+    if target == "objects":
+        bucket = str(payload.get("bucket") or payload.get("bucket_name") or "").strip()
+        key = str(payload.get("key") or payload.get("object_path") or "").strip()
+        if not bucket or not key:
+            raise HTTPException(status_code=400, detail="bucket and key are required for object upload targets")
+        normalized_bucket, normalized_key, _ = _object_storage_target(workspace_id, bucket, key)
+        url = (
+            _primitive_object_url(normalized_bucket, normalized_key)
+            if preview_origin
+            else _runtime_primitive_object_url(workspace_id, normalized_bucket, normalized_key)
+        )
+        return {
+            "target": "objects",
+            "method": "PUT",
+            "url": url,
+            "bucket": normalized_bucket,
+            "key": normalized_key,
+            "max_bytes": max_upload_bytes,
+            "headers": {},
+        }
+    raise HTTPException(status_code=400, detail="target must be 'files' or 'objects'")
+
+
+async def _primitive_capabilities(
+    workspace_id: str,
+    user_id: str | None,
+    *,
+    preview_mode: str = "workspace",
+) -> dict[str, Any]:
+    max_upload_bytes = await _get_primitive_upload_max_bytes()
+    max_archive_entries = await _get_primitive_archive_max_entries()
+    can_read_workspace = False
+    can_write_workspace = False
+    buckets: list[str] = []
+    if user_id and preview_mode == "workspace":
+        try:
+            await _userspace_service().enforce_workspace_role(workspace_id, user_id, "viewer")
+            can_read_workspace = True
+        except HTTPException:
+            can_read_workspace = False
+        try:
+            await _userspace_service().enforce_workspace_role(workspace_id, user_id, "editor")
+            can_write_workspace = True
+        except HTTPException:
+            can_write_workspace = False
+        if can_read_workspace:
+            with contextlib.suppress(Exception):
+                payload = _userspace_service()._ensure_object_storage_config(workspace_id)
+                bucket_items = payload.get("buckets") if isinstance(payload, dict) else []
+                if not isinstance(bucket_items, list):
+                    bucket_items = []
+                buckets = [str(item.get("name")) for item in bucket_items if isinstance(item, dict) and item.get("name")]
+    return {
+        "workspace_id": workspace_id,
+        "mode": preview_mode,
+        "can_parse": True,
+        "can_render_preview": True,
+        "can_normalize_tables": True,
+        "can_read_files": can_read_workspace,
+        "can_write_files": can_write_workspace,
+        "can_read_objects": can_read_workspace,
+        "can_write_objects": can_write_workspace,
+        "can_extract_archives": can_write_workspace,
+        "can_create_upload_targets": can_write_workspace,
+        "can_read_progress": can_read_workspace,
+        "can_write_progress": can_write_workspace,
+        "can_read_jobs": can_read_workspace,
+        "can_write_jobs": can_write_workspace,
+        "max_upload_bytes": max_upload_bytes,
+        "max_archive_entries": max_archive_entries,
+        "object_buckets": buckets,
+        "endpoints": {
+            "capabilities": "/__ragtime/capabilities",
+            "session": "/__ragtime/session",
+            "parse_document": "/__ragtime/parse-document",
+            "parse_spreadsheet": "/__ragtime/parse-spreadsheet",
+            "normalize_table": "/__ragtime/tables/normalize",
+            "render_document_preview": "/__ragtime/documents/render-preview",
+            "extract_archive": "/__ragtime/archives/extract",
+            "upload_target": "/__ragtime/upload-target",
+            "files": "/__ragtime/files/{path}",
+            "objects": "/__ragtime/objects/{bucket}/{key}",
+            "progress": "/__ragtime/progress/{taskId}",
+            "jobs": "/__ragtime/jobs/{jobId}",
+        },
+    }
 
 
 async def _broadcast_collab_message(
@@ -1018,6 +1937,183 @@ async def authorize_browser_surfaces(
         workspace_id=workspace_id,
         authorizations=authorizations,
     )
+
+
+@router.post("/runtime/workspaces/{workspace_id}/documents/parse")
+async def runtime_parse_document(
+    workspace_id: str,
+    file: UploadFile = File(...),
+    user: Any = Depends(get_current_user),
+):
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
+    return await _parse_uploaded_document_upload(file)
+
+
+@router.post("/runtime/workspaces/{workspace_id}/spreadsheets/parse")
+async def runtime_parse_spreadsheet(
+    workspace_id: str,
+    file: UploadFile = File(...),
+    user: Any = Depends(get_current_user),
+):
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
+    return await _parse_uploaded_spreadsheet_upload(file)
+
+
+@router.get("/runtime/workspaces/{workspace_id}/primitives/capabilities")
+async def runtime_primitive_capabilities(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_capabilities(workspace_id, user.id, preview_mode="workspace")
+
+
+@router.get("/runtime/workspaces/{workspace_id}/primitives/session")
+async def runtime_primitive_session(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    capabilities = await _primitive_capabilities(workspace_id, user.id, preview_mode="workspace")
+    return {
+        "workspace_id": workspace_id,
+        "mode": "workspace",
+        "user_id": user.id,
+        "capabilities": capabilities,
+    }
+
+
+@router.post("/runtime/workspaces/{workspace_id}/primitives/tables/normalize")
+async def runtime_primitive_table_normalize(
+    workspace_id: str,
+    file: UploadFile = File(...),
+    user: Any = Depends(get_current_user),
+):
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
+    return await _normalize_uploaded_table_upload(file)
+
+
+@router.post("/runtime/workspaces/{workspace_id}/primitives/documents/render-preview")
+async def runtime_primitive_document_render_preview(
+    workspace_id: str,
+    file: UploadFile = File(...),
+    user: Any = Depends(get_current_user),
+):
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
+    return await _render_uploaded_document_preview_upload(file)
+
+
+@router.post("/runtime/workspaces/{workspace_id}/primitives/archives/extract")
+async def runtime_primitive_archive_extract(
+    workspace_id: str,
+    request: Request,
+    target: str = "files",
+    destination_path: str = "",
+    bucket: str | None = None,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_archive_extract(
+        workspace_id,
+        request,
+        user.id,
+        target=target,
+        destination_path=destination_path,
+        bucket_name=bucket,
+    )
+
+
+@router.post("/runtime/workspaces/{workspace_id}/primitives/upload-target")
+async def runtime_primitive_upload_target(
+    workspace_id: str,
+    payload: dict[str, Any],
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_upload_target(workspace_id, payload, user.id, preview_origin=False)
+
+
+@router.get("/runtime/workspaces/{workspace_id}/primitives/files/{file_path:path}")
+async def runtime_primitive_file_read(
+    workspace_id: str,
+    file_path: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_workspace_file_response(workspace_id, file_path, user.id)
+
+
+@router.put("/runtime/workspaces/{workspace_id}/primitives/files/{file_path:path}")
+async def runtime_primitive_file_write(
+    workspace_id: str,
+    file_path: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_workspace_file_write_request(workspace_id, file_path, request, user.id)
+
+
+@router.get("/runtime/workspaces/{workspace_id}/primitives/objects/{bucket_name}/{object_path:path}")
+async def runtime_primitive_object_read(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_object_response(workspace_id, bucket_name, object_path, user.id)
+
+
+@router.put("/runtime/workspaces/{workspace_id}/primitives/objects/{bucket_name}/{object_path:path}")
+async def runtime_primitive_object_write(
+    workspace_id: str,
+    bucket_name: str,
+    object_path: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_object_write_request(workspace_id, bucket_name, object_path, request, user.id)
+
+
+@router.get("/runtime/workspaces/{workspace_id}/primitives/progress/{task_id}")
+async def runtime_primitive_progress_get(
+    workspace_id: str,
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_progress_get(workspace_id, task_id, user.id)
+
+
+@router.put("/runtime/workspaces/{workspace_id}/primitives/progress/{task_id}")
+async def runtime_primitive_progress_put(
+    workspace_id: str,
+    task_id: str,
+    payload: dict[str, Any],
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_progress_put(workspace_id, task_id, payload, user.id)
+
+
+@router.post("/runtime/workspaces/{workspace_id}/primitives/jobs")
+async def runtime_primitive_job_create(
+    workspace_id: str,
+    payload: dict[str, Any],
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_job_create(workspace_id, payload, user.id)
+
+
+@router.get("/runtime/workspaces/{workspace_id}/primitives/jobs/{job_id}")
+async def runtime_primitive_job_get(
+    workspace_id: str,
+    job_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_job_get(workspace_id, job_id, user.id)
+
+
+@router.put("/runtime/workspaces/{workspace_id}/primitives/jobs/{job_id}")
+async def runtime_primitive_job_put(
+    workspace_id: str,
+    job_id: str,
+    payload: dict[str, Any],
+    user: Any = Depends(get_current_user),
+):
+    return await _primitive_job_put(workspace_id, job_id, payload, user.id)
 
 
 @router.post(

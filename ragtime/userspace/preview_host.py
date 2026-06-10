@@ -11,14 +11,38 @@ from itertools import count
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket
 from fastapi.responses import RedirectResponse
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 
 from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
 from ragtime.userspace.preview_probe import PREVIEW_HOST_PROBE_HEADER, PREVIEW_HOST_PROBE_PATH, PREVIEW_HOST_PROBE_VALUE
-from ragtime.userspace.runtime_routes import _PROXY_METHODS, _proxy_http_request, _proxy_websocket_request, _sanitize_preview_query, _to_websocket_url
+from ragtime.userspace.runtime_routes import (
+    _PROXY_METHODS,
+    _normalize_uploaded_table_upload,
+    _parse_uploaded_document_upload,
+    _parse_uploaded_spreadsheet_upload,
+    _primitive_archive_extract,
+    _primitive_capabilities,
+    _primitive_job_create,
+    _primitive_job_get,
+    _primitive_job_put,
+    _primitive_object_response,
+    _primitive_object_write,
+    _primitive_object_write_request,
+    _primitive_progress_get,
+    _primitive_progress_put,
+    _primitive_upload_target,
+    _primitive_workspace_file_response,
+    _primitive_workspace_file_write,
+    _primitive_workspace_file_write_request,
+    _proxy_http_request,
+    _proxy_websocket_request,
+    _render_uploaded_document_preview_upload,
+    _sanitize_preview_query,
+    _to_websocket_url,
+)
 
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
 _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
@@ -522,6 +546,190 @@ async def preview_execute_component(
         workspace_id,
         payload,
     )
+
+
+@preview_host_app.get("/__ragtime/capabilities")
+async def preview_capabilities(request: Request):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id = str(claims.get("workspace_id") or "").strip()
+    user_id = str(claims.get("sub") or "").strip() or None
+    return await _primitive_capabilities(workspace_id, user_id, preview_mode=_preview_mode(claims))
+
+
+@preview_host_app.get("/__ragtime/session")
+async def preview_session(request: Request):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id = str(claims.get("workspace_id") or "").strip()
+    user_id = str(claims.get("sub") or "").strip() or None
+    mode = _preview_mode(claims)
+    capabilities = await _primitive_capabilities(workspace_id, user_id, preview_mode=mode)
+    return {
+        "workspace_id": workspace_id,
+        "mode": mode,
+        "user_id": user_id,
+        "share_access_mode": claims.get("share_access_mode"),
+        "capabilities": capabilities,
+    }
+
+
+@preview_host_app.post("/__ragtime/parse-document")
+async def preview_parse_document(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    await _verify_preview_session_cookie(request)
+    return await _parse_uploaded_document_upload(file)
+
+
+@preview_host_app.post("/__ragtime/parse-spreadsheet")
+async def preview_parse_spreadsheet(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    await _verify_preview_session_cookie(request)
+    return await _parse_uploaded_spreadsheet_upload(file)
+
+
+@preview_host_app.post("/__ragtime/tables/normalize")
+async def preview_table_normalize(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    await _verify_preview_session_cookie(request)
+    return await _normalize_uploaded_table_upload(file)
+
+
+@preview_host_app.post("/__ragtime/documents/render-preview")
+async def preview_document_render_preview(
+    request: Request,
+    file: UploadFile = File(...),
+):
+    await _verify_preview_session_cookie(request)
+    return await _render_uploaded_document_preview_upload(file)
+
+
+def _workspace_user_from_preview_claims(claims: dict[str, Any]) -> tuple[str, str]:
+    if _preview_mode(claims) != "workspace":
+        raise HTTPException(status_code=403, detail="Workspace preview session required")
+    workspace_id = str(claims.get("workspace_id") or "").strip()
+    user_id = str(claims.get("sub") or "").strip()
+    if not workspace_id or not user_id:
+        raise HTTPException(status_code=401, detail="Preview session missing user")
+    return workspace_id, user_id
+
+
+@preview_host_app.get("/__ragtime/files/{file_path:path}")
+async def preview_file_read(request: Request, file_path: str):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_workspace_file_response(workspace_id, file_path, user_id)
+
+
+@preview_host_app.put("/__ragtime/files/{file_path:path}")
+async def preview_file_write(
+    request: Request,
+    file_path: str,
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_workspace_file_write_request(workspace_id, file_path, request, user_id)
+
+
+@preview_host_app.post("/__ragtime/upload-target")
+async def preview_upload_target(
+    request: Request,
+    payload: dict[str, Any],
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_upload_target(workspace_id, payload, user_id, preview_origin=True)
+
+
+@preview_host_app.post("/__ragtime/archives/extract")
+async def preview_archive_extract(
+    request: Request,
+    target: str = "files",
+    destination_path: str = "",
+    bucket: str | None = None,
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_archive_extract(
+        workspace_id,
+        request,
+        user_id,
+        target=target,
+        destination_path=destination_path,
+        bucket_name=bucket,
+    )
+
+
+@preview_host_app.get("/__ragtime/objects/{bucket_name}/{object_path:path}")
+async def preview_object_read(
+    request: Request,
+    bucket_name: str,
+    object_path: str,
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_object_response(workspace_id, bucket_name, object_path, user_id)
+
+
+@preview_host_app.put("/__ragtime/objects/{bucket_name}/{object_path:path}")
+async def preview_object_write(
+    request: Request,
+    bucket_name: str,
+    object_path: str,
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_object_write_request(workspace_id, bucket_name, object_path, request, user_id)
+
+
+@preview_host_app.get("/__ragtime/progress/{task_id}")
+async def preview_progress_get(request: Request, task_id: str):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_progress_get(workspace_id, task_id, user_id)
+
+
+@preview_host_app.put("/__ragtime/progress/{task_id}")
+async def preview_progress_put(
+    request: Request,
+    task_id: str,
+    payload: dict[str, Any],
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_progress_put(workspace_id, task_id, payload, user_id)
+
+
+@preview_host_app.post("/__ragtime/jobs")
+async def preview_job_create(
+    request: Request,
+    payload: dict[str, Any],
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_job_create(workspace_id, payload, user_id)
+
+
+@preview_host_app.get("/__ragtime/jobs/{job_id}")
+async def preview_job_get(request: Request, job_id: str):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_job_get(workspace_id, job_id, user_id)
+
+
+@preview_host_app.put("/__ragtime/jobs/{job_id}")
+async def preview_job_put(
+    request: Request,
+    job_id: str,
+    payload: dict[str, Any],
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await _primitive_job_put(workspace_id, job_id, payload, user_id)
 
 
 @preview_host_app.api_route("/", methods=_PROXY_METHODS)

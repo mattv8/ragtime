@@ -1428,6 +1428,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_mount_sync_start_minute: data.userspace_mount_sync_start_minute,
         userspace_mount_sync_timezone: data.userspace_mount_sync_timezone,
         userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
+        userspace_primitive_upload_max_bytes: data.userspace_primitive_upload_max_bytes,
+        userspace_primitive_archive_max_entries: data.userspace_primitive_archive_max_entries,
 
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
@@ -2309,6 +2311,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_mount_sync_start_minute: formData.userspace_mount_sync_start_minute ?? defaultScheduleStartMinute(),
         userspace_mount_sync_timezone: formData.userspace_mount_sync_timezone ?? defaultScheduleTimezone(),
         userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
+        userspace_primitive_upload_max_bytes: formData.userspace_primitive_upload_max_bytes,
+        userspace_primitive_archive_max_entries: formData.userspace_primitive_archive_max_entries,
         http_proxy_safe_timeout_seconds: formData.http_proxy_safe_timeout_seconds,
       });
       setSettings(updated);
@@ -2323,6 +2327,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_mount_sync_start_minute: updated.userspace_mount_sync_start_minute,
         userspace_mount_sync_timezone: updated.userspace_mount_sync_timezone,
         userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
+        userspace_primitive_upload_max_bytes: updated.userspace_primitive_upload_max_bytes,
+        userspace_primitive_archive_max_entries: updated.userspace_primitive_archive_max_entries,
         http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
       toast.success('User Space settings saved.', 5000);
@@ -2341,6 +2347,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.userspace_mount_sync_start_minute,
     formData.userspace_mount_sync_timezone,
     formData.userspace_sqlite_import_max_bytes,
+    formData.userspace_primitive_upload_max_bytes,
+    formData.userspace_primitive_archive_max_entries,
     formData.http_proxy_safe_timeout_seconds,
   ]);
 
@@ -6096,6 +6104,82 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                       </div>
                       <p className="field-help">
                         Default: 90 seconds. Keep this below your load balancer, CDN, or reverse-proxy upstream timeout so Ragtime can return structured timeout guidance to the agent.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Primitive Upload Size Limit</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Maximum upload accepted by same-origin User Space primitives for files, objects, document previews, and archive extraction.
+                </p>
+                {(() => {
+                  const currentVal = formData.userspace_primitive_upload_max_bytes
+                    ?? settings?.userspace_primitive_upload_max_bytes
+                    ?? 104857600;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="1048576"
+                          max="1073741824"
+                          step="1048576"
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) => setFormData({
+                            ...formData,
+                            userspace_primitive_upload_max_bytes: parseInt(e.target.value, 10),
+                          })}
+                        />
+                        <span style={{ minWidth: '84px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {formatBytes(currentVal)}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Range: 1 MB to 1 GB. This is a platform resource cap; workspace editors still choose their own app upload UI and storage pattern.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Primitive Archive File Limit</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Maximum number of files extracted from one User Space archive primitive request.
+                </p>
+                {(() => {
+                  const currentVal = formData.userspace_primitive_archive_max_entries
+                    ?? settings?.userspace_primitive_archive_max_entries
+                    ?? 500;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="1"
+                          max="10000"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) => setFormData({
+                            ...formData,
+                            userspace_primitive_archive_max_entries: parseInt(e.target.value, 10),
+                          })}
+                        />
+                        <span style={{ minWidth: '72px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {currentVal.toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Default: 500. Higher values are useful for bulk support packages but can create many workspace file-change events.
                       </p>
                     </>
                   );

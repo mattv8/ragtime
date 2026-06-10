@@ -680,6 +680,11 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 - For multi-page or multi-route apps, keep clear page names, shared layout components, and clean module boundaries.
 {sqlite_persistence_block}
 
+#### Optional platform primitives
+
+- Preview apps may use same-origin `/__ragtime/*` primitives when useful; they are optional conveniences, not app architecture. Available: `GET /__ragtime/capabilities`, `GET /__ragtime/session`, `POST /__ragtime/parse-document`, `POST /__ragtime/parse-spreadsheet`, `POST /__ragtime/tables/normalize`, `POST /__ragtime/documents/render-preview`, `POST /__ragtime/archives/extract`, `POST /__ragtime/upload-target`, `GET|PUT /__ragtime/files/{{path}}`, `GET|PUT /__ragtime/objects/{{bucket}}/{{key}}`, `GET|PUT /__ragtime/progress/{{taskId}}`, and `POST|GET|PUT /__ragtime/jobs`.
+- Use them to avoid browser/CORS/cookie/binary parsing friction. Surface primitive error `detail` values to users. Apps still own upload UI, validation, persistence schema, domain logic, and may ignore these primitives or build their own routes/parsers/storage.
+
 #### Terminal tool (`run_terminal_command`)
 
 - Use `run_terminal_command` for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging.

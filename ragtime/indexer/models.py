@@ -15,6 +15,12 @@ from ragtime.core.embedding_models import (
     get_model_dimensions_sync,
 )
 from ragtime.core.userspace_limits import (
+    USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
+    USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
+    USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
+    USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES,
+    USERSPACE_PRIMITIVE_UPLOAD_MAX_BYTES,
+    USERSPACE_PRIMITIVE_UPLOAD_MIN_BYTES,
     USERSPACE_SQLITE_IMPORT_DEFAULT_MAX_BYTES,
     USERSPACE_SQLITE_IMPORT_MAX_BYTES,
     USERSPACE_SQLITE_IMPORT_MIN_BYTES,
@@ -936,6 +942,18 @@ class AppSettings(BaseModel):
         le=USERSPACE_SQLITE_IMPORT_MAX_BYTES,
         description="Maximum SQL dump upload size for User Space SQLite imports.",
     )
+    userspace_primitive_upload_max_bytes: int = Field(
+        default=USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES,
+        ge=USERSPACE_PRIMITIVE_UPLOAD_MIN_BYTES,
+        le=USERSPACE_PRIMITIVE_UPLOAD_MAX_BYTES,
+        description="Maximum upload size accepted by User Space platform primitives.",
+    )
+    userspace_primitive_archive_max_entries: int = Field(
+        default=USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
+        ge=USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
+        le=USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
+        description="Maximum number of files extracted from one User Space archive primitive request.",
+    )
 
     updated_at: Optional[datetime] = None
 
@@ -1294,6 +1312,18 @@ class UpdateSettingsRequest(BaseModel):
         le=USERSPACE_SQLITE_IMPORT_MAX_BYTES,
         description="Maximum SQL dump upload size for User Space SQLite imports.",
     )
+    userspace_primitive_upload_max_bytes: Optional[int] = Field(
+        default=None,
+        ge=USERSPACE_PRIMITIVE_UPLOAD_MIN_BYTES,
+        le=USERSPACE_PRIMITIVE_UPLOAD_MAX_BYTES,
+        description="Maximum upload size accepted by User Space platform primitives.",
+    )
+    userspace_primitive_archive_max_entries: Optional[int] = Field(
+        default=None,
+        ge=USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
+        le=USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
+        description="Maximum number of files extracted from one User Space archive primitive request.",
+    )
     userspace_duplicate_copy_files_default: Optional[bool] = Field(
         default=None,
         description="Default User Space duplication behavior for copying workspace files.",
@@ -1363,6 +1393,18 @@ class UserSpacePreviewSettingsResponse(BaseModel):
         ge=USERSPACE_SQLITE_IMPORT_MIN_BYTES,
         le=USERSPACE_SQLITE_IMPORT_MAX_BYTES,
         description="Maximum SQL dump upload size for User Space SQLite imports.",
+    )
+    userspace_primitive_upload_max_bytes: int = Field(
+        default=USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES,
+        ge=USERSPACE_PRIMITIVE_UPLOAD_MIN_BYTES,
+        le=USERSPACE_PRIMITIVE_UPLOAD_MAX_BYTES,
+        description="Maximum upload size accepted by User Space platform primitives.",
+    )
+    userspace_primitive_archive_max_entries: int = Field(
+        default=USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
+        ge=USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
+        le=USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
+        description="Maximum number of files extracted from one User Space archive primitive request.",
     )
 
 

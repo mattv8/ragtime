@@ -1541,6 +1541,8 @@ async def get_userspace_preview_settings():
         userspace_preview_sandbox_default_flags=list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
         userspace_preview_sandbox_flag_options=[UserSpacePreviewSandboxFlagOptionResponse(**option) for option in USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS],
         userspace_sqlite_import_max_bytes=settings.userspace_sqlite_import_max_bytes,
+        userspace_primitive_upload_max_bytes=settings.userspace_primitive_upload_max_bytes,
+        userspace_primitive_archive_max_entries=settings.userspace_primitive_archive_max_entries,
     )
 
 

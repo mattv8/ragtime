@@ -39,7 +39,11 @@ from ragtime.core.encryption import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
-from ragtime.core.userspace_limits import clamp_userspace_sqlite_import_max_bytes
+from ragtime.core.userspace_limits import (
+    clamp_userspace_primitive_archive_max_entries,
+    clamp_userspace_primitive_upload_max_bytes,
+    clamp_userspace_sqlite_import_max_bytes,
+)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
@@ -1173,6 +1177,10 @@ class IndexerRepository:
                 None,
             ),
             userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(getattr(settings, "userspaceSqliteImportMaxBytes", None)),
+            userspace_primitive_upload_max_bytes=clamp_userspace_primitive_upload_max_bytes(getattr(settings, "userspacePrimitiveUploadMaxBytes", None)),
+            userspace_primitive_archive_max_entries=clamp_userspace_primitive_archive_max_entries(
+                getattr(settings, "userspacePrimitiveArchiveMaxEntries", None)
+            ),
             updated_at=settings.updatedAt,
         )
 
@@ -1309,6 +1317,8 @@ class IndexerRepository:
             "userspace_mount_sync_start_minute": "userspaceMountSyncStartMinute",
             "userspace_mount_sync_timezone": "userspaceMountSyncTimezone",
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
+            "userspace_primitive_upload_max_bytes": "userspacePrimitiveUploadMaxBytes",
+            "userspace_primitive_archive_max_entries": "userspacePrimitiveArchiveMaxEntries",
         }
 
         # Build update data with only provided fields

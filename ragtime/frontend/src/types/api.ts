@@ -595,6 +595,8 @@ export interface UserSpacePreviewSettingsResponse {
   userspace_preview_sandbox_default_flags: string[];
   userspace_preview_sandbox_flag_options: UserSpacePreviewSandboxFlagOption[];
   userspace_sqlite_import_max_bytes: number;
+  userspace_primitive_upload_max_bytes: number;
+  userspace_primitive_archive_max_entries: number;
 }
 
 export interface UserSpacePreviewSandboxFlagOption {
@@ -740,6 +742,8 @@ export interface AppSettings {
   userspace_mount_sync_start_minute: number | null;
   userspace_mount_sync_timezone: string | null;
   userspace_sqlite_import_max_bytes: number;
+  userspace_primitive_upload_max_bytes: number;
+  userspace_primitive_archive_max_entries: number;
   updated_at: string | null;
 }
 
@@ -867,6 +871,8 @@ export interface UpdateSettingsRequest {
   userspace_mount_sync_start_minute?: number | null;
   userspace_mount_sync_timezone?: string | null;
   userspace_sqlite_import_max_bytes?: number;
+  userspace_primitive_upload_max_bytes?: number;
+  userspace_primitive_archive_max_entries?: number;
 }
 
 // Ollama Connection Testing
