@@ -40,6 +40,7 @@ from ragtime.indexer.models import (
     FetchBranchesRequest,
     FetchBranchesResponse,
     RepoVisibilityResponse,
+    ToolType,
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.tool_health import tool_health_monitor
@@ -324,6 +325,9 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
     tool_configs = await repository.list_tool_configs(enabled_only=True)
     results: list[UserSpaceAvailableTool] = []
     for tool in tool_configs:
+        # Filesystem indexes are background services, not user-facing tools
+        if tool.tool_type == ToolType.FILESYSTEM_INDEXER:
+            continue
         tool_id = tool.id
         if not tool_id:
             continue
