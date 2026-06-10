@@ -2897,7 +2897,13 @@ class IndexerRepository:
 
                 return self._prisma_branch_to_model(created_branch)
         except Exception as e:
-            logger.warning(f"Failed to create conversation branch: {e}")
+            logger.warning(
+                "Failed to create conversation branch for conversation=%s branch_point=%s: %s: %s",
+                conversation_id,
+                branch_point_index,
+                type(e).__name__,
+                e,
+            )
             return None
 
     async def create_conversation_snapshot_branch(
@@ -2936,7 +2942,13 @@ class IndexerRepository:
                 )
                 return self._prisma_branch_to_model(created)
         except Exception as e:
-            logger.warning(f"Failed to create conversation snapshot branch: {e}")
+            logger.warning(
+                "Failed to create conversation snapshot branch for conversation=%s branch_point=%s: %s: %s",
+                conversation_id,
+                branch_point_index,
+                type(e).__name__,
+                e,
+            )
             return None
 
     async def switch_conversation_branch(
@@ -3037,7 +3049,13 @@ class IndexerRepository:
 
                 return self._prisma_conversation_to_model(updated)
         except Exception as e:
-            logger.warning(f"Failed to switch conversation branch: {e}")
+            logger.warning(
+                "Failed to switch conversation branch for conversation=%s branch=%s: %s: %s",
+                conversation_id,
+                branch_id,
+                type(e).__name__,
+                e,
+            )
             return None
 
     @staticmethod

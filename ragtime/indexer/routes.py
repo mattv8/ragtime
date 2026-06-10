@@ -11985,6 +11985,16 @@ async def create_conversation_branch(
     if request.from_message_index < 0 or request.from_message_index > len(conv.messages):
         raise HTTPException(status_code=400, detail="Invalid message index")
 
+    # Refuse to branch while a chat task is actively streaming/processing
+    if conv.active_task_id:
+        # Check whether the task is still live before rejecting
+        active_task = await repository.get_active_task_for_conversation(conversation_id)
+        if active_task:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot branch conversation while a chat is in progress. Wait for the current response to finish before editing.",
+            )
+
     # Auto-snapshot for workspace conversations
     associated_snapshot_id: Optional[str] = None
     if request.auto_snapshot and workspace_id:
@@ -12018,7 +12028,15 @@ async def create_conversation_branch(
         associated_snapshot_id=associated_snapshot_id,
     )
     if not branch:
-        raise HTTPException(status_code=500, detail="Failed to create branch")
+        logger.warning(
+            "Repository returned None for branch creation: conversation=%s index=%s",
+            conversation_id,
+            request.from_message_index,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create branch. The conversation may be locked by an active streaming response.",
+        )
 
     # Per-message snapshot link: anchor the branch snapshot to the original
     # branch-point message so the in-chat restore action can resolve it after
@@ -12051,7 +12069,10 @@ async def create_conversation_branch(
         if b.id == branch.id:
             return b
 
-    raise HTTPException(status_code=500, detail="Branch created but not found")
+    raise HTTPException(
+        status_code=500,
+        detail="Branch created but not found in the database after creation.",
+    )
 
 
 @router.post(
