@@ -112,6 +112,18 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
   const [_toggling, setToggling] = useState<string | null>(null);
   // editingIndex removed in favor of inline editing
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [archiveMaxTotalSizeBytes, setArchiveMaxTotalSizeBytes] = useState<number | null>(null);
+  const [archiveMaxFileCount, setArchiveMaxFileCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.getSettings().then((response) => {
+      const s = response.settings;
+      if (s.archive_max_total_size_bytes != null) setArchiveMaxTotalSizeBytes(s.archive_max_total_size_bytes);
+      if (s.archive_max_file_count != null) setArchiveMaxFileCount(s.archive_max_file_count);
+    }).catch(() => {
+      // Silently fail
+    });
+  }, []);
 
   // Index memory info from health endpoint
   const [indexMemoryMap, setIndexMemoryMap] = useState<Map<string, IndexLoadingDetail>>(new Map());
@@ -458,7 +470,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               </>
             ) : (
               <>
-                <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must delete and re-upload. Use Git indexing for content that changes frequently.
+                <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must delete and re-upload. Use Git indexing for content that changes frequently.{archiveMaxTotalSizeBytes != null && archiveMaxFileCount != null && <> Maximum archive size: {formatSizeMB(archiveMaxTotalSizeBytes / (1024 * 1024))}, maximum files: {archiveMaxFileCount.toLocaleString()}.< />}
               </>
             )}
           </p>
