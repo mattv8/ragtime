@@ -458,6 +458,19 @@ export interface CreateIndexRequest {
   config?: Partial<IndexConfig>;
 }
 
+// Response from importing an exported FAISS zip
+export interface ImportFaissIndexResponse {
+  name: string;
+  display_name: string | null;
+  description: string;
+  document_count: number;
+  chunk_count: number;
+  size_bytes: number;
+  source_type: string;
+  vector_store_type: string;
+  message: string;
+}
+
 // Index Analysis Types (pre-indexing estimation)
 export interface FileTypeStats {
   extension: string;

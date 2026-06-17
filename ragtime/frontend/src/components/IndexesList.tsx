@@ -5,6 +5,7 @@ import { formatSizeMB } from '@/utils';
 import type { IndexInfo, IndexJob, RepoVisibilityResponse, IndexLoadingDetail } from '@/types';
 import { GitIndexWizard } from './GitIndexWizard';
 import { UploadForm } from './UploadForm';
+import { ImportFaissForm } from './ImportFaissForm';
 import { IndexCard } from './IndexCard';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
@@ -27,7 +28,7 @@ interface IndexesListProps {
   onNavigateToSettings?: () => void;
 }
 
-type SourceType = 'upload' | 'git';
+type SourceType = 'upload' | 'git' | 'import';
 
 interface WeightModalProps {
   index: IndexInfo;
@@ -459,6 +460,14 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               >
                 Upload Archive
               </button>
+              <button
+                type="button"
+                className={`wizard-tab ${activeSource === 'import' ? 'active' : ''}`}
+                onClick={() => setActiveSource('import')}
+                disabled={isAnalyzing}
+              >
+                Import FAISS
+              </button>
             </div>
           </div>
 
@@ -468,9 +477,13 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               <>
                 <strong>Git Repository:</strong> Clone from GitHub or GitLab. Supports automatic updates via "Pull & Re-index" to keep your index current with the latest changes.
               </>
-            ) : (
+            ) : activeSource === 'upload' ? (
               <>
                 <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must delete and re-upload. Use Git indexing for content that changes frequently.{archiveMaxTotalSizeBytes != null && archiveMaxFileCount != null && <> Maximum archive size: {formatSizeMB(archiveMaxTotalSizeBytes / (1024 * 1024))}, maximum files: {archiveMaxFileCount.toLocaleString()}.</>}
+              </>
+            ) : (
+              <>
+                <strong>Import FAISS:</strong> Restore a previously exported FAISS index from a zip file (use the <em>Download</em> button on an existing index to get one). The original description, source, and configuration are restored automatically.
               </>
             )}
           </p>
@@ -483,13 +496,20 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               onAnalysisComplete={() => setIsAnalyzing(false)}
               onNavigateToSettings={onNavigateToSettings}
             />
-          ) : (
+          ) : activeSource === 'upload' ? (
             <UploadForm
               onJobCreated={handleGitJobCreated}
               onCancel={handleCancelWizard}
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
               onNavigateToSettings={onNavigateToSettings}
+            />
+          ) : (
+            <ImportFaissForm
+              onImported={() => {
+                handleGitJobCreated();
+              }}
+              onCancel={handleCancelWizard}
             />
           )}
         </div>

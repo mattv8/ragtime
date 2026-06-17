@@ -9,6 +9,7 @@ import importlib
 import io
 import json
 import os
+import pickle
 import posixpath
 import re
 import secrets
@@ -19,6 +20,7 @@ import subprocess
 import tempfile
 import time
 import types
+import uuid
 import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -172,6 +174,7 @@ from ragtime.indexer.export_service import (
     table_source,
     verify_token,
 )
+from ragtime.indexer.file_utils import get_directory_size_bytes
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.live_visualizations import (
     LiveVisualizationRefreshError,
@@ -272,7 +275,7 @@ from ragtime.indexer.models import (
 from ragtime.indexer.pdm_service import pdm_indexer
 from ragtime.indexer.repository import _resolve_default_conversation_model, repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
-from ragtime.indexer.service import indexer
+from ragtime.indexer.service import UPLOAD_TMP_DIR, indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.indexer.utils import safe_tool_name
@@ -1393,7 +1396,9 @@ async def rename_index(
 async def download_index(name: str, _user: User = Depends(require_admin)):
     """Download FAISS index files as a zip archive. Admin only.
 
-    Returns a zip file containing the index.faiss and index.pkl files.
+    Returns a zip file containing the index.faiss, index.pkl, and a
+    metadata.json file with the index description, source, branch, and
+    configuration snapshot so it can be restored on import.
     """
     # Validate index name (prevent path traversal)
     if "/" in name or "\\" in name or ".." in name:
@@ -1424,12 +1429,41 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
             detail="Index files incomplete - index.faiss or index.pkl not found",
         )
 
+    # Build metadata payload (best-effort; metadata is missing for orphan
+    # indexes or before any metadata has been written)
+    metadata_payload: dict[str, Any] = {
+        "name": name,
+        "format_version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        meta = await repository.get_index_metadata(name)
+        if meta is not None:
+            metadata_payload.update(
+                {
+                    "display_name": getattr(meta, "displayName", None),
+                    "description": getattr(meta, "description", "") or "",
+                    "source_type": getattr(meta, "sourceType", "upload"),
+                    "source": getattr(meta, "source", None),
+                    "git_branch": getattr(meta, "gitBranch", None),
+                    "vector_store_type": getattr(meta, "vectorStoreType", None) or "faiss",
+                    "ocr_mode": getattr(meta, "ocrMode", None) or "disabled",
+                    "ocr_provider": getattr(meta, "ocrProvider", None),
+                    "ocr_vision_model": getattr(meta, "ocrVisionModel", None),
+                    "config_snapshot": getattr(meta, "configSnapshot", None),
+                }
+            )
+    except Exception as meta_err:
+        # Never fail the download because of metadata lookup issues
+        logger.warning(f"Could not load metadata for download of '{name}': {meta_err}")
+
     # Create zip file in memory (can be large, run in thread)
     def _create_zip() -> io.BytesIO:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(faiss_file, arcname=f"{name}/index.faiss")
             zf.write(pkl_file, arcname=f"{name}/index.pkl")
+            zf.writestr(f"{name}/metadata.json", json.dumps(metadata_payload, indent=2, default=str))
         buf.seek(0)
         return buf
 
@@ -1446,8 +1480,9 @@ async def download_index(name: str, _user: User = Depends(require_admin)):
 async def download_filesystem_faiss_index(name: str, _user: User = Depends(require_admin)):
     """Download filesystem FAISS index files as a zip archive. Admin only.
 
-    Returns a zip file containing the index.faiss and index.pkl files for a
-    filesystem index that uses FAISS as its vector store.
+    Returns a zip file containing the index.faiss, index.pkl, and a
+    metadata.json file for the filesystem index that uses FAISS as its
+    vector store. The metadata.json allows re-import on a different host.
     """
     # Validate index name (prevent path traversal)
     if "/" in name or "\\" in name or ".." in name:
@@ -1478,12 +1513,22 @@ async def download_filesystem_faiss_index(name: str, _user: User = Depends(requi
             detail="Index files incomplete - index.faiss or index.pkl not found",
         )
 
+    # Build a minimal metadata payload for filesystem indexes
+    metadata_payload: dict[str, Any] = {
+        "name": name,
+        "format_version": 1,
+        "source_type": "filesystem",
+        "vector_store_type": "faiss",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+    }
+
     # Create zip file in memory (can be large, run in thread)
     def _create_zip() -> io.BytesIO:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(faiss_file, arcname=f"{name}/index.faiss")
             zf.write(pkl_file, arcname=f"{name}/index.pkl")
+            zf.writestr(f"{name}/metadata.json", json.dumps(metadata_payload, indent=2, default=str))
         buf.seek(0)
         return buf
 
@@ -1494,6 +1539,268 @@ async def download_filesystem_faiss_index(name: str, _user: User = Depends(requi
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=filesystem_{name}_index.zip"},
     )
+
+
+# -----------------------------------------------------------------------------
+# FAISS Index Import (re-create index from an exported zip)
+# -----------------------------------------------------------------------------
+
+
+class ImportFaissIndexResponse(BaseModel):
+    """Response from importing a FAISS index zip."""
+
+    name: str
+    display_name: Optional[str] = None
+    description: str
+    document_count: int
+    chunk_count: int
+    size_bytes: int
+    source_type: str
+    vector_store_type: str
+    message: str
+
+
+@router.post("/import-faiss", response_model=ImportFaissIndexResponse)
+async def import_faiss_index(
+    file: UploadFile = File(
+        ...,
+        description="Zip archive produced by the FAISS download endpoint (contains index.faiss, index.pkl, metadata.json).",
+    ),
+    name: Optional[str] = Form(
+        default=None,
+        description="Optional override for the new index name. Defaults to the name embedded in metadata.json.",
+    ),
+    description: Optional[str] = Form(
+        default=None,
+        description="Optional description override. Defaults to the description in metadata.json.",
+    ),
+    overwrite: bool = Form(
+        default=False,
+        description="If true, replace an existing index with the same name. If false, returns 409 when the name is taken.",
+    ),
+    _user: User = Depends(require_admin),
+):
+    """Import a previously-exported FAISS index zip and re-create the index metadata. Admin only.
+
+    The zip is expected to contain ``index.faiss``, ``index.pkl``, and an
+    optional ``metadata.json`` produced by the download endpoint. The import:
+
+    1. Extracts the archive into ``<index_base_path>/<name>/``.
+    2. Reads ``metadata.json`` (if present) to restore the description, source,
+       branch, and config_snapshot.
+    3. Computes document/chunk counts and disk size from the restored files.
+    4. Persists an ``index_metadata`` row so the index becomes searchable.
+    5. Hot-loads the FAISS index into the running RAG components.
+    """
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Imported file must be a .zip archive")
+
+    # Stream the upload to a temporary file so we can read the embedded
+    # metadata.json before fully unpacking. The tmp file lives next to the
+    # upload tmp dir and is cleaned up even on failure.
+    tmp_dir = UPLOAD_TMP_DIR / f"faiss_import_{uuid.uuid4().hex[:8]}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = tmp_dir / file.filename
+
+    try:
+
+        def _write_upload() -> None:
+            with open(zip_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+
+        await asyncio.to_thread(_write_upload)
+
+        # Validate that the zip is well-formed before unpacking anything
+        if not zipfile.is_zipfile(zip_path):
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid zip archive")
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # Look for index.faiss and index.pkl (in any nested subfolder)
+            names = zf.namelist()
+            faiss_members = [n for n in names if n.endswith("index.faiss")]
+            pkl_members = [n for n in names if n.endswith("index.pkl")]
+            if not faiss_members or not pkl_members:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Archive is missing required index.faiss or index.pkl files",
+                )
+
+            # Read metadata.json (optional) for restoring description/source/etc.
+            metadata_payload: dict[str, Any] = {}
+            metadata_members = [n for n in names if n.endswith("metadata.json")]
+            for member in metadata_members:
+                try:
+                    metadata_payload = json.loads(zf.read(member).decode("utf-8"))
+                    break
+                except Exception as meta_err:
+                    logger.warning(f"Failed to parse metadata.json in import zip: {meta_err}")
+                    metadata_payload = {}
+
+        # Determine the final index name. Override wins, then metadata.json, then filename.
+        raw_name: Optional[str] = name
+        if not raw_name:
+            raw_name = metadata_payload.get("name")
+        if not raw_name:
+            # Fall back to the zip filename (strip extension)
+            raw_name = file.filename.rsplit(".", 1)[0]
+
+        safe_name = safe_tool_name(raw_name)
+        if not safe_name:
+            raise HTTPException(status_code=400, detail="Could not derive a valid index name from upload")
+
+        target_path = indexer.index_base_path / safe_name
+
+        # Reject if a conflicting index exists and the user did not ask to overwrite
+        if target_path.exists() and not overwrite:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"Index '{safe_name}' already exists at {target_path}. Delete it first or retry with overwrite=true."),
+            )
+
+        # Reject if metadata already exists in DB and overwrite is false
+        existing_meta = await repository.get_index_metadata(safe_name)
+        if existing_meta is not None and not overwrite:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"Index '{safe_name}' already has metadata. Delete it first or retry with overwrite=true."),
+            )
+
+        # If overwriting, unload and clear the existing index to avoid stale state
+        if existing_meta is not None or target_path.exists():
+            try:
+                rag.unload_index(safe_name)
+            except Exception as unload_err:
+                logger.warning(f"Failed to unload existing index '{safe_name}' before import: {unload_err}")
+            await asyncio.to_thread(shutil.rmtree, target_path, True)
+
+        # Extract the archive, stripping any top-level directory so files
+        # land directly under target_path. The download zip always uses
+        # ``{name}/`` as a prefix, so we strip that prefix when present.
+        def _extract_zip() -> None:
+            target_path.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                for member in zf.namelist():
+                    if member.endswith("/"):
+                        continue
+                    # metadata.json is the transport envelope - skip it. The
+                    # metadata is parsed above and persisted via the DB, not
+                    # by extracting the file into the index directory.
+                    if member.endswith("metadata.json"):
+                        continue
+                    # Normalise path: strip optional top-level directory
+                    parts = member.split("/")
+                    if len(parts) > 1 and parts[0]:
+                        # Drop the first segment (the index name prefix from the zip)
+                        relative = "/".join(parts[1:])
+                    else:
+                        relative = member
+                    if not relative:
+                        continue
+                    dest_file = target_path / relative
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(dest_file, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+        await asyncio.to_thread(_extract_zip)
+
+        # Verify the extracted files are present
+        faiss_file = target_path / "index.faiss"
+        pkl_file = target_path / "index.pkl"
+        if not faiss_file.exists() or not pkl_file.exists():
+            raise HTTPException(
+                status_code=400,
+                detail="Extracted archive is missing index.faiss or index.pkl",
+            )
+
+        # Compute document/chunk counts from the pickle file (best-effort)
+        def _read_counts() -> tuple[int, int]:
+            try:
+                with open(pkl_file, "rb") as pkl_f:
+                    data = pickle.load(pkl_f)
+                if isinstance(data, tuple) and len(data) >= 2:
+                    docstore = data[0]
+                    idx_to_id = data[1]
+                    if hasattr(docstore, "_dict"):
+                        count = len(getattr(docstore, "_dict", {}))
+                        return count, count
+                    if isinstance(idx_to_id, dict):
+                        count = len(idx_to_id)
+                        return count, count
+                if isinstance(data, dict):
+                    return len(data), len(data)
+            except Exception as pkl_err:
+                logger.warning(f"Could not read counts from index.pkl during import: {pkl_err}")
+            return 0, 0
+
+        doc_count, chunk_count = await asyncio.to_thread(_read_counts)
+        size_bytes = await asyncio.to_thread(get_directory_size_bytes, target_path)
+
+        # Pull restored values from metadata.json (overridable by form fields)
+        description_value = description if description is not None else metadata_payload.get("description", "") or ""
+        display_name_value = metadata_payload.get("display_name")
+        source_type = metadata_payload.get("source_type") or "upload"
+        # Imports cannot re-create a git clone, so force non-git source_type
+        if source_type == "git" and not metadata_payload.get("source"):
+            source_type = "upload"
+        source_value = metadata_payload.get("source")
+        git_branch_value = metadata_payload.get("git_branch") if source_type == "git" else None
+        config_snapshot = metadata_payload.get("config_snapshot")
+        # Filesystem-imported zips carry an empty config snapshot; replace
+        # with a minimal stub so the UI shows reasonable defaults
+        if not config_snapshot:
+            config_snapshot = {
+                "file_patterns": ["**/*"],
+                "exclude_patterns": [],
+                "chunk_size": 1000,
+                "chunk_overlap": 200,
+                "max_file_size_kb": 500,
+                "ocr_mode": metadata_payload.get("ocr_mode", "disabled"),
+                "ocr_provider": metadata_payload.get("ocr_provider"),
+                "ocr_vision_model": metadata_payload.get("ocr_vision_model"),
+            }
+
+        await repository.upsert_index_metadata(
+            name=safe_name,
+            path=str(target_path),
+            document_count=doc_count,
+            chunk_count=chunk_count,
+            size_bytes=size_bytes,
+            source_type=source_type,
+            source=source_value,
+            config_snapshot=config_snapshot,
+            description=description_value,
+            git_branch=git_branch_value,
+            display_name=display_name_value,
+        )
+
+        # Hot-load into the running RAG components so it is searchable immediately
+        try:
+            await rag.load_faiss_index_from_metadata(safe_name)
+        except Exception as load_err:
+            logger.warning(f"FAISS import: hot-load failed for '{safe_name}': {load_err}")
+
+        logger.info(f"Imported FAISS index '{safe_name}': {doc_count} chunks, {size_bytes} bytes, source_type={source_type}")
+
+        return ImportFaissIndexResponse(
+            name=safe_name,
+            display_name=display_name_value,
+            description=description_value,
+            document_count=doc_count,
+            chunk_count=chunk_count,
+            size_bytes=size_bytes,
+            source_type=source_type,
+            vector_store_type=metadata_payload.get("vector_store_type") or "faiss",
+            message=(f"Imported FAISS index '{safe_name}' with {chunk_count} chunks. It is now available for search."),
+        )
+    finally:
+        # Best-effort cleanup of the upload tmp dir
+        try:
+            if zip_path.exists():
+                zip_path.unlink()
+            if tmp_dir.exists():
+                await asyncio.to_thread(shutil.rmtree, tmp_dir, True)
+        except Exception as cleanup_err:
+            logger.warning(f"Failed to clean up FAISS import tmp dir {tmp_dir}: {cleanup_err}")
 
 
 # -----------------------------------------------------------------------------
