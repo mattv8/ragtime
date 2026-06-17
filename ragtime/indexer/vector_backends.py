@@ -23,6 +23,7 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import VectorStoreType
 from ragtime.indexer.vector_utils import (
+    FAISS_SOURCE_METADATA_KEYS,
     FILESYSTEM_COLUMNS,
     ensure_embedding_column,
     ensure_pgvector_extension,
@@ -35,6 +36,18 @@ logger = get_logger(__name__)
 
 # Base path for FAISS indexes (shared with document indexer - flat structure)
 FAISS_INDEX_BASE_PATH = Path(settings.index_data_path)
+
+
+def _first_metadata_value(metadata: Any, keys: tuple[str, ...]) -> str:
+    """Return the first non-empty value across ``keys`` in a metadata mapping."""
+    if not metadata:
+        return ""
+    if hasattr(metadata, "get"):
+        for key in keys:
+            value = metadata.get(key)
+            if value:
+                return str(value)
+    return ""
 
 
 class VectorStoreBackend(ABC):
@@ -483,12 +496,15 @@ class FaissBackend(VectorStoreBackend):
             "size_mb": None,
         }
 
+        file_paths: set[str] = set()
+
         # Check pending buffer
         if index_name in self._pending:
             pending = self._pending[index_name]
             stats["chunk_count"] = len(pending["texts"])
             stats["embedding_count"] = len(pending["texts"])
-            file_paths = set(m.get("file_path") for m in pending["metadatas"])
+            file_paths = {_first_metadata_value(m, FAISS_SOURCE_METADATA_KEYS) for m in pending["metadatas"]}
+            file_paths.discard("")
             stats["file_count"] = len(file_paths)
             return stats
 
@@ -499,12 +515,15 @@ class FaissBackend(VectorStoreBackend):
                 # Get document count from FAISS
                 stats["chunk_count"] = faiss_db.index.ntotal
                 stats["embedding_count"] = faiss_db.index.ntotal
-                # Count unique file paths from docstore
-                file_paths = set()
+                # Count unique source files from docstore. Metadata key depends
+                # on which indexer wrote the chunk: filesystem -> "file_path",
+                # archive/git/document indexers -> "source".
                 for doc_id in faiss_db.index_to_docstore_id.values():
                     doc = faiss_db.docstore.search(doc_id)
                     if doc and hasattr(doc, "metadata"):
-                        file_paths.add(doc.metadata.get("file_path", ""))
+                        source = _first_metadata_value(doc.metadata, FAISS_SOURCE_METADATA_KEYS)
+                        if source:
+                            file_paths.add(source)
                 stats["file_count"] = len(file_paths)
             except Exception as e:
                 logger.debug(f"Error getting FAISS stats for {index_name}: {e}")

@@ -280,7 +280,7 @@ from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
-from ragtime.indexer.vector_utils import ensure_pgvector_extension
+from ragtime.indexer.vector_utils import count_faiss_docstore_stats, ensure_pgvector_extension
 from ragtime.indexer.visualization_retry import (
     VisualizationRetryContext,
     retry_visualization_with_repair,
@@ -1712,22 +1712,15 @@ async def import_faiss_index(
                 detail="Extracted archive is missing index.faiss or index.pkl",
             )
 
-        # Compute document/chunk counts from the pickle file (best-effort)
+        # Compute document/chunk counts from the pickle file (best-effort).
+        # document_count = unique source files, chunk_count = total stored chunks.
+        # Older imports erroneously reused the chunk count for both, making the
+        # UI report a 1:1 file/chunk ratio.
         def _read_counts() -> tuple[int, int]:
             try:
                 with open(pkl_file, "rb") as pkl_f:
                     data = pickle.load(pkl_f)
-                if isinstance(data, tuple) and len(data) >= 2:
-                    docstore = data[0]
-                    idx_to_id = data[1]
-                    if hasattr(docstore, "_dict"):
-                        count = len(getattr(docstore, "_dict", {}))
-                        return count, count
-                    if isinstance(idx_to_id, dict):
-                        count = len(idx_to_id)
-                        return count, count
-                if isinstance(data, dict):
-                    return len(data), len(data)
+                return count_faiss_docstore_stats(data)
             except Exception as pkl_err:
                 logger.warning(f"Could not read counts from index.pkl during import: {pkl_err}")
             return 0, 0

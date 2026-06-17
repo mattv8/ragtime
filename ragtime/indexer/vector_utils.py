@@ -5,10 +5,11 @@ This module centralizes:
 - Embedding model factory (get_embeddings_model)
 - pgvector similarity search (search_pgvector_embeddings)
 - Embedding dimension warnings
+- FAISS docstore stats (count_faiss_docstore_stats)
 """
 
 import asyncio
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
@@ -70,6 +71,69 @@ def _get_setting(settings: Any, key: str, default: Any = None) -> Any:
     if isinstance(settings, Mapping):
         return settings.get(key, default)
     return getattr(settings, key, default)
+
+
+# Metadata keys that may carry the source-file identity in a FAISS docstore.
+# Document-archive and git indexers persist chunks with ``source`` (from
+# langchain ``Document.metadata``); the filesystem indexer persists with
+# ``file_path`` (see FaissBackend.store_embeddings). Both must be honoured
+# when deriving file-level statistics.
+FAISS_SOURCE_METADATA_KEYS: Tuple[str, ...] = ("source", "file_path")
+
+
+def _docstore_source(metadata: Any) -> str:
+    """Return the first non-empty source-identifying value in a metadata dict."""
+    if not isinstance(metadata, Mapping):
+        return ""
+    for key in FAISS_SOURCE_METADATA_KEYS:
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def count_faiss_docstore_stats(faiss_pickle_data: Any) -> Tuple[int, int]:
+    """Return ``(document_count, chunk_count)`` for a FAISS pickle payload.
+
+    ``document_count`` is the number of unique source files referenced by chunk
+    metadata. ``chunk_count`` is the total number of stored chunks. Older code
+    set both fields to the chunk count, which made every index look like it had
+    a 1:1 file-to-chunk ratio in the UI.
+
+    Accepts the raw object returned by ``pickle.load`` on ``index.pkl``:
+    typically ``(InMemoryDocstore, index_to_docstore_id)``. Falls back to the
+    chunk count when no usable source metadata is present so legacy data does
+    not regress to zero.
+    """
+    docstore_dict: Optional[Mapping[Any, Any]] = None
+    idx_to_id: Optional[Mapping[Any, Any]] = None
+
+    if isinstance(faiss_pickle_data, tuple) and len(faiss_pickle_data) >= 2:
+        docstore, idx_to_id_candidate = faiss_pickle_data[0], faiss_pickle_data[1]
+        inner = getattr(docstore, "_dict", None)
+        if isinstance(inner, Mapping):
+            docstore_dict = inner
+        if isinstance(idx_to_id_candidate, Mapping):
+            idx_to_id = idx_to_id_candidate
+    elif isinstance(faiss_pickle_data, Mapping):
+        docstore_dict = faiss_pickle_data
+
+    if docstore_dict is not None:
+        chunk_count = len(docstore_dict)
+        sources: set[str] = set()
+        for doc in docstore_dict.values():
+            source = _docstore_source(getattr(doc, "metadata", None))
+            if source:
+                sources.add(source)
+        if sources:
+            return len(sources), chunk_count
+        return chunk_count, chunk_count
+
+    if idx_to_id is not None:
+        count = len(idx_to_id)
+        return count, count
+
+    return 0, 0
 
 
 async def ensure_pgvector_extension(logger_override=None) -> bool:

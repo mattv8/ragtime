@@ -93,6 +93,7 @@ from ragtime.indexer.repository import repository
 from ragtime.indexer.vector_utils import (
     EMBEDDING_SUB_BATCH_SIZE,
     append_embedding_dimension_warning,
+    count_faiss_docstore_stats,
     embed_documents_subbatched,
     get_embeddings_model,
 )
@@ -546,25 +547,16 @@ class IndexerService:
 
                 logger.info(f"Discovered orphan index: {path.name}")
 
-                # Try to extract document count from pickle file
+                # Try to extract document/chunk counts from pickle file.
+                # document_count = unique source files; chunk_count = chunks.
                 doc_count = 0
                 chunk_count = 0
                 try:
                     with open(pkl_file, "rb") as pkl_f:
                         data = pickle.load(pkl_f)
+                    doc_count, chunk_count = count_faiss_docstore_stats(data)
 
-                    # FAISS pickle format: (InMemoryDocstore, index_to_docstore_id_dict)
-                    if isinstance(data, tuple) and len(data) >= 2:
-                        docstore, idx_to_id = data[0], data[1]
-                        if hasattr(docstore, "_dict"):
-                            docstore_dict = getattr(docstore, "_dict", {})
-                            doc_count = len(docstore_dict)  # noqa: SLF001
-                            chunk_count = doc_count  # chunks == documents for FAISS
-                        elif isinstance(idx_to_id, dict):
-                            doc_count = len(idx_to_id)
-                            chunk_count = doc_count
-
-                    logger.info(f"  Extracted {doc_count} documents from {path.name}")
+                    logger.info(f"  Extracted {doc_count} source file(s) and {chunk_count} chunk(s) from {path.name}")
                 except Exception as e:
                     logger.warning(f"  Could not extract doc count from {path.name}: {e}")
 
@@ -880,22 +872,23 @@ class IndexerService:
                         try:
                             with open(pkl_file, "rb") as f:
                                 data = pickle.load(f)
-                            if isinstance(data, tuple) and len(data) >= 2:
-                                docstore = data[0]
-                                if hasattr(docstore, "_dict"):
-                                    doc_count = len(getattr(docstore, "_dict", {}))
-                                    size_bytes = await asyncio.to_thread(
-                                        get_directory_size_bytes,
-                                        index_path,
-                                    )
-                                    logger.info(f"Restoring metadata counts for '{name}' from FAISS data: {doc_count} chunks, {size_bytes} bytes")
-                                    await repository.update_index_metadata_counts(
-                                        name=name,
-                                        document_count=doc_count,
-                                        chunk_count=doc_count,
-                                        size_bytes=size_bytes,
-                                    )
-                                    return
+                            doc_count, chunk_count = count_faiss_docstore_stats(data)
+                            if chunk_count > 0:
+                                size_bytes = await asyncio.to_thread(
+                                    get_directory_size_bytes,
+                                    index_path,
+                                )
+                                logger.info(
+                                    f"Restoring metadata counts for '{name}' from FAISS data: "
+                                    f"{doc_count} source file(s), {chunk_count} chunk(s), {size_bytes} bytes"
+                                )
+                                await repository.update_index_metadata_counts(
+                                    name=name,
+                                    document_count=doc_count,
+                                    chunk_count=chunk_count,
+                                    size_bytes=size_bytes,
+                                )
+                                return
                         except Exception as pkl_err:
                             logger.warning(f"Could not restore counts from FAISS for '{name}': {pkl_err}")
 
