@@ -470,7 +470,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
               </>
             ) : (
               <>
-                <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must delete and re-upload. Use Git indexing for content that changes frequently.{archiveMaxTotalSizeBytes != null && archiveMaxFileCount != null && <> Maximum archive size: {formatSizeMB(archiveMaxTotalSizeBytes / (1024 * 1024))}, maximum files: {archiveMaxFileCount.toLocaleString()}.< />}
+                <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must delete and re-upload. Use Git indexing for content that changes frequently.{archiveMaxTotalSizeBytes != null && archiveMaxFileCount != null && <> Maximum archive size: {formatSizeMB(archiveMaxTotalSizeBytes / (1024 * 1024))}, maximum files: {archiveMaxFileCount.toLocaleString()}.</>}
               </>
             )}
           </p>
