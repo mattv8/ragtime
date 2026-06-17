@@ -10,6 +10,58 @@ from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from ragtime.core.app_setting_defaults import (
+    DEFAULT_AGGREGATE_SEARCH,
+    DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
+    DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
+    DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
+    DEFAULT_CHUNKING_MAX_BATCH_SIZE,
+    DEFAULT_CHUNKING_MAX_WORKERS,
+    DEFAULT_CHUNKING_USE_TOKENS,
+    DEFAULT_CONTEXT_TOKEN_BUDGET,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_EMBEDDING_PROVIDER,
+    DEFAULT_GITHUB_COPILOT_BASE_URL,
+    DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
+    DEFAULT_IMAGE_PAYLOAD_MAX_BYTES,
+    DEFAULT_IMAGE_PAYLOAD_MAX_HEIGHT,
+    DEFAULT_IMAGE_PAYLOAD_MAX_PIXELS,
+    DEFAULT_IMAGE_PAYLOAD_MAX_WIDTH,
+    DEFAULT_INCLUDE_COPILOT_THIRD_PARTY_MODELS,
+    DEFAULT_IVFFLAT_LISTS,
+    DEFAULT_LEGACY_ODOO_CONTAINER,
+    DEFAULT_LEGACY_POSTGRES_CONTAINER,
+    DEFAULT_LEGACY_POSTGRES_PORT,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_MAX_QUERY_RESULTS,
+    DEFAULT_MAX_TOOL_OUTPUT_CHARS,
+    DEFAULT_MCP_DEFAULT_ROUTE_AUTH,
+    DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD,
+    DEFAULT_MCP_ENABLED,
+    DEFAULT_OCR_CONCURRENCY_LIMIT,
+    DEFAULT_OCR_MODE,
+    DEFAULT_OCR_PROVIDER,
+    DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS,
+    DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
+    DEFAULT_OPENAPI_SYNC_CHAT_MODELS,
+    DEFAULT_QUERY_TIMEOUT_SECONDS,
+    DEFAULT_SCRATCHPAD_WINDOW_SIZE,
+    DEFAULT_SEARCH_MMR_LAMBDA,
+    DEFAULT_SEARCH_RESULTS_K,
+    DEFAULT_SEARCH_USE_MMR,
+    DEFAULT_SEQUENTIAL_INDEX_LOADING,
+    DEFAULT_SERVER_NAME,
+    DEFAULT_SNAPSHOT_RETENTION_DAYS,
+    DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
+    DEFAULT_USERSPACE_DUPLICATE_COPY_CHATS,
+    DEFAULT_USERSPACE_DUPLICATE_COPY_FILES,
+    DEFAULT_USERSPACE_DUPLICATE_COPY_METADATA,
+    DEFAULT_USERSPACE_DUPLICATE_COPY_MOUNTS,
+    DEFAULT_USERSPACE_MOUNT_SYNC_INTERVAL_SECONDS,
+)
 from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
@@ -460,25 +512,25 @@ class AppSettings(BaseModel):
 
     # Server branding
     server_name: str = Field(
-        default="Ragtime",
+        default=DEFAULT_SERVER_NAME,
         description="Server display name (shown in UI and API model name)",
     )
     authenticated_webgl_background_enabled: bool = Field(
-        default=True,
+        default=DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
         description="If True, show the animated WebGL gradient behind authenticated app pages.",
     )
     openapi_model_prefix_enabled: bool = Field(
-        default=True,
+        default=DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
         description="If True, prefix OpenAI-compatible API model names with the server name.",
     )
 
     # Embedding Configuration (for FAISS indexing)
     embedding_provider: str = Field(
-        default="ollama",
+        default=DEFAULT_EMBEDDING_PROVIDER,
         description="Embedding provider: 'ollama', 'openai', 'llama_cpp', or 'lmstudio'",
     )
     embedding_model: str = Field(
-        default="nomic-embed-text",
+        default=DEFAULT_EMBEDDING_MODEL,
         description="Embedding model name (e.g., 'nomic-embed-text' for Ollama, 'text-embedding-3-small' for OpenAI)",
     )
     embedding_dimensions: Optional[int] = Field(
@@ -545,38 +597,38 @@ class AppSettings(BaseModel):
 
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
-        default="openai",
+        default=DEFAULT_LLM_PROVIDER,
         description="LLM provider: 'openai', 'anthropic', 'openrouter', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
     )
     llm_model: str = Field(
-        default="gpt-4-turbo",
+        default=DEFAULT_LLM_MODEL,
         description="LLM model name (e.g., 'gpt-4-turbo' for OpenAI, 'claude-3-sonnet-20240229' for Anthropic, 'llama3' for Ollama)",
     )
     llm_max_tokens: int = Field(
-        default=4096,
+        default=DEFAULT_LLM_MAX_TOKENS,
         ge=1,
         description="Maximum number of tokens to generate in LLM response",
     )
     image_payload_max_width: int = Field(
-        default=1024,
+        default=DEFAULT_IMAGE_PAYLOAD_MAX_WIDTH,
         ge=320,
         le=4096,
         description="Maximum image width in pixels for multimodal attachments.",
     )
     image_payload_max_height: int = Field(
-        default=1024,
+        default=DEFAULT_IMAGE_PAYLOAD_MAX_HEIGHT,
         ge=240,
         le=4096,
         description="Maximum image height in pixels for multimodal attachments.",
     )
     image_payload_max_pixels: int = Field(
-        default=786_432,
+        default=DEFAULT_IMAGE_PAYLOAD_MAX_PIXELS,
         ge=76_800,
         le=8_000_000,
         description="Maximum total pixels for multimodal image attachments.",
     )
     image_payload_max_bytes: int = Field(
-        default=350_000,
+        default=DEFAULT_IMAGE_PAYLOAD_MAX_BYTES,
         ge=50_000,
         le=5_000_000,
         description="Target max compressed bytes for multimodal image attachments.",
@@ -659,11 +711,11 @@ class AppSettings(BaseModel):
         description="GitHub Enterprise domain used for Copilot auth (if enterprise deployment is selected).",
     )
     github_copilot_base_url: str = Field(
-        default="https://api.githubcopilot.com",
+        default=DEFAULT_GITHUB_COPILOT_BASE_URL,
         description="GitHub Copilot API base URL for chat/model requests.",
     )
     include_copilot_third_party_models: bool = Field(
-        default=False,
+        default=DEFAULT_INCLUDE_COPILOT_THIRD_PARTY_MODELS,
         description="When true, include 3rd-party families (Anthropic/Google) from models.dev in GitHub Copilot model discovery.",
     )
     has_github_copilot_auth: bool = Field(
@@ -685,25 +737,25 @@ class AppSettings(BaseModel):
         description="Models exposed via /v1/models. Empty = use chat models list.",
     )
     openapi_sync_chat_models: bool = Field(
-        default=True,
+        default=DEFAULT_OPENAPI_SYNC_CHAT_MODELS,
         description="When true, /v1/models mirrors the Chat Models list.",
     )
 
     # Agent behavior
     max_iterations: int = Field(
-        default=15,
+        default=DEFAULT_MAX_ITERATIONS,
         ge=1,
         le=100,
         description="Maximum agent iterations before stopping tool calls",
     )
     chat_compaction_threshold_percent: int = Field(
-        default=80,
+        default=DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
         ge=1,
         le=100,
         description="Show the chat compact button once effective conversation context usage reaches this percentage.",
     )
     chat_auto_compaction_threshold_percent: int = Field(
-        default=99,
+        default=DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
         ge=1,
         le=100,
         description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
@@ -711,13 +763,13 @@ class AppSettings(BaseModel):
 
     # Token optimization settings
     max_tool_output_chars: int = Field(
-        default=5000,
+        default=DEFAULT_MAX_TOOL_OUTPUT_CHARS,
         ge=0,
         le=100000,
         description="Maximum characters per tool output before truncation. 0=unlimited. Reduces quadratic token growth in multi-tool loops.",
     )
     scratchpad_window_size: int = Field(
-        default=6,
+        default=DEFAULT_SCRATCHPAD_WINDOW_SIZE,
         ge=0,
         le=100,
         description="Keep last N tool calls in full detail; older steps are summarized. 0=keep all (no compression).",
@@ -725,39 +777,39 @@ class AppSettings(BaseModel):
 
     # Search configuration
     search_results_k: int = Field(
-        default=5,
+        default=DEFAULT_SEARCH_RESULTS_K,
         ge=1,
         le=100,
         description="Number of results returned per vector search (k). Higher values provide more context but increase response time and token usage.",
     )
     aggregate_search: bool = Field(
-        default=True,
+        default=DEFAULT_AGGREGATE_SEARCH,
         description="If True, provide a single search_knowledge tool that searches all indexes. If False, create separate search_<index_name> tools for granular control.",
     )
     search_use_mmr: bool = Field(
-        default=True,
+        default=DEFAULT_SEARCH_USE_MMR,
         description="Use Max Marginal Relevance for result diversification. Reduces near-duplicate results by balancing relevance with diversity.",
     )
     search_mmr_lambda: float = Field(
-        default=0.5,
+        default=DEFAULT_SEARCH_MMR_LAMBDA,
         ge=0.0,
         le=1.0,
         description="MMR diversity/relevance tradeoff. 0=maximum diversity (most varied results), 1=maximum relevance (closest matches). Recommended: 0.5-0.7.",
     )
     context_token_budget: int = Field(
-        default=4000,
+        default=DEFAULT_CONTEXT_TOKEN_BUDGET,
         ge=0,
         le=32000,
         description="Maximum tokens for retrieved context sent to LLM. 0=unlimited. Prevents context overflow for models with smaller context windows.",
     )
     chunking_use_tokens: bool = Field(
-        default=True,
+        default=DEFAULT_CHUNKING_USE_TOKENS,
         description="Use token-based chunking instead of character-based. More accurate chunk sizes aligned with model tokenization.",
     )
 
     # pgvector configuration
     ivfflat_lists: int = Field(
-        default=100,
+        default=DEFAULT_IVFFLAT_LISTS,
         ge=10,
         le=1000,
         description="IVFFlat index lists parameter. Higher values: slower build but faster queries for large datasets. Scale with sqrt(num_embeddings).",
@@ -765,17 +817,17 @@ class AppSettings(BaseModel):
 
     # Performance configuration
     sequential_index_loading: bool = Field(
-        default=False,
+        default=DEFAULT_SEQUENTIAL_INDEX_LOADING,
         description="If True, load FAISS indexes one at a time (smallest first) to reduce peak memory. If False (default), load all indexes in parallel for faster startup.",
     )
     chunking_max_workers: int = Field(
-        default=4,
+        default=DEFAULT_CHUNKING_MAX_WORKERS,
         ge=1,
         le=16,
         description="Maximum parallel processes the chunking pool may use. Lower this if indexing causes OOMs or starves the API; raise on high-memory hosts.",
     )
     chunking_max_batch_size: int = Field(
-        default=100,
+        default=DEFAULT_CHUNKING_MAX_BATCH_SIZE,
         ge=1,
         le=500,
         description="Maximum documents submitted to each chunking worker batch. Smaller batches reduce per-worker memory spikes at the cost of throughput.",
@@ -789,15 +841,15 @@ class AppSettings(BaseModel):
 
     # MCP Configuration
     mcp_enabled: bool = Field(
-        default=False,
+        default=DEFAULT_MCP_ENABLED,
         description="If True, enable the MCP (Model Context Protocol) server endpoints.",
     )
     mcp_default_route_auth: bool = Field(
-        default=False,
+        default=DEFAULT_MCP_DEFAULT_ROUTE_AUTH,
         description="If True, require Bearer token authentication for the default /mcp route.",
     )
     mcp_default_route_auth_method: str = Field(
-        default="password",
+        default=DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD,
         description="Authentication method for default MCP route: 'password' for Bearer token, 'oauth2' for LDAP OAuth2 flow, 'client_credentials' for OAuth2 client_credentials grant.",
     )
     mcp_default_route_password: Optional[str] = Field(
@@ -822,28 +874,41 @@ class AppSettings(BaseModel):
 
     # Legacy Odoo tool settings
     odoo_container: str = Field(
-        default="odoo-server",
+        default=DEFAULT_LEGACY_ODOO_CONTAINER,
         description="Legacy: Docker container name for Odoo server",
     )
 
     # Legacy Postgres tool settings (target DB, not ragtime-db)
     postgres_container: str = Field(
-        default="odoo-postgres",
+        default=DEFAULT_LEGACY_POSTGRES_CONTAINER,
         description="Legacy: Docker container name for target PostgreSQL",
     )
     postgres_host: str = Field(default="localhost", description="Legacy: PostgreSQL host for tool queries")
-    postgres_port: int = Field(default=5432, description="Legacy: PostgreSQL port for tool queries")
+    postgres_port: int = Field(
+        default=DEFAULT_LEGACY_POSTGRES_PORT,
+        description="Legacy: PostgreSQL port for tool queries",
+    )
     postgres_user: str = Field(default="odoo", description="Legacy: PostgreSQL user for tool queries")
     postgres_password: str = Field(default="", description="Legacy: PostgreSQL password for tool queries")
     postgres_database: str = Field(default="odoo", description="Legacy: PostgreSQL database for tool queries")
 
     # Query limits
-    max_query_results: int = Field(default=100, ge=1, le=1000, description="Maximum rows returned by queries")
-    query_timeout: int = Field(default=30, ge=1, le=300, description="Query timeout in seconds")
+    max_query_results: int = Field(
+        default=DEFAULT_MAX_QUERY_RESULTS,
+        ge=1,
+        le=1000,
+        description="Maximum rows returned by queries",
+    )
+    query_timeout: int = Field(
+        default=DEFAULT_QUERY_TIMEOUT_SECONDS,
+        ge=1,
+        le=300,
+        description="Query timeout in seconds",
+    )
 
     # HTTP request handling
     http_proxy_safe_timeout_seconds: int = Field(
-        default=90,
+        default=DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
         ge=1,
         le=3600,
         description="Maximum seconds for synchronous HTTP handlers before returning an in-app timeout response. Set below your upstream reverse-proxy timeout.",
@@ -864,11 +929,11 @@ class AppSettings(BaseModel):
 
     # OCR Configuration (global defaults for new indexes)
     default_ocr_mode: OcrMode = Field(
-        default=OcrMode.DISABLED,
+        default=OcrMode(DEFAULT_OCR_MODE),
         description="Default OCR mode for new indexes: 'disabled' (skip images), 'tesseract' (fast), 'vision' (semantic)",
     )
     default_ocr_provider: Optional[OcrProvider] = Field(
-        default=OcrProvider.OLLAMA,
+        default=OcrProvider(DEFAULT_OCR_PROVIDER),
         description="Default provider for semantic vision OCR.",
     )
     default_ocr_vision_model: Optional[str] = Field(
@@ -876,7 +941,7 @@ class AppSettings(BaseModel):
         description="Default vision-capable model for OCR. Required when default_ocr_mode is 'vision'.",
     )
     ocr_concurrency_limit: int = Field(
-        default=1,
+        default=DEFAULT_OCR_CONCURRENCY_LIMIT,
         ge=1,
         le=10,
         description="Max concurrent Ollama vision OCR requests. Higher values use more VRAM.",
@@ -884,7 +949,7 @@ class AppSettings(BaseModel):
 
     # Embedding Timeout
     ollama_embedding_timeout_seconds: int = Field(
-        default=180,
+        default=DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS,
         ge=30,
         le=600,
         description="Per sub-batch timeout in seconds for embedding API calls across providers. Increase for slow hardware or large models.",
@@ -892,12 +957,12 @@ class AppSettings(BaseModel):
 
     # User Space Snapshot Retention
     snapshot_retention_days: int = Field(
-        default=0,
+        default=DEFAULT_SNAPSHOT_RETENTION_DAYS,
         ge=0,
         description="Snapshot retention in days (0 = unlimited). Snapshots older than this are hidden and cannot be restored.",
     )
     snapshot_stale_branch_threshold: int = Field(
-        default=50,
+        default=DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
         ge=0,
         le=500,
         description="Hide branches whose head is this many or more commits behind the active branch head. 0 = show all.",
@@ -907,11 +972,11 @@ class AppSettings(BaseModel):
         description=("Allowed iframe sandbox flags for User Space previews. Defaults to the current preview capability set."),
     )
     userspace_duplicate_copy_files_default: bool = Field(
-        default=True,
+        default=DEFAULT_USERSPACE_DUPLICATE_COPY_FILES,
         description="Default User Space duplication behavior for copying workspace files.",
     )
     userspace_duplicate_copy_metadata_default: bool = Field(
-        default=True,
+        default=DEFAULT_USERSPACE_DUPLICATE_COPY_METADATA,
         description=(
             "Default User Space duplication behavior for copying workspace "
             "description, SQLite mode, tool selections, and workspace "
@@ -919,15 +984,15 @@ class AppSettings(BaseModel):
         ),
     )
     userspace_duplicate_copy_chats_default: bool = Field(
-        default=False,
+        default=DEFAULT_USERSPACE_DUPLICATE_COPY_CHATS,
         description="Default User Space duplication behavior for copying chat history.",
     )
     userspace_duplicate_copy_mounts_default: bool = Field(
-        default=False,
+        default=DEFAULT_USERSPACE_DUPLICATE_COPY_MOUNTS,
         description="Default User Space duplication behavior for copying workspace mounts.",
     )
     userspace_mount_sync_interval_seconds: int = Field(
-        default=30,
+        default=DEFAULT_USERSPACE_MOUNT_SYNC_INTERVAL_SECONDS,
         ge=1,
         le=2592000,
         description="Global default auto-sync interval in seconds for SSH and cloud workspace mounts.",

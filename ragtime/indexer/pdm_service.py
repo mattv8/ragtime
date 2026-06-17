@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, cast
 
+from ragtime.core.app_setting_defaults import DEFAULT_IVFFLAT_LISTS
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import (
@@ -844,7 +845,7 @@ class PdmIndexerService:
             # Check embedding dimension and ensure column matches
             test_embedding = await asyncio.to_thread(embeddings.embed_documents, ["test"])
             embedding_dim = len(test_embedding[0])
-            index_lists = app_settings.get("ivfflat_lists", 100)
+            index_lists = app_settings.get("ivfflat_lists", DEFAULT_IVFFLAT_LISTS)
             # This will raise RuntimeError with detailed message if it fails
             await self._ensure_embedding_column(embedding_dim, index_lists)
 

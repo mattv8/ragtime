@@ -68,6 +68,15 @@ from ragtime.chat_runtime.presets import (
 )
 from ragtime.config import settings
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
+from ragtime.core.app_setting_defaults import (
+    DEFAULT_CONTEXT_TOKEN_BUDGET,
+    DEFAULT_IMAGE_PAYLOAD_LIMITS,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_MAX_TOOL_OUTPUT_CHARS,
+    DEFAULT_SCRATCHPAD_WINDOW_SIZE,
+    DEFAULT_SEARCH_RESULTS_K,
+)
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
@@ -350,12 +359,7 @@ TRANSIENT_PROVIDER_ERROR_PHRASES = (
 
 # Shared image payload caps for all vision-related message content.
 # Keep a single source of truth to avoid drift between userspace and chat paths.
-IMAGE_PAYLOAD_LIMITS = {
-    "max_width": 1024,
-    "max_height": 1024,
-    "max_pixels": 786_432,
-    "max_bytes": 350_000,
-}
+IMAGE_PAYLOAD_LIMITS = DEFAULT_IMAGE_PAYLOAD_LIMITS
 
 # Keep at most this many concurrent image downsampling jobs.
 IMAGE_DOWNSAMPLE_MAX_CONCURRENCY = 2
@@ -1728,7 +1732,7 @@ class RAGComponents:
         self._faiss_loading_task: Optional[asyncio.Task] = None  # prevent GC
         self._ollama_warmup_task: Optional[asyncio.Task] = None  # prevent GC
         # Token optimization settings
-        self._scratchpad_window_size: int = 6  # Default, updated from settings
+        self._scratchpad_window_size: int = DEFAULT_SCRATCHPAD_WINDOW_SIZE  # Default, updated from settings
         # Request-scoped prompt fragments cache
         self._request_prompt_cache: dict[tuple[Any, ...], str] = {}
         # Track the Copilot HMAC token baked into the cached LLM so we can
@@ -2697,7 +2701,7 @@ class RAGComponents:
     async def _resolve_llm_max_tokens(self, provider: str, model: str) -> int:
         """Resolve max tokens for an LLM request using configured limits."""
         assert self._app_settings is not None
-        max_tokens = self._app_settings.get("llm_max_tokens", 4096)
+        max_tokens = self._app_settings.get("llm_max_tokens", DEFAULT_LLM_MAX_TOKENS)
 
         if max_tokens < 100000:
             return max_tokens
@@ -2709,16 +2713,16 @@ class RAGComponents:
                 logger.info(f"Using detected context limit for {self._provider_label(normalized_provider)} model {model}: {detected_limit}")
                 return detected_limit
 
-            logger.warning(f"Could not detect limits for {self._provider_label(normalized_provider)} model {model}, using default 4096")
-            return 4096
+            logger.warning(f"Could not detect limits for {self._provider_label(normalized_provider)} model {model}, using default {DEFAULT_LLM_MAX_TOKENS}")
+            return DEFAULT_LLM_MAX_TOKENS
 
         detected_limit = await get_output_limit(model)
         if detected_limit:
             logger.info(f"Using detected output limit for {model}: {detected_limit}")
             return detected_limit
 
-        logger.warning(f"Could not detect output limit for {model}, using default 4096")
-        return 4096
+        logger.warning(f"Could not detect output limit for {model}, using default {DEFAULT_LLM_MAX_TOKENS}")
+        return DEFAULT_LLM_MAX_TOKENS
 
     async def _build_llm(
         self,
@@ -3155,7 +3159,7 @@ class RAGComponents:
             A retriever configured with current settings
         """
         assert self._app_settings is not None
-        search_k = self._app_settings.get("search_results_k", 5)
+        search_k = self._app_settings.get("search_results_k", DEFAULT_SEARCH_RESULTS_K)
         use_mmr = self._app_settings.get("search_use_mmr", True)
         mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5)
 
@@ -3506,7 +3510,7 @@ class RAGComponents:
         self._indexes_total = len(enabled_indexes)
         self._indexes_loaded = 0
         app_settings = self._app_settings or {}
-        search_k = app_settings.get("search_results_k", 5)
+        search_k = app_settings.get("search_results_k", DEFAULT_SEARCH_RESULTS_K)
 
         # Get current embedding dimension by probing the embedding model
         # This is more reliable than tracked app_settings when provider changes
@@ -3731,17 +3735,17 @@ class RAGComponents:
             available = list(get_all_tools().keys())
             logger.warning(f"No tools configured. Available tool types: {available}. Configure via Tools tab at /indexes/ui?view=tools")
 
-        # Respect admin-configured iteration limit; fall back to 15 if invalid
+        # Respect admin-configured iteration limit; fall back to the shared default if invalid
         try:
-            max_iterations = int(self._app_settings.get("max_iterations", 15))
+            max_iterations = int(self._app_settings.get("max_iterations", DEFAULT_MAX_ITERATIONS))
             if max_iterations < 1:
                 max_iterations = 1
         except (TypeError, ValueError):
-            max_iterations = 15
+            max_iterations = DEFAULT_MAX_ITERATIONS
 
         # Get token optimization settings
-        max_tool_output_chars = int(self._app_settings.get("max_tool_output_chars", 5000))
-        scratchpad_window_size = int(self._app_settings.get("scratchpad_window_size", 6))
+        max_tool_output_chars = int(self._app_settings.get("max_tool_output_chars", DEFAULT_MAX_TOOL_OUTPUT_CHARS))
+        scratchpad_window_size = int(self._app_settings.get("scratchpad_window_size", DEFAULT_SCRATCHPAD_WINDOW_SIZE))
 
         # Wrap all tools with output truncation (if enabled)
         # This reduces token consumption in the agent's scratchpad
@@ -5578,7 +5582,7 @@ class RAGComponents:
             return "", sources
 
         # Apply token budget if configured (0 = unlimited)
-        token_budget = self._app_settings.get("context_token_budget", 4000) if self._app_settings else 4000
+        token_budget = self._app_settings.get("context_token_budget", DEFAULT_CONTEXT_TOKEN_BUDGET) if self._app_settings else DEFAULT_CONTEXT_TOKEN_BUDGET
 
         if token_budget > 0:
             context, actual_tokens = truncate_to_token_budget(all_docs, max_tokens=token_budget)

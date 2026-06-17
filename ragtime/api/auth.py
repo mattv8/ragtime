@@ -35,6 +35,12 @@ from ragtime.core.api_accounting import (
     get_api_daily_trend,
     get_api_provider_model_breakdown,
 )
+from ragtime.core.app_setting_defaults import (
+    DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
+    DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
+    DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
+    DEFAULT_SERVER_NAME,
+)
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     authenticate,
@@ -569,19 +575,19 @@ class AuthStatusResponse(BaseModel):
     allowed_origins_open: bool = False  # True if ALLOWED_ORIGINS=*
     auth_methods: list[AuthMethodStatus] = Field(default_factory=list)
     server_name: str = Field(
-        default="Ragtime",
+        default=DEFAULT_SERVER_NAME,
         description="Configured server branding name",
     )
     authenticated_webgl_background_enabled: bool = Field(
-        default=True,
+        default=DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
         description="If True, show the animated WebGL gradient behind authenticated app pages.",
     )
     chat_compaction_threshold_percent: int = Field(
-        default=80,
+        default=DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
         description="Show the chat compact button once effective conversation context usage reaches this percentage.",
     )
     chat_auto_compaction_threshold_percent: int = Field(
-        default=99,
+        default=DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
         description="Automatically compact the conversation once effective context usage reaches this percentage. Set to 100 to disable auto-compaction.",
     )
 
@@ -953,10 +959,10 @@ async def get_auth_status(
     ldap_config = await get_ldap_config()
     cookie_warning = _detect_cookie_mismatch(request)
     auth_methods = await _build_auth_method_statuses(ldap_config)
-    server_name = "Ragtime"
-    authenticated_webgl_background_enabled = True
-    chat_compaction_threshold_percent = 80
-    chat_auto_compaction_threshold_percent = 99
+    server_name = DEFAULT_SERVER_NAME
+    authenticated_webgl_background_enabled = DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED
+    chat_compaction_threshold_percent = DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT
+    chat_auto_compaction_threshold_percent = DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT
 
     try:
         # Invalidate the settings cache before reading to ensure fresh values.
@@ -967,9 +973,36 @@ async def get_auth_status(
         configured_server_name = str(app_settings.get("server_name") or "").strip()
         if configured_server_name:
             server_name = configured_server_name
-        authenticated_webgl_background_enabled = bool(app_settings.get("authenticated_webgl_background_enabled", True))
-        chat_compaction_threshold_percent = max(1, min(100, int(app_settings.get("chat_compaction_threshold_percent", 80))))
-        chat_auto_compaction_threshold_percent = max(1, min(100, int(app_settings.get("chat_auto_compaction_threshold_percent", 99))))
+        authenticated_webgl_background_enabled = bool(
+            app_settings.get(
+                "authenticated_webgl_background_enabled",
+                DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
+            )
+        )
+        chat_compaction_threshold_percent = max(
+            1,
+            min(
+                100,
+                int(
+                    app_settings.get(
+                        "chat_compaction_threshold_percent",
+                        DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT,
+                    )
+                ),
+            ),
+        )
+        chat_auto_compaction_threshold_percent = max(
+            1,
+            min(
+                100,
+                int(
+                    app_settings.get(
+                        "chat_auto_compaction_threshold_percent",
+                        DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT,
+                    )
+                ),
+            ),
+        )
     except Exception as exc:
         logger.debug("Failed to load server branding for auth status: %s", exc)
 

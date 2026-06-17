@@ -10,12 +10,11 @@ OCR and embeddings have different runtime characteristics:
 import asyncio
 from typing import Optional
 
+from ragtime.core.app_setting_defaults import DEFAULT_OCR_CONCURRENCY_LIMIT
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-_DEFAULT_OCR_CONCURRENCY_LIMIT = 1
 
 # OCR semaphore instance (lazily initialized)
 _ollama_semaphore: Optional[asyncio.Semaphore] = None
@@ -37,11 +36,11 @@ async def _get_concurrency_limit() -> int:
     """
     try:
         settings = await get_app_settings()
-        limit = settings.get("ocr_concurrency_limit", _DEFAULT_OCR_CONCURRENCY_LIMIT)
+        limit = settings.get("ocr_concurrency_limit", DEFAULT_OCR_CONCURRENCY_LIMIT)
         return max(1, int(limit))
     except Exception as e:
         logger.debug(f"Could not read ocr_concurrency_limit: {e}")
-        return _DEFAULT_OCR_CONCURRENCY_LIMIT
+        return DEFAULT_OCR_CONCURRENCY_LIMIT
 
 
 def _new_semaphore(limit: int, label: str) -> asyncio.Semaphore:

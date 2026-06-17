@@ -27,6 +27,10 @@ from typing import Callable, Dict, List, Optional, Tuple, get_args
 from chonkie import CodeChunker, OverlapRefinery, RecursiveChunker
 from langchain_core.documents import Document
 
+from ragtime.core.app_setting_defaults import (
+    DEFAULT_CHUNKING_MAX_BATCH_SIZE,
+    DEFAULT_CHUNKING_MAX_WORKERS,
+)
 from ragtime.core.file_constants import LANG_MAPPING
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
@@ -60,12 +64,10 @@ _pool_max_workers: int = 1
 _GIB = 1024 * 1024 * 1024
 # Defaults preserve historical behavior. The active values can be overridden at
 # runtime by `configure_chunking_pool()` (typically driven by app settings).
-_DEFAULT_MAX_CHUNKING_WORKERS = 4
-_DEFAULT_MAX_CHUNKING_BATCH_SIZE = 100
 _CHUNKING_WORKERS_HARD_CEILING = 16
 _CHUNKING_BATCH_SIZE_HARD_CEILING = 500
-_configured_max_workers: int = _DEFAULT_MAX_CHUNKING_WORKERS
-_configured_max_batch_size: int = _DEFAULT_MAX_CHUNKING_BATCH_SIZE
+_configured_max_workers: int = DEFAULT_CHUNKING_MAX_WORKERS
+_configured_max_batch_size: int = DEFAULT_CHUNKING_MAX_BATCH_SIZE
 
 
 def configure_chunking_pool(

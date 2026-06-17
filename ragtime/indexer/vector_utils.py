@@ -184,7 +184,7 @@ async def ensure_embedding_column(
 EMBEDDING_SUB_BATCH_SIZE = 50
 # Bound individual embedding requests so a stuck remote call does not
 # pin an indexing background task forever.
-_DEFAULT_EMBEDDING_TIMEOUT_SECONDS = 180.0
+from ragtime.core.app_setting_defaults import DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS
 
 
 async def _get_embedding_timeout() -> float:
@@ -194,16 +194,16 @@ async def _get_embedding_timeout() -> float:
         timeout_seconds = _get_setting(
             settings,
             "ollama_embedding_timeout_seconds",
-            _DEFAULT_EMBEDDING_TIMEOUT_SECONDS,
+            DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS,
         )
         return max(1.0, float(timeout_seconds))
     except (TypeError, ValueError) as exc:
         logger.debug("Invalid embedding timeout setting: %s", exc)
     except Exception as exc:
         logger.debug("Could not read embedding timeout setting: %s", exc)
-        return _DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+        return float(DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS)
 
-    return _DEFAULT_EMBEDDING_TIMEOUT_SECONDS
+    return float(DEFAULT_OLLAMA_EMBEDDING_TIMEOUT_SECONDS)
 
 
 class EmbeddingBatchTimeoutError(RuntimeError):
