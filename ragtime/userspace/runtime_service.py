@@ -1750,7 +1750,12 @@ class UserSpaceRuntimeService:
     ) -> None:
         db = await get_db()
         model = self._runtime_audit_model(db)
-        normalized_payload = json.loads(json.dumps(payload or {}, default=str))
+        enriched_payload = await userspace_service.enrich_runtime_audit_payload_with_user_fingerprint(
+            workspace_id,
+            user_id,
+            payload,
+        )
+        normalized_payload = json.loads(json.dumps(enriched_payload, default=str))
         payload_json = prisma_fields.Json(normalized_payload)
 
         def _build_shapes() -> list[dict[str, Any]]:

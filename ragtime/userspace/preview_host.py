@@ -16,7 +16,8 @@ from fastapi.responses import RedirectResponse
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 
-from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse
+from ragtime.core.database import get_db
+from ragtime.userspace.models import ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceBrowserAuthRequest, UserSpaceBrowserAuthResponse
 from ragtime.userspace.preview_probe import PREVIEW_HOST_PROBE_HEADER, PREVIEW_HOST_PROBE_PATH, PREVIEW_HOST_PROBE_VALUE
 from ragtime.userspace.runtime_routes import (
     _PROXY_METHODS,
@@ -33,6 +34,7 @@ from ragtime.userspace.runtime_routes import (
     _primitive_object_write_request,
     _primitive_progress_get,
     _primitive_progress_put,
+    _primitive_session_payload,
     _primitive_upload_target,
     _primitive_workspace_file_response,
     _primitive_workspace_file_write,
@@ -42,6 +44,7 @@ from ragtime.userspace.runtime_routes import (
     _render_uploaded_document_preview_upload,
     _sanitize_preview_query,
     _to_websocket_url,
+    authorize_browser_surfaces,
 )
 
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
@@ -61,6 +64,17 @@ def _userspace_service() -> Any:
     from ragtime.userspace.service import userspace_service
 
     return userspace_service
+
+
+async def _preview_user_from_id(user_id: str | None) -> Any | None:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return None
+    try:
+        db = await get_db()
+        return await db.user.find_unique(where={"id": normalized_user_id})
+    except Exception:
+        return None
 
 
 preview_host_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
@@ -562,14 +576,33 @@ async def preview_session(request: Request):
     workspace_id = str(claims.get("workspace_id") or "").strip()
     user_id = str(claims.get("sub") or "").strip() or None
     mode = _preview_mode(claims)
-    capabilities = await _primitive_capabilities(workspace_id, user_id, preview_mode=mode)
-    return {
-        "workspace_id": workspace_id,
-        "mode": mode,
-        "user_id": user_id,
-        "share_access_mode": claims.get("share_access_mode"),
-        "capabilities": capabilities,
-    }
+    return await _primitive_session_payload(
+        workspace_id,
+        user_id,
+        mode=mode,
+        share_access_mode=claims.get("share_access_mode"),
+        user=await _preview_user_from_id(user_id),
+    )
+
+
+@preview_host_app.post(
+    "/__ragtime/browser-auth",
+    response_model=UserSpaceBrowserAuthResponse,
+)
+async def preview_browser_auth(
+    request: Request,
+    response: Response,
+    payload: UserSpaceBrowserAuthRequest,
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id, user_id = _workspace_user_from_preview_claims(claims)
+    return await authorize_browser_surfaces(
+        workspace_id,
+        payload,
+        request,
+        response,
+        user=type("PreviewUser", (), {"id": user_id})(),
+    )
 
 
 @preview_host_app.post("/__ragtime/parse-document")

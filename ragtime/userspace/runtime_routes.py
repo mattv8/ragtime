@@ -27,9 +27,11 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
+from ragtime.core.auth_methods import build_auth_method_statuses, normalize_auth_method_key
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional, get_session_token
+from ragtime.core.user_identity import USER_FINGERPRINT_SCOPE_WORKSPACE, build_user_fingerprint_subject, build_workspace_user_fingerprint
 from ragtime.core.userspace_limits import (
     USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
     USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES,
@@ -38,6 +40,7 @@ from ragtime.core.userspace_limits import (
 )
 from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.userspace.models import (
+    UserSpaceAuthMethod,
     UserSpaceBrowserAuthorization,
     UserSpaceBrowserAuthRequest,
     UserSpaceBrowserAuthResponse,
@@ -273,6 +276,77 @@ def _normalize_browser_surfaces(
     if raw_surfaces is None:
         return ordered or _default_browser_surfaces()
     return ordered
+
+
+async def _userspace_auth_methods() -> list[UserSpaceAuthMethod]:
+    binding_surfaces = _default_browser_surfaces()
+    return [
+        UserSpaceAuthMethod(
+            **status,
+            binding_surfaces=(binding_surfaces if bool(status.get("configured")) and bool(status.get("available")) else []),
+        )
+        for status in await build_auth_method_statuses()
+    ]
+
+
+async def _validate_auth_binding_method(auth_method_key: str | None) -> str | None:
+    normalized_key = normalize_auth_method_key(auth_method_key)
+    if not normalized_key:
+        return None
+    methods = await _userspace_auth_methods()
+    methods_by_key = {method.key: method for method in methods}
+    method = methods_by_key.get(normalized_key)
+    if method is None:
+        raise HTTPException(status_code=400, detail=f"Unknown auth method: {normalized_key}")
+    if not method.configured:
+        raise HTTPException(status_code=400, detail=f"Auth method is not configured: {normalized_key}")
+    if not method.available:
+        raise HTTPException(status_code=400, detail=f"Auth method is not available: {normalized_key}")
+    return normalized_key
+
+
+async def _primitive_session_payload(
+    workspace_id: str,
+    user_id: str | None,
+    *,
+    mode: str,
+    share_access_mode: Any = None,
+    user: Any = None,
+) -> dict[str, Any]:
+    capabilities = await _primitive_capabilities(workspace_id, user_id, preview_mode=mode)
+    fingerprint = None
+    if user_id:
+        fingerprint = (
+            build_workspace_user_fingerprint(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                workspace_fingerprint_namespace=await _userspace_service().get_workspace_audit_fingerprint_namespace(workspace_id),
+                user_identity_subject=build_user_fingerprint_subject(
+                    user_id=user_id,
+                    username=getattr(user, "username", None),
+                    auth_provider=getattr(user, "authProvider", None),
+                    ldap_dn=getattr(user, "ldapDn", None),
+                    source_provider=getattr(user, "sourceProvider", None),
+                    source_id=getattr(user, "sourceId", None),
+                ),
+            )
+            or None
+        )
+    auth_methods = await _userspace_auth_methods()
+    return {
+        "workspace_id": workspace_id,
+        "mode": mode,
+        "user_id": user_id,
+        "user_fingerprint": fingerprint,
+        "user_fingerprint_scope": USER_FINGERPRINT_SCOPE_WORKSPACE if fingerprint else None,
+        "share_access_mode": share_access_mode,
+        "auth": {
+            "methods": [method.model_dump() for method in auth_methods],
+            "binding_strategy": "browser_capability_token",
+            "browser_auth_endpoint": "/__ragtime/browser-auth" if mode != "workspace" else f"/indexes/userspace/runtime/workspaces/{workspace_id}/browser-auth",
+        },
+        "capabilities": capabilities,
+    }
 
 
 def _get_max_proxy_timeout() -> float:
@@ -1904,6 +1978,7 @@ async def authorize_browser_surfaces(
     user: Any = Depends(get_current_user),
 ):
     surfaces = _normalize_browser_surfaces(payload.surfaces)
+    auth_method_key = await _validate_auth_binding_method(payload.auth_method_key)
     authorizations: list[UserSpaceBrowserAuthorization] = []
 
     for surface in surfaces:
@@ -1930,11 +2005,13 @@ async def authorize_browser_surfaces(
             UserSpaceBrowserAuthorization(
                 surface=surface,
                 expires_at=token_response.expires_at,
+                auth_method_key=auth_method_key,
             )
         )
 
     return UserSpaceBrowserAuthResponse(
         workspace_id=workspace_id,
+        auth_method_key=auth_method_key,
         authorizations=authorizations,
     )
 
@@ -1972,13 +2049,7 @@ async def runtime_primitive_session(
     workspace_id: str,
     user: Any = Depends(get_current_user),
 ):
-    capabilities = await _primitive_capabilities(workspace_id, user.id, preview_mode="workspace")
-    return {
-        "workspace_id": workspace_id,
-        "mode": "workspace",
-        "user_id": user.id,
-        "capabilities": capabilities,
-    }
+    return await _primitive_session_payload(workspace_id, user.id, mode="workspace", user=user)
 
 
 @router.post("/runtime/workspaces/{workspace_id}/primitives/tables/normalize")

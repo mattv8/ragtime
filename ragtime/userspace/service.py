@@ -75,7 +75,7 @@ from ragtime.core.ssh import (
     sync_ssh_directory,
 )
 from ragtime.core.type_coercion import coerce_bool_metadata, coerce_int_metadata
-from ragtime.core.user_identity import normalize_user_identity
+from ragtime.core.user_identity import add_workspace_user_fingerprint, build_user_fingerprint_subject, normalize_user_identity
 from ragtime.core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
     WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
@@ -3660,6 +3660,10 @@ class UserSpaceService:
     ) -> tuple[list[str], int, int]:
         warnings: list[str] = []
         workspace_meta = cast(dict[str, Any], manifest.get("workspace") or {})
+        await self.import_workspace_audit_identity_manifest(
+            workspace_id,
+            cast(dict[str, Any] | None, manifest.get("audit_identity")),
+        )
         (
             allowed_tool_ids,
             allowed_tool_group_ids,
@@ -3757,6 +3761,7 @@ class UserSpaceService:
                 },
                 "env_vars": await self._serialize_workspace_env_var_placeholders(workspace_id),
                 "mounts": [self._serialize_workspace_mount_placeholder(mount) for mount in mounts],
+                "audit_identity": await self.export_workspace_audit_identity_manifest(workspace_id),
             }
             scm_metadata = self._serialize_workspace_archive_scm_metadata(workspace.scm)
             if scm_metadata is not None:
@@ -5335,6 +5340,111 @@ class UserSpaceService:
     def _workspace_files_dir(self, workspace_id: str) -> Path:
         return self._workspace_dir(workspace_id) / "files"
 
+    def _workspace_audit_identity_path(self, workspace_id: str) -> Path:
+        return self._workspace_files_dir(workspace_id) / ".ragtime" / "audit-identity.json"
+
+    async def get_workspace_audit_fingerprint_namespace(self, workspace_id: str) -> str:
+        path = self._workspace_audit_identity_path(workspace_id)
+
+        def _read_or_create() -> str:
+            payload: dict[str, Any] = {}
+            if path.is_file():
+                try:
+                    loaded = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        payload = dict(loaded)
+                except Exception:
+                    payload = {}
+            namespace = str(payload.get("workspace_fingerprint_namespace") or "").strip()
+            if namespace:
+                return namespace
+            namespace = secrets.token_urlsafe(32)
+            payload = {
+                "version": 1,
+                "managed_by": "ragtime",
+                "fingerprint_scope": "workspace",
+                "workspace_fingerprint_namespace": namespace,
+                "created_at": utc_now().isoformat(),
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            return namespace
+
+        return await asyncio.to_thread(_read_or_create)
+
+    async def export_workspace_audit_identity_manifest(self, workspace_id: str) -> dict[str, Any]:
+        namespace = await self.get_workspace_audit_fingerprint_namespace(workspace_id)
+        return {
+            "version": 1,
+            "fingerprint_scope": "workspace",
+            "fingerprint_version": "v1",
+            "workspace_fingerprint_namespace": namespace,
+        }
+
+    async def import_workspace_audit_identity_manifest(
+        self,
+        workspace_id: str,
+        payload: dict[str, Any] | None,
+    ) -> None:
+        namespace = str((payload or {}).get("workspace_fingerprint_namespace") or "").strip()
+        if not namespace:
+            await self.get_workspace_audit_fingerprint_namespace(workspace_id)
+            return
+
+        path = self._workspace_audit_identity_path(workspace_id)
+
+        def _write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "managed_by": "ragtime",
+                        "fingerprint_scope": "workspace",
+                        "workspace_fingerprint_namespace": namespace,
+                        "imported_at": utc_now().isoformat(),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+        await asyncio.to_thread(_write)
+
+    async def enrich_runtime_audit_payload_with_user_fingerprint(
+        self,
+        workspace_id: str,
+        user_id: str | None,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        user = None
+        if user_id:
+            try:
+                db = await get_db()
+                user = await db.user.find_unique(where={"id": user_id})
+            except Exception:
+                user = None
+        return add_workspace_user_fingerprint(
+            payload,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            workspace_fingerprint_namespace=await self.get_workspace_audit_fingerprint_namespace(workspace_id),
+            user_identity_subject=(
+                build_user_fingerprint_subject(
+                    user_id=str(user_id or ""),
+                    username=getattr(user, "username", None),
+                    auth_provider=getattr(user, "authProvider", None),
+                    ldap_dn=getattr(user, "ldapDn", None),
+                    source_provider=getattr(user, "sourceProvider", None),
+                    source_id=getattr(user, "sourceId", None),
+                )
+                if user_id
+                else None
+            ),
+        )
+
     @staticmethod
     def _read_workspace_text_file(path: Path) -> str:
         try:
@@ -5858,7 +5968,12 @@ class UserSpaceService:
     ) -> bool:
         db = await get_db()
         model = self._runtime_audit_model(db)
-        payload_json = prisma_fields.Json(json.loads(json.dumps(payload, default=str)))
+        enriched_payload = await self.enrich_runtime_audit_payload_with_user_fingerprint(
+            workspace_id,
+            user_id,
+            payload,
+        )
+        payload_json = prisma_fields.Json(json.loads(json.dumps(enriched_payload, default=str)))
         data: dict[str, Any] = {
             "workspace": {"connect": {"id": workspace_id}},
             "eventType": event_type,

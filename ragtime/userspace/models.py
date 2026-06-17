@@ -1065,17 +1065,30 @@ class UserSpacePreviewLaunchResponse(BaseModel):
     preview_warning: UserSpacePreviewWarning | None = None
 
 
+class UserSpaceAuthMethod(BaseModel):
+    key: str
+    label: str
+    configured: bool
+    available: bool
+    status: str
+    detail: str | None = None
+    binding_surfaces: list[UserSpaceBrowserSurface] = Field(default_factory=list)
+
+
 class UserSpaceBrowserAuthRequest(BaseModel):
     surfaces: list[UserSpaceBrowserSurface] = Field(default_factory=list)
+    auth_method_key: str | None = None
 
 
 class UserSpaceBrowserAuthorization(BaseModel):
     surface: UserSpaceBrowserSurface
     expires_at: datetime
+    auth_method_key: str | None = None
 
 
 class UserSpaceBrowserAuthResponse(BaseModel):
     workspace_id: str
+    auth_method_key: str | None = None
     authorizations: list[UserSpaceBrowserAuthorization] = Field(default_factory=list)
 
 

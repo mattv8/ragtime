@@ -4,7 +4,6 @@ Authentication API routes.
 Endpoints for login, logout, user info, and LDAP configuration.
 """
 
-import asyncio
 import base64
 import hashlib
 import time
@@ -60,6 +59,7 @@ from ragtime.core.auth import (
     search_ldap_user_profiles,
     update_auth_provider_config,
 )
+from ragtime.core.auth_methods import build_auth_method_statuses
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
@@ -801,147 +801,6 @@ def _detect_cookie_mismatch(request: Request) -> Optional[str]:
     return None
 
 
-async def _build_local_auth_method_status() -> AuthMethodStatus:
-    """Build local-admin auth method status for login UI."""
-    is_configured = bool(settings.local_admin_password)
-    if not is_configured:
-        return AuthMethodStatus(
-            key="local",
-            label="Local Admin",
-            configured=False,
-            available=False,
-            status="not_configured",
-            detail="Not configured",
-        )
-
-    return AuthMethodStatus(
-        key="local",
-        label="Local Admin",
-        configured=True,
-        available=True,
-        status="available",
-        detail="Ready",
-    )
-
-
-async def _build_local_managed_auth_method_status() -> AuthMethodStatus:
-    """Build internal managed users auth status for login UI."""
-    config = await get_auth_provider_config()
-    if not config.local_users_enabled:
-        return AuthMethodStatus(
-            key="local_managed",
-            label="Internal Users",
-            configured=True,
-            available=False,
-            status="unavailable",
-            detail="Disabled",
-        )
-
-    db = await get_db()
-    user_count = await db.user.count(where={"authProvider": AuthProvider.local_managed})
-    return AuthMethodStatus(
-        key="local_managed",
-        label="Internal Users",
-        configured=True,
-        available=True,
-        status="available",
-        detail=f"{user_count} managed user{'s' if user_count != 1 else ''}",
-    )
-
-
-async def _build_ldap_auth_method_status(ldap_config) -> AuthMethodStatus:
-    """Build LDAP auth method status with a brief reachability check."""
-    if not ldap_config.serverUrl:
-        return AuthMethodStatus(
-            key="ldap",
-            label="LDAP",
-            configured=False,
-            available=False,
-            status="not_configured",
-            detail="Not configured",
-        )
-
-    if not ldap_config.bindDn or not ldap_config.bindPassword:
-        return AuthMethodStatus(
-            key="ldap",
-            label="LDAP",
-            configured=True,
-            available=False,
-            status="unavailable",
-            detail="Configuration incomplete",
-        )
-
-    bind_password = decrypt_secret(ldap_config.bindPassword)
-    if not bind_password:
-        return AuthMethodStatus(
-            key="ldap",
-            label="LDAP",
-            configured=True,
-            available=False,
-            status="unavailable",
-            detail="Bind password unavailable",
-        )
-
-    try:
-        discovery = await asyncio.wait_for(
-            discover_ldap_structure(
-                server_url=ldap_config.serverUrl,
-                bind_dn=ldap_config.bindDn,
-                bind_password=bind_password,
-                allow_self_signed=ldap_config.allowSelfSigned,
-            ),
-            timeout=5.0,
-        )
-    except TimeoutError:
-        return AuthMethodStatus(
-            key="ldap",
-            label="LDAP",
-            configured=True,
-            available=False,
-            status="unavailable",
-            detail="Connection check timed out",
-        )
-    except Exception as e:
-        logger.warning(f"LDAP availability check failed: {e}")
-        return AuthMethodStatus(
-            key="ldap",
-            label="LDAP",
-            configured=True,
-            available=False,
-            status="unavailable",
-            detail="Connection check failed",
-        )
-
-    if discovery.success:
-        return AuthMethodStatus(
-            key="ldap",
-            label="LDAP",
-            configured=True,
-            available=True,
-            status="available",
-            detail="Reachable",
-        )
-
-    return AuthMethodStatus(
-        key="ldap",
-        label="LDAP",
-        configured=True,
-        available=False,
-        status="unavailable",
-        detail="Unreachable",
-    )
-
-
-async def _build_auth_method_statuses(ldap_config) -> list[AuthMethodStatus]:
-    """Build auth method statuses in one place for easier future expansion."""
-    statuses = await asyncio.gather(
-        _build_ldap_auth_method_status(ldap_config),
-        _build_local_managed_auth_method_status(),
-        _build_local_auth_method_status(),
-    )
-    return list(statuses)
-
-
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status(
     request: Request,
@@ -956,9 +815,9 @@ async def get_auth_status(
     allowed_origins_open, and debug_mode are only returned to
     authenticated users to avoid public reconnaissance signals.
     """
-    ldap_config = await get_ldap_config()
     cookie_warning = _detect_cookie_mismatch(request)
-    auth_methods = await _build_auth_method_statuses(ldap_config)
+    auth_methods = [AuthMethodStatus(**status) for status in await build_auth_method_statuses()]
+    ldap_configured = any(method.key == "ldap" and method.configured for method in auth_methods)
     server_name = DEFAULT_SERVER_NAME
     authenticated_webgl_background_enabled = DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED
     chat_compaction_threshold_percent = DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT
@@ -1010,7 +869,7 @@ async def get_auth_status(
 
     return AuthStatusResponse(
         authenticated=is_authenticated,
-        ldap_configured=bool(ldap_config.serverUrl),
+        ldap_configured=ldap_configured,
         local_admin_enabled=bool(settings.local_admin_password),
         debug_mode=settings.debug_mode if is_authenticated else False,
         debug_username=settings.local_admin_user if settings.debug_mode else None,
