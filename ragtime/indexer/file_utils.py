@@ -227,14 +227,12 @@ def is_excluded_directory(
     return get_matching_pattern(rel_path, dir_path.name, patterns) is not None or get_matching_pattern(f"{rel_path}/", dir_path.name, patterns) is not None
 
 
-def has_binary_content(file_path: Path, sample_size: int = 8192) -> bool:
-    """Check whether file content appears binary using a small byte sample."""
-    try:
-        with file_path.open("rb") as handle:
-            sample = handle.read(sample_size)
-    except OSError:
-        return True
+def _looks_binary(sample: bytes, *, threshold: float = 0.30) -> bool:
+    """Return True when ``sample`` bytes look like binary content.
 
+    Reused by :func:`has_binary_content` (file path) and any caller that
+    already has the bytes in memory (e.g. document_parser).
+    """
     if not sample:
         return False
 
@@ -261,7 +259,17 @@ def has_binary_content(file_path: Path, sample_size: int = 8192) -> bool:
 
     text_bytes = set(range(32, 127)) | {8, 9, 10, 12, 13}
     non_text_bytes = sum(byte not in text_bytes for byte in sample)
-    return (non_text_bytes / len(sample)) > 0.30
+    return (non_text_bytes / len(sample)) > threshold
+
+
+def has_binary_content(file_path: Path, sample_size: int = 8192) -> bool:
+    """Check whether file content appears binary using a small byte sample."""
+    try:
+        with file_path.open("rb") as handle:
+            sample = handle.read(sample_size)
+    except OSError:
+        return True
+    return _looks_binary(sample)
 
 
 def should_index_file_type(

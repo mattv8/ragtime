@@ -50,9 +50,9 @@ from ragtime.core.userspace_limits import (
 from ragtime.indexer.chunking import (
     chunk_documents_parallel,
     is_context_length_error,
+    pool_manager,
     rechunk_documents_batch,
     rechunk_oversized_content,
-    shutdown_process_pool,
 )
 from ragtime.indexer.document_parser import OCR_EXTENSIONS, extract_text_from_file_async
 from ragtime.indexer.file_utils import (
@@ -1935,14 +1935,14 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
 
-            # Release process pool workers if no other indexing jobs need them.
-            # Workers persist as long as the pool exists and consume significant
-            # memory (each imports chunking libs like Chonkie/tree-sitter).
-            if not self._active_jobs:
-                try:
-                    await asyncio.to_thread(shutdown_process_pool)
-                except Exception:
-                    pass
+            # Release this job's chunking pool so its workers (which each import
+            # Chonkie/tree-sitter) are terminated and the per-job pool entry
+            # removed from the manager. Running in a thread because the
+            # underlying terminate + join is blocking.
+            try:
+                await asyncio.to_thread(pool_manager.release, job.id)
+            except Exception:
+                pass
 
             # Load into RAG before publishing completed status so newly completed
             # indexes are immediately queryable without a restart.
@@ -2049,12 +2049,13 @@ class IndexerService:
             self._active_jobs.pop(job.id, None)
             self._processing_tasks.pop(job.id, None)
 
-            # Release process pool workers if no other indexing jobs need them.
-            if not self._active_jobs:
-                try:
-                    await asyncio.to_thread(shutdown_process_pool)
-                except Exception:
-                    pass
+            # Release this job's chunking pool. Each indexing job owns its own
+            # pool keyed by job.id, so cancellation/termination of one job
+            # cannot block or kill another job's workers.
+            try:
+                await asyncio.to_thread(pool_manager.release, job.id)
+            except Exception:
+                pass
 
             # Load into RAG before publishing completed status so newly completed
             # indexes are immediately queryable without a restart.
@@ -2734,14 +2735,26 @@ class IndexerService:
         # Split into chunks using parallel process pool
         # This runs CPU-intensive tiktoken work in separate processes,
         # leaving the main event loop responsive for API/UI/MCP
+        # Set total_chunks to an upper bound (one chunk per doc) so the
+        # progress indicator can move while chunking runs. The exact
+        # value is overwritten once chunking completes.
+        job.total_chunks = max(len(documents), 1)
+
+        async def _chunking_progress(processed_docs: int, _total_docs: int) -> None:
+            # Track per-document progress so the UI is not stuck at
+            # total_files=processed_files while chunking runs.
+            job.processed_chunks = processed_docs
+            await repository.update_job(job)
+
         chunks = await chunk_documents_parallel(
             documents=documents,
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
             use_tokens=use_tokens,
             batch_size=100,  # Larger batches for efficiency
-            progress_callback=None,  # Progress logged from the function itself
+            progress_callback=_chunking_progress,
             is_cancelled=lambda: self._is_cancelled(job.id),
+            pool_key=job.id,
         )
 
         job.total_chunks = len(chunks)

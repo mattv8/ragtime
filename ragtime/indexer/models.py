@@ -243,10 +243,40 @@ class IndexJob(BaseModel):
 
     @property
     def progress_percent(self) -> float:
-        """Calculate overall progress: 30% for file loading, 70% for embedding."""
+        """Calculate overall progress: 30% file loading + 20% chunking + 50% embedding."""
+        # File loading phase: 0% → 30%
         file_progress = (self.processed_files / self.total_files) * 30 if self.total_files > 0 else 0.0
-        chunk_progress = (self.processed_chunks / self.total_chunks) * 70 if self.total_chunks > 0 else 0.0
-        return min(file_progress + chunk_progress, 99.0)  # Cap at 99 until completed
+        # Chunking phase: 30% → 50%. Uses documents processed via the
+        # progress_callback; falls back to a non-zero ramp once all files
+        # are loaded so the indicator never sits idle between phases.
+        chunking_bonus = 20.0 if (self.total_files > 0 and self.processed_files >= self.total_files) else 0.0
+        if self.total_chunks > 0 and self.processed_chunks > 0:
+            chunk_progress = (self.processed_chunks / self.total_chunks) * 20
+            chunking_bonus = max(chunking_bonus, chunk_progress)
+        # Embedding phase: 50% → 99%
+        embed_progress = (self.processed_chunks / self.total_chunks) * 50 if self.total_chunks > 0 else 0.0
+        return min(file_progress + chunking_bonus + embed_progress, 99.0)  # Cap at 99 until completed
+
+    @property
+    def phase(self) -> str:
+        """Human-readable current phase of the indexing job."""
+        if self.status == IndexStatus.COMPLETED:
+            return "completed"
+        if self.status == IndexStatus.FAILED:
+            # Cancelled jobs are marked FAILED with an explicit message;
+            # surface "cancelled" so the UI can render that distinctly.
+            if self.error_message and "cancel" in self.error_message.lower():
+                return "cancelled"
+            return "failed"
+        if self.total_files == 0:
+            return "preparing"
+        if self.processed_files < self.total_files:
+            return "loading"
+        if self.total_chunks == 0:
+            return "chunking"
+        if self.processed_chunks < self.total_chunks:
+            return "embedding"
+        return "finalizing"
 
 
 class IndexConfigSnapshot(BaseModel):
@@ -442,6 +472,10 @@ class IndexJobResponse(BaseModel):
     id: str
     name: str
     status: IndexStatus
+    phase: str = Field(
+        default="preparing",
+        description="Current phase of the indexing job: preparing|loading|chunking|embedding|finalizing|completed|failed|cancelled",
+    )
     progress_percent: float
     total_files: int
     processed_files: int

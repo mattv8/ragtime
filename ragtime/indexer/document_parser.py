@@ -243,6 +243,20 @@ async def extract_text_from_file_async(
             logger.warning(f"Failed to read file {file_path}: {e}")
             return ""
 
+        # Re-use the file-level binary detector to skip files that look
+        # binary but escaped collection-time filtering (e.g. CAD formats
+        # whose first 8KB is a text translation table). Without this guard,
+        # the plain-text fallback below would hand binary garbage to
+        # chonkie's tree-sitter language detector, which then spins forever.
+        # DRY: this is the same bytes check used by has_binary_content in
+        # ragtime.indexer.file_utils.
+        if not suffix or (suffix not in DOCUMENT_EXTENSIONS and suffix not in OCR_EXTENSIONS):
+            from ragtime.indexer.file_utils import _looks_binary
+
+            if _looks_binary(content):
+                logger.debug(f"Skipping binary file {file_path.name} (looks like non-text content)")
+                return ""
+
     # Route to appropriate parser
     try:
         # Handle OCR cases for images

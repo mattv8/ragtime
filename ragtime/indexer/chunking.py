@@ -18,11 +18,13 @@ import asyncio
 import contextlib
 import multiprocessing
 import os
+import threading
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, get_args
+from typing import Any, Callable, Dict, List, Optional, Tuple, get_args
 
 from chonkie import CodeChunker, OverlapRefinery, RecursiveChunker
 from langchain_core.documents import Document
@@ -31,7 +33,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_CHUNKING_MAX_BATCH_SIZE,
     DEFAULT_CHUNKING_MAX_WORKERS,
 )
-from ragtime.core.file_constants import LANG_MAPPING
+from ragtime.core.file_constants import DOCUMENT_EXTENSIONS, LANG_MAPPING
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 
@@ -57,40 +59,144 @@ logger = get_logger(__name__)
 TIKTOKEN_ENCODING = "cl100k_base"
 
 
-# Global process pool - initialized lazily
-_process_pool: Optional[ProcessPoolExecutor] = None
-_pool_max_workers: int = 1
-
+# Pool sizing caps. Defaults preserve historical behavior; the active values
+# can be overridden at runtime by `configure_chunking_pool()` (typically driven
+# by app settings).
 _GIB = 1024 * 1024 * 1024
-# Defaults preserve historical behavior. The active values can be overridden at
-# runtime by `configure_chunking_pool()` (typically driven by app settings).
 _CHUNKING_WORKERS_HARD_CEILING = 16
 _CHUNKING_BATCH_SIZE_HARD_CEILING = 500
 _configured_max_workers: int = DEFAULT_CHUNKING_MAX_WORKERS
 _configured_max_batch_size: int = DEFAULT_CHUNKING_MAX_BATCH_SIZE
+
+# Sentinel pool key for callers that have no natural job identity (e.g. chat
+# attachment chunking, rechunk fallbacks). Multiple callers may share this
+# pool concurrently; per-job callers should pass their own key.
+SHARED_CHUNKING_POOL_KEY = "__shared__"
+
+# Time we give workers to drain after SIGTERM before escalating to SIGKILL.
+# Chonkie's Rust-backed tree-sitter language detection does not unwind
+# cleanly on SIGTERM, so we always need an escalation path.
+_WORKER_SIGTERM_GRACE_SECONDS = 0.5
+_WORKER_SIGKILL_GRACE_SECONDS = 0.5
+
+# Poll interval for detecting pool closure while awaiting in-flight futures.
+# Smaller values react faster to cancellation but add wakeup overhead.
+_POOL_CLOSED_POLL_SECONDS = 0.5
+
+
+class ChunkingPoolError(RuntimeError):
+    """Raised when a chunking pool is unavailable (closed, terminated, or its
+    owning job was cancelled)."""
+
+
+@dataclass
+class ChunkingPool:
+    """A single chunking process pool owned by a job (or the shared pool)."""
+
+    key: str
+    executor: Any
+    max_workers: int
+    closed: threading.Event = field(default_factory=threading.Event)
+
+    def is_closed(self) -> bool:
+        return self.closed.is_set()
+
+
+class ChunkingPoolManager:
+    """Registry of active chunking pools keyed by job/pool identity.
+
+    Replaces the previous global `_process_pool` singleton so that:
+      * Per-job pools give each indexing job its own workers; cancelling or
+        terminating one job never leaves another job's `asyncio.gather()`
+        blocked on orphaned futures.
+      * Chat-attach and rechunk-fallback callers share the sentinel
+        `SHARED_CHUNKING_POOL_KEY` while still benefiting from graceful
+        termination when the app shuts down.
+      * The manager owns the SIGTERM -> SIGKILL escalation so workers that
+        ignore SIGTERM (Chonkie's Rust code) cannot outlive their pool.
+    """
+
+    def __init__(self) -> None:
+        self._pools: Dict[str, ChunkingPool] = {}
+        self._lock = threading.Lock()
+
+    def get_or_create(self, key: str, max_workers: int) -> ChunkingPool:
+        with self._lock:
+            existing = self._pools.get(key)
+            if existing is not None:
+                if existing.is_closed():
+                    self._pools.pop(key, None)
+                else:
+                    return existing
+
+            executor = ProcessPoolExecutor(
+                max_workers=max_workers,
+                mp_context=multiprocessing.get_context("spawn"),
+            )
+            pool = ChunkingPool(key=key, executor=executor, max_workers=max_workers)
+            self._pools[key] = pool
+            logger.info(f"Created chunking pool '{key}': {max_workers} workers (cap={_configured_max_workers}, batch_cap={_configured_max_batch_size})")
+            return pool
+
+    def get(self, key: str) -> Optional[ChunkingPool]:
+        with self._lock:
+            return self._pools.get(key)
+
+    def release(self, key: str, *, terminate_workers: bool = True) -> bool:
+        """Terminate the pool for `key` and remove it from the registry.
+
+        Returns True if a pool was released, False if none existed.
+        """
+        with self._lock:
+            pool = self._pools.pop(key, None)
+        if pool is None:
+            return False
+        _terminate_pool(pool, terminate_workers=terminate_workers)
+        return True
+
+    def shutdown_all(self, *, terminate_workers: bool = True) -> None:
+        """Terminate every registered pool. Used by app lifespan shutdown."""
+        with self._lock:
+            pools = list(self._pools.values())
+            self._pools.clear()
+        for pool in pools:
+            _terminate_pool(pool, terminate_workers=terminate_workers)
+        if pools:
+            logger.info(f"Chunking pool manager shut down {len(pools)} pool(s)")
+
+    def active_keys(self) -> List[str]:
+        with self._lock:
+            return [key for key, pool in self._pools.items() if not pool.is_closed()]
+
+
+# Module-level singleton. Imported by callers via `pool_manager` below.
+pool_manager = ChunkingPoolManager()
 
 
 def configure_chunking_pool(
     max_workers: int | None = None,
     max_batch_size: int | None = None,
 ) -> None:
-    """Apply runtime caps for the shared chunking process pool.
+    """Apply runtime caps for chunking pools.
 
-    Values are clamped to safe ranges. If `max_workers` changes the active
-    pool size, the existing pool is shut down so it is recreated lazily with
-    the new size on next use. Safe to call repeatedly (e.g. on settings reload).
+    Values are clamped to safe ranges. If `max_workers` changes, all existing
+    pools are released so they are recreated lazily with the new size on next
+    use. Safe to call repeatedly (e.g. on settings reload).
     """
     global _configured_max_workers, _configured_max_batch_size
 
+    resized = False
     if max_workers is not None:
         clamped_workers = max(1, min(int(max_workers), _CHUNKING_WORKERS_HARD_CEILING))
         if clamped_workers != _configured_max_workers:
             _configured_max_workers = clamped_workers
-            if _process_pool is not None and _pool_max_workers != clamped_workers:
-                shutdown_process_pool(wait=False, cancel_futures=False)
+            resized = True
 
     if max_batch_size is not None:
         _configured_max_batch_size = max(1, min(int(max_batch_size), _CHUNKING_BATCH_SIZE_HARD_CEILING))
+
+    if resized:
+        pool_manager.shutdown_all(terminate_workers=False)
 
 
 def _read_cgroup_int(path: str) -> int | None:
@@ -134,7 +240,7 @@ def _get_effective_memory_limit_bytes() -> int | None:
 
 
 def _resolve_worker_count(cpu_count: int) -> int:
-    """Return the worker count for the pool, capped by configured ceiling."""
+    """Return the worker count for a new pool, capped by configured ceiling."""
     cpu_limited = max(1, cpu_count // 4)
     return max(1, min(cpu_limited, _configured_max_workers))
 
@@ -143,58 +249,91 @@ def _effective_batch_size(requested_batch_size: int) -> int:
     return max(1, min(int(requested_batch_size), _configured_max_batch_size))
 
 
-def _get_process_pool() -> ProcessPoolExecutor:
-    """Get or create the shared process pool.
+def _resolve_max_workers() -> tuple[int, int, int | None]:
+    """Return (max_workers, cpu_count, memory_limit_bytes) for a new pool."""
+    cpu_count = os.cpu_count() or 2
+    return _resolve_worker_count(cpu_count), cpu_count, _get_effective_memory_limit_bytes()
 
-    The worker count is bounded by `_configured_max_workers` (default 4,
-    tunable via `configure_chunking_pool` / Settings UI) to prevent CPU
-    saturation during background indexing jobs. On high-core-count machines,
-    using cpu_count-1 workers starves the main event loop (uvicorn/API/UI/MCP)
-    of CPU time.
+
+def _pool_worker_processes(pool: ChunkingPool) -> list:
+    """Return the live multiprocessing.Process objects for `pool`'s executor."""
+    return list((getattr(pool.executor, "_processes", None) or {}).values())
+
+
+def _terminate_pool(pool: ChunkingPool, *, terminate_workers: bool) -> None:
+    """Tear down a pool's executor with SIGTERM-then-SIGKILL escalation.
+
+    Chonkie's Rust-backed tree-sitter language detection does not unwind
+    cleanly on SIGTERM, so a 0.5s grace window followed by SIGKILL is the
+    only reliable way to release those workers.
     """
-    global _process_pool, _pool_max_workers
+    if pool.closed.is_set():
+        return
+    pool.closed.set()
 
-    if _process_pool is None:
-        cpu_count = os.cpu_count() or 2
-        memory_limit_bytes = _get_effective_memory_limit_bytes()
-        _pool_max_workers = _resolve_worker_count(cpu_count)
-        _process_pool = ProcessPoolExecutor(
-            max_workers=_pool_max_workers,
-            mp_context=multiprocessing.get_context("spawn"),
-        )
-        memory_note = f", memory limit ~{memory_limit_bytes / _GIB:.1f}GiB" if memory_limit_bytes else ""
-        logger.info(
-            f"Created process pool for chunking: {_pool_max_workers} workers "
-            f"(cap={_configured_max_workers}, batch_cap={_configured_max_batch_size}, "
-            f"{cpu_count} cores available{memory_note})"
-        )
+    processes = _pool_worker_processes(pool) if terminate_workers else []
 
-    return _process_pool
-
-
-def shutdown_process_pool(wait: bool = True, cancel_futures: bool = False, terminate_workers: bool = False):
-    """Shutdown the process pool.
-
-    ``ProcessPoolExecutor.shutdown(wait=False, cancel_futures=True)`` does not
-    stop already-running child work on Python 3.12. During app shutdown or hot
-    reload, terminate active workers explicitly so CPU-bound chunking cannot
-    keep the old uvicorn process alive behind an open, unserved socket.
-    """
-    global _process_pool
-    if _process_pool is not None:
-        pool = _process_pool
-        _process_pool = None
-        worker_processes = list((getattr(pool, "_processes", None) or {}).values()) if terminate_workers else []
-        if terminate_workers:
-            for process in worker_processes:
-                if getattr(process, "is_alive", lambda: False)():
-                    process.terminate()
-        pool.shutdown(wait=wait, cancel_futures=cancel_futures)
-        if terminate_workers:
-            for process in worker_processes:
+    if terminate_workers:
+        for process in processes:
+            if getattr(process, "is_alive", lambda: False)():
                 with contextlib.suppress(Exception):
-                    process.join(timeout=0.2)
-        logger.info("Chunking process pool shut down")
+                    process.terminate()
+
+    try:
+        pool.executor.shutdown(wait=False, cancel_futures=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(f"Pool '{pool.key}' shutdown raised (ignored): {exc}")
+
+    if terminate_workers:
+        deadline = _WORKER_SIGTERM_GRACE_SECONDS
+        for process in processes:
+            if not getattr(process, "is_alive", lambda: False)():
+                continue
+            try:
+                process.join(timeout=deadline)
+            except Exception:
+                pass
+            if getattr(process, "is_alive", lambda: False)():
+                with contextlib.suppress(Exception):
+                    process.kill()
+            with contextlib.suppress(Exception):
+                process.join(timeout=_WORKER_SIGKILL_GRACE_SECONDS)
+        survivors = [p for p in processes if getattr(p, "is_alive", lambda: False)()]
+        if survivors:
+            logger.warning(f"Chunking pool '{pool.key}': {len(survivors)} worker(s) still alive after SIGKILL; they may need parent reap")
+        else:
+            logger.info(f"Chunking pool '{pool.key}' shut down (workers terminated)")
+
+
+# ---- Backwards-compatible module-level helpers ----------------------------
+# `_get_process_pool` and `shutdown_process_pool` are kept as thin shims so
+# existing callers (and tests that patched `_process_pool`) keep working.
+# Indexing jobs should now pass an explicit `pool_key` to `chunk_documents_parallel`
+# and release their pool via `pool_manager.release(job.id)` instead of relying
+# on the global singleton.
+
+
+def _get_process_pool() -> ProcessPoolExecutor:
+    """Return the shared sentinel pool's executor (legacy compatibility shim)."""
+    max_workers, _cpu, memory_limit_bytes = _resolve_max_workers()
+    pool = pool_manager.get_or_create(SHARED_CHUNKING_POOL_KEY, max_workers)
+    memory_note = f", memory limit ~{memory_limit_bytes / _GIB:.1f}GiB" if memory_limit_bytes else ""
+    logger.debug(f"Using shared chunking pool '{SHARED_CHUNKING_POOL_KEY}' ({pool.max_workers} workers{memory_note})")
+    return pool.executor
+
+
+def shutdown_process_pool(
+    wait: bool = True,  # noqa: ARG001 - kept for backwards compatibility
+    cancel_futures: bool = True,  # noqa: ARG001 - kept for backwards compatibility
+    terminate_workers: bool = True,
+) -> None:
+    """Shut down every chunking pool. Used by app lifespan shutdown.
+
+    `wait` and `cancel_futures` are accepted for back-compat with previous
+    call sites but the manager always uses the safest behaviour (cancel
+    pending + terminate workers).
+    """
+    pool_manager.shutdown_all(terminate_workers=terminate_workers)
 
 
 # =============================================================================
@@ -356,12 +495,58 @@ def _get_treesitter_langs() -> set[str]:
     return _treesitter_langs_cache
 
 
+def _normalize_ext(file_ext: str) -> tuple[str, str]:
+    """Return (with_dot, without_dot) variants of an extension for map lookups.
+
+    LANG_MAPPING mixes keys with and without a leading dot (e.g. ``pdf`` is
+    present but ``.pdf`` is not). The chunker derives ``file_ext`` with a
+    leading dot, so lookups must consider both forms to find the entry.
+    """
+    if not file_ext:
+        return "", ""
+    if file_ext.startswith("."):
+        return file_ext, file_ext[1:]
+    return f".{file_ext}", file_ext
+
+
+def _is_extension_mapped_to_plain_text(file_ext: str) -> bool:
+    """Return True when the extension is explicitly mapped to ``None`` in LANG_MAPPING.
+
+    Such extensions represent text-style content (``.txt``, ``.csv``, ``.log``)
+    or parseable documents whose text has already been extracted by the
+    document parser (``.pdf``, ``.doc``, ``.docx``). Code-aware chunking adds
+    no value here and chonkie's tree-sitter language detection can be
+    extremely slow on long extracted text — but PDFs/Office docs do still
+    need semantic chunking, so the dispatcher falls back to
+    ``_chunk_with_recursive`` (paragraph/sentence boundaries), not to
+    skipping entirely.
+
+    Truly binary files are filtered out earlier by ``has_binary_content``
+    in ``ragtime.indexer.file_utils`` so they never reach the chunker.
+    """
+    if not file_ext:
+        return False
+    with_dot, no_dot = _normalize_ext(file_ext)
+    if with_dot in LANG_MAPPING and LANG_MAPPING[with_dot] is None:
+        return True
+    if no_dot in LANG_MAPPING and LANG_MAPPING[no_dot] is None:
+        return True
+    return False
+
+
+def _is_known_document_or_code_extension(file_ext: str) -> bool:
+    """Return True for extensions Ragtime intentionally treats as text/code."""
+    with_dot, _no_dot = _normalize_ext(file_ext)
+    return bool(with_dot and with_dot in DOCUMENT_EXTENSIONS)
+
+
 def _resolve_language(key: str) -> str | None | str:
     """
     Resolve a file extension, filename, or Magika content type to tree-sitter language.
 
     Uses LANG_MAPPING from file_constants.py as the single source of truth,
     with auto-mapping for the 59+ Magika types that exactly match tree-sitter names.
+    Lookup is normalized so both ``.py`` and ``py`` keys resolve.
 
     Args:
         key: File extension (e.g., ".py"), filename (e.g., "makefile"),
@@ -374,9 +559,12 @@ def _resolve_language(key: str) -> str | None | str:
     """
     key_lower = key.lower()
 
-    # Check unified mapping first
-    if key_lower in LANG_MAPPING:
-        return LANG_MAPPING[key_lower]
+    # Normalize the lookup to handle both ``.ext`` and ``ext`` keys in LANG_MAPPING.
+    with_dot, no_dot = _normalize_ext(key)
+    if with_dot and with_dot in LANG_MAPPING:
+        return LANG_MAPPING[with_dot]
+    if no_dot and no_dot in LANG_MAPPING:
+        return LANG_MAPPING[no_dot]
 
     # Check if it auto-maps (exact name match with tree-sitter)
     # This handles the 59+ Magika types like "python", "javascript", "rust", etc.
@@ -420,13 +608,29 @@ def _chunk_with_chonkie_code(
         file_ext = source_path.rsplit("/", 1)[-1]  # Use filename itself
 
     # Check if extension/filename is explicitly mapped to plain text (None)
-    # If so, raise early to trigger RecursiveChunker fallback
-    if file_ext:
-        from ragtime.core.file_constants import LANG_MAPPING
+    # in LANG_MAPPING. Such content (text files and extracted PDF / Office
+    # text) is best handled by the RecursiveChunker which splits at
+    # paragraph and sentence boundaries. The dispatcher below catches the
+    # raised ValueError and falls back to recursive chunking — semantic
+    # boundaries are preserved, just not via tree-sitter.
+    plain_text = file_ext and _is_extension_mapped_to_plain_text(file_ext)
+    if plain_text:
+        raise ValueError(f"Extension {file_ext.lower()} mapped to plain text chunker")
 
-        ext_lower = file_ext.lower()
-        if ext_lower in LANG_MAPPING and LANG_MAPPING[ext_lower] is None:
-            raise ValueError(f"Extension {ext_lower} mapped to plain text chunker")
+    # Truly unmapped extensions (CAD .stp/.x_t/.igs, PostScript .eps, etc.)
+    # have no tree-sitter grammar. Chonkie's auto-detect picks the wrong
+    # "best match" language and the iteration is slow on long text.
+    # Keep known source/document extensions on their normal path because
+    # LANG_MAPPING intentionally only lists non-obvious code aliases.
+    # RecursiveChunker splits unknown text at paragraph/sentence boundaries,
+    # which is both faster and more accurate for non-code formats.
+    if file_ext and not plain_text:
+        if not _is_known_document_or_code_extension(file_ext):
+            # Phrase carries the "mapped to plain text" sentinel so the
+            # dispatcher's fallback pattern matches and we get the
+            # normal RecursiveChunker path (paragraph/sentence boundaries)
+            # rather than the last-resort error branch.
+            raise ValueError(f"Extension {file_ext.lower()} mapped to plain text chunker (no tree-sitter grammar)")
 
     # Extract imports and definitions for context/summary using Tree-sitter
     imports: list[str] = []
@@ -779,21 +983,50 @@ def _chunk_document_batch_recursive_sync(
     return all_chunks, splitter_counts
 
 
+async def _await_pool_futures_or_closed(
+    futures: List,
+    pool: ChunkingPool,
+) -> List:
+    """Await all futures, polling for pool closure.
+
+    Plain `asyncio.gather()` would block forever on futures whose workers are
+    stuck (e.g. inside Chonkie's Rust-backed tree-sitter detection, which
+    ignores SIGTERM). Polling `pool.closed` lets us cancel pending futures
+    and surface a `ChunkingPoolError` as soon as the pool is torn down.
+    """
+    pending = set(futures)
+    while pending:
+        done, pending = await asyncio.wait(
+            pending,
+            timeout=_POOL_CLOSED_POLL_SECONDS,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if pool.is_closed():
+            for future in futures:
+                if not future.done():
+                    future.cancel()
+            raise ChunkingPoolError(f"Chunking pool '{pool.key}' was terminated before all batches completed")
+    return [future.result() for future in futures]
+
+
 async def _retry_chunk_documents_individually(
     doc_data: List[Tuple[str, dict]],
     chunk_size: int,
     chunk_overlap: int,
     use_tokens: bool,
+    pool: ChunkingPool,
 ) -> List[Tuple[List[Tuple[str, dict]], Dict[str, int]]]:
     """Retry a failed process-pool wave one document at a time."""
     loop = asyncio.get_event_loop()
     results: List[Tuple[List[Tuple[str, dict]], Dict[str, int]]] = []
 
     for idx, doc_item in enumerate(doc_data):
+        if pool.is_closed():
+            raise ChunkingPoolError(f"Chunking pool '{pool.key}' was terminated")
+
         try:
-            pool = _get_process_pool()
             result = await loop.run_in_executor(
-                pool,
+                pool.executor,
                 _chunk_document_batch_sync,
                 [doc_item],
                 chunk_size,
@@ -803,13 +1036,16 @@ async def _retry_chunk_documents_individually(
         except BrokenProcessPool:
             file_path = doc_item[1].get("source", "unknown")
             logger.error(f"Chunking worker terminated while processing {file_path}; falling back to recursive chunking for that document")
-            shutdown_process_pool(wait=False, cancel_futures=True)
+            pool_was_already_closed = pool.is_closed()
+            pool_manager.release(pool.key, terminate_workers=True)
             result = _chunk_document_batch_recursive_sync(
                 [doc_item],
                 chunk_size,
                 chunk_overlap,
                 use_tokens,
             )
+            if not pool_was_already_closed:
+                pool = pool_manager.get_or_create(pool.key, pool.max_workers)
 
         results.append(result)
         if idx % 10 == 9:
@@ -824,8 +1060,9 @@ async def chunk_documents_parallel(
     chunk_overlap: int,
     use_tokens: bool,
     batch_size: int = 50,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Optional[Callable[..., Any]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    pool_key: Optional[str] = None,
 ) -> List[Document]:
     """
     Chunk documents in parallel processes using Chonkie/Unstructured.
@@ -836,22 +1073,36 @@ async def chunk_documents_parallel(
     Args:
         is_cancelled: Optional callback that returns True if the job has been cancelled.
                       Checked between waves to allow early exit.
+        pool_key: Identifier for the chunking pool to use. Each indexing job
+                  should pass its own `job.id` so its workers can be terminated
+                  independently of other jobs. Defaults to
+                  `SHARED_CHUNKING_POOL_KEY` for callers without a job identity.
     """
     if not documents:
         return []
 
     batch_size = _effective_batch_size(batch_size)
-    pool = _get_process_pool()
+    key = pool_key or SHARED_CHUNKING_POOL_KEY
+
+    # If a pool already exists for this key but is closed, the owning job was
+    # cancelled. Do NOT silently hand the caller a brand-new pool; surface the
+    # failure so the caller can decide whether to abort.
+    existing = pool_manager.get(key)
+    if existing is not None and existing.is_closed():
+        raise ChunkingPoolError(f"Chunking pool '{key}' was terminated before chunking started")
+
+    max_workers, _, _ = _resolve_max_workers()
+    pool = pool_manager.get_or_create(key, max_workers)
     total_docs = len(documents)
     all_chunks: List[Document] = []
     all_splitter_counts: Dict[str, int] = {}
 
-    logger.debug(f"Starting parallel chunking: {total_docs} docs, batch_size={batch_size}, workers={_pool_max_workers}")
+    logger.debug(f"Starting parallel chunking: pool='{pool.key}' total_docs={total_docs} batch_size={batch_size} workers={pool.max_workers}")
 
     loop = asyncio.get_event_loop()
 
     # Submit batches in waves of pool_workers to keep all workers busy
-    wave_size = _pool_max_workers
+    wave_size = pool.max_workers
     batch_ranges = list(range(0, total_docs, batch_size))
 
     for wave_start in range(0, len(batch_ranges), wave_size):
@@ -859,6 +1110,9 @@ async def chunk_documents_parallel(
         if is_cancelled and is_cancelled():
             logger.info("Chunking cancelled, stopping early")
             raise asyncio.CancelledError("Job cancelled by user")
+
+        if pool.is_closed():
+            raise ChunkingPoolError(f"Chunking pool '{pool.key}' was terminated before wave submit")
 
         wave_indices = batch_ranges[wave_start : wave_start + wave_size]
         futures = []
@@ -873,7 +1127,7 @@ async def chunk_documents_parallel(
             batch_data = [(doc.page_content, doc.metadata) for doc in batch_docs]
             wave_doc_data.extend(batch_data)
             future = loop.run_in_executor(
-                pool,
+                pool.executor,
                 _chunk_document_batch_sync,
                 batch_data,
                 chunk_size,
@@ -882,30 +1136,34 @@ async def chunk_documents_parallel(
             )
             futures.append(future)
 
-        # Await all futures in this wave concurrently
+        # Await all futures in this wave concurrently, with shutdown detection.
         try:
-            results = await asyncio.gather(*futures)
+            results = await _await_pool_futures_or_closed(futures, pool)
         except asyncio.CancelledError:
             for future in futures:
                 future.cancel()
-            logger.info("Chunking cancelled; terminating active process pool workers")
-            shutdown_process_pool(wait=False, cancel_futures=True, terminate_workers=True)
+            logger.info(f"Chunking cancelled; terminating active workers for pool '{pool.key}'")
+            pool_manager.release(pool.key, terminate_workers=True)
+            raise
+        except ChunkingPoolError:
+            logger.warning(f"Chunking pool '{pool.key}' was terminated mid-wave")
             raise
         except BrokenProcessPool as e:
             for future in futures:
                 future.cancel()
             logger.warning(
-                f"Chunking process pool broke while processing {len(wave_doc_data)} document(s); "
-                f"restarting the pool and retrying this wave one document at a time: {e}"
+                f"Chunking pool '{pool.key}' broke while processing {len(wave_doc_data)} document(s); recycling pool and retrying one document at a time: {e}"
             )
-            shutdown_process_pool(wait=False, cancel_futures=True, terminate_workers=True)
+            pool_manager.release(pool.key, terminate_workers=True)
+            new_pool = pool_manager.get_or_create(pool.key, pool.max_workers)
             results = await _retry_chunk_documents_individually(
                 wave_doc_data,
                 chunk_size,
                 chunk_overlap,
                 use_tokens,
+                new_pool,
             )
-            pool = _get_process_pool()
+            pool = new_pool
         except Exception as e:
             logger.error(f"Batch chunking error: {e}")
             raise
@@ -923,7 +1181,9 @@ async def chunk_documents_parallel(
 
         processed_docs = min(wave_indices[-1] + batch_size, total_docs)
         if progress_callback:
-            progress_callback(processed_docs, total_docs)
+            cb_result = progress_callback(processed_docs, total_docs)
+            if asyncio.iscoroutine(cb_result):
+                await cb_result
 
         # Yield to event loop between waves with a real time delay
         # asyncio.sleep(0) only switches coroutines but doesn't free CPU
@@ -932,7 +1192,7 @@ async def chunk_documents_parallel(
 
     # Log summary
     summary = ", ".join(f"{k}:{v}" for k, v in sorted(all_splitter_counts.items()))
-    logger.info(f"Chunking complete. Splitters used: {summary}")
+    logger.info(f"Chunking complete. Pool='{pool.key}'. Splitters used: {summary}")
 
     return all_chunks
 

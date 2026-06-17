@@ -476,6 +476,28 @@ LANG_MAPPING: dict[str, str | None] = {
     ".log": None,
     ".csv": None,
     ".tsv": None,
+    # Parseable documents -> RecursiveChunker
+    # (extracted text from PDFs, Office, OpenDocument, ebooks and email).
+    # Tree-sitter's auto-detect path is extremely slow on long extracted text,
+    # so the chunker dispatches these to recursive paragraph/sentence
+    # boundaries via LANG_MAPPING[ext] is None.
+    ".pdf": None,
+    ".doc": None,
+    ".docx": None,
+    ".xls": None,
+    ".xlsx": None,
+    ".ppt": None,
+    ".pptx": None,
+    ".rtf": None,
+    # OpenDocument
+    ".odt": None,
+    ".ods": None,
+    ".odp": None,
+    # Email
+    ".eml": None,
+    ".msg": None,
+    # Ebooks
+    ".epub": None,
     # =========================================================================
     # FILENAMES (for extensionless files like Makefile)
     # =========================================================================
@@ -498,6 +520,15 @@ LANG_MAPPING: dict[str, str | None] = {
     "ppt": None,
     "pptx": None,
     "rtf": None,
+    # OpenDocument
+    "odt": None,
+    "ods": None,
+    "odp": None,
+    # Email
+    "eml": None,
+    "msg": None,
+    # Ebooks
+    "epub": None,
     "jpeg": None,
     "png": None,
     "gif": None,

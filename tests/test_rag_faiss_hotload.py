@@ -134,7 +134,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(service, "_clone_git_repo", new=AsyncMock()),
                 patch.object(service, "_create_faiss_index", new=AsyncMock()),
                 patch.object(service, "_maybe_reinitialize_rag", new=hot_load),
-                patch("ragtime.indexer.service.shutdown_process_pool"),
+                patch("ragtime.indexer.service.pool_manager"),
             ):
                 await service._process_git(cast(Any, job))
 
@@ -168,7 +168,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(service, "_create_faiss_index", new=AsyncMock(side_effect=RuntimeError("boom"))),
                 patch.object(service, "_cleanup_failed_index_metadata", new=AsyncMock()),
                 patch.object(service, "_maybe_reinitialize_rag", new=AsyncMock()),
-                patch("ragtime.indexer.service.shutdown_process_pool"),
+                patch("ragtime.indexer.service.pool_manager"),
             ):
                 await service._process_git(cast(Any, job))
 
