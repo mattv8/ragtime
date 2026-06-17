@@ -3,7 +3,7 @@ import { api } from '@/api';
 import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, OcrMode, OcrProvider, VectorStoreType } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
-import { OcrVectorStoreFields } from './OcrVectorStoreFields';
+import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
@@ -155,6 +155,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [ocrVisionModel, setOcrVisionModel] = useState(configSnapshot?.ocr_vision_model || '');
   const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss');
   const [visionOcrAvailable] = useState(true);
+  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(undefined);
+  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(undefined);
   const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth ?? 1);
   const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
@@ -225,6 +227,22 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       setPatternsExpanded(true);
     }
   }, [editIndex]);
+
+  // Fetch global OCR default settings to show in helptext
+  useEffect(() => {
+    api.getSettings().then((settings) => {
+      if (settings.default_ocr_provider) {
+        setDefaultOcrProviderLabel(
+          OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider
+        );
+      }
+      if (settings.default_ocr_vision_model) {
+        setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
+      }
+    }).catch(() => {
+      // Silently fail - helptext will fall back to generic message
+    });
+  }, []);
 
   // Check repo visibility in edit mode to detect if repo became private
   useEffect(() => {
@@ -659,6 +677,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           ocrVisionModel={ocrVisionModel}
           setOcrVisionModel={setOcrVisionModel}
           visionOcrAvailable={visionOcrAvailable}
+          defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={true}
@@ -874,6 +894,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           ocrVisionModel={ocrVisionModel}
           setOcrVisionModel={setOcrVisionModel}
           visionOcrAvailable={visionOcrAvailable}
+          defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={!!existingVectorStoreType}
@@ -981,6 +1003,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           ocrVisionModel={ocrVisionModel}
           setOcrVisionModel={setOcrVisionModel}
           visionOcrAvailable={visionOcrAvailable}
+          defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={vectorStoreType}
           setVectorStoreType={setVectorStoreType}
           vectorStoreDisabled={!!existingVectorStoreType}

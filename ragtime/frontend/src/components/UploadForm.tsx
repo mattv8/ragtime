@@ -1,10 +1,10 @@
-import { useState, useCallback, type DragEvent, type ChangeEvent } from 'react';
+import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import { api } from '@/api';
 import type { IndexJob, IndexAnalysisResult, OcrMode, OcrProvider, VectorStoreType } from '@/types';
 import { DescriptionField } from './DescriptionField';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
-import { OcrVectorStoreFields } from './OcrVectorStoreFields';
+import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
@@ -60,6 +60,8 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   // Use existing vector store type if available (locked after first index), otherwise default to 'faiss'
   const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? 'faiss');
   const [visionOcrAvailable] = useState(true);
+  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(undefined);
+  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(undefined);
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -85,6 +87,22 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
     setExclusionsApplied(false);
     setPatternsExpanded(false);
   }, [existingVectorStoreType]);
+
+  // Fetch global OCR default settings to show in helptext
+  useEffect(() => {
+    api.getSettings().then((settings) => {
+      if (settings.default_ocr_provider) {
+        setDefaultOcrProviderLabel(
+          OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider
+        );
+      }
+      if (settings.default_ocr_vision_model) {
+        setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
+      }
+    }).catch(() => {
+      // Silently fail - helptext will fall back to generic message
+    });
+  }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
@@ -242,6 +260,8 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
         ocrVisionModel={ocrVisionModel}
         setOcrVisionModel={setOcrVisionModel}
         visionOcrAvailable={visionOcrAvailable}
+        defaultOcrProviderLabel={defaultOcrProviderLabel}
+        defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
         vectorStoreType={vectorStoreType}
         setVectorStoreType={setVectorStoreType}
         vectorStoreDisabled={!!existingVectorStoreType}
@@ -287,7 +307,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             <input
               type="file"
               name="file"
-              accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2"
+              accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2,application/gzip,application/x-gzip,application/x-tar,application/zip"
               onChange={handleFileChange}
               disabled={isLoading}
             />

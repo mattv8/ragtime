@@ -15,6 +15,12 @@ from ragtime.core.embedding_models import (
     get_model_dimensions_sync,
 )
 from ragtime.core.userspace_limits import (
+    ARCHIVE_MAX_FILE_COUNT_DEFAULT,
+    ARCHIVE_MAX_FILE_COUNT_MAX,
+    ARCHIVE_MAX_FILE_COUNT_MIN,
+    ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
+    ARCHIVE_MAX_TOTAL_SIZE_MAX_BYTES,
+    ARCHIVE_MAX_TOTAL_SIZE_MIN_BYTES,
     USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
     USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
     USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
@@ -955,6 +961,20 @@ class AppSettings(BaseModel):
         description="Maximum number of files extracted from one User Space archive primitive request.",
     )
 
+    # Index Archive Extraction Limits
+    archive_max_total_size_bytes: int = Field(
+        default=ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
+        ge=ARCHIVE_MAX_TOTAL_SIZE_MIN_BYTES,
+        le=ARCHIVE_MAX_TOTAL_SIZE_MAX_BYTES,
+        description="Maximum uncompressed size of an uploaded index archive in bytes.",
+    )
+    archive_max_file_count: int = Field(
+        default=ARCHIVE_MAX_FILE_COUNT_DEFAULT,
+        ge=ARCHIVE_MAX_FILE_COUNT_MIN,
+        le=ARCHIVE_MAX_FILE_COUNT_MAX,
+        description="Maximum number of files extracted from an uploaded index archive.",
+    )
+
     updated_at: Optional[datetime] = None
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
@@ -1323,6 +1343,19 @@ class UpdateSettingsRequest(BaseModel):
         ge=USERSPACE_PRIMITIVE_ARCHIVE_MIN_ENTRIES,
         le=USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
         description="Maximum number of files extracted from one User Space archive primitive request.",
+    )
+    # Index Archive Extraction Limits
+    archive_max_total_size_bytes: Optional[int] = Field(
+        default=None,
+        ge=ARCHIVE_MAX_TOTAL_SIZE_MIN_BYTES,
+        le=ARCHIVE_MAX_TOTAL_SIZE_MAX_BYTES,
+        description="Maximum uncompressed size of an uploaded index archive in bytes.",
+    )
+    archive_max_file_count: Optional[int] = Field(
+        default=None,
+        ge=ARCHIVE_MAX_FILE_COUNT_MIN,
+        le=ARCHIVE_MAX_FILE_COUNT_MAX,
+        description="Maximum number of files extracted from an uploaded index archive.",
     )
     userspace_duplicate_copy_files_default: Optional[bool] = Field(
         default=None,

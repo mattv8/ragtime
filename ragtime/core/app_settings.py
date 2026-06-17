@@ -25,6 +25,10 @@ from ragtime.core.model_providers import (
     OMLX_LLM_CONNECTION,
     ProviderConnection,
 )
+from ragtime.core.userspace_limits import (
+    ARCHIVE_MAX_FILE_COUNT_DEFAULT,
+    ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
+)
 from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
@@ -313,6 +317,9 @@ class SettingsCache:
                 "ollama_embedding_timeout_seconds": getattr(prisma_settings, "ollamaEmbeddingTimeoutSeconds", 180),
                 "snapshot_retention_days": getattr(prisma_settings, "snapshotRetentionDays", 0),
                 "snapshot_stale_branch_threshold": getattr(prisma_settings, "snapshotStaleBranchThreshold", 50),
+                # Index archive extraction limits
+                "archive_max_total_size_bytes": getattr(prisma_settings, "archiveMaxTotalSizeBytes", ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES),
+                "archive_max_file_count": getattr(prisma_settings, "archiveMaxFileCount", ARCHIVE_MAX_FILE_COUNT_DEFAULT),
                 # User Space configuration
                 "userspace_preview_sandbox_flags": userspace_preview_sandbox_flags,
                 "userspace_mount_sync_interval_seconds": getattr(
@@ -416,6 +423,9 @@ class SettingsCache:
                 "ollama_embedding_timeout_seconds": 180,
                 "snapshot_retention_days": 0,
                 "snapshot_stale_branch_threshold": 20,
+                # Index archive extraction limits
+                "archive_max_total_size_bytes": ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
+                "archive_max_file_count": ARCHIVE_MAX_FILE_COUNT_DEFAULT,
                 # User Space configuration
                 "userspace_preview_sandbox_flags": list(USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS),
                 "userspace_mount_sync_interval_seconds": 30,

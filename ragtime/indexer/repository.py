@@ -40,6 +40,8 @@ from ragtime.core.encryption import (
 from ragtime.core.logging import get_logger
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_limits import (
+    clamp_archive_max_file_count,
+    clamp_archive_max_total_size_bytes,
     clamp_userspace_primitive_archive_max_entries,
     clamp_userspace_primitive_upload_max_bytes,
     clamp_userspace_sqlite_import_max_bytes,
@@ -1181,6 +1183,8 @@ class IndexerRepository:
             userspace_primitive_archive_max_entries=clamp_userspace_primitive_archive_max_entries(
                 getattr(settings, "userspacePrimitiveArchiveMaxEntries", None)
             ),
+            archive_max_total_size_bytes=clamp_archive_max_total_size_bytes(getattr(settings, "archiveMaxTotalSizeBytes", None)),
+            archive_max_file_count=clamp_archive_max_file_count(getattr(settings, "archiveMaxFileCount", None)),
             updated_at=settings.updatedAt,
         )
 
@@ -1319,6 +1323,8 @@ class IndexerRepository:
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
             "userspace_primitive_upload_max_bytes": "userspacePrimitiveUploadMaxBytes",
             "userspace_primitive_archive_max_entries": "userspacePrimitiveArchiveMaxEntries",
+            "archive_max_total_size_bytes": "archiveMaxTotalSizeBytes",
+            "archive_max_file_count": "archiveMaxFileCount",
         }
 
         # Build update data with only provided fields

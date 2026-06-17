@@ -1,0 +1,3 @@
+ALTER TABLE "app_settings"
+  ADD COLUMN IF NOT EXISTS "archive_max_total_size_bytes" BIGINT NOT NULL DEFAULT 5368709120,
+  ADD COLUMN IF NOT EXISTS "archive_max_file_count" INTEGER NOT NULL DEFAULT 100000;

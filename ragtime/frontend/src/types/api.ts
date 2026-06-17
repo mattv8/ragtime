@@ -744,6 +744,9 @@ export interface AppSettings {
   userspace_sqlite_import_max_bytes: number;
   userspace_primitive_upload_max_bytes: number;
   userspace_primitive_archive_max_entries: number;
+  // Index Archive Extraction Limits
+  archive_max_total_size_bytes: number;
+  archive_max_file_count: number;
   updated_at: string | null;
 }
 
@@ -873,6 +876,9 @@ export interface UpdateSettingsRequest {
   userspace_sqlite_import_max_bytes?: number;
   userspace_primitive_upload_max_bytes?: number;
   userspace_primitive_archive_max_entries?: number;
+  // Index Archive Extraction Limits
+  archive_max_total_size_bytes?: number;
+  archive_max_file_count?: number;
 }
 
 // Ollama Connection Testing

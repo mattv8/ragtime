@@ -1430,6 +1430,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
         userspace_primitive_upload_max_bytes: data.userspace_primitive_upload_max_bytes,
         userspace_primitive_archive_max_entries: data.userspace_primitive_archive_max_entries,
+        archive_max_total_size_bytes: data.archive_max_total_size_bytes,
+        archive_max_file_count: data.archive_max_file_count,
 
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
@@ -2049,9 +2051,17 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         search_mmr_lambda: formData.search_mmr_lambda,
         chunking_use_tokens: formData.chunking_use_tokens,
         ivfflat_lists: formData.ivfflat_lists,
+        // Archive extraction limits
+        archive_max_total_size_bytes: formData.archive_max_total_size_bytes,
+        archive_max_file_count: formData.archive_max_file_count,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      setFormData((prev) => ({
+        ...prev,
+        archive_max_total_size_bytes: updated.archive_max_total_size_bytes,
+        archive_max_file_count: updated.archive_max_file_count,
+      }));
       toast.success('Search configuration saved. Restart the server to apply changes to search tools.', 5000);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save search settings');
@@ -5464,6 +5474,83 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                     Recommended: sqrt(num embeddings). Default: 100.
                   </p>
                 </div>
+              </div>
+            </div>
+
+            {/* Archive Extraction Limits */}
+            <div className="form-row" style={{ marginTop: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Archive Max Size</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Maximum total uncompressed size of an uploaded index archive.
+                </p>
+                {(() => {
+                  const currentVal = formData.archive_max_total_size_bytes
+                    ?? settings?.archive_max_total_size_bytes
+                    ?? 5_368_709_120;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min={104_857_600}
+                          max={536_870_912_000}
+                          step={104_857_600}
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) => setFormData({
+                            ...formData,
+                            archive_max_total_size_bytes: parseInt(e.target.value, 10),
+                          })}
+                        />
+                        <span style={{ minWidth: '84px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {formatBytes(currentVal)}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Range: 100 MB to 500 GB. Applies to both upload and git-sourced index archives.
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Archive Max File Count</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Maximum number of files allowed in a single extracted index archive.
+                </p>
+                {(() => {
+                  const currentVal = formData.archive_max_file_count
+                    ?? settings?.archive_max_file_count
+                    ?? 100000;
+
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min={100}
+                          max={500000}
+                          step={1000}
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) => setFormData({
+                            ...formData,
+                            archive_max_file_count: parseInt(e.target.value, 10),
+                          })}
+                        />
+                        <span style={{ minWidth: '72px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
+                          {currentVal.toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="field-help">
+                        Default: 100,000. Increase for large monorepos or bulk archives. Range: 100 to 500,000.
+                      </p>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </details>

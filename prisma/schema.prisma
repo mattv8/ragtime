@@ -291,6 +291,10 @@ model AppSettings {
   userspacePrimitiveUploadMaxBytes      Int      @default(104857600) @map("userspace_primitive_upload_max_bytes")
   userspacePrimitiveArchiveMaxEntries   Int      @default(500) @map("userspace_primitive_archive_max_entries")
 
+  // Index Archive Extraction Limits
+  archiveMaxTotalSizeBytes             BigInt   @default(5368709120) @map("archive_max_total_size_bytes") // 5 GB max extracted archive size
+  archiveMaxFileCount                  Int      @default(100000) @map("archive_max_file_count")
+
   // Timestamps
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 

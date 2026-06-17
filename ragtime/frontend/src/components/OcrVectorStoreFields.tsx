@@ -30,6 +30,10 @@ interface OcrVectorStoreFieldsProps {
   setVectorStoreType: (val: VectorStoreType) => void;
   /** If true, vector store selection is disabled (locked after first index) */
   vectorStoreDisabled?: boolean;
+  /** Global default OCR provider label to show in helptext (e.g. "OpenAI") */
+  defaultOcrProviderLabel?: string;
+  /** Global default OCR vision model to show in helptext (e.g. "gpt-4o-mini") */
+  defaultOcrVisionModelLabel?: string;
 }
 
 /**
@@ -53,6 +57,8 @@ export function OcrVectorStoreFields({
   vectorStoreType,
   setVectorStoreType,
   vectorStoreDisabled = false,
+  defaultOcrProviderLabel,
+  defaultOcrVisionModelLabel,
 }: OcrVectorStoreFieldsProps) {
   const handleOcrModeChange = (e: ChangeEvent<HTMLSelectElement>) => {
     setOcrMode(e.target.value as OcrMode);
@@ -136,7 +142,9 @@ export function OcrVectorStoreFields({
           <p className="field-help">
             {ocrProvider
               ? 'Override the vision provider for this index only.'
-              : 'Uses the provider and model configured in global OCR settings.'}
+              : defaultOcrProviderLabel
+                ? `Uses the global default (${defaultOcrProviderLabel}${defaultOcrVisionModelLabel ? ` / ${defaultOcrVisionModelLabel}` : ''}).`
+                : 'Uses the provider and model configured in global OCR settings.'}
           </p>
         </div>
         {ocrProvider && (
@@ -171,7 +179,13 @@ export function OcrVectorStoreFields({
               )}
             </div>
             <p className="field-help">
-              {visionModelsError || 'Leave blank to use the global OCR model for this provider.'}
+              {visionModelsError
+                ? visionModelsError
+                : ocrVisionModel
+                  ? 'Custom vision model for this index.'
+                  : defaultOcrVisionModelLabel
+                    ? `Uses the global default model (${defaultOcrVisionModelLabel}).`
+                    : 'Leave blank to use the global OCR model for this provider.'}
             </p>
           </div>
         )}

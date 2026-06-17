@@ -43,6 +43,10 @@ from ragtime.core.file_constants import (
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.userspace_limits import (
+    ARCHIVE_MAX_FILE_COUNT_DEFAULT,
+    ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
+)
 from ragtime.indexer.chunking import (
     chunk_documents_parallel,
     is_context_length_error,
@@ -1384,7 +1388,12 @@ class IndexerService:
             # Extract archive in thread to avoid blocking event loop
             extract_dir = temp_dir / "extracted"
             extract_dir.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(extract_archive, archive_path, extract_dir)
+
+            # Read archive extraction limits from settings
+            app_settings = await get_app_settings()
+            max_total_size = app_settings.get("archive_max_total_size_bytes", ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES)
+            max_file_count = app_settings.get("archive_max_file_count", ARCHIVE_MAX_FILE_COUNT_DEFAULT)
+            await asyncio.to_thread(extract_archive, archive_path, extract_dir, max_total_size, max_file_count)
 
             # Find actual source directory
             source_dir = find_source_dir(extract_dir)
@@ -1880,7 +1889,12 @@ class IndexerService:
             extract_dir.mkdir()
 
             logger.info(f"Extracting {archive_path} to {extract_dir}")
-            await asyncio.to_thread(extract_archive, archive_path, extract_dir)
+
+            # Read archive extraction limits from settings
+            app_settings = await get_app_settings()
+            max_total_size = app_settings.get("archive_max_total_size_bytes", ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES)
+            max_file_count = app_settings.get("archive_max_file_count", ARCHIVE_MAX_FILE_COUNT_DEFAULT)
+            await asyncio.to_thread(extract_archive, archive_path, extract_dir, max_total_size, max_file_count)
 
             # Check for cancellation after extraction
             if self._is_cancelled(job.id):

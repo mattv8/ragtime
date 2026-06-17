@@ -23,7 +23,7 @@ import type {
 import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
 import { DisabledPopover } from './Popover';
 import { Icon, getToolIconType } from './Icon';
-import { OcrVectorStoreFields } from './OcrVectorStoreFields';
+import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
@@ -2146,13 +2146,23 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [pdmVariableFilter, setPdmVariableFilter] = useState('');
 
   const [visionOcrAvailable, setVisionOcrAvailable] = useState(true);
+  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(undefined);
+  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(undefined);
 
   // Fetch settings to use the global OCR provider/model as the default override baseline.
   useEffect(() => {
     if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
       api.getSettings()
-        .then(() => {
+        .then((settings) => {
           setVisionOcrAvailable(true);
+          if (settings.default_ocr_provider) {
+            setDefaultOcrProviderLabel(
+              OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider
+            );
+          }
+          if (settings.default_ocr_vision_model) {
+            setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
+          }
         })
         .catch((err) => {
           console.warn('Failed to fetch settings for Ollama check:', err);
@@ -5210,6 +5220,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           ocrVisionModel={filesystemConfig.ocr_vision_model || ''}
           setOcrVisionModel={(model) => setFilesystemConfig((prev) => ({ ...prev, ocr_vision_model: model || undefined }))}
           visionOcrAvailable={visionOcrAvailable}
+          defaultOcrProviderLabel={defaultOcrProviderLabel}
+          defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
           vectorStoreType={filesystemConfig.vector_store_type || 'pgvector'}
           setVectorStoreType={(type) => setFilesystemConfig((prev) => ({ ...prev, vector_store_type: type }))}
           vectorStoreDisabled={isEditing}
