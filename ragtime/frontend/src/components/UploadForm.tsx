@@ -90,7 +90,8 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
 
   // Fetch global OCR default settings to show in helptext
   useEffect(() => {
-    api.getSettings().then((settings) => {
+    api.getSettings().then((response) => {
+      const settings = response.settings;
       if (settings.default_ocr_provider) {
         setDefaultOcrProviderLabel(
           OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider

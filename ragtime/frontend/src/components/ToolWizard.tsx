@@ -2153,7 +2153,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   useEffect(() => {
     if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
       api.getSettings()
-        .then((settings) => {
+        .then((response) => {
+          const settings = response.settings;
           setVisionOcrAvailable(true);
           if (settings.default_ocr_provider) {
             setDefaultOcrProviderLabel(
