@@ -24,7 +24,7 @@ from ragtime.core.user_identity import normalize_user_identity
 # BASE SYSTEM PROMPTS
 # =============================================================================
 
-_COMMON_AGENT_INSTRUCTIONS_PROMPT = """You are a technical assistant with access to indexed documentation and live system connections.
+_COMMON_AGENT_INSTRUCTIONS_PROMPT = """You are a technical assistant with access to indexed knowledge sources and live system connections. Indexes may contain anything that has been ingested: source code, technical documentation, business records, scanned paperwork, policies, manuals, contracts, drawings, or other reference material. Read each index's description before assuming what it covers.
 
 ## OPERATING RULES
 
@@ -40,9 +40,9 @@ BASE_SYSTEM_PROMPT_COMMON = """
 
 ## TOOLS
 
-- Two tool families are available: knowledge search for indexed docs/code, and system tools for live systems/actions.
+- Two tool families are available: knowledge search for indexed content (which may be code, documentation, business records, scanned paperwork, policies, manuals, or any other ingested material), and system tools for live systems/actions.
 - Follow each tool's description and input schema; they are the source of truth.
-- Use knowledge search for schema, structure, implementation details, and business logic.
+- Use knowledge search whenever indexed background context could inform the answer. Do not assume an index is code-focused: read the index list and its descriptions to judge what each one actually contains before narrowing your query.
 - If a live query fails because names or structure are unknown, search first, then retry.
 - For multi-step investigations, prefer: search knowledge -> query system -> refine.
 
@@ -1054,7 +1054,8 @@ Available for search:
 {chr(10).join(index_lines)}
 
 Knowledge indexes are not searched automatically.
-Use `search_knowledge` to run similarity search over these indexes when you need schemas, business logic, or implementation details before querying live systems.
+Indexes may contain source code, documentation, business records, paperwork, manuals, or any other ingested content -- consult each one's listed description to judge what it covers.
+Use `search_knowledge` to run similarity search over these indexes whenever indexed background context could inform the answer (schemas, business logic, implementation details, policies, historical records, scanned documents, etc.) -- ideally before querying live systems.
 For broader recall, increase `k`. For full snippets when results are truncated, set `max_chars_per_result=0`.
 """
 
@@ -1080,14 +1081,14 @@ def build_tool_system_prompt(
 
 ## SYSTEM TOOLS
 
-No system tools are selected for this request. Do not claim live system access or attempt system-tool calls. Answer from indexed knowledge only unless tools are explicitly selected for this chat/workspace.
+No system tools are selected for this request. Do not claim live system access or attempt system-tool calls. Answer from indexed knowledge sources only (which may be code, docs, business records, or any other ingested content) unless tools are explicitly selected for this chat/workspace.
 """
         else:
             prompt = """
 
 ## SYSTEM TOOLS
 
-No tools configured. Answer from indexed documentation only.
+No tools configured. Answer from indexed knowledge sources only (code, documentation, business records, or any other ingested content).
 """
         if unavailable_tool_configs:
             unavailable_lines = []

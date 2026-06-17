@@ -271,7 +271,9 @@ async def generate_index_description(
         # Sample some content snippets
         content_samples = [doc.page_content[:500] for doc in documents[:5]]
 
-        prompt = f"""Analyze this indexed codebase and write a brief description (1-2 sentences) for an AI assistant to understand what knowledge is available.
+        prompt = f"""Analyze this indexed content and write a brief description (1-2 sentences) for an AI assistant to understand what knowledge is available.
+
+The index may contain anything that has been ingested: source code, technical documentation, business records, scanned paperwork, contracts, policies, manuals, drawings, reference data, or any other material. Do not assume it is a codebase unless the sample evidence clearly indicates that.
 
 Index name: {index_name}
 Source type: {source_type}
@@ -284,9 +286,9 @@ Sample content snippets:
 {chr(10).join(f"---{chr(10)}{s}{chr(10)}" for s in content_samples)}
 
 Write a concise description focusing on:
-- What type of project/codebase this is
-- Key technologies, frameworks, or domains covered
-- What questions this index can help answer
+- What kind of content this index actually contains (code, documentation, business records, paperwork, etc.) based on the samples
+- Key topics, domains, technologies, or document types covered
+- What kinds of questions this index can help answer
 
 Description:"""
 

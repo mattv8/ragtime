@@ -206,7 +206,7 @@ TOOL_INPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": "Search query to find relevant documentation, code, or technical information",
+                "description": "Search query describing what you want to find in the indexed content (code, documentation, business records, paperwork, manuals, or any other ingested material).",
             },
             "index_name": {
                 "type": "string",
@@ -1012,9 +1012,11 @@ class MCPToolAdapter:
         mmr_lambda = app_settings.get("search_mmr_lambda", 0.5)
 
         description = (
-            "Search indexed documentation and codebase for relevant information. "
+            "Search indexed knowledge sources for relevant information. "
+            "Indexes may contain source code, technical documentation, business records, paperwork, "
+            "scanned documents, manuals, policies, drawings, or any other ingested material -- the kind of "
+            "content depends on each index. Consult the listed index descriptions to choose the right one. "
             f"Available indexes: {', '.join(index_names)}. "
-            "Use for finding code examples, schema definitions, configuration details. "
             "Use 'k' to control number of results. "
             "Use 'max_chars_per_result' to control content length (0 for full content when results are truncated)."
         )
@@ -1132,7 +1134,7 @@ class MCPToolAdapter:
                     "type": "integer",
                     "description": (
                         "Maximum characters per result (default: 500). "
-                        "Use 0 for full content when you need complete code/file content. "
+                        "Use 0 for full content when you need the complete chunk text. "
                         "Increase when results are truncated."
                     ),
                     "default": 500,
@@ -1202,7 +1204,7 @@ class MCPToolAdapter:
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query to find relevant documentation, code, or technical information",
+                    "description": "Search query describing what to find in this index (which may contain code, documentation, business records, paperwork, or any other ingested content).",
                 },
                 "k": {
                     "type": "integer",

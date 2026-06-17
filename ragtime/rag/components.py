@@ -4070,7 +4070,9 @@ class RAGComponents:
         mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5) if self._app_settings else 0.5
 
         class KnowledgeSearchInput(BaseModel):
-            query: str = Field(description="Search query to find relevant documentation, code, or technical information")
+            query: str = Field(
+                description="Search query describing what you want to find in the indexed content (code, documentation, business records, paperwork, manuals, or any other ingested material)."
+            )
             index_name: str = Field(
                 default="",
                 description=index_name_desc,
@@ -4085,7 +4087,7 @@ class RAGComponents:
                 default=500,
                 ge=0,
                 le=10000,
-                description="Maximum characters per result (default: 500). Use 0 for full content when you need complete code/file content. Increase when results are truncated.",
+                description="Maximum characters per result (default: 500). Use 0 for full content when you need the complete chunk text. Increase when results are truncated.",
             )
 
         def search_knowledge(
@@ -4094,7 +4096,7 @@ class RAGComponents:
             k: int = default_k,
             max_chars_per_result: int = 500,
         ) -> str:
-            """Search indexed documentation for relevant information."""
+            """Search indexed knowledge sources (code, documentation, business records, paperwork, or any other ingested content) for relevant information."""
             k, max_chars_per_result = clamp_search_parameters(k, max_chars_per_result)
 
             # Log the search attempt for debugging
@@ -4149,10 +4151,12 @@ class RAGComponents:
         # Build description with available indexes
         index_names = list(self.retrievers.keys())
         description = (
-            "Search the indexed documentation and codebase for relevant information. "
-            "Use this to find code examples, schema definitions, configuration details, or technical documentation. "
+            "Search indexed knowledge sources for relevant information. "
+            "Indexes may contain source code, technical documentation, business records, paperwork, "
+            "scanned documents, manuals, policies, drawings, or any other ingested material -- the kind of "
+            "content depends on each index. Consult the listed index descriptions to choose the right one. "
             f"Available indexes: {', '.join(index_names)}. "
-            "The query should describe what you're looking for. "
+            "The query should describe what you're looking for in natural language. "
             "Use 'k' to control number of results (increase for broader searches). "
             "Use 'max_chars_per_result' to control content length (use 0 for full content when results are truncated)."
         )
@@ -4504,7 +4508,9 @@ class RAGComponents:
 
             # Create input schema for this tool with k and max_chars_per_result
             class IndexSearchInput(BaseModel):
-                query: str = Field(description="Search query to find relevant documentation or code")
+                query: str = Field(
+                    description="Search query describing what to find in this index (which may contain code, documentation, business records, paperwork, or any other ingested content)."
+                )
                 k: int = Field(
                     default=default_k,
                     ge=1,
