@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import shutil
@@ -22,9 +23,11 @@ from ragtime.core.file_constants import (
 )
 from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import get_context_limit
+from ragtime.core.model_providers import normalize_provider_name, resolve_provider_api_key, resolve_provider_base_url
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
-from ragtime.indexer.chunking import chunk_documents_parallel
-from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.core.vision_models import OPENAI_DEFAULT_BASE_URL
+from ragtime.indexer.chunking import chunk_documents_parallel, chunk_semantic_segments
+from ragtime.indexer.document_parser import extract_image_structured_async, extract_text_from_file_async
 
 logger = get_logger(__name__)
 
@@ -301,6 +304,132 @@ async def get_chat_attachment_budget_tokens(model_id: Optional[str]) -> int:
 
 def _format_chunk_block(filename: str, chunk_text: str, chunk_index: int, total_chunks: int) -> str:
     return f"--- Attached file: {filename} ---\nChunk {chunk_index}/{total_chunks}\n{chunk_text.strip()}"
+
+
+def _image_part_url(part: dict[str, Any]) -> Optional[str]:
+    image_url = part.get("image_url")
+    url = image_url.get("url") if isinstance(image_url, dict) else image_url
+    return url if isinstance(url, str) else None
+
+
+def _decode_inline_image_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
+    url = _image_part_url(part)
+    if not url or not url.lower().startswith("data:image/"):
+        return None
+
+    header, separator, payload = url.partition(",")
+    if not separator or not payload or ";base64" not in header.lower():
+        return None
+
+    media_type = header.split(";", 1)[0].removeprefix("data:").lower()
+    subtype = media_type.split("/", 1)[1] if "/" in media_type else "png"
+    suffix = ".jpg" if subtype == "jpeg" else f".{re.sub(r'[^a-z0-9]+', '', subtype) or 'png'}"
+    try:
+        return base64.b64decode(payload, validate=False), suffix
+    except Exception:
+        return None
+
+
+def _chat_ocr_settings(app_settings: dict[str, Any]) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+    ocr_mode = str(app_settings.get("default_ocr_mode") or app_settings.get("defaultOcrMode") or "disabled").strip().lower()
+    ocr_provider = str(app_settings.get("default_ocr_provider") or app_settings.get("defaultOcrProvider") or "").strip().lower() or None
+    ocr_vision_model = str(app_settings.get("default_ocr_vision_model") or app_settings.get("defaultOcrVisionModel") or "").strip() or None
+
+    vision_base_url = None
+    vision_api_key = None
+    if ocr_mode == "vision" and ocr_provider:
+        normalized_provider = normalize_provider_name(ocr_provider)
+        vision_base_url = resolve_provider_base_url(app_settings, normalized_provider, "llm")
+        if not vision_base_url and normalized_provider == "openai":
+            vision_base_url = OPENAI_DEFAULT_BASE_URL
+        vision_api_key = resolve_provider_api_key(app_settings, normalized_provider, "llm")
+        ocr_provider = normalized_provider
+
+    return ocr_mode, ocr_provider, ocr_vision_model, vision_base_url, vision_api_key
+
+
+def _format_image_chunk_block(chunk_text: str, chunk_index: int, total_chunks: int) -> str:
+    return f"--- Attached image OCR chunk {chunk_index}/{total_chunks} ---\n{chunk_text.strip()}"
+
+
+async def _chunk_image_text_for_chat(text: str, metadata: dict[str, Any]) -> list[str]:
+    if not text.strip():
+        return []
+    documents = await chunk_documents_parallel(
+        [Document(page_content=text.strip(), metadata=metadata)],
+        chunk_size=CHAT_ATTACHMENT_CHUNK_SIZE,
+        chunk_overlap=CHAT_ATTACHMENT_CHUNK_OVERLAP,
+        use_tokens=True,
+        batch_size=1,
+    )
+    return [doc.page_content.strip() for doc in documents if doc.page_content.strip()] or [text.strip()]
+
+
+async def extract_chat_image_context_from_part(
+    part: dict[str, Any],
+    *,
+    app_settings: dict[str, Any],
+    filename: str = "chat-image",
+) -> str:
+    decoded = _decode_inline_image_part(part)
+    if decoded is None:
+        return ""
+
+    image_bytes, suffix = decoded
+    image_path = Path(f"{filename}{suffix}")
+    metadata = {"source": image_path.name, "source_type": "chat_image"}
+    ocr_mode, ocr_provider, ocr_vision_model, vision_base_url, vision_api_key = _chat_ocr_settings(app_settings)
+
+    chunks: list[str] = []
+    if ocr_mode == "vision" and ocr_provider and ocr_vision_model and vision_base_url:
+        structured = await extract_image_structured_async(
+            image_path,
+            content=image_bytes,
+            ocr_provider=ocr_provider,
+            ocr_vision_model=ocr_vision_model,
+            vision_base_url=vision_base_url,
+            vision_api_key=vision_api_key,
+        )
+        if structured:
+            if structured.raw_text and not structured.extracted_text:
+                chunks = await _chunk_image_text_for_chat(structured.raw_text, metadata)
+            else:
+                segments = structured.get_semantic_segments()
+                if segments:
+                    docs = chunk_semantic_segments(
+                        segments,
+                        CHAT_ATTACHMENT_CHUNK_SIZE,
+                        CHAT_ATTACHMENT_CHUNK_OVERLAP,
+                        metadata,
+                    )
+                    chunks = [doc.page_content.strip() for doc in docs if doc.page_content.strip()]
+
+        if not chunks:
+            text = await extract_text_from_file_async(
+                image_path,
+                content=image_bytes,
+                ocr_mode="vision",
+                ocr_provider=ocr_provider,
+                ocr_vision_model=ocr_vision_model,
+                vision_base_url=vision_base_url,
+                vision_api_key=vision_api_key,
+            )
+            chunks = await _chunk_image_text_for_chat(text, metadata)
+
+    if not chunks:
+        text = await extract_text_from_file_async(
+            image_path,
+            content=image_bytes,
+            enable_ocr=True,
+            ocr_mode="tesseract",
+        )
+        chunks = await _chunk_image_text_for_chat(text, metadata)
+
+    if not chunks:
+        return ""
+
+    total_chunks = len(chunks)
+    return "\n\n".join(_format_image_chunk_block(chunk, index, total_chunks) for index, chunk in enumerate(chunks, start=1))
 
 
 async def preprocess_chat_attachment_content_parts(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import tempfile
 import unittest
@@ -108,6 +109,50 @@ class ChatAttachmentTests(unittest.IsolatedAsyncioTestCase):
         assert stats is not None
         self.assertEqual(stats["file_count"], 1)
         self.assertEqual(stats["included_chunk_count"], 2)
+
+    async def test_extract_chat_image_context_uses_structured_ocr_chunks(self) -> None:
+        payload = base64.b64encode(b"image-bytes").decode("ascii")
+        part = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{payload}"},
+        }
+        structured_result = SimpleNamespace(
+            raw_text=None,
+            extracted_text=[{"type": "Title", "content": "Quarterly revenue"}],
+            get_semantic_segments=lambda: [
+                ("ocr_text", "Quarterly revenue"),
+                ("classification", "Image type: chart\nTags: finance"),
+            ],
+        )
+
+        with (
+            mock.patch.object(
+                chat_attachments,
+                "extract_image_structured_async",
+                new=mock.AsyncMock(return_value=structured_result),
+            ) as structured_mock,
+            mock.patch.object(
+                chat_attachments,
+                "extract_text_from_file_async",
+                new=mock.AsyncMock(return_value="fallback text"),
+            ) as text_mock,
+        ):
+            text = await chat_attachments.extract_chat_image_context_from_part(
+                part,
+                app_settings={
+                    "default_ocr_mode": "vision",
+                    "default_ocr_provider": "openai",
+                    "default_ocr_vision_model": "gpt-4o-mini",
+                    "openai_api_key": "test-key",
+                },
+            )
+
+        structured_mock.assert_awaited_once()
+        text_mock.assert_not_called()
+        self.assertIn("Attached image OCR chunk 1/2", text)
+        self.assertIn("Quarterly revenue", text)
+        self.assertIn("Attached image OCR chunk 2/2", text)
+        self.assertIn("Tags: finance", text)
 
     async def test_cleanup_expired_chat_attachments_removes_old_directories(
         self,

@@ -93,10 +93,12 @@ from ragtime.core.logging import get_logger
 from ragtime.core.model_limits import (
     get_context_limit,
     get_output_limit,
+    register_model_image_input_capability,
     register_model_reasoning_capabilities,
     register_model_supported_endpoints,
     register_openrouter_model_limits,
     requires_responses_api,
+    supports_image_input,
     supports_reasoning,
     supports_reasoning_effort,
     supports_responses_api,
@@ -150,8 +152,7 @@ from ragtime.core.ssh import (
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata
-from ragtime.indexer.chat_attachments import preprocess_chat_attachment_content_parts
-from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.indexer.chat_attachments import extract_chat_image_context_from_part, preprocess_chat_attachment_content_parts
 from ragtime.indexer.export_service import (
     chart_to_table,
     content_source,
@@ -6356,6 +6357,89 @@ class RAGComponents:
                 return True
 
         return False
+
+    async def _ocr_image_part_for_chat(
+        self,
+        part: dict[str, Any],
+        *,
+        app_settings: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        if app_settings is None:
+            app_settings = await get_app_settings()
+        text = await extract_chat_image_context_from_part(
+            part,
+            app_settings=app_settings,
+        )
+        if text:
+            logger.info("OCR fallback extracted %d chars from image for chat", len(text))
+            return {"type": "text", "text": f"[Image text extracted via OCR]:\n{text}"}
+
+        return {"type": "text", "text": "[image attached] (OCR text unavailable)"}
+
+    async def _ocr_images_in_content(self, content: Any) -> Any:
+        """Replace all image_url parts in multimodal content with OCR-extracted text.
+
+        Used when the selected model does not support image input.
+        """
+        if not isinstance(content, list):
+            return content
+
+        image_parts: list[tuple[int, dict[str, Any]]] = []
+        result: list[Any] = []
+
+        for i, item in enumerate(content):
+            is_image = (isinstance(item, dict) and item.get("type") == "image_url") or (hasattr(item, "type") and getattr(item, "type", None) == "image_url")
+            if is_image:
+                part: dict[str, Any]
+                if isinstance(item, dict):
+                    part = {"type": "image_url", "image_url": item.get("image_url", {})}
+                else:
+                    part = {"type": "image_url", "image_url": getattr(item, "image_url", {})}
+                result.append(None)
+                image_parts.append((i, part))
+            else:
+                if isinstance(item, dict):
+                    text_val = item.get("text", "")
+                    result.append({"type": "text", "text": text_val} if item.get("type") == "text" else item)
+                elif hasattr(item, "type") and item.type == "text":
+                    result.append({"type": "text", "text": getattr(item, "text", "")})
+                else:
+                    result.append(item)
+
+        if image_parts:
+            app_settings = await get_app_settings()
+            logger.info("OCR-ing %d image(s) for chat because the selected model does not support image input", len(image_parts))
+            ocr_parts = await asyncio.gather(*(self._ocr_image_part_for_chat(part, app_settings=app_settings) for _, part in image_parts))
+            for (idx, _), ocr_part in zip(image_parts, ocr_parts):
+                result[idx] = ocr_part
+
+        return result
+
+    async def _ocr_images_if_model_lacks_support(self, content: Any, model_id: Optional[str], *, context: str) -> Any:
+        if not self._has_image_content(content) or not model_id:
+            return content
+        if await supports_image_input(model_id):
+            return content
+
+        logger.info(
+            "Model '%s' does not support image input; OCR-ing images before sending (%s)",
+            model_id,
+            context,
+        )
+        return await self._ocr_images_in_content(content)
+
+    async def _ocr_images_after_no_image_support_error(self, content: Any, model_id: Optional[str], *, context: str) -> Any | None:
+        if model_id:
+            register_model_image_input_capability(model_id, False)
+        if not self._has_image_content(content):
+            return None
+
+        logger.warning(
+            "Provider rejected image input for model '%s'; OCR-ing images and retrying (%s)",
+            model_id or "unknown",
+            context,
+        )
+        return await self._ocr_images_in_content(content)
 
     def _build_local_image_data_url(self, file_path: str) -> str | None:
         """Load a local image file and convert it to a downsampled data URL."""
@@ -12824,6 +12908,12 @@ class RAGComponents:
         text = f"{body_message} {_format_exception_message(exc)}".lower()
         return "maximum context length" in text or "context window" in text and "exceed" in text or "please reduce the length" in text
 
+    @classmethod
+    def _is_no_image_support_error(cls, exc: BaseException) -> bool:
+        """Detect provider errors indicating the model does not support image input."""
+        text = cls._provider_error_text(exc)
+        return "no endpoints found that support image" in text or "image input" in text and ("not supported" in text or "no endpoints" in text)
+
     @staticmethod
     def _provider_error_text(exc: BaseException) -> str:
         parts = [_format_exception_message(exc)]
@@ -13141,64 +13231,12 @@ class RAGComponents:
             media_type = url.split(";", 1)[0].removeprefix("data:") or "image"
         return f"[Image attachment: {media_type}{detail}; image data omitted from compaction.]"
 
-    @staticmethod
-    def _decode_image_data_url_for_compaction(part: dict[str, Any]) -> tuple[bytes, str] | None:
-        image_url = part.get("image_url")
-        url = image_url.get("url") if isinstance(image_url, dict) else image_url
-        if not isinstance(url, str) or not url.lower().startswith("data:image/"):
-            return None
-
-        header, separator, payload = url.partition(",")
-        if not separator or not payload or ";base64" not in header.lower():
-            return None
-
-        media_type = header.split(";", 1)[0].removeprefix("data:").lower()
-        subtype = media_type.split("/", 1)[1] if "/" in media_type else "png"
-        suffix = ".jpg" if subtype == "jpeg" else f".{re.sub(r'[^a-z0-9]+', '', subtype) or 'png'}"
-        try:
-            return base64.b64decode(payload, validate=False), suffix
-        except Exception:
-            return None
-
     async def _extract_image_text_for_compaction(self, part: dict[str, Any]) -> str:
-        decoded = self._decode_image_data_url_for_compaction(part)
-        if decoded is None:
-            return ""
-
-        image_bytes, suffix = decoded
-        app_settings = await get_app_settings()
-        ocr_mode = str(app_settings.get("default_ocr_mode") or app_settings.get("defaultOcrMode") or "disabled").strip().lower()
-        ocr_provider = str(app_settings.get("default_ocr_provider") or app_settings.get("defaultOcrProvider") or "").strip().lower() or None
-        ocr_vision_model = str(app_settings.get("default_ocr_vision_model") or app_settings.get("defaultOcrVisionModel") or "").strip() or None
-
-        if ocr_mode == "vision" and ocr_provider and ocr_vision_model:
-            try:
-                return (
-                    await extract_text_from_file_async(
-                        Path(f"compaction-image{suffix}"),
-                        content=image_bytes,
-                        ocr_mode="vision",
-                        ocr_provider=ocr_provider,
-                        ocr_vision_model=ocr_vision_model,
-                        vision_base_url=resolve_provider_base_url(app_settings, ocr_provider, "llm"),
-                        vision_api_key=resolve_provider_api_key(app_settings, ocr_provider, "llm"),
-                    )
-                ).strip()
-            except Exception as exc:
-                logger.info("Vision OCR fallback failed for compaction image via %s/%s: %s", ocr_provider, ocr_vision_model, exc)
-
-        try:
-            return (
-                await extract_text_from_file_async(
-                    Path(f"compaction-image{suffix}"),
-                    content=image_bytes,
-                    enable_ocr=True,
-                    ocr_mode="tesseract",
-                )
-            ).strip()
-        except Exception as exc:
-            logger.debug("Could not OCR image attachment for compaction: %s", exc)
-            return ""
+        return await extract_chat_image_context_from_part(
+            part,
+            app_settings=await get_app_settings(),
+            filename="compaction-image",
+        )
 
     async def _describe_image_part_for_compaction(self, part: dict[str, Any], request_llm: Optional[Any]) -> str:
         fallback = self._image_part_placeholder_for_compaction(part)
@@ -13788,6 +13826,13 @@ class RAGComponents:
             llm_resolution = await self._get_request_scoped_llm(conversation_model)
             request_llm = llm_resolution.llm
             request_model_id = llm_resolution.model
+
+            langchain_content = await self._ocr_images_if_model_lacks_support(
+                langchain_content,
+                request_model_id,
+                context="non-streaming",
+            )
+
             t_ctx = time.monotonic()
             request_context = await self._build_request_runtime_context(
                 is_ui=False,
@@ -13900,14 +13945,36 @@ class RAGComponents:
                 )
                 provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
-                # Use agent with tools
-                result = await executor.ainvoke(
-                    {
-                        "input": langchain_content,
-                        "user_input": [HumanMessage(content=langchain_content)],
-                        "chat_history": chat_history,
-                    }
-                )
+                agent_content = langchain_content
+                try:
+                    result = await executor.ainvoke(
+                        {
+                            "input": agent_content,
+                            "user_input": [HumanMessage(content=agent_content)],
+                            "chat_history": chat_history,
+                        }
+                    )
+                except Exception as invoke_err:
+                    retry_content = None
+                    if self._is_no_image_support_error(invoke_err):
+                        retry_content = await self._ocr_images_after_no_image_support_error(
+                            agent_content,
+                            effective_model,
+                            context="non-streaming agent",
+                        )
+                    if retry_content is None:
+                        raise
+
+                    request_tool_state["image_input_ocr_retry"] = True
+                    agent_content = retry_content
+                    provider_messages[-1]["content"] = self._serialize_prompt_content(agent_content)
+                    result = await executor.ainvoke(
+                        {
+                            "input": agent_content,
+                            "user_input": [HumanMessage(content=agent_content)],
+                            "chat_history": chat_history,
+                        }
+                    )
                 output = result.get("output", "I couldn't generate a response.")
                 # Handle Anthropic-style content blocks (list of dicts with 'text' key)
                 if isinstance(output, list):
@@ -13935,7 +14002,7 @@ class RAGComponents:
                     mode=request_context["mode"],
                     request_kind="agent_executor",
                     system_prompt=system_prompt,
-                    rendered_user_input=langchain_content,
+                    rendered_user_input=agent_content,
                     chat_history=chat_history,
                     provider_messages=provider_messages,
                     tool_scope_prompt=tool_scope_prompt,
@@ -13960,10 +14027,27 @@ class RAGComponents:
                 messages.extend(chat_history)
                 if include_ai_turn_reminder:
                     messages.append(AIMessage(content=turn_system_content))
-                messages.append(HumanMessage(content=langchain_content))
+                direct_content = langchain_content
+                messages.append(HumanMessage(content=direct_content))
                 provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
-                response = await request_llm.ainvoke(messages)
+                try:
+                    response = await request_llm.ainvoke(messages)
+                except Exception as invoke_err:
+                    retry_content = None
+                    if self._is_no_image_support_error(invoke_err):
+                        retry_content = await self._ocr_images_after_no_image_support_error(
+                            direct_content,
+                            effective_model,
+                            context="non-streaming direct",
+                        )
+                    if retry_content is None:
+                        raise
+
+                    request_tool_state["image_input_ocr_retry"] = True
+                    direct_content = retry_content
+                    messages[-1] = HumanMessage(content=direct_content)
+                    response = await request_llm.ainvoke(messages)
                 content = response.content
                 debug_metadata = self._build_request_debug_metadata(
                     mode=request_context["mode"],
@@ -13979,7 +14063,7 @@ class RAGComponents:
                     mode=request_context["mode"],
                     request_kind="direct_llm",
                     system_prompt=system_prompt,
-                    rendered_user_input=langchain_content,
+                    rendered_user_input=direct_content,
                     chat_history=chat_history,
                     provider_messages=[self._serialize_base_message(message) for message in messages],
                     tool_scope_prompt="",
@@ -14042,6 +14126,13 @@ class RAGComponents:
         llm_resolution = await self._get_request_scoped_llm(conversation_model)
         request_llm = llm_resolution.llm
         request_model_id = llm_resolution.model
+
+        langchain_content = await self._ocr_images_if_model_lacks_support(
+            langchain_content,
+            request_model_id,
+            context="streaming",
+        )
+
         t_ctx = time.monotonic()
         try:
             request_context = await self._build_request_runtime_context(
@@ -14183,9 +14274,11 @@ class RAGComponents:
                 attempt_input = agent_input
                 attempt_number = 0
                 any_tool_activity = False
+                image_input_ocr_retry_attempted = False
 
                 try:
                     while True:
+                        attempt_retry_with_ocr = False
                         active_tool_runs: set[str] = set()
                         streamed_content_by_chat_run: dict[str, str] = {}
                         streamed_reasoning_by_chat_run: dict[str, str] = {}
@@ -14334,6 +14427,38 @@ class RAGComponents:
                                         _format_active_tool_stream_error_output(tool_name, stream_err),
                                     )
                                     break
+                                if self._is_no_image_support_error(stream_err):
+                                    retry_content = None
+                                    if not image_input_ocr_retry_attempted and not attempt_emitted_content and not attempt_had_tool_activity:
+                                        retry_content = await self._ocr_images_after_no_image_support_error(
+                                            attempt_input,
+                                            effective_model,
+                                            context="streaming agent",
+                                        )
+
+                                    await _close_agent_stream_iter()
+                                    if retry_content is not None:
+                                        image_input_ocr_retry_attempted = True
+                                        request_tool_state["image_input_ocr_retry"] = True
+                                        request_tool_state["image_input_ocr_retry_error"] = _format_exception_message(stream_err)[:500]
+                                        attempt_retry_with_ocr = True
+                                        agent_input = retry_content
+                                        attempt_original_input = retry_content
+                                        attempt_input = retry_content
+                                        attempt_chat_history = list(chat_history)
+                                        attempt_history_has_original_input = False
+                                        stream_provider_messages[-1]["content"] = self._serialize_prompt_content(agent_input)
+                                    else:
+                                        request_tool_state["provider_stream_failed"] = True
+                                        request_tool_state["provider_stream_error"] = _format_exception_message(stream_err)[:500]
+                                        logger.warning(
+                                            "Agent provider stream failed because the model does not support image input "
+                                            "(attempt=%d); OCR retry was unavailable, falling through to tool-free synthesis",
+                                            attempt_number,
+                                        )
+                                        attempt_emitted_content = False
+                                        attempt_provider_stream_failed = True
+                                    break
                                 if self._is_transient_provider_runtime_error(stream_err):
                                     logger.warning(
                                         "Agent provider stream failed with a transient error; closing the stream and falling through to tool-free synthesis (attempt=%d, tool_activity=%s): %s",
@@ -14404,6 +14529,8 @@ class RAGComponents:
                                 json_display_integrity_tools = {
                                     CHAT_WEB_SEARCH_TOOL_ID,
                                     CHAT_WEB_BROWSE_TOOL_ID,
+                                    "assay_userspace_code",
+                                    "discover_userspace_primitives",
                                 }
                                 # Userspace write tools embed the full file content
                                 # in a `file` key which inflates the output beyond
@@ -14659,6 +14786,10 @@ class RAGComponents:
                                         if "iteration limit" in str(rv_output).lower():
                                             request_tool_state["max_iterations_reached"] = True
                                             yield {"type": "max_iterations_reached"}
+
+                        if attempt_retry_with_ocr:
+                            logger.info("Retrying agent stream with OCR text after image-input rejection")
+                            continue
 
                         should_internal_continue = (
                             not request_tool_state.get("max_iterations_reached", False)
@@ -14920,41 +15051,71 @@ class RAGComponents:
                     direct_system_prompt = f"{system_prompt}\n\n{turn_system_content}"
                     include_ai_turn_reminder = False
 
-                messages: List[BaseMessage] = [SystemMessage(content=direct_system_prompt)]
-                messages.extend(chat_history)
-                if include_ai_turn_reminder:
-                    messages.append(AIMessage(content=turn_system_content))
-                messages.append(HumanMessage(content=langchain_content))
+                direct_content = langchain_content
+                messages: List[BaseMessage] = []
+
+                def _build_direct_stream_messages(content: Any) -> list[BaseMessage]:
+                    built_messages: list[BaseMessage] = [SystemMessage(content=direct_system_prompt)]
+                    built_messages.extend(chat_history)
+                    if include_ai_turn_reminder:
+                        built_messages.append(AIMessage(content=turn_system_content))
+                    built_messages.append(HumanMessage(content=content))
+                    return built_messages
+
+                messages = _build_direct_stream_messages(direct_content)
 
                 provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 try:
-                    direct_channel_header_buffer = ""
-                    async for chunk in self._stream_llm_chunks_with_transient_retries(
-                        request_llm,
-                        messages,
-                        label="direct chat",
-                    ):
-                        reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
-                        if reasoning_text:
-                            yield {"type": "reasoning", "content": reasoning_text}
+                    image_input_ocr_retry_attempted = False
+                    while True:
+                        direct_channel_header_buffer = ""
+                        direct_emitted_content = False
+                        try:
+                            async for chunk in self._stream_llm_chunks_with_transient_retries(
+                                request_llm,
+                                messages,
+                                label="direct chat",
+                            ):
+                                reasoning_text = self._extract_reasoning_from_stream_chunk(chunk)
+                                if reasoning_text:
+                                    yield {"type": "reasoning", "content": reasoning_text}
 
-                        if hasattr(chunk, "content") and chunk.content:
-                            content = self._extract_text_from_stream_content(chunk.content)
-                            content, direct_channel_header_buffer = self._filter_lmstudio_channel_headers(
-                                direct_channel_header_buffer,
-                                content,
-                            )
-                            if content:
-                                yield content
-                    if direct_channel_header_buffer:
-                        content, direct_channel_header_buffer = self._filter_lmstudio_channel_headers(
-                            direct_channel_header_buffer,
-                            "",
-                            final=True,
-                        )
-                        if content:
-                            yield content
+                                if hasattr(chunk, "content") and chunk.content:
+                                    content = self._extract_text_from_stream_content(chunk.content)
+                                    content, direct_channel_header_buffer = self._filter_lmstudio_channel_headers(
+                                        direct_channel_header_buffer,
+                                        content,
+                                    )
+                                    if content:
+                                        direct_emitted_content = True
+                                        yield content
+                            if direct_channel_header_buffer:
+                                content, direct_channel_header_buffer = self._filter_lmstudio_channel_headers(
+                                    direct_channel_header_buffer,
+                                    "",
+                                    final=True,
+                                )
+                                if content:
+                                    direct_emitted_content = True
+                                    yield content
+                            break
+                        except Exception as stream_err:
+                            retry_content = None
+                            if not image_input_ocr_retry_attempted and not direct_emitted_content and self._is_no_image_support_error(stream_err):
+                                retry_content = await self._ocr_images_after_no_image_support_error(
+                                    direct_content,
+                                    effective_model,
+                                    context="streaming direct",
+                                )
+                            if retry_content is None:
+                                raise
+
+                            image_input_ocr_retry_attempted = True
+                            request_tool_state["image_input_ocr_retry"] = True
+                            direct_content = retry_content
+                            messages = _build_direct_stream_messages(direct_content)
+                            logger.info("Retrying direct stream with OCR text after image-input rejection")
                 finally:
                     debug_metadata = self._build_request_debug_metadata(
                         mode=request_context["mode"],
@@ -14970,7 +15131,7 @@ class RAGComponents:
                         mode=request_context["mode"],
                         request_kind="direct_llm",
                         system_prompt=system_prompt,
-                        rendered_user_input=langchain_content,
+                        rendered_user_input=direct_content,
                         chat_history=chat_history,
                         provider_messages=[self._serialize_base_message(message) for message in messages],
                         tool_scope_prompt="",
