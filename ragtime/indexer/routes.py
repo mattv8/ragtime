@@ -7581,16 +7581,17 @@ async def _fetch_github_provider_models(
             token = str(settings.github_copilot_access_token or "").strip()
             base_url = settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL
             refresh_token = str(settings.github_copilot_refresh_token or "").strip()
-        if not token:
-            return LLMModelsResponse(
-                success=False,
-                message="GitHub Copilot is not connected. Use OAuth connect in LLM settings first.",
-            )
 
         if not token_override:
             refreshed = await ensure_copilot_token_fresh()
             if refreshed:
                 token = refreshed
+
+        if not token:
+            return LLMModelsResponse(
+                success=False,
+                message="GitHub Copilot is not connected. Use OAuth connect in LLM settings first.",
+            )
 
         result = await _fetch_github_copilot_models(
             token,

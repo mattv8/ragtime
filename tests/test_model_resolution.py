@@ -1299,12 +1299,45 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             response = await indexer_routes.get_available_chat_models()
 
         fetch_copilot.assert_awaited_once()
-        fetch_kwargs = fetch_copilot.await_args.kwargs
+        await_args = fetch_copilot.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        fetch_kwargs = await_args.kwargs
         self.assertEqual(fetch_kwargs["provider"], "github_copilot")
         self.assertIs(fetch_kwargs["settings"], settings)
         self.assertEqual([model.provider for model in response.models], ["github_copilot"])
         copilot_state = next(state for state in response.provider_states if state.provider == "github_copilot")
         self.assertTrue(copilot_state.available)
+
+    async def test_github_provider_oauth_fetch_refreshes_before_missing_access_token_error(self) -> None:
+        settings = AppSettings(
+            github_copilot_access_token="",
+            github_copilot_refresh_token="github-oauth-token",
+        )
+        copilot_result = LLMModelsResponse(success=True, message="ok", models=[])
+
+        with (
+            mock.patch(
+                "ragtime.indexer.routes.ensure_copilot_token_fresh",
+                new=mock.AsyncMock(return_value="fresh-copilot-token"),
+            ) as refresh_token,
+            mock.patch(
+                "ragtime.indexer.routes._fetch_github_copilot_models",
+                new=mock.AsyncMock(return_value=copilot_result),
+            ) as fetch_models,
+        ):
+            result = await indexer_routes._fetch_github_provider_models(
+                provider="github_copilot",
+                settings=settings,
+            )
+
+        self.assertIs(result, copilot_result)
+        refresh_token.assert_awaited_once()
+        fetch_models.assert_awaited_once_with(
+            "fresh-copilot-token",
+            indexer_routes.COPILOT_DEFAULT_BASE_URL,
+            force_refresh=False,
+        )
 
     async def test_models_dev_reasoning_flag_routes_openai_codex_to_responses(self) -> None:
         model_limits.invalidate_cache()
