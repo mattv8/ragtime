@@ -229,6 +229,32 @@ CHAT_CONTEXT_PREFERRED_MIN_COMPLETION_TOKENS = 512
 CHAT_CONTEXT_ABSOLUTE_MIN_COMPLETION_TOKENS = 128
 DEFAULT_THINKING_BUDGET_TOKENS = 16384
 CREATE_DOWNLOAD_LINK_TOOL_ID = "create_download_link"
+FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES = frozenset(
+    {
+        CHAT_WEB_SEARCH_TOOL_ID,
+        CHAT_WEB_BROWSE_TOOL_ID,
+        "assay_userspace_code",
+        "discover_userspace_primitives",
+    }
+)
+STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES = frozenset(
+    {
+        "upsert_userspace_file",
+        "patch_userspace_file",
+        "move_userspace_file",
+        "delete_userspace_file",
+    }
+)
+STREAM_DISPLAY_UNTRUNCATED_TOOL_NAMES = frozenset(
+    {
+        "create_chart",
+        "create_datatable",
+        "read_userspace_file",
+        "list_userspace_files",
+        *FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
+        *STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -489,6 +515,22 @@ def truncate_tool_output(output: str, max_chars: int) -> str:
     return output[:head_chars] + f"\n\n... [{omitted:,} characters omitted] ...\n\n" + output[-tail_chars:]
 
 
+def should_truncate_stream_display_output(
+    tool_name: str,
+    display_output: Any,
+    presentation_meta: Any = None,
+) -> bool:
+    if not isinstance(display_output, str) or len(display_output) <= 2000:
+        return False
+    if tool_name in STREAM_DISPLAY_UNTRUNCATED_TOOL_NAMES:
+        return False
+    if isinstance(presentation_meta, dict) and presentation_meta.get("kind") == "terminal":
+        return False
+    if display_output.startswith(TABLE_METADATA_START):
+        return False
+    return True
+
+
 def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
     """Shrink large string fields while keeping tool JSON parseable."""
 
@@ -543,7 +585,12 @@ def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
     return serialized if len(serialized) <= max_chars else None
 
 
-def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> StructuredTool:
+def wrap_tool_with_truncation(
+    tool: StructuredTool,
+    max_chars: int,
+    *,
+    preserve_output_tool_names: set[str] | frozenset[str] | None = None,
+) -> StructuredTool:
     """
     Wrap a LangChain tool to truncate its output before returning to the agent.
 
@@ -558,6 +605,9 @@ def wrap_tool_with_truncation(tool: StructuredTool, max_chars: int) -> Structure
         A new StructuredTool with truncated output behavior.
     """
     if max_chars <= 0:
+        return tool
+
+    if preserve_output_tool_names and getattr(tool, "name", "") in preserve_output_tool_names:
         return tool
 
     original_func = tool.func
@@ -3759,7 +3809,14 @@ class RAGComponents:
         # Wrap all tools with output truncation (if enabled)
         # This reduces token consumption in the agent's scratchpad
         if max_tool_output_chars > 0:
-            tools = [wrap_tool_with_truncation(t, max_tool_output_chars) for t in tools]
+            tools = [
+                wrap_tool_with_truncation(
+                    t,
+                    max_tool_output_chars,
+                    preserve_output_tool_names=FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
+                )
+                for t in tools
+            ]
             logger.info(f"Wrapped {len(tools)} tools with output truncation (max {max_tool_output_chars:,} chars)")
 
         # Store window size for scratchpad compression
@@ -8740,7 +8797,7 @@ class RAGComponents:
             return _render_userspace_tool_payload(
                 tool_name="discover_userspace_primitives",
                 status="completed",
-                message="Primitive discovery payload sourced from the same helpers that back /__ragtime/capabilities and /__ragtime/session.",
+                message="Primitive discovery completed.",
                 persisted=False,
                 retryable=False,
                 failure_class="none",
@@ -14525,26 +14582,13 @@ class RAGComponents:
                                     else:
                                         logger.debug(f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})")
 
-                                ui_tools = {"create_chart", "create_datatable"}
-                                json_display_integrity_tools = {
-                                    CHAT_WEB_SEARCH_TOOL_ID,
-                                    CHAT_WEB_BROWSE_TOOL_ID,
-                                    "assay_userspace_code",
-                                    "discover_userspace_primitives",
-                                }
                                 # Userspace write tools embed the full file content
                                 # in a `file` key which inflates the output beyond
                                 # the 2000-char display limit. Strip only the bulky
                                 # `content` field so the rest of the payload stays
                                 # intact and JSON-parseable for the chat diff UI.
-                                _userspace_write_tools = {
-                                    "upsert_userspace_file",
-                                    "patch_userspace_file",
-                                    "move_userspace_file",
-                                    "delete_userspace_file",
-                                }
                                 display_output = tool_output
-                                if isinstance(display_output, str) and tool_name in _userspace_write_tools:
+                                if isinstance(display_output, str) and tool_name in STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES:
                                     try:
                                         _parsed_output = json.loads(display_output)
                                         if isinstance(_parsed_output, dict):
@@ -14577,8 +14621,6 @@ class RAGComponents:
                                             display_output = json.dumps(_parsed_output, indent=2)
                                     except (json.JSONDecodeError, TypeError):
                                         pass
-                                has_table_metadata = isinstance(display_output, str) and display_output.startswith(TABLE_METADATA_START)
-                                is_terminal_display_output = bool(isinstance(presentation_meta, dict) and presentation_meta.get("kind") == "terminal")
                                 # Structured JSON tool payloads must remain
                                 # parseable client-side. Truncating to 2000 chars
                                 # cuts off closing braces and forces the frontend
@@ -14587,17 +14629,7 @@ class RAGComponents:
                                 # targeted strip above; read/list tools and chat
                                 # web tools are already bounded by their own tool
                                 # limits and frontend scroll containers.
-                                if (
-                                    isinstance(display_output, str)
-                                    and len(display_output) > 2000
-                                    and tool_name not in ui_tools
-                                    and tool_name not in _userspace_write_tools
-                                    and tool_name not in json_display_integrity_tools
-                                    and tool_name != "read_userspace_file"
-                                    and tool_name != "list_userspace_files"
-                                    and not is_terminal_display_output
-                                    and not has_table_metadata
-                                ):
+                                if should_truncate_stream_display_output(tool_name, display_output, presentation_meta):
                                     display_output = display_output[:2000] + "... (truncated)"
                                 tool_args = start_payload.get("input") if start_payload else {}
                                 if not isinstance(tool_args, dict):

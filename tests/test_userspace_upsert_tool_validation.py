@@ -14,7 +14,12 @@ async def _fake_ensure_copilot_token_fresh(*_args, **_kwargs):
 setattr(fake_copilot_auth, "ensure_copilot_token_fresh", _fake_ensure_copilot_token_fresh)
 sys.modules.setdefault("ragtime.core.copilot_auth", fake_copilot_auth)
 
-from ragtime.rag.components import RAGComponents
+from ragtime.rag.components import (
+    FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
+    RAGComponents,
+    should_truncate_stream_display_output,
+    wrap_tool_with_truncation,
+)
 
 
 class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -114,6 +119,28 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["session"], session_payload)
         primitive_capabilities.assert_awaited_once_with("workspace-1", "user-1", preview_mode="workspace")
         primitive_session.assert_awaited_once_with("workspace-1", "user-1", mode="workspace")
+
+    async def test_frontend_json_display_tools_bypass_global_output_truncation(self) -> None:
+        tool = await self._tool("discover_userspace_primitives")
+
+        wrapped = wrap_tool_with_truncation(
+            tool,
+            32,
+            preserve_output_tool_names=FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
+        )
+
+        self.assertIs(wrapped, tool)
+
+    def test_frontend_json_display_tools_bypass_stream_display_truncation(self) -> None:
+        output = json.dumps({"tool": "discover_userspace_primitives", "payload": "x" * 3000}, indent=2)
+
+        for tool_name in FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES:
+            self.assertFalse(
+                should_truncate_stream_display_output(tool_name, output),
+                tool_name,
+            )
+
+        self.assertTrue(should_truncate_stream_display_output("generic_tool", output))
 
 
 if __name__ == "__main__":

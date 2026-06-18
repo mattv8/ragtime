@@ -1008,6 +1008,7 @@ function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
   const nestedToolCall = event?.toolCall && typeof event.toolCall === 'object' ? event.toolCall : undefined;
   const hasTopLevelOutput = event && typeof event === 'object' && Object.prototype.hasOwnProperty.call(event, 'output');
   const hasNestedOutput = nestedToolCall && Object.prototype.hasOwnProperty.call(nestedToolCall, 'output');
+  const outputValue = hasTopLevelOutput ? event?.output : nestedToolCall?.output;
 
   return {
     type: 'tool' as const,
@@ -1015,13 +1016,25 @@ function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
     toolCall: {
       tool: event?.tool ?? nestedToolCall?.tool ?? '',
       input: event?.input ?? nestedToolCall?.input,
-      output: event?.output ?? nestedToolCall?.output,
+      output: normalizeToolOutputValue(outputValue),
       presentation: event?.presentation ?? nestedToolCall?.presentation,
       connection: event?.connection ?? nestedToolCall?.connection,
       status: hasTopLevelOutput || hasNestedOutput ? 'complete' : 'running',
       generating_lines: event?.generating_lines ?? nestedToolCall?.generating_lines,
     },
   };
+}
+
+function normalizeToolOutputValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 // Parse table metadata from SQL tool output
@@ -2388,6 +2401,10 @@ const USERSPACE_WRITE_TOOL_NAMES = new Set([
   'move_userspace_file',
   'delete_userspace_file',
 ]);
+const USERSPACE_STRUCTURED_JSON_TOOL_NAMES = new Set([
+  'assay_userspace_code',
+  'discover_userspace_primitives',
+]);
 const USERSPACE_DIFFABLE_TOOL_NAMES = new Set(['upsert_userspace_file', 'patch_userspace_file']);
 const USERSPACE_WRITE_DIFF_CACHE_MAX_ENTRIES = 100;
 
@@ -2431,6 +2448,15 @@ interface ParsedUserSpaceReadBatch {
   };
   aggregateMessage: string;
   aggregateStatus: string;
+}
+
+interface ParsedUserSpaceStructuredJsonResult {
+  toolName: string;
+  title: string;
+  message: string;
+  summaryRows: Array<{ label: string; value: string }>;
+  formattedJson: string;
+  payload: Record<string, unknown>;
 }
 
 interface ParsedUserspaceToolPayload {
@@ -2705,6 +2731,94 @@ function readJsonObjectArrayField(source: string, key: string): string[] {
 function isLikelyTruncatedToolOutput(source: string): boolean {
   return /\.\.\. \[[\d,]+ characters omitted\] \.\.\./.test(source)
     || source.includes('... (truncated)');
+}
+
+function asJsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function formatStructuredSummaryValue(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (Array.isArray(value)) return String(value.length);
+  const record = asJsonRecord(value);
+  if (record) return String(Object.keys(record).length);
+  return '';
+}
+
+function parseJsonRecordValue(output: string): Record<string, unknown> | null {
+  const normalized = output.replace(/^\uFEFF/, '').trim();
+  if (!normalized) return null;
+
+  const firstParse = JSON.parse(normalized) as unknown;
+  if (typeof firstParse === 'string') {
+    const nested = firstParse.replace(/^\uFEFF/, '').trim();
+    if (!nested) return null;
+    return asJsonRecord(JSON.parse(nested));
+  }
+
+  return asJsonRecord(firstParse);
+}
+
+function parseUserspaceStructuredJsonToolResult(toolName: string, output?: string | null): ParsedUserSpaceStructuredJsonResult | null {
+  if (!USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolName) || !output) return null;
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = parseJsonRecordValue(output);
+  } catch {
+    return null;
+  }
+  if (!parsed) return null;
+
+  const rows: Array<{ label: string; value: string }> = [];
+  const pushRow = (label: string, value: unknown) => {
+    const formatted = formatStructuredSummaryValue(value);
+    if (formatted) rows.push({ label, value: formatted });
+  };
+
+  const message = typeof parsed.message === 'string' ? parsed.message.trim() : '';
+
+  if (toolName === 'discover_userspace_primitives') {
+    const capabilities = asJsonRecord(parsed.capabilities);
+    const session = asJsonRecord(parsed.session);
+    const auth = asJsonRecord(session?.auth);
+    const capabilityFlags = capabilities
+      ? Object.entries(capabilities).filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
+      : [];
+    const enabledCapabilities = capabilityFlags.filter(([, value]) => value === true).length;
+    const endpoints = asJsonRecord(capabilities?.endpoints);
+    const objectBuckets = Array.isArray(capabilities?.object_buckets) ? capabilities.object_buckets.length : null;
+    pushRow('Workspace', parsed.workspace_id);
+    pushRow('Session', parsed.include_session === true ? 'included' : parsed.include_session === false ? 'not included' : null);
+    pushRow('Capabilities', capabilityFlags.length > 0 ? `${enabledCapabilities}/${capabilityFlags.length} enabled` : null);
+    pushRow('Endpoints', endpoints ? Object.keys(endpoints).length : null);
+    pushRow('Object buckets', objectBuckets);
+    pushRow('Auth methods', Array.isArray(auth?.methods) ? auth.methods.length : null);
+  } else if (toolName === 'assay_userspace_code') {
+    const workspace = asJsonRecord(parsed.workspace);
+    const summary = asJsonRecord(workspace?.summary);
+    const structure = asJsonRecord(workspace?.structure);
+    const diagnostics = asJsonRecord(parsed.diagnostics);
+    const totalFiles = summary?.total_files ?? diagnostics?.total_files;
+    const inspectedFiles = summary?.inspected_file_count ?? diagnostics?.inspected_file_count;
+    pushRow('Files', typeof inspectedFiles === 'number' && typeof totalFiles === 'number' ? `${inspectedFiles}/${totalFiles} inspected` : totalFiles);
+    pushRow('Dashboard', summary?.has_dashboard_entry === true || diagnostics?.has_dashboard_entry === true ? 'found' : 'missing');
+    pushRow('Entrypoint', structure?.authoritative_entrypoint || (structure?.has_runtime_entrypoint ? 'configured' : 'missing'));
+    pushRow('Live data', workspace?.live_data_contract ? 'available' : null);
+  }
+
+  return {
+    toolName,
+    title: toolName === 'discover_userspace_primitives' ? 'Primitive discovery' : 'Code assay',
+    message,
+    summaryRows: rows,
+    formattedJson: JSON.stringify(parsed, null, 2),
+    payload: parsed,
+  };
 }
 
 function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolPayload | null {
@@ -3839,6 +3953,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Effective output (use retry output if available)
   const effectiveOutput = activeOutput || '';
+  const isUserspaceStructuredJsonTool = USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolCall.tool);
 
   // Split into two memos: the searchable string composition (expensive — stringifies
   // tool input) only re-runs when tool-call data changes; the regex test only re-runs
@@ -4038,6 +4153,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const userspaceListResult = useMemo(() => {
     if (toolCall.tool !== 'list_userspace_files') return null;
     return parseUserspaceListToolResult(toolCall.tool, effectiveOutput);
+  }, [effectiveOutput, toolCall.tool]);
+
+  const userspaceStructuredJsonResult = useMemo(() => {
+    return parseUserspaceStructuredJsonToolResult(toolCall.tool, effectiveOutput);
   }, [effectiveOutput, toolCall.tool]);
 
   useEffect(() => {
@@ -5044,6 +5163,165 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         );
       }
 
+      case 'assay_userspace_code':
+      case 'discover_userspace_primitives': {
+        const title = toolCall.tool === 'discover_userspace_primitives' ? 'Primitive discovery' : 'Code assay';
+        if (!userspaceStructuredJsonResult) {
+          const fallbackMessage = effectiveOutput
+            ? 'Tool output was not valid JSON, so it could not be formatted.'
+            : toolCall.status === 'running'
+              ? 'Waiting for tool output...'
+              : 'No tool output was received.';
+          return (
+            <div className="tool-call-section tool-call-userspace-json-section">
+              <div className="tool-call-section-header">
+                <span className="tool-call-section-label">{title}:</span>
+                {effectiveOutput && (
+                  <button
+                    className="tool-call-copy-btn"
+                    onClick={() => copyToClipboard(effectiveOutput, 'result', `userspace-json-fallback-${toolCall.tool}`)}
+                    title="Copy raw output"
+                  >
+                    {isCopiedButton('result', `userspace-json-fallback-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                )}
+              </div>
+              <div className="tool-call-userspace-json-message">{fallbackMessage}</div>
+            </div>
+          );
+        }
+        const payload = userspaceStructuredJsonResult.payload;
+        const capabilities = asJsonRecord(payload.capabilities);
+        const endpoints = asJsonRecord(capabilities?.endpoints);
+        const objectBuckets = Array.isArray(capabilities?.object_buckets)
+          ? capabilities.object_buckets.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          : [];
+        const capabilityFlags = capabilities
+          ? Object.entries(capabilities)
+              .filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
+              .map(([key, value]) => ({ label: key.replace(/^can_/, '').split('_').join(' '), enabled: value === true }))
+          : [];
+        const workspacePayload = asJsonRecord(payload.workspace);
+        const assaySummary = asJsonRecord(workspacePayload?.summary);
+        const assayStructure = asJsonRecord(workspacePayload?.structure);
+        const inspectedFiles = Array.isArray(workspacePayload?.inspected_files)
+          ? workspacePayload.inspected_files.map(asJsonRecord).filter((item): item is Record<string, unknown> => Boolean(item))
+          : [];
+        return (
+          <div className="tool-call-section tool-call-userspace-json-section">
+            <div className="tool-call-section-header">
+              <span className="tool-call-section-label">{userspaceStructuredJsonResult.title}:</span>
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(userspaceStructuredJsonResult.formattedJson, 'result', `userspace-json-${toolCall.tool}`)}
+                title="Copy JSON"
+              >
+                {isCopiedButton('result', `userspace-json-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+            {userspaceStructuredJsonResult.message && (
+              <div className="tool-call-userspace-json-message">{userspaceStructuredJsonResult.message}</div>
+            )}
+            {userspaceStructuredJsonResult.summaryRows.length > 0 && (
+              <dl className="tool-call-userspace-json-summary">
+                {userspaceStructuredJsonResult.summaryRows.map((row) => (
+                  <div className="tool-call-userspace-json-summary-item" key={`${row.label}:${row.value}`}>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+            {toolCall.tool === 'discover_userspace_primitives' && (
+              <>
+                {capabilityFlags.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Capabilities</div>
+                    <div className="tool-call-userspace-json-chip-list">
+                      {capabilityFlags.map((capability) => (
+                        <span
+                          className={`tool-call-userspace-json-chip ${capability.enabled ? 'tool-call-userspace-json-chip-on' : 'tool-call-userspace-json-chip-off'}`}
+                          key={capability.label}
+                        >
+                          {capability.label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {objectBuckets.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Object buckets</div>
+                    <div className="tool-call-userspace-json-path-list">
+                      {objectBuckets.map((bucket) => <span key={bucket}>{bucket}</span>)}
+                    </div>
+                  </div>
+                )}
+                {endpoints && Object.keys(endpoints).length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Endpoints</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {Object.entries(endpoints).map(([name, path]) => (
+                        <li key={name}>
+                          <span>{name.split('_').join(' ')}</span>
+                          <code>{typeof path === 'string' ? path : String(path)}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+            {toolCall.tool === 'assay_userspace_code' && (
+              <>
+                {(assaySummary || assayStructure) && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Workspace structure</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {assayStructure && Object.entries(assayStructure).map(([name, value]) => (
+                        <li key={name}>
+                          <span>{name.split('_').join(' ')}</span>
+                          <code>{formatStructuredSummaryValue(value) || String(value)}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {inspectedFiles.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Inspected files</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {inspectedFiles.map((file, idx) => {
+                        const path = typeof file.path === 'string' ? file.path : `file-${idx + 1}`;
+                        const chars = typeof file.content_chars === 'number' ? `${file.content_chars} chars` : '';
+                        const lines = typeof file.line_count === 'number' ? `${file.line_count} lines` : '';
+                        return (
+                          <li key={`${path}:${idx}`}>
+                            {onOpenWorkspaceFile ? (
+                              <button
+                                type="button"
+                                className="tool-call-userspace-json-path-button"
+                                title={path}
+                                onClick={() => onOpenWorkspaceFile(path)}
+                              >
+                                {path}
+                              </button>
+                            ) : (
+                              <span>{path}</span>
+                            )}
+                            <code>{[lines, chars].filter(Boolean).join(' | ') || 'inspected'}</code>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      }
+
       case 'web_search': {
         if (!webSearchOutput) {
           return (
@@ -5567,7 +5845,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && (
+          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isUserspaceStructuredJsonTool && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
@@ -5728,7 +6006,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               </div>
             </div>
           ) : null}
-          {effectiveOutput && !isTerminalCommand && (
+          {(effectiveOutput || isUserspaceStructuredJsonTool) && !isTerminalCommand && (
             screenshotPreview && !hasErrorInOutput ? (
               <div className="tool-call-section">
                 <div className="tool-call-screenshot-meta">
