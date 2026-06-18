@@ -7592,6 +7592,20 @@ class RAGComponents:
                 description="Brief description of why env vars are being listed",
             )
 
+        class DiscoverUserSpacePrimitivesInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=("Optional target workspace ID for cross-workspace access. Omit to discover primitives for this workspace."),
+            )
+            include_session: bool = Field(
+                default=True,
+                description="Include the /__ragtime/session payload with auth methods and user_fingerprint when true.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why primitive discovery is needed",
+            )
+
         class UpsertUserSpaceEnvVarInput(BaseModel):
             key: str = Field(
                 description=("Environment variable key (for example: OPENAI_API_KEY). Must match [A-Za-z_][A-Za-z0-9_]*."),
@@ -8622,6 +8636,35 @@ class RAGComponents:
                 next_best_tool="upsert_userspace_env_var",
                 env_vars=env_var_items,
                 count=len(env_var_items),
+            )
+
+        async def discover_userspace_primitives(
+            include_session: bool = True,
+            reason: str = "",
+            workspace_id: Optional[str] = None,
+            **_: Any,
+        ) -> str:
+            del reason
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "read")
+            from ragtime.userspace.runtime_routes import _primitive_capabilities, _primitive_session_payload
+
+            capabilities = await _primitive_capabilities(target_ws, target_uid, preview_mode="workspace")
+            session = None
+            if include_session:
+                session = await _primitive_session_payload(target_ws, target_uid, mode="workspace")
+
+            return _render_userspace_tool_payload(
+                tool_name="discover_userspace_primitives",
+                status="completed",
+                message="Primitive discovery payload sourced from the same helpers that back /__ragtime/capabilities and /__ragtime/session.",
+                persisted=False,
+                retryable=False,
+                failure_class="none",
+                next_best_tool="patch_userspace_file",
+                workspace_id=target_ws,
+                include_session=include_session,
+                capabilities=capabilities,
+                session=session,
             )
 
         async def upsert_userspace_env_var(
@@ -10905,6 +10948,15 @@ class RAGComponents:
                     "Use this to understand which keys are already configured or still placeholders."
                 ),
                 args_schema=ListUserSpaceEnvVarsInput,
+            ),
+            _create_userspace_tool(
+                coroutine=discover_userspace_primitives,
+                name="discover_userspace_primitives",
+                description=(
+                    "Return the current User Space primitive capability/session payloads without loading a preview page. "
+                    "Use this to discover auth, login, SSO, LDAP, Basic Auth, and audit identity primitives."
+                ),
+                args_schema=DiscoverUserSpacePrimitivesInput,
             ),
             _create_userspace_tool(
                 coroutine=upsert_userspace_env_var,

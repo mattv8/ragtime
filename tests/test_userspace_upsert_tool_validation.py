@@ -18,12 +18,15 @@ from ragtime.rag.components import RAGComponents
 
 
 class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
-    async def _upsert_tool(self):
+    async def _tool(self, name: str):
         tools = await RAGComponents()._create_userspace_file_tools("workspace-1", "user-1")
         for tool in tools:
-            if tool.name == "upsert_userspace_file":
+            if tool.name == name:
                 return tool
-        raise AssertionError("upsert_userspace_file tool not found")
+        raise AssertionError(f"{name} tool not found")
+
+    async def _upsert_tool(self):
+        return await self._tool("upsert_userspace_file")
 
     async def test_single_file_upsert_rejects_missing_content_without_writing(self) -> None:
         tool = await self._upsert_tool()
@@ -63,6 +66,54 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["summary"]["rejected"], 1)
         self.assertEqual(payload["files"][0]["failure_class"], "content_missing")
         upsert_workspace_file.assert_not_called()
+
+    async def test_discover_userspace_primitives_reuses_primitive_payload_helpers(self) -> None:
+        tool = await self._tool("discover_userspace_primitives")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        capabilities_payload = {
+            "workspace_id": "workspace-1",
+            "endpoints": {
+                "capabilities": "/__ragtime/capabilities",
+                "session": "/__ragtime/session",
+            },
+        }
+        session_payload = {
+            "workspace_id": "workspace-1",
+            "user_fingerprint": "fp_test",
+            "auth": {
+                "methods": [{"key": "ldap", "available": True}],
+                "browser_auth_endpoint": "/__ragtime/browser-auth",
+            },
+        }
+        with (
+            mock.patch(
+                "ragtime.userspace.runtime_routes._primitive_capabilities",
+                new_callable=mock.AsyncMock,
+                return_value=capabilities_payload,
+            ) as primitive_capabilities,
+            mock.patch(
+                "ragtime.userspace.runtime_routes._primitive_session_payload",
+                new_callable=mock.AsyncMock,
+                return_value=session_payload,
+            ) as primitive_session,
+        ):
+            raw = await coroutine(include_session=True)
+
+        payload = json.loads(raw)
+        self.assertLess(len(raw), 6000)
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["tool"], "discover_userspace_primitives")
+        self.assertEqual(payload["workspace_id"], "workspace-1")
+        self.assertEqual(payload["next_best_tool"], "patch_userspace_file")
+        self.assertIn("/__ragtime/session", raw)
+        self.assertIn("/__ragtime/browser-auth", raw)
+        self.assertIn("user_fingerprint", raw)
+        self.assertEqual(payload["capabilities"], capabilities_payload)
+        self.assertEqual(payload["session"], session_payload)
+        primitive_capabilities.assert_awaited_once_with("workspace-1", "user-1", preview_mode="workspace")
+        primitive_session.assert_awaited_once_with("workspace-1", "user-1", mode="workspace")
 
 
 if __name__ == "__main__":
