@@ -51,6 +51,15 @@ def _tokens(values: Any) -> set[str]:
     return {str(item or "").strip().lower() for item in values if str(item or "").strip()}
 
 
+def _normalize_endpoint_token(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if token.startswith("/v1/"):
+        return token[3:]
+    if token.startswith("v1/"):
+        return f"/{token[3:]}"
+    return token
+
+
 def input_modalities(row: dict[str, Any]) -> set[str]:
     """Return input modality tokens from OpenRouter-style metadata."""
     architecture = row.get("architecture")
@@ -92,7 +101,7 @@ def supported_endpoints(row: dict[str, Any]) -> set[str]:
         endpoints = row.get("supported_endpoints")
     if endpoints is None:
         endpoints = row.get("endpoints")
-    return _tokens(endpoints)
+    return {_normalize_endpoint_token(token) for token in _tokens(endpoints)}
 
 
 def supported_endpoints_list(row: dict[str, Any]) -> list[str]:

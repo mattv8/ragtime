@@ -92,6 +92,8 @@ from ragtime.core.model_limits import (
     resolve_model_family_label,
     resolve_model_provider_label,
     supports_function_calling,
+    supports_reasoning,
+    supports_reasoning_effort,
     supports_responses_api,
     update_model_function_calling,
     update_model_limit,
@@ -8648,24 +8650,44 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
                     thinking_budget_supported,
                     effort_levels,
                 ) = _extract_provider_capability_metadata(model)
+                if supported_endpoints:
+                    register_model_supported_endpoints(model_id, supported_endpoints)
+                if reasoning_supported or thinking_budget_supported:
+                    register_model_reasoning_capabilities(
+                        model_id,
+                        reasoning_supported=bool(reasoning_supported),
+                        reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
+                        thinking_budget_supported=bool(thinking_budget_supported),
+                    )
+                if not reasoning_supported:
+                    reasoning_supported = await supports_reasoning(model_id)
+                if not effort_levels and await supports_reasoning_effort(model_id):
+                    effort_levels = ["high"]
+                if not supported_endpoints and reasoning_supported:
+                    supported_endpoints = ["/responses"]
+                    register_model_supported_endpoints(model_id, supported_endpoints)
                 # Include GPT models suitable for chat (exclude embeddings, whisper, tts, dall-e, etc.)
                 if model_id.startswith("gpt-") and not any(x in model_id for x in ["instruct", "vision", "realtime", "audio", "tts"]):
-                    # Check if model supports function calling (indicates chat capability)
-                    if await supports_function_calling(model_id):
-                        output_limit = await get_output_limit(model_id)
-                        models.append(
-                            LLMModel(
-                                id=model_id,
-                                name=model_id,
-                                created=model.get("created"),
-                                max_output_tokens=output_limit,
-                                capabilities=capabilities or None,
-                                supported_endpoints=supported_endpoints or None,
-                                reasoning_supported=reasoning_supported,
-                                thinking_budget_supported=thinking_budget_supported,
-                                effort_levels=effort_levels or None,
-                            )
+                    if supported_endpoints:
+                        if not any(endpoint in {"/chat/completions", "chat/completions", "/responses", "responses"} for endpoint in supported_endpoints):
+                            continue
+                    elif not await supports_function_calling(model_id):
+                        continue
+
+                    output_limit = await get_output_limit(model_id)
+                    models.append(
+                        LLMModel(
+                            id=model_id,
+                            name=model_id,
+                            created=model.get("created"),
+                            max_output_tokens=output_limit,
+                            capabilities=capabilities or None,
+                            supported_endpoints=supported_endpoints or None,
+                            reasoning_supported=reasoning_supported,
+                            thinking_budget_supported=thinking_budget_supported,
+                            effort_levels=effort_levels or None,
                         )
+                    )
 
             # Curate models to remove dated duplicates
             models = _group_models(models, "openai")
@@ -9696,22 +9718,20 @@ async def get_available_chat_models():
     elif github_auth_mode == "oauth" and (github_copilot_token or github_refresh_token):
         provider_states["github_copilot"].configured = True
         provider_states["github_copilot"].connected = bool(github_copilot_token and len(github_copilot_token) > 10)
-        if github_copilot_token and len(github_copilot_token) > 10:
-            tasks.append(
-                asyncio.create_task(
-                    _safe_fetch_llm_models_task(
-                        "github_copilot",
-                        _fetch_github_copilot_models(
-                            github_copilot_token,
-                            app_settings.github_copilot_base_url or COPILOT_DEFAULT_BASE_URL,
-                        ),
-                    )
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "github_copilot",
+                    _fetch_github_provider_models(
+                        provider="github_copilot",
+                        settings=app_settings,
+                        include_directory_models=True,
+                        include_anthropic_models=True,
+                        include_google_models=True,
+                    ),
                 )
             )
-        elif provider_states["github_copilot"].loading:
-            provider_states["github_copilot"].error = "Refreshing GitHub Copilot credentials."
-        else:
-            provider_states["github_copilot"].error = "GitHub Copilot access token is not available. Reconnect GitHub Copilot."
+        )
 
     # --- Await all provider fetches in parallel ---
     results: list[tuple[str, LLMModelsResponse]] = []

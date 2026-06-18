@@ -1302,6 +1302,14 @@ class _CopilotChatOpenAI(ChatOpenAI):
         if not isinstance(body, dict):
             return set()
 
+        def _normalize_endpoint(endpoint: Any) -> str:
+            token = str(endpoint or "").strip().lower()
+            if token.startswith("/v1/"):
+                return token[3:]
+            if token.startswith("v1/"):
+                return f"/{token[3:]}"
+            return token
+
         error_obj = body.get("error", {})
         endpoint_candidates: list[Any] = []
         if isinstance(error_obj, dict):
@@ -1312,7 +1320,7 @@ class _CopilotChatOpenAI(ChatOpenAI):
 
         for candidate in endpoint_candidates:
             if isinstance(candidate, list):
-                return {str(item).lower() for item in candidate if item}
+                return {_normalize_endpoint(item) for item in candidate if item}
 
         return set()
 
@@ -2793,8 +2801,8 @@ class RAGComponents:
 
                             register_openrouter_model_limits(row)
 
-                            supported_endpoints = row.get("supportedEndpoints")
-                            if isinstance(supported_endpoints, list):
+                            supported_endpoints = openrouter.supported_endpoints_list(row)
+                            if supported_endpoints:
                                 register_model_supported_endpoints(normalized_row_id, supported_endpoints)
 
                             capabilities = row.get("capabilities")

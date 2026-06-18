@@ -30,6 +30,7 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
     resolve_model_family_from_metadata,
 )
+from ragtime.indexer.models import AppSettings
 from ragtime.indexer.routes import (
     AvailableModel,
     LLMModel,
@@ -49,6 +50,33 @@ class FakeProviderError(Exception):
     def __init__(self, body: dict):
         super().__init__(str(body))
         self.body = body
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeAsyncClient:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url: str, headers: dict | None = None) -> FakeHTTPResponse:
+        return FakeHTTPResponse(self._payload)
 
 
 class ModelResolutionTests(unittest.TestCase):
@@ -150,6 +178,17 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertFalse(llm._downgrade_reasoning_parameters(error))
         self.assertTrue(llm._should_probe_responses_fallback(error))
+
+    def test_unsupported_api_error_normalizes_v1_endpoint_hints(self) -> None:
+        error = FakeProviderError(
+            {
+                "error": {
+                    "supported_endpoints": ["v1/responses"],
+                }
+            }
+        )
+
+        self.assertTrue(_CopilotChatOpenAI._is_unsupported_api_error(error))
 
     def test_conversation_model_provider_rejects_unknown_provider(self) -> None:
         with self.assertRaises(indexer_routes.HTTPException) as raised:
@@ -1122,6 +1161,177 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openai_model_discovery_skips_completions_only_rows(self) -> None:
+        payload = {
+            "data": [
+                {
+                    "id": "gpt-5.3-codex",
+                    "supported_endpoints": ["/v1/completions"],
+                },
+                {
+                    "id": "gpt-5.4-mini",
+                    "supported_endpoints": ["/v1/chat/completions", "/v1/responses"],
+                },
+            ]
+        }
+
+        model_limits.invalidate_cache()
+        try:
+            with (
+                mock.patch(
+                    "ragtime.indexer.routes.httpx.AsyncClient",
+                    return_value=FakeAsyncClient(payload),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.supports_function_calling",
+                    new=mock.AsyncMock(return_value=True),
+                ),
+            ):
+                result = await indexer_routes._fetch_openai_models("openai-key")
+
+            self.assertTrue(result.success)
+            self.assertEqual([model.id for model in result.models], ["gpt-5.4-mini"])
+            self.assertEqual(result.models[0].supported_endpoints, ["/chat/completions", "/responses"])
+        finally:
+            model_limits.invalidate_cache()
+
+    async def test_openai_model_discovery_keeps_sparse_reasoning_rows_as_responses(self) -> None:
+        payload = {
+            "data": [
+                {
+                    "id": "gpt-5.3-codex",
+                    "object": "model",
+                    "owned_by": "system",
+                },
+                {
+                    "id": "gpt-5.3-chat-latest",
+                    "object": "model",
+                    "owned_by": "system",
+                },
+            ]
+        }
+
+        model_limits.invalidate_cache()
+        try:
+            with (
+                mock.patch(
+                    "ragtime.indexer.routes.httpx.AsyncClient",
+                    return_value=FakeAsyncClient(payload),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.supports_function_calling",
+                    new=mock.AsyncMock(return_value=True),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.supports_reasoning",
+                    new=mock.AsyncMock(side_effect=lambda model_id: model_id == "gpt-5.3-codex"),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.supports_reasoning_effort",
+                    new=mock.AsyncMock(side_effect=lambda model_id: model_id == "gpt-5.3-codex"),
+                ),
+            ):
+                result = await indexer_routes._fetch_openai_models("openai-key")
+
+            self.assertTrue(result.success)
+            self.assertEqual({model.id for model in result.models}, {"gpt-5.3-codex", "gpt-5.3-chat-latest"})
+            codex_model = next(model for model in result.models if model.id == "gpt-5.3-codex")
+            self.assertEqual(codex_model.supported_endpoints, ["/responses"])
+            self.assertTrue(codex_model.reasoning_supported)
+            self.assertEqual(codex_model.effort_levels, ["high"])
+            self.assertTrue(await model_limits.requires_responses_api("gpt-5.3-codex"))
+        finally:
+            model_limits.invalidate_cache()
+
+    async def test_available_models_uses_refresh_aware_copilot_oauth_fetch(self) -> None:
+        settings = AppSettings(
+            llm_provider="github_copilot",
+            llm_model="gpt-5.3-codex",
+            github_copilot_access_token="",
+            github_copilot_refresh_token="github-oauth-token",
+            allowed_chat_models=[],
+            allowed_openapi_models=[],
+        )
+        copilot_result = LLMModelsResponse(
+            success=True,
+            message="ok",
+            models=[
+                LLMModel(
+                    id="gpt-5.3-codex",
+                    name="gpt-5.3-codex",
+                    supported_endpoints=["/responses"],
+                )
+            ],
+            default_model="gpt-5.3-codex",
+        )
+
+        with (
+            mock.patch.object(
+                indexer_routes.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.ensure_copilot_token_fresh",
+                new=mock.AsyncMock(return_value=None),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.is_copilot_token_refresh_in_progress",
+                return_value=False,
+            ),
+            mock.patch(
+                "ragtime.indexer.routes._fetch_github_provider_models",
+                new=mock.AsyncMock(return_value=copilot_result),
+            ) as fetch_copilot,
+            mock.patch(
+                "ragtime.indexer.routes._is_model_discovery_loading",
+                new=mock.AsyncMock(return_value=False),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes._reconcile_allowed_models_with_discovery",
+                new=mock.AsyncMock(return_value=[]),
+            ),
+            mock.patch(
+                "ragtime.indexer.routes.ensure_model_metadata_loaded",
+                new=mock.AsyncMock(),
+            ),
+        ):
+            response = await indexer_routes.get_available_chat_models()
+
+        fetch_copilot.assert_awaited_once()
+        fetch_kwargs = fetch_copilot.await_args.kwargs
+        self.assertEqual(fetch_kwargs["provider"], "github_copilot")
+        self.assertIs(fetch_kwargs["settings"], settings)
+        self.assertEqual([model.provider for model in response.models], ["github_copilot"])
+        copilot_state = next(state for state in response.provider_states if state.provider == "github_copilot")
+        self.assertTrue(copilot_state.available)
+
+    async def test_models_dev_reasoning_flag_routes_openai_codex_to_responses(self) -> None:
+        model_limits.invalidate_cache()
+        try:
+            model_limits._model_supports_reasoning["gpt-5.3-codex"] = True
+            model_limits._model_supports_reasoning_effort["gpt-5.3-codex"] = True
+            model_limits._cache_loaded = True
+
+            rag = RAGComponents()
+            rag._app_settings = {"openai_api_key": "openai-key"}
+
+            with mock.patch(
+                "ragtime.rag.components.httpx.AsyncClient.get",
+                new=mock.AsyncMock(side_effect=RuntimeError("metadata fetch disabled in test")),
+            ):
+                llm = await rag._build_llm("openai", "gpt-5.3-codex", 4096)
+
+            self.assertIsInstance(llm, _CopilotChatOpenAI)
+            self.assertTrue(getattr(llm, "use_responses_api", False))
+            self.assertEqual(getattr(llm, "output_version", None), "responses/v1")
+            self.assertEqual(
+                getattr(llm, "reasoning", None),
+                {"summary": "auto", "effort": "high"},
+            )
+        finally:
+            model_limits.invalidate_cache()
+
     async def test_openai_reasoning_model_prefers_responses_api(self) -> None:
         rag = RAGComponents()
         rag._app_settings = {"openai_api_key": "openai-key"}

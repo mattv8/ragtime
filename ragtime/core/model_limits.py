@@ -1362,6 +1362,10 @@ async def supports_reasoning(model_id: str) -> bool:
     if matched is not None:
         return matched
 
+    matched = _lookup_capability_flag(_model_supports_reasoning, model_id)
+    if matched is not None:
+        return matched
+
     # Do not infer by model-name heuristics. Reasoning support must come from
     # provider-reported structured capability metadata.
     return False
