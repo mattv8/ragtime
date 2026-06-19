@@ -2988,6 +2988,8 @@ export interface UserSpaceSnapshotDiffSummary {
   snapshot_commit_hash?: string | null;
   files: UserSpaceSnapshotDiffFileSummary[];
   is_snapshot_own_diff?: boolean;
+  available?: boolean;
+  warning?: string | null;
 }
 
 export interface UserSpaceSnapshotFileDiff {

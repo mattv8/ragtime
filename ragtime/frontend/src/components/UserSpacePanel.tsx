@@ -1484,7 +1484,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return getWorkspaceRoleForUser(activeWorkspace, currentUser);
   }, [activeWorkspace, currentUser]);
 
-  const canEditWorkspace = activeWorkspaceRole === 'owner' || activeWorkspaceRole === 'editor';
+  const canEditWorkspace = useMemo(() => {
+    if (!activeWorkspace) return false;
+    return canEditUserSpaceWorkspace(activeWorkspace, currentUser);
+  }, [activeWorkspace, currentUser]);
   const isOwner = activeWorkspaceRole === 'owner';
   const showPersonalCloudDrives = currentUser.role === 'admin';
   const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
@@ -7814,6 +7817,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                     <MiniLoadingSpinner variant="icon" size={12} />
                                     <span>Loading changed files...</span>
                                   </div>
+                                </div>
+                              ) : diffSummary.available === false ? (
+                                <div className="userspace-snapshot-expanded-panel" style={{ margin: 0, padding: '2px 6px 4px' }}>
+                                  <p className="userspace-muted" style={{ color: 'var(--color-warning, #b26a00)', margin: 0, fontSize: 12 }}>
+                                    {diffSummary.warning ?? 'This snapshot history is unavailable in the current workspace repository.'}
+                                  </p>
                                 </div>
                               ) : diffSummary.files.length > 0 ? (
                                 <div className="userspace-snapshot-diff-file-list">

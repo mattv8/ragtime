@@ -300,6 +300,39 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertEqual(len(archives), 1)
             self.assertEqual(list((rootfs / "workspace").iterdir()), [])
 
+    def test_cleanup_sandbox_skips_routine_workspace_mirror_without_legacy_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            mirrored_workspace = rootfs / "workspace"
+            files.mkdir()
+            mirrored_workspace.mkdir(parents=True)
+
+            canonical_file = files / "dashboard" / "main.ts"
+            canonical_file.parent.mkdir()
+            canonical_file.write_text("canonical\n", encoding="utf-8")
+
+            mirrored_file = mirrored_workspace / "dashboard" / "main.ts"
+            mirrored_file.parent.mkdir()
+            mirrored_file.write_text("canonical\n", encoding="utf-8")
+
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=files,
+                rootfs_path=rootfs,
+                mode="chroot",
+            )
+            caps = self._chroot_caps_no_mount()
+
+            with mock.patch.object(sandbox, "detect_capabilities", return_value=caps):
+                sandbox.cleanup_sandbox(spec)
+
+            self.assertEqual(canonical_file.read_text(encoding="utf-8"), "canonical\n")
+            self.assertTrue(mirrored_file.is_file())
+            archives = list((tmp / sandbox._WORKSPACE_LEGACY_RECOVERY_DIR).glob("chroot-workspace-cleanup-*"))
+            self.assertEqual(archives, [])
+
     def test_terminate_sandbox_cgroup_processes_sends_sigterm_to_lingering_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

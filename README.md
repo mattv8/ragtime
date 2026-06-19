@@ -371,7 +371,9 @@ flowchart LR
      searxng-cache:
    ```
 
-   > **Note:** Ragtime configuration variables are loaded from the `.env` file via `env_file`. The `ragtime.environment` section only overrides values that should use the internal container network.
+    > **Note:** Ragtime configuration variables are loaded from the `.env` file via `env_file`. The `ragtime.environment` section only overrides values that should use the internal container network.
+
+    > **Runtime mode compatibility:** `pivot_root` with `CAP_SYS_ADMIN` is the preferred steady-state runtime mode. If the runtime starts without mount authority, Ragtime falls back to a `chroot` compatibility mode that mirrors workspace files into the sandbox. Switching an existing workspace fleet from chroot fallback to full isolation is supported, but should be treated as a one-time migration event. Transitioning between `chroot` and `pivot_root` can cause loss of snapshot history! It is recommended to take a full backup before transitioning.
 
    </details>
 
@@ -450,6 +452,7 @@ Core concepts that affect how Ragtime is deployed and used.
 
 - Public sharing uses direct routes (`/{owner}/{slug}` and `/shared/{token}`) which launch shared previews.
 - Password-protected shares are handled server-side with a full-page prompt.
+- When the runtime lacks `CAP_SYS_ADMIN`, previews run in a `chroot` compatibility mode instead of full `pivot_root` isolation. Transitioning between `chroot` and `pivot_root` can cause loss of snapshot history! It is recommended to take a full backup before transitioning.
 
 ### Vector Store Abstraction
 

@@ -888,6 +888,8 @@ class UserSpaceSnapshotDiffSummaryResponse(BaseModel):
     snapshot_commit_hash: str | None = None
     files: list[UserSpaceSnapshotDiffFileSummary] = Field(default_factory=list)
     is_snapshot_own_diff: bool = False
+    available: bool = True
+    warning: str | None = None
 
 
 class UserSpaceSnapshotFileDiffResponse(BaseModel):

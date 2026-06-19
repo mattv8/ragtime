@@ -7730,6 +7730,14 @@ class UserSpaceService:
         )
         if diff_result.returncode != 0:
             stderr = (diff_result.stderr or "").strip()
+            if any(token in stderr.lower() for token in ("bad object", "unknown revision", "bad revision")):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Snapshot commit is no longer available in the current workspace repository. "
+                        "This can happen after runtime mode migration or repository reset."
+                    ),
+                )
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to compute snapshot diff summary: {stderr or 'git diff failed'}",
@@ -7874,11 +7882,26 @@ class UserSpaceService:
         snapshot_id: str,
         user_id: str,
     ) -> UserSpaceSnapshotDiffSummaryResponse:
-        snapshot_commit_hash, summary_map, is_snapshot_own_diff = await self._prepare_snapshot_diff_context(
-            workspace_id,
-            snapshot_id,
-            user_id,
-        )
+        snapshot_row = await self._get_snapshot_record(workspace_id, snapshot_id)
+        snapshot_commit_hash = str(snapshot_row.get("git_commit_hash") or "")
+        try:
+            snapshot_commit_hash, summary_map, is_snapshot_own_diff = await self._prepare_snapshot_diff_context(
+                workspace_id,
+                snapshot_id,
+                user_id,
+            )
+        except HTTPException as exc:
+            if getattr(exc, "status_code", None) == 409:
+                return UserSpaceSnapshotDiffSummaryResponse(
+                    workspace_id=workspace_id,
+                    snapshot_id=snapshot_id,
+                    snapshot_commit_hash=snapshot_commit_hash or None,
+                    files=[],
+                    is_snapshot_own_diff=False,
+                    available=False,
+                    warning=str(getattr(exc, "detail", "Snapshot history is unavailable.")),
+                )
+            raise
         files = [
             UserSpaceSnapshotDiffFileSummary(
                 path=item["path"],
@@ -7896,6 +7919,8 @@ class UserSpaceService:
             snapshot_commit_hash=snapshot_commit_hash or None,
             files=files,
             is_snapshot_own_diff=is_snapshot_own_diff,
+            available=True,
+            warning=None,
         )
 
     async def _lookup_single_file_diff_entry(

@@ -580,6 +580,58 @@ def _copy_workspace_file_if_needed(src: Path, dst: Path, *, prefer_source: bool 
     return "copied"
 
 
+def _workspace_tree_has_meaningful_content(
+    workspace_root: Path,
+    canonical_root: Path,
+    *,
+    skip_dirs: frozenset[str] = _WORKSPACE_RECOVERY_SKIP_DIRS,
+) -> bool:
+    """Return whether a mirrored workspace contains restorable project content.
+
+    A chroot-only sandbox keeps a copied workspace tree under ``rootfs/workspace``
+    because bind mounts are unavailable. That copy is useful for legacy recovery
+    when it contains edits that never made it back to the canonical ``files/``
+    tree, but it is dangerous to treat every non-empty mirrored tree as
+    authoritative because routine bootstrap copies also make it non-empty.
+
+    This helper ignores known cache / VCS directories and sidecar metadata and
+    compares the mirrored tree against canonical ``files/`` content. We only
+    reconcile when the mirrored tree contains project files that are missing
+    from canonical storage or whose bytes differ, which indicates real legacy
+    edits rather than a routine bootstrap mirror.
+    """
+    if not workspace_root.is_dir():
+        return False
+
+    for root, dirs, files in os.walk(workspace_root, topdown=True, followlinks=False):
+        kept_dirs = []
+        for dirname in dirs:
+            if dirname in skip_dirs:
+                continue
+            kept_dirs.append(dirname)
+        dirs[:] = kept_dirs
+
+        for filename in files:
+            path = Path(root) / filename
+            if path.suffix in _WORKSPACE_SYNC_SKIP_SUFFIXES:
+                continue
+            if filename.endswith(".artifact.json"):
+                continue
+            relative_path = path.relative_to(workspace_root)
+            canonical_path = canonical_root / relative_path
+            if not canonical_path.is_file():
+                return True
+            try:
+                if path.stat().st_size != canonical_path.stat().st_size:
+                    return True
+                if not filecmp.cmp(path, canonical_path, shallow=False):
+                    return True
+            except OSError:
+                return True
+
+    return False
+
+
 def _sync_workspace_copy_to_canonical(
     spec: SandboxSpec,
     source_workspace: Path,
@@ -636,15 +688,18 @@ def _sync_workspace_copy_to_canonical(
     return stats
 
 
-def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str) -> None:
+def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str, prefer_source: bool = True) -> None:
     source_workspace = spec.rootfs_path / spec.sandbox_workspace.lstrip("/")
     if not source_workspace.is_dir() or not spec.workspace_files_path.is_dir():
         return
     try:
-        has_content = any(source_workspace.iterdir())
+        has_recoverable_content = _workspace_tree_has_meaningful_content(
+            source_workspace,
+            spec.workspace_files_path,
+        )
     except OSError:
         return
-    if not has_content:
+    if not has_recoverable_content:
         return
 
     # ``source_workspace`` is the previous authoritative location for the
@@ -659,7 +714,7 @@ def _reconcile_workspace_copy(spec: SandboxSpec, *, label: str) -> None:
         spec,
         source_workspace,
         skip_dirs=_WORKSPACE_RECOVERY_SKIP_DIRS,
-        prefer_source=True,
+        prefer_source=prefer_source,
     )
     archive = _safe_legacy_archive_path(spec.rootfs_path.parent, label)
     try:
@@ -1849,7 +1904,11 @@ def cleanup_sandbox(spec: SandboxSpec) -> None:
 
     caps = detect_capabilities()
     if workspace_mirror_required(spec, caps):
-        _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup")
+        # Routine session stop: prefer canonical files/ with mtime-based
+        # comparison so stale rootfs content does not overwrite newer edits
+        # that arrived through the ragtime API. Mode transitions (provision
+        # path) continue to use source-wins to recover stranded chroot-era data.
+        _reconcile_workspace_copy(spec, label="chroot-workspace-cleanup", prefer_source=False)
         # Refresh the marker so a subsequent provision sees the most
         # recently used mode even when no transition occurred.
         _write_sandbox_layout_marker(spec, caps)
