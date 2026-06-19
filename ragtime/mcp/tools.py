@@ -12,6 +12,7 @@ tools and MCP's tool format. It supports:
 import asyncio
 import copy
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,12 @@ from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.indexer.schema_service import search_schema_index
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.rag import rag
-from ragtime.rag.components import RAGComponents
+from ragtime.rag.components import (
+    KNOWLEDGE_SEARCH_TOOL_ID,
+    RAGComponents,
+    build_knowledge_search_payload,
+    serialize_knowledge_search_payload,
+)
 from ragtime.tools.git_history import search_git_history
 
 logger = get_logger(__name__)
@@ -1032,8 +1038,8 @@ class MCPToolAdapter:
             **_: Any,
         ) -> str:
             """Execute knowledge search with dynamic k and content length."""
-            results = []
-            errors = []
+            results: list[dict[str, Any]] = []
+            errors: list[dict[str, Any]] = []
 
             # Clamp parameters
             k = max(1, min(50, k))
@@ -1053,8 +1059,21 @@ class MCPToolAdapter:
 
             if not dbs_to_search:
                 logger.warning("No FAISS dbs available for MCP search_knowledge")
-                return "No knowledge indexes are currently loaded. Please index some documents first."
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="no_indexes",
+                    ok=False,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=[],
+                    errors=[],
+                    message="No knowledge indexes are currently loaded. Please index some documents first.",
+                )
+                return serialize_knowledge_search_payload(payload)
 
+            started_at = time.monotonic()
             for name, db in dbs_to_search.items():
                 try:
                     logger.debug(f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}")
@@ -1082,34 +1101,84 @@ class MCPToolAdapter:
                     for doc in docs:
                         source = doc.metadata.get("source", "unknown")
                         content = doc.page_content
+                        truncated = False
                         # Apply truncation if max_chars_per_result > 0
                         if max_chars_per_result > 0 and len(content) > max_chars_per_result:
                             content = content[:max_chars_per_result] + "... (truncated)"
-                        results.append(f"[{name}] {source}:\n{content}")
+                            truncated = True
+                        results.append(
+                            {
+                                "index_name": name,
+                                "source": source,
+                                "content": content,
+                                "truncated": truncated,
+                            }
+                        )
                 except Exception as e:
                     error_msg = str(e)
                     logger.warning(f"Error searching {name}: {e}", exc_info=True)
                     # Detect Ollama connectivity issues
                     if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
-                        errors.append(
+                        message = (
                             f"[{name}] Embedding service unavailable - Cannot connect to Ollama. "
                             "Check that Ollama is running and the URL in Settings is accessible from the server "
                             "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
                         )
                     else:
-                        errors.append(f"[{name}] Search error: {error_msg}")
+                        message = f"[{name}] Search error: {error_msg}"
+                    errors.append({"index_name": name, "message": message})
+            duration_ms = (time.monotonic() - started_at) * 1000.0
 
             if results:
                 logger.debug(f"MCP search_knowledge found {len(results)} results")
-                return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="completed",
+                    ok=True,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=results,
+                    errors=errors,
+                    message=f"Found {len(results)} relevant document{'s' if len(results) != 1 else ''}.",
+                    duration_ms=duration_ms,
+                )
+                return serialize_knowledge_search_payload(payload)
 
             # Return errors if we had any, otherwise generic no results message
             if errors:
                 logger.warning(f"MCP search_knowledge failed with errors: {errors}")
-                return "Search failed:\n" + "\n".join(errors)
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="error",
+                    ok=False,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=[],
+                    errors=errors,
+                    message="Knowledge search failed.",
+                    duration_ms=duration_ms,
+                )
+                return serialize_knowledge_search_payload(payload)
 
             logger.debug("MCP search_knowledge found no results")
-            return "No relevant documentation found for this query."
+            payload = build_knowledge_search_payload(
+                tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                status="no_results",
+                ok=True,
+                query=query,
+                index_name=index_name or None,
+                k=k,
+                max_chars_per_result=max_chars_per_result,
+                entries=[],
+                errors=[],
+                message="No relevant documentation found for this query.",
+                duration_ms=duration_ms,
+            )
+            return serialize_knowledge_search_payload(payload)
 
         # Create schema with available indexes in index_name description
         knowledge_schema = {
@@ -1253,7 +1322,8 @@ class MCPToolAdapter:
                     **_: Any,
                 ) -> str:
                     """Execute search on a specific index with dynamic k."""
-                    results = []
+                    results: list[dict[str, Any]] = []
+                    errors: list[dict[str, Any]] = []
 
                     # Clamp parameters
                     k = max(1, min(50, k))
@@ -1261,6 +1331,7 @@ class MCPToolAdapter:
 
                     logger.debug(f"MCP search_{idx_name} called with query='{query[:50] if query else ''}...', k={k}, max_chars={max_chars_per_result}")
 
+                    started_at = time.monotonic()
                     try:
                         # Use MMR or similarity search based on settings
                         # Offload blocking FAISS search to a thread.
@@ -1284,21 +1355,76 @@ class MCPToolAdapter:
                         for doc in docs:
                             source = doc.metadata.get("source", "unknown")
                             content = doc.page_content
+                            truncated = False
                             # Apply truncation if max_chars_per_result > 0
                             if max_chars_per_result > 0 and len(content) > max_chars_per_result:
                                 content = content[:max_chars_per_result] + "... (truncated)"
-                            results.append(f"{source}:\n{content}")
+                                truncated = True
+                            results.append(
+                                {
+                                    "index_name": idx_name,
+                                    "source": source,
+                                    "content": content,
+                                    "truncated": truncated,
+                                }
+                            )
                     except Exception as e:
                         error_msg = str(e)
                         logger.warning(f"Error searching {idx_name}: {e}", exc_info=True)
                         if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
-                            return "Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."
-                        return f"Search error: {error_msg}"
+                            message = "Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."
+                        else:
+                            message = f"Search error: {error_msg}"
+                        errors.append({"index_name": idx_name, "message": message})
+                    duration_ms = (time.monotonic() - started_at) * 1000.0
+
+                    if errors:
+                        error_message = str(errors[0].get("message") or "Knowledge search failed.")
+                        payload = build_knowledge_search_payload(
+                            tool_name=tool_name,
+                            status="error",
+                            ok=False,
+                            query=query,
+                            index_name=idx_name,
+                            k=k,
+                            max_chars_per_result=max_chars_per_result,
+                            entries=[],
+                            errors=errors,
+                            message=error_message,
+                            duration_ms=duration_ms,
+                        )
+                        return serialize_knowledge_search_payload(payload)
 
                     if results:
-                        return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
+                        payload = build_knowledge_search_payload(
+                            tool_name=tool_name,
+                            status="completed",
+                            ok=True,
+                            query=query,
+                            index_name=idx_name,
+                            k=k,
+                            max_chars_per_result=max_chars_per_result,
+                            entries=results,
+                            errors=[],
+                            message=f"Found {len(results)} relevant document{'s' if len(results) != 1 else ''}.",
+                            duration_ms=duration_ms,
+                        )
+                        return serialize_knowledge_search_payload(payload)
 
-                    return f"No relevant documents found in {idx_name} for query: {query}"
+                    payload = build_knowledge_search_payload(
+                        tool_name=tool_name,
+                        status="no_results",
+                        ok=True,
+                        query=query,
+                        index_name=idx_name,
+                        k=k,
+                        max_chars_per_result=max_chars_per_result,
+                        entries=[],
+                        errors=[],
+                        message=f"No relevant documents found in {idx_name} for query: {query}",
+                        duration_ms=duration_ms,
+                    )
+                    return serialize_knowledge_search_payload(payload)
 
                 return search_index
 

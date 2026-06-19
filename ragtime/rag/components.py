@@ -235,6 +235,7 @@ FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES = frozenset(
         CHAT_WEB_BROWSE_TOOL_ID,
         "assay_userspace_code",
         "discover_userspace_primitives",
+        "search_knowledge",
     }
 )
 STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES = frozenset(
@@ -466,6 +467,84 @@ def clamp_search_parameters(k: int, max_chars_per_result: int) -> tuple[int, int
     clamped_k = max(1, min(SEARCH_RESULTS_K_MAX, int(k)))
     clamped_chars = max(0, min(SEARCH_MAX_CHARS_PER_RESULT, int(max_chars_per_result)))
     return clamped_k, clamped_chars
+
+
+KNOWLEDGE_SEARCH_TOOL_ID = "search_knowledge"
+
+
+def build_knowledge_search_payload(
+    *,
+    tool_name: str,
+    status: str,
+    ok: bool,
+    query: str,
+    index_name: str | None,
+    k: int,
+    max_chars_per_result: int,
+    entries: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+    message: str,
+    indexes_attempted: list[dict[str, Any]] | None = None,
+    duration_ms: float | None = None,
+) -> dict[str, Any]:
+    """Assemble the structured JSON envelope emitted by knowledge search tools.
+
+    The frontend pretty-prints this payload and renders each result as a card
+    with index name, source path, and content snippet. Returning a plain dict
+    (rather than a serialized string) makes the format easy to extend and test.
+    """
+    error_messages = [str(item.get("message") or "") for item in errors if isinstance(item, dict) and str(item.get("message") or "").strip()]
+
+    if indexes_attempted is None:
+        indexes_attempted = []
+        seen_indexes: set[str] = set()
+        for entry in entries:
+            idx_name = str(entry.get("index_name") or "") if isinstance(entry, dict) else ""
+            if not idx_name or idx_name in seen_indexes:
+                continue
+            seen_indexes.add(idx_name)
+            indexes_attempted.append({"name": idx_name, "result_count": 0, "ok": True})
+        for err in errors:
+            idx_name = str(err.get("index_name") or "") if isinstance(err, dict) else ""
+            if not idx_name or idx_name in seen_indexes:
+                continue
+            seen_indexes.add(idx_name)
+            indexes_attempted.append({"name": idx_name, "result_count": 0, "ok": False})
+
+    counts_by_index: dict[str, int] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        idx_name = str(entry.get("index_name") or "")
+        if not idx_name:
+            continue
+        counts_by_index[idx_name] = counts_by_index.get(idx_name, 0) + 1
+    for entry in indexes_attempted:
+        entry["result_count"] = counts_by_index.get(str(entry.get("name") or ""), 0)
+
+    payload: dict[str, Any] = {
+        "tool": tool_name,
+        "status": status,
+        "ok": ok,
+        "query": query,
+        "index_name": index_name or None,
+        "k": int(k),
+        "max_chars_per_result": int(max_chars_per_result),
+        "indexes_searched": indexes_attempted,
+        "total_results": len(entries),
+        "results": entries,
+        "errors": error_messages,
+        "error_details": errors,
+        "message": message,
+    }
+    if duration_ms is not None:
+        payload["duration_ms"] = float(duration_ms)
+    return payload
+
+
+def serialize_knowledge_search_payload(payload: dict[str, Any]) -> str:
+    """Serialize a knowledge-search payload to a compact-but-readable JSON string."""
+    return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
 
 # =============================================================================
@@ -3285,13 +3364,20 @@ class RAGComponents:
         max_chars_per_result: int,
         use_mmr: bool,
         mmr_lambda: float,
-        include_index_name: bool,
+        include_index_name: bool = True,
         include_index_name_in_errors: bool = True,
         ollama_error_message: str,
-    ) -> tuple[list[str], list[str]]:
-        """Search one or more FAISS indexes with shared formatting/error handling."""
-        results: list[str] = []
-        errors: list[str] = []
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Search one or more FAISS indexes with shared formatting/error handling.
+
+        Returns a tuple of ``(entries, errors)`` where each entry is a dict with
+        ``index_name``, ``source``, ``content``, and ``truncated`` keys, and each
+        error is a dict with ``index_name`` (may be empty when the caller does
+        not want per-index errors) and ``message``. Callers serialize the
+        structured payload to JSON so the frontend can render it pretty.
+        """
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
         k, max_chars_per_result = clamp_search_parameters(k, max_chars_per_result)
 
         for name, db in dbs_to_search.items():
@@ -3312,25 +3398,28 @@ class RAGComponents:
                 for doc in docs:
                     source = doc.metadata.get("source", "unknown")
                     content = doc.page_content
+                    truncated = False
                     if max_chars_per_result > 0 and len(content) > max_chars_per_result:
                         content = content[:max_chars_per_result] + "... (truncated)"
-                    if include_index_name:
-                        results.append(f"[{name}] {source}:\n{content}")
-                    else:
-                        results.append(f"{source}:\n{content}")
+                        truncated = True
+                    entry: dict[str, Any] = {
+                        "index_name": name,
+                        "source": source,
+                        "content": content,
+                        "truncated": truncated,
+                    }
+                    results.append(entry)
             except Exception as e:
                 error_msg = str(e)
                 logger.warning(f"Error searching {name}: {e}", exc_info=True)
                 if "ollama" in error_msg.lower() or "failed to connect" in error_msg.lower():
-                    if include_index_name_in_errors:
-                        errors.append(f"[{name}] {ollama_error_message}")
-                    else:
-                        errors.append(ollama_error_message)
+                    message = ollama_error_message
                 else:
-                    if include_index_name_in_errors:
-                        errors.append(f"[{name}] Search error: {error_msg}")
-                    else:
-                        errors.append(f"Search error: {error_msg}")
+                    message = f"Search error: {error_msg}"
+                if include_index_name_in_errors:
+                    errors.append({"index_name": name, "message": message})
+                else:
+                    errors.append({"index_name": "", "message": message})
 
         return results, errors
 
@@ -4179,14 +4268,39 @@ class RAGComponents:
                 # Check if indexes are still loading
                 if self._indexes_loading:
                     logger.info("Knowledge search called while indexes still loading")
-                    return (
-                        "Knowledge indexes are currently loading in the background. "
-                        f"Progress: {self._indexes_loaded}/{self._indexes_total} loaded. "
-                        "Please try again in a moment, or use other available tools."
+                    payload = build_knowledge_search_payload(
+                        tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                        status="loading",
+                        ok=False,
+                        query=query,
+                        index_name=index_name or None,
+                        k=k,
+                        max_chars_per_result=max_chars_per_result,
+                        entries=[],
+                        errors=[],
+                        message=(
+                            f"Knowledge indexes are currently loading in the background "
+                            f"({self._indexes_loaded}/{self._indexes_total} loaded). "
+                            "Please try again in a moment, or use other available tools."
+                        ),
                     )
+                    return serialize_knowledge_search_payload(payload)
                 logger.warning("No FAISS dbs available for search_knowledge")
-                return "No knowledge indexes are currently loaded. Please index some documents first."
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="no_indexes",
+                    ok=False,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=[],
+                    errors=[],
+                    message="No knowledge indexes are currently loaded. Please index some documents first.",
+                )
+                return serialize_knowledge_search_payload(payload)
 
+            started_at = time.monotonic()
             results, errors = self._search_faiss_databases(
                 query=query,
                 dbs_to_search=dbs_to_search,
@@ -4201,18 +4315,58 @@ class RAGComponents:
                     "(use 'host.docker.internal' instead of 'localhost' when running in Docker)."
                 ),
             )
+            duration_ms = (time.monotonic() - started_at) * 1000.0
 
             if results:
                 logger.debug(f"search_knowledge found {len(results)} results")
-                return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="completed",
+                    ok=True,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=results,
+                    errors=errors,
+                    message=f"Found {len(results)} relevant document{'s' if len(results) != 1 else ''}.",
+                    duration_ms=duration_ms,
+                )
+                return serialize_knowledge_search_payload(payload)
 
             # Return errors if we had any, otherwise generic no results message
             if errors:
                 logger.warning(f"search_knowledge failed with errors: {errors}")
-                return "Search failed:\n" + "\n".join(errors)
+                payload = build_knowledge_search_payload(
+                    tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                    status="error",
+                    ok=False,
+                    query=query,
+                    index_name=index_name or None,
+                    k=k,
+                    max_chars_per_result=max_chars_per_result,
+                    entries=[],
+                    errors=errors,
+                    message="Knowledge search failed.",
+                    duration_ms=duration_ms,
+                )
+                return serialize_knowledge_search_payload(payload)
 
             logger.debug("search_knowledge found no results")
-            return "No relevant documentation found for this query."
+            payload = build_knowledge_search_payload(
+                tool_name=KNOWLEDGE_SEARCH_TOOL_ID,
+                status="no_results",
+                ok=True,
+                query=query,
+                index_name=index_name or None,
+                k=k,
+                max_chars_per_result=max_chars_per_result,
+                entries=[],
+                errors=[],
+                message="No relevant documentation found for this query.",
+                duration_ms=duration_ms,
+            )
+            return serialize_knowledge_search_payload(payload)
 
         # Build description with available indexes
         index_names = list(self.retrievers.keys())
@@ -4550,6 +4704,7 @@ class RAGComponents:
 
                     logger.debug(f"search_{idx_name} called with query='{query[:50]}...', k={k}, max_chars={max_chars_per_result}")
 
+                    started_at = time.monotonic()
                     results, errors = self._search_faiss_databases(
                         query=query,
                         dbs_to_search={idx_name: idx_db},
@@ -4561,14 +4716,55 @@ class RAGComponents:
                         include_index_name_in_errors=False,
                         ollama_error_message=("Embedding service unavailable - Cannot connect to Ollama. Check that Ollama is running and accessible."),
                     )
+                    duration_ms = (time.monotonic() - started_at) * 1000.0
 
                     if errors:
-                        return errors[0]
+                        error_message = str(errors[0].get("message") or "Knowledge search failed.")
+                        payload = build_knowledge_search_payload(
+                            tool_name=f"search_{idx_name}",
+                            status="error",
+                            ok=False,
+                            query=query,
+                            index_name=idx_name,
+                            k=k,
+                            max_chars_per_result=max_chars_per_result,
+                            entries=[],
+                            errors=errors,
+                            message=error_message,
+                            duration_ms=duration_ms,
+                        )
+                        return serialize_knowledge_search_payload(payload)
 
                     if results:
-                        return f"Found {len(results)} relevant documents:\n\n" + "\n\n---\n\n".join(results)
+                        payload = build_knowledge_search_payload(
+                            tool_name=f"search_{idx_name}",
+                            status="completed",
+                            ok=True,
+                            query=query,
+                            index_name=idx_name,
+                            k=k,
+                            max_chars_per_result=max_chars_per_result,
+                            entries=results,
+                            errors=[],
+                            message=f"Found {len(results)} relevant document{'s' if len(results) != 1 else ''}.",
+                            duration_ms=duration_ms,
+                        )
+                        return serialize_knowledge_search_payload(payload)
 
-                    return f"No relevant documents found in {idx_name} for query: {query}"
+                    payload = build_knowledge_search_payload(
+                        tool_name=f"search_{idx_name}",
+                        status="no_results",
+                        ok=True,
+                        query=query,
+                        index_name=idx_name,
+                        k=k,
+                        max_chars_per_result=max_chars_per_result,
+                        entries=[],
+                        errors=[],
+                        message=f"No relevant documents found in {idx_name} for query: {query}",
+                        duration_ms=duration_ms,
+                    )
+                    return serialize_knowledge_search_payload(payload)
 
                 return search_index
 

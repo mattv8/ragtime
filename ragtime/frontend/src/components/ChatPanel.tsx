@@ -2763,15 +2763,19 @@ function parseJsonRecordValue(output: string): Record<string, unknown> | null {
   return asJsonRecord(firstParse);
 }
 
-function parseUserspaceStructuredJsonToolResult(toolName: string, output?: string | null): ParsedUserSpaceStructuredJsonResult | null {
-  if (!USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolName) || !output) return null;
-
-  let parsed: Record<string, unknown> | null = null;
+function parseNestedJsonRecordValue(output: string | undefined | null): Record<string, unknown> | null {
+  if (!output) return null;
   try {
-    parsed = parseJsonRecordValue(output);
+    return parseJsonRecordValue(output);
   } catch {
     return null;
   }
+}
+
+function parseUserspaceStructuredJsonToolResult(toolName: string, output?: string | null): ParsedUserSpaceStructuredJsonResult | null {
+  if (!USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolName) || !output) return null;
+
+  const parsed = parseNestedJsonRecordValue(output);
   if (!parsed) return null;
 
   const rows: Array<{ label: string; value: string }> = [];
@@ -2824,9 +2828,8 @@ function parseUserspaceStructuredJsonToolResult(toolName: string, output?: strin
 function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolPayload | null {
   if (!output) return null;
 
-  try {
-    const parsed = JSON.parse(output) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== 'object') return null;
+  const parsed = parseNestedJsonRecordValue(output);
+  if (parsed) {
 
     const file = parsed.file && typeof parsed.file === 'object' ? parsed.file as Record<string, unknown> : null;
     const diagnostics = parsed.diagnostics && typeof parsed.diagnostics === 'object'
@@ -2870,9 +2873,9 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
           : []),
       ],
     };
-  } catch {
-    // Fall through to tolerant field extraction for truncated payloads.
   }
+
+  // Fall through to tolerant field extraction for truncated payloads.
 
   const parsedFile = extractJsonObjectSource(output, 'file');
   const parsedDiagnostics = extractJsonObjectSource(output, 'diagnostics');
@@ -2949,15 +2952,7 @@ function parseUserspaceListToolResult(toolName: string, output?: string | null):
     };
   };
 
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    const candidate = JSON.parse(output);
-    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-      parsed = candidate as Record<string, unknown>;
-    }
-  } catch {
-    parsed = null;
-  }
+  const parsed = parseNestedJsonRecordValue(output);
 
   if (parsed) {
     const filesRaw = Array.isArray(parsed.files) ? (parsed.files as unknown[]) : [];
@@ -3033,15 +3028,7 @@ function parseUserspaceReadBatch(toolName: string, output?: string | null): Pars
   if (toolName !== 'read_userspace_file') return null;
   if (!output) return null;
 
-  let parsedJson: Record<string, unknown> | null = null;
-  try {
-    const candidate = JSON.parse(output);
-    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-      parsedJson = candidate as Record<string, unknown>;
-    }
-  } catch {
-    parsedJson = null;
-  }
+  const parsedJson = parseNestedJsonRecordValue(output);
 
   const isBatch = Boolean(parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files));
 
@@ -3201,16 +3188,8 @@ function parseUserspaceWriteBatch(toolName: string, output?: string | null): Par
     : toolName === 'move_userspace_file' ? 'move'
     : 'delete';
 
-  // Try strict JSON parse first to detect a batched `files` collection.
-  let parsedJson: Record<string, unknown> | null = null;
-  try {
-    const candidate = JSON.parse(output);
-    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-      parsedJson = candidate as Record<string, unknown>;
-    }
-  } catch {
-    parsedJson = null;
-  }
+  // Try tolerant JSON parse first to detect a batched `files` collection.
+  const parsedJson = parseNestedJsonRecordValue(output);
 
   const isBatch = Boolean(parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files));
 
@@ -3662,97 +3641,512 @@ interface ParsedWebBrowseOutput {
 
 function parseWebSearchOutput(output: string | undefined | null): ParsedWebSearchOutput | null {
   if (!output) return null;
-  try {
-    const parsed = JSON.parse(output) as Record<string, unknown>;
-    if (parsed.tool !== 'web_search') return null;
+  const parsed = parseNestedJsonRecordValue(output);
+  if (!parsed || parsed.tool !== 'web_search') return null;
 
-    const rawResults = Array.isArray(parsed.results) ? parsed.results : [];
-    const results: ParsedWebSearchResult[] = [];
-    for (const item of rawResults) {
-      if (!item || typeof item !== 'object') continue;
-      const record = item as Record<string, unknown>;
-      const url = typeof record.url === 'string' ? record.url : '';
-      const title = typeof record.title === 'string' ? record.title : '';
-      if (!url || !title) continue;
-      const snippet = typeof record.snippet === 'string' ? record.snippet : '';
-      const result: ParsedWebSearchResult = { title, url, snippet };
-      if (typeof record.score === 'number') result.score = record.score;
-      if (typeof record.favicon === 'string' && record.favicon.trim()) {
-        result.favicon = record.favicon;
-      }
-      if (typeof record.engine === 'string' && record.engine.trim()) {
-        result.engine = record.engine;
-      }
-      results.push(result);
+  const rawResults = Array.isArray(parsed.results) ? parsed.results : [];
+  const results: ParsedWebSearchResult[] = [];
+  for (const item of rawResults) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const url = typeof record.url === 'string' ? record.url : '';
+    const title = typeof record.title === 'string' ? record.title : '';
+    if (!url || !title) continue;
+    const snippet = typeof record.snippet === 'string' ? record.snippet : '';
+    const result: ParsedWebSearchResult = { title, url, snippet };
+    if (typeof record.score === 'number') result.score = record.score;
+    if (typeof record.favicon === 'string' && record.favicon.trim()) {
+      result.favicon = record.favicon;
     }
-
-    return {
-      status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
-      ok: parsed.ok === true,
-      blocked: parsed.blocked === true,
-      error: typeof parsed.error === 'string' ? parsed.error : '',
-      query: typeof parsed.query === 'string' ? parsed.query : '',
-      provider: typeof parsed.provider === 'string' ? parsed.provider : '',
-      answer: typeof parsed.answer === 'string' ? parsed.answer : '',
-      results,
-      resultCount: typeof parsed.result_count === 'number'
-        ? parsed.result_count
-        : results.length,
-      engineUrl: typeof parsed.engine_url === 'string' ? parsed.engine_url : '',
-      durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
-    };
-  } catch {
-    return null;
+    if (typeof record.engine === 'string' && record.engine.trim()) {
+      result.engine = record.engine;
+    }
+    results.push(result);
   }
+
+  return {
+    status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
+    ok: parsed.ok === true,
+    blocked: parsed.blocked === true,
+    error: typeof parsed.error === 'string' ? parsed.error : '',
+    query: typeof parsed.query === 'string' ? parsed.query : '',
+    provider: typeof parsed.provider === 'string' ? parsed.provider : '',
+    answer: typeof parsed.answer === 'string' ? parsed.answer : '',
+    results,
+    resultCount: typeof parsed.result_count === 'number'
+      ? parsed.result_count
+      : results.length,
+    engineUrl: typeof parsed.engine_url === 'string' ? parsed.engine_url : '',
+    durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+  };
 }
 
 function parseWebBrowseOutput(output: string | undefined | null): ParsedWebBrowseOutput | null {
   if (!output) return null;
-  try {
-    const parsed = JSON.parse(output) as Record<string, unknown>;
-    if (parsed.tool !== 'web_browse') return null;
+  const parsed = parseNestedJsonRecordValue(output);
+  if (!parsed || parsed.tool !== 'web_browse') return null;
 
-    const rawLinks = Array.isArray(parsed.links) ? parsed.links : [];
-    const links: ParsedWebBrowseLink[] = [];
-    for (const item of rawLinks) {
-      if (!item || typeof item !== 'object') continue;
-      const record = item as Record<string, unknown>;
-      const url = typeof record.url === 'string' ? record.url : '';
-      if (!url) continue;
-      const text = typeof record.text === 'string' ? record.text : '';
-      links.push({ url, text });
-    }
-
-    const rawConsoleErrors = Array.isArray(parsed.console_errors) ? parsed.console_errors : [];
-    const consoleErrors: string[] = [];
-    for (const item of rawConsoleErrors) {
-      if (typeof item === 'string' && item.trim()) consoleErrors.push(item);
-    }
-
-    const statusCodeRaw = parsed.status_code;
-    let statusCode: number | null = null;
-    if (typeof statusCodeRaw === 'number' && Number.isFinite(statusCodeRaw)) {
-      statusCode = statusCodeRaw;
-    }
-
-    return {
-      status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
-      ok: parsed.ok === true,
-      error: typeof parsed.error === 'string' ? parsed.error : '',
-      url: typeof parsed.url === 'string' ? parsed.url : '',
-      requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
-      statusCode,
-      title: typeof parsed.title === 'string' ? parsed.title : '',
-      text: typeof parsed.text === 'string' ? parsed.text : '',
-      textLength: typeof parsed.text_length === 'number' ? parsed.text_length : 0,
-      truncated: parsed.truncated === true,
-      links,
-      consoleErrors,
-      durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
-    };
-  } catch {
-    return null;
+  const rawLinks = Array.isArray(parsed.links) ? parsed.links : [];
+  const links: ParsedWebBrowseLink[] = [];
+  for (const item of rawLinks) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const url = typeof record.url === 'string' ? record.url : '';
+    if (!url) continue;
+    const text = typeof record.text === 'string' ? record.text : '';
+    links.push({ url, text });
   }
+
+  const rawConsoleErrors = Array.isArray(parsed.console_errors) ? parsed.console_errors : [];
+  const consoleErrors: string[] = [];
+  for (const item of rawConsoleErrors) {
+    if (typeof item === 'string' && item.trim()) consoleErrors.push(item);
+  }
+
+  const statusCodeRaw = parsed.status_code;
+  let statusCode: number | null = null;
+  if (typeof statusCodeRaw === 'number' && Number.isFinite(statusCodeRaw)) {
+    statusCode = statusCodeRaw;
+  }
+
+  return {
+    status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
+    ok: parsed.ok === true,
+    error: typeof parsed.error === 'string' ? parsed.error : '',
+    url: typeof parsed.url === 'string' ? parsed.url : '',
+    requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
+    statusCode,
+    title: typeof parsed.title === 'string' ? parsed.title : '',
+    text: typeof parsed.text === 'string' ? parsed.text : '',
+    textLength: typeof parsed.text_length === 'number' ? parsed.text_length : 0,
+    truncated: parsed.truncated === true,
+    links,
+    consoleErrors,
+    durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+  };
+}
+
+interface ParsedKnowledgeSearchResult {
+  indexName: string;
+  source: string;
+  content: string;
+  truncated: boolean;
+  score?: number;
+}
+
+interface ParsedKnowledgeSearchIndexSummary {
+  name: string;
+  resultCount: number;
+  ok: boolean;
+}
+
+interface ParsedKnowledgeSearchErrorDetail {
+  indexName: string;
+  message: string;
+}
+
+interface ParsedKnowledgeSearchOutput {
+  tool: string;
+  status: string;
+  ok: boolean;
+  query: string;
+  indexName: string;
+  k: number;
+  maxCharsPerResult: number;
+  indexesSearched: ParsedKnowledgeSearchIndexSummary[];
+  totalResults: number;
+  results: ParsedKnowledgeSearchResult[];
+  errors: string[];
+  errorDetails: ParsedKnowledgeSearchErrorDetail[];
+  message: string;
+  durationMs?: number;
+  declaredTotalResults?: number;
+}
+
+interface ParsedSchemaSearchColumn {
+  name: string;
+  type: string;
+  details?: string;
+}
+
+interface ParsedSchemaSearchSectionItem {
+  label: string;
+  value: string;
+}
+
+interface ParsedSchemaSearchResult {
+  qualifiedName: string;
+  schemaName: string;
+  objectName: string;
+  objectKind: string;
+  similarity: number | null;
+  description: string;
+  estimatedRows: string;
+  columns: ParsedSchemaSearchColumn[];
+  primaryKeys: string[];
+  foreignKeys: ParsedSchemaSearchSectionItem[];
+  indexes: ParsedSchemaSearchSectionItem[];
+}
+
+interface ParsedSchemaSearchOutput {
+  tool: string;
+  query: string;
+  message: string;
+  results: ParsedSchemaSearchResult[];
+}
+
+const KNOWLEDGE_SEARCH_TOOL_NAME = 'search_knowledge';
+
+function isKnowledgeSearchToolName(toolName: string): boolean {
+  return toolName === KNOWLEDGE_SEARCH_TOOL_NAME;
+}
+
+function isSchemaSearchToolName(toolName: string): boolean {
+  return /^search_.+_schema$/.test(toolName);
+}
+
+function buildKnowledgeSearchIndexSummaries(
+  results: ParsedKnowledgeSearchResult[],
+  errorDetails: ParsedKnowledgeSearchErrorDetail[] = [],
+): ParsedKnowledgeSearchIndexSummary[] {
+  const summaries = new Map<string, ParsedKnowledgeSearchIndexSummary>();
+
+  for (const result of results) {
+    if (!result.indexName) continue;
+    const existing = summaries.get(result.indexName);
+    if (existing) {
+      existing.resultCount += 1;
+      continue;
+    }
+    summaries.set(result.indexName, { name: result.indexName, resultCount: 1, ok: true });
+  }
+
+  for (const error of errorDetails) {
+    if (!error.indexName) continue;
+    const existing = summaries.get(error.indexName);
+    if (existing) {
+      existing.ok = false;
+      continue;
+    }
+    summaries.set(error.indexName, { name: error.indexName, resultCount: 0, ok: false });
+  }
+
+  return Array.from(summaries.values());
+}
+
+function normalizeKnowledgeSearchPayload(
+  parsed: Record<string, unknown>,
+  parsedTool: string,
+): ParsedKnowledgeSearchOutput {
+  const rawResults = Array.isArray(parsed.results) ? parsed.results : [];
+  const results: ParsedKnowledgeSearchResult[] = [];
+  for (const item of rawResults) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const source = typeof record.source === 'string' ? record.source : '';
+    const content = typeof record.content === 'string' ? record.content : '';
+    const indexName = typeof record.index_name === 'string' ? record.index_name : '';
+    const truncated = record.truncated === true;
+    if (!source && !content) continue;
+    const result: ParsedKnowledgeSearchResult = { indexName, source, content, truncated };
+    if (typeof record.score === 'number' && Number.isFinite(record.score)) {
+      result.score = record.score;
+    }
+    results.push(result);
+  }
+
+  const rawIndexes = Array.isArray(parsed.indexes_searched) ? parsed.indexes_searched : [];
+  const indexesSearched: ParsedKnowledgeSearchIndexSummary[] = [];
+  for (const item of rawIndexes) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name : '';
+    if (!name) continue;
+    const resultCountRaw = record.result_count;
+    const resultCount = typeof resultCountRaw === 'number' && Number.isFinite(resultCountRaw)
+      ? resultCountRaw
+      : 0;
+    indexesSearched.push({ name, resultCount, ok: record.ok !== false });
+  }
+
+  const rawErrors = Array.isArray(parsed.errors) ? parsed.errors : [];
+  const errors: string[] = [];
+  for (const item of rawErrors) {
+    if (typeof item === 'string' && item.trim()) errors.push(item.trim());
+  }
+
+  const rawErrorDetails = Array.isArray(parsed.error_details) ? parsed.error_details : [];
+  const errorDetails: ParsedKnowledgeSearchErrorDetail[] = [];
+  for (const item of rawErrorDetails) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const message = typeof record.message === 'string' ? record.message : '';
+    if (!message.trim()) continue;
+    errorDetails.push({
+      indexName: typeof record.index_name === 'string' ? record.index_name : '',
+      message,
+    });
+  }
+
+  const derivedIndexes = indexesSearched.length > 0
+    ? indexesSearched
+    : buildKnowledgeSearchIndexSummaries(results, errorDetails);
+
+  const totalResultsRaw = parsed.total_results;
+  const totalResults = typeof totalResultsRaw === 'number' && Number.isFinite(totalResultsRaw)
+    ? totalResultsRaw
+    : results.length;
+
+  return {
+    tool: parsedTool,
+    status: typeof parsed.status === 'string' ? parsed.status : 'unknown',
+    ok: parsed.ok === true,
+    query: typeof parsed.query === 'string' ? parsed.query : '',
+    indexName: typeof parsed.index_name === 'string' ? parsed.index_name : '',
+    k: typeof parsed.k === 'number' && Number.isFinite(parsed.k) ? parsed.k : 0,
+    maxCharsPerResult: typeof parsed.max_chars_per_result === 'number' && Number.isFinite(parsed.max_chars_per_result)
+      ? parsed.max_chars_per_result
+      : 0,
+    indexesSearched: derivedIndexes,
+    totalResults,
+    results,
+    errors,
+    errorDetails,
+    message: typeof parsed.message === 'string' ? parsed.message : '',
+    durationMs: typeof parsed.duration_ms === 'number' && Number.isFinite(parsed.duration_ms)
+      ? parsed.duration_ms
+      : undefined,
+    declaredTotalResults: totalResults,
+  };
+}
+
+function parseLegacyKnowledgeSearchOutput(output: string, toolName: string): ParsedKnowledgeSearchOutput | null {
+  const normalized = output.trim();
+  if (!normalized) return null;
+
+  if (/^No relevant documentation found/i.test(normalized) || /^No relevant documents found/i.test(normalized)) {
+    return {
+      tool: toolName,
+      status: 'no_results',
+      ok: true,
+      query: '',
+      indexName: '',
+      k: 0,
+      maxCharsPerResult: 0,
+      indexesSearched: [],
+      totalResults: 0,
+      results: [],
+      errors: [],
+      errorDetails: [],
+      message: normalized,
+    };
+  }
+
+  if (/^(Search failed:|Error:)/i.test(normalized)) {
+    const messageLines = normalized.split('\n').map((line) => line.trim()).filter(Boolean);
+    const errorMessage = messageLines.join(' ');
+    return {
+      tool: toolName,
+      status: 'error',
+      ok: false,
+      query: '',
+      indexName: '',
+      k: 0,
+      maxCharsPerResult: 0,
+      indexesSearched: [],
+      totalResults: 0,
+      results: [],
+      errors: [errorMessage],
+      errorDetails: [{ indexName: '', message: errorMessage }],
+      message: errorMessage,
+    };
+  }
+
+  const foundMatch = normalized.match(/^Found\s+(\d+)\s+relevant\s+documents?:?/i);
+  if (!foundMatch) return null;
+
+  const totalResults = Number.parseInt(foundMatch[1] || '0', 10) || 0;
+  const firstBlankLine = normalized.indexOf('\n\n');
+  const body = firstBlankLine >= 0 ? normalized.slice(firstBlankLine + 2) : '';
+  const rawBlocks = body.split(/\n\n---\n\n/g).map((block) => block.trim()).filter(Boolean);
+  const results: ParsedKnowledgeSearchResult[] = rawBlocks.map((block) => {
+    const newlineIndex = block.indexOf('\n');
+    const header = newlineIndex >= 0 ? block.slice(0, newlineIndex).trim() : block.trim();
+    const content = newlineIndex >= 0 ? block.slice(newlineIndex + 1).trim() : '';
+    const headerMatch = header.match(/^\[([^\]]+)\]\s+(.*?):\s*$/s);
+    const indexName = headerMatch?.[1]?.trim() || '';
+    const source = headerMatch?.[2]?.trim() || header.replace(/:\s*$/, '');
+    return {
+      indexName,
+      source,
+      content,
+      truncated: /\.\.\. \(truncated\)\s*$/m.test(content),
+    };
+  }).filter((entry) => entry.source || entry.content);
+
+  return {
+    tool: toolName,
+    status: results.length > 0 ? 'completed' : 'no_results',
+    ok: results.length > 0,
+    query: '',
+    indexName: results.length > 0 && results.every((entry) => entry.indexName === results[0].indexName)
+      ? (results[0].indexName || '')
+      : '',
+    k: 0,
+    maxCharsPerResult: 0,
+    indexesSearched: buildKnowledgeSearchIndexSummaries(results),
+    totalResults: totalResults || results.length,
+    results,
+    errors: [],
+    errorDetails: [],
+    message: foundMatch[0].replace(/\s+$/, ''),
+    declaredTotalResults: totalResults || undefined,
+  };
+}
+
+function parseKnowledgeSearchOutput(
+  output: string | undefined | null,
+  toolName: string,
+): ParsedKnowledgeSearchOutput | null {
+  if (!output || !isKnowledgeSearchToolName(toolName)) return null;
+  const parsed = parseNestedJsonRecordValue(output);
+  const parsedTool = typeof parsed?.tool === 'string' ? parsed.tool : '';
+  if (parsed && isKnowledgeSearchToolName(parsedTool)) {
+    return normalizeKnowledgeSearchPayload(parsed, parsedTool);
+  }
+  return parseLegacyKnowledgeSearchOutput(output, toolName);
+}
+
+function parseSchemaSearchOutput(
+  output: string | undefined | null,
+  toolName: string,
+  input?: Record<string, unknown>,
+): ParsedSchemaSearchOutput | null {
+  if (!output || !isSchemaSearchToolName(toolName)) return null;
+
+  const normalized = output.trim();
+  if (!normalized) return null;
+
+  const blocks = normalized
+    .split(/^---+\s*$/m)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  if (blocks.length === 0) return null;
+
+  const results: ParsedSchemaSearchResult[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const header = (lines[0] || '').trim();
+    const headerMatch = header.match(/^\[([^\]]+)\]\s+\(similarity:\s*([0-9.]+)\)/i);
+    if (!headerMatch) continue;
+
+    const qualifiedName = headerMatch[1] || '';
+    const [schemaName, ...objectParts] = qualifiedName.split('.');
+    const objectName = objectParts.join('.') || qualifiedName;
+    const similarity = Number.parseFloat(headerMatch[2] || '');
+
+    const result: ParsedSchemaSearchResult = {
+      qualifiedName,
+      schemaName: objectParts.length > 0 ? schemaName : '',
+      objectName,
+      objectKind: '',
+      similarity: Number.isFinite(similarity) ? similarity : null,
+      description: '',
+      estimatedRows: '',
+      columns: [],
+      primaryKeys: [],
+      foreignKeys: [],
+      indexes: [],
+    };
+
+    let section: 'columns' | 'primary' | 'foreign' | 'indexes' | '' = '';
+
+    for (let index = 1; index < lines.length; index += 1) {
+      const rawLine = lines[index] || '';
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      const kindMatch = line.match(/^#\s+(TABLE|VIEW):\s+(.+)$/i);
+      if (kindMatch) {
+        result.objectKind = kindMatch[1].toUpperCase();
+        continue;
+      }
+
+      if (line.startsWith('Description: ')) {
+        result.description = line.slice('Description: '.length).trim();
+        continue;
+      }
+
+      if (line.startsWith('Estimated rows: ')) {
+        result.estimatedRows = line.slice('Estimated rows: '.length).trim();
+        continue;
+      }
+
+      if (line === '## Columns:') {
+        section = 'columns';
+        continue;
+      }
+      if (line === '## Primary Key:') {
+        section = 'primary';
+        continue;
+      }
+      if (line === '## Foreign Keys:') {
+        section = 'foreign';
+        continue;
+      }
+      if (line === '## Indexes:') {
+        section = 'indexes';
+        continue;
+      }
+
+      if (section === 'columns' && line.startsWith('- ')) {
+        const columnText = line.slice(2).trim();
+        const parts = columnText.split(/\s+-\s+|\s+--\s+/);
+        const head = parts.shift() || columnText;
+        const details = parts.join(' - ').trim();
+        const headMatch = head.match(/^([^:]+):\s+(.+)$/);
+        result.columns.push({
+          name: headMatch?.[1]?.trim() || head,
+          type: headMatch?.[2]?.trim() || '',
+          ...(details ? { details } : {}),
+        });
+        continue;
+      }
+
+      if (section === 'primary') {
+        result.primaryKeys.push(line.replace(/^[-*]\s*/, '').trim());
+        continue;
+      }
+
+      if ((section === 'foreign' || section === 'indexes') && line.startsWith('- ')) {
+        const itemText = line.slice(2).trim();
+        const itemMatch = itemText.match(/^([^:]+):\s+(.+)$/);
+        const item = {
+          label: itemMatch?.[1]?.trim() || itemText,
+          value: itemMatch?.[2]?.trim() || '',
+        };
+        if (section === 'foreign') result.foreignKeys.push(item);
+        else result.indexes.push(item);
+      }
+    }
+
+    if (!result.objectKind && !result.description && !result.estimatedRows && result.columns.length === 0) {
+      continue;
+    }
+
+    results.push(result);
+  }
+
+  if (results.length === 0) return null;
+
+  const query = typeof input?.query === 'string' ? input.query : '';
+  return {
+    tool: toolName,
+    query,
+    message: `Found ${results.length} schema match${results.length === 1 ? '' : 'es'}.`,
+    results,
+  };
 }
 
 interface ParsedWebReadPdfMatch {
@@ -3804,46 +4198,45 @@ function parsePartialWebReadPdfOutput(output: string): ParsedWebReadPdfOutput | 
 
 function parseWebReadPdfOutput(output: string | undefined | null): ParsedWebReadPdfOutput | null {
   if (!output) return null;
-  try {
-    const parsed = JSON.parse(output) as Record<string, unknown>;
-    if (parsed.tool !== WEB_READ_PDF_TOOL_ID && !(parsed.tool === WEB_BROWSE_TOOL_ID && parsed.mode === 'pdf_read')) return null;
-
-    const rawMatches = Array.isArray(parsed.matches) ? parsed.matches : [];
-    const matches: ParsedWebReadPdfMatch[] = [];
-    for (const item of rawMatches) {
-      if (!item || typeof item !== 'object') continue;
-      const record = item as Record<string, unknown>;
-      const text = typeof record.text === 'string' ? record.text : '';
-      const matchStartRaw = record.match_start_char;
-      const matchEndRaw = record.match_end_char;
-      const matchStart = typeof matchStartRaw === 'number' && Number.isFinite(matchStartRaw) ? matchStartRaw : null;
-      const matchEnd = typeof matchEndRaw === 'number' && Number.isFinite(matchEndRaw) ? matchEndRaw : null;
-      if (!text && matchStart == null && matchEnd == null) continue;
-      matches.push({ text, matchStart, matchEnd });
-    }
-
-    const textStartRaw = parsed.text_start_char;
-    const textEndRaw = parsed.text_end_char;
-    const textLengthRaw = parsed.text_length;
-    const text = typeof parsed.text === 'string' ? parsed.text : '';
-
-    return {
-      ok: parsed.ok === true,
-      error: typeof parsed.error === 'string' ? parsed.error : '',
-      url: typeof parsed.url === 'string' ? parsed.url : '',
-      requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
-      query: typeof parsed.query === 'string' ? parsed.query : '',
-      text,
-      textLength: typeof textLengthRaw === 'number' && Number.isFinite(textLengthRaw) ? textLengthRaw : text.length,
-      textStartChar: typeof textStartRaw === 'number' && Number.isFinite(textStartRaw) ? textStartRaw : null,
-      textEndChar: typeof textEndRaw === 'number' && Number.isFinite(textEndRaw) ? textEndRaw : null,
-      truncated: parsed.truncated === true,
-      matches,
-      durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
-    };
-  } catch {
+  const parsed = parseNestedJsonRecordValue(output);
+  if (!parsed) return parsePartialWebReadPdfOutput(output);
+  if (parsed.tool !== WEB_READ_PDF_TOOL_ID && !(parsed.tool === WEB_BROWSE_TOOL_ID && parsed.mode === 'pdf_read')) {
     return parsePartialWebReadPdfOutput(output);
   }
+
+  const rawMatches = Array.isArray(parsed.matches) ? parsed.matches : [];
+  const matches: ParsedWebReadPdfMatch[] = [];
+  for (const item of rawMatches) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const text = typeof record.text === 'string' ? record.text : '';
+    const matchStartRaw = record.match_start_char;
+    const matchEndRaw = record.match_end_char;
+    const matchStart = typeof matchStartRaw === 'number' && Number.isFinite(matchStartRaw) ? matchStartRaw : null;
+    const matchEnd = typeof matchEndRaw === 'number' && Number.isFinite(matchEndRaw) ? matchEndRaw : null;
+    if (!text && matchStart == null && matchEnd == null) continue;
+    matches.push({ text, matchStart, matchEnd });
+  }
+
+  const textStartRaw = parsed.text_start_char;
+  const textEndRaw = parsed.text_end_char;
+  const textLengthRaw = parsed.text_length;
+  const text = typeof parsed.text === 'string' ? parsed.text : '';
+
+  return {
+    ok: parsed.ok === true,
+    error: typeof parsed.error === 'string' ? parsed.error : '',
+    url: typeof parsed.url === 'string' ? parsed.url : '',
+    requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
+    query: typeof parsed.query === 'string' ? parsed.query : '',
+    text,
+    textLength: typeof textLengthRaw === 'number' && Number.isFinite(textLengthRaw) ? textLengthRaw : text.length,
+    textStartChar: typeof textStartRaw === 'number' && Number.isFinite(textStartRaw) ? textStartRaw : null,
+    textEndChar: typeof textEndRaw === 'number' && Number.isFinite(textEndRaw) ? textEndRaw : null,
+    truncated: parsed.truncated === true,
+    matches,
+    durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
+  };
 }
 
 export const ToolCallDisplay = memo(function ToolCallDisplay({
@@ -4284,6 +4677,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (toolCall.tool !== WEB_READ_PDF_TOOL_ID || !effectiveOutput) return null;
     return parseWebReadPdfOutput(effectiveOutput);
   }, [toolCall.tool, effectiveOutput]);
+
+  const knowledgeSearchOutput = useMemo(() => {
+    if (!isKnowledgeSearchToolName(toolCall.tool) || !effectiveOutput) return null;
+    return parseKnowledgeSearchOutput(effectiveOutput, toolCall.tool);
+  }, [toolCall.tool, effectiveOutput]);
+
+  const schemaSearchOutput = useMemo(() => {
+    if (!isSchemaSearchToolName(toolCall.tool) || !effectiveOutput) return null;
+    return parseSchemaSearchOutput(effectiveOutput, toolCall.tool, toolCall.input);
+  }, [toolCall.input, toolCall.tool, effectiveOutput]);
 
   // Check if this is a datatable tool
   const datatableData = useMemo(() => {
@@ -4878,6 +5281,300 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   };
 
   const renderUserspaceResultBody = (): ReactNode => {
+    if (isKnowledgeSearchToolName(toolCall.tool) && knowledgeSearchOutput) {
+      const search = knowledgeSearchOutput;
+      const toolTitle = toolCall.tool === KNOWLEDGE_SEARCH_TOOL_NAME
+        ? 'Knowledge search'
+        : `Index search (${search.indexName || toolCall.tool})`;
+      const isErrorState = !search.ok || search.status === 'error' || search.errors.length > 0;
+      const queryText = search.query || (toolCall.input?.query as string) || '';
+      const visibleResultCount = search.results.length;
+      const declaredResultCount = search.declaredTotalResults ?? search.totalResults;
+      const hasTruncatedResultSet = declaredResultCount > visibleResultCount;
+
+      const metaParts: string[] = [];
+      if (search.indexName) {
+        metaParts.push(`index: ${search.indexName}`);
+      } else if (search.indexesSearched.length > 0) {
+        metaParts.push(`${search.indexesSearched.length} index${search.indexesSearched.length === 1 ? '' : 'es'}`);
+      }
+      metaParts.push(
+        hasTruncatedResultSet
+          ? `${visibleResultCount}/${declaredResultCount} results shown`
+          : `${visibleResultCount} result${visibleResultCount === 1 ? '' : 's'}`,
+      );
+      if (search.k > 0) metaParts.push(`k=${search.k}`);
+      if (typeof search.durationMs === 'number') {
+        metaParts.push(`${Math.round(search.durationMs)} ms`);
+      }
+
+      const indexSummary = search.indexesSearched
+        .filter((idx) => idx.name)
+        .map((idx) => {
+          const displayCount = hasTruncatedResultSet ? `${idx.resultCount}+` : String(idx.resultCount);
+          return (
+          <span
+            className={`tool-call-knowledge-index-chip ${idx.ok ? 'tool-call-knowledge-index-chip-ok' : 'tool-call-knowledge-index-chip-error'}`}
+            key={idx.name}
+            title={idx.ok
+              ? (hasTruncatedResultSet
+                ? `At least ${idx.resultCount} visible result${idx.resultCount === 1 ? '' : 's'} for ${idx.name}; full output was truncated`
+                : `${idx.resultCount} result${idx.resultCount === 1 ? '' : 's'}`)
+              : 'Search failed'}
+          >
+            <span className="tool-call-knowledge-index-chip-name">{idx.name}</span>
+            <span className="tool-call-knowledge-index-chip-count">{idx.ok ? displayCount : 'error'}</span>
+          </span>
+          );
+        });
+
+      return (
+        <div className="tool-call-section tool-call-knowledge-section">
+          <div className="tool-call-section-header">
+            <span className="tool-call-section-label">
+              <Database size={12} />
+              <span>{toolTitle}</span>
+            </span>
+            <div className="tool-call-terminal-header-actions">
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(effectiveOutput, 'result', `knowledge-search-${toolCall.tool}`)}
+                title="Copy JSON"
+              >
+                {isCopiedButton('result', `knowledge-search-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+          </div>
+          {queryText && (
+            <div className="tool-call-web-query" title={queryText}>
+              <Database size={12} aria-hidden="true" />
+              <span>{queryText}</span>
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(queryText, 'query', `knowledge-search-query-${toolCall.tool}`)}
+                title="Copy query"
+              >
+                {isCopiedButton('query', `knowledge-search-query-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+          )}
+          <div className="tool-call-web-meta">{metaParts.join(' \u00b7 ')}</div>
+          {indexSummary.length > 0 && (
+            <div className="tool-call-knowledge-index-chips">{indexSummary}</div>
+          )}
+          {search.message && (
+            <div className="tool-call-knowledge-message">{search.message}</div>
+          )}
+          {hasTruncatedResultSet && (
+            <div className="tool-call-knowledge-result-truncated">
+              Only {visibleResultCount} of {declaredResultCount} results were available in this stored output; the original tool output was truncated.
+            </div>
+          )}
+          {isErrorState && search.errors.length > 0 && (
+            <div className="tool-call-web-error">
+              <AlertCircle size={12} />
+              <span>{search.errors.join(' \u00b7 ')}</span>
+            </div>
+          )}
+          {search.results.length > 0 ? (
+            <ol className="tool-call-knowledge-results">
+              {search.results.map((result, idx) => (
+                <li className="tool-call-knowledge-result" key={`${result.indexName || 'idx'}:${result.source}:${idx}`}>
+                  <div className="tool-call-knowledge-result-head">
+                    {result.indexName && (
+                      <span className="tool-call-knowledge-result-index" title={`Index: ${result.indexName}`}>
+                        {result.indexName}
+                      </span>
+                    )}
+                    <span className="tool-call-knowledge-result-source" title={result.source}>
+                      {result.source}
+                    </span>
+                    {typeof result.score === 'number' && Number.isFinite(result.score) && (
+                      <span className="tool-call-knowledge-index-chip tool-call-knowledge-index-chip-ok" title="Similarity score">
+                        <span className="tool-call-knowledge-index-chip-name">score</span>
+                        <span className="tool-call-knowledge-index-chip-count">{result.score.toFixed(3)}</span>
+                      </span>
+                    )}
+                    <button
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(result.source, 'result', `knowledge-search-source-${toolCall.tool}-${idx}`)}
+                      title="Copy source path"
+                    >
+                      {isCopiedButton('result', `knowledge-search-source-${toolCall.tool}-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                  </div>
+                  <pre className="tool-call-knowledge-result-content">{result.content}</pre>
+                  {result.truncated && (
+                    <div className="tool-call-knowledge-result-truncated">
+                      truncated at {search.maxCharsPerResult} chars; retry with a higher max_chars_per_result for the full chunk
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          ) : !isErrorState ? (
+            <div className="tool-call-knowledge-empty">No results returned.</div>
+          ) : null}
+        </div>
+      );
+    }
+    if (isKnowledgeSearchToolName(toolCall.tool)) {
+      const fallbackMessage = effectiveOutput
+        ? 'Tool output was not valid JSON, so it could not be formatted.'
+        : toolCall.status === 'running'
+          ? 'Waiting for tool output...'
+          : 'No tool output was received.';
+      return (
+        <div className="tool-call-section">
+          <div className="tool-call-section-header">
+            <span className="tool-call-section-label">Result:</span>
+            {effectiveOutput && (
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(effectiveOutput, 'result', `knowledge-search-fallback-${toolCall.tool}`)}
+                title="Copy raw output"
+              >
+                {isCopiedButton('result', `knowledge-search-fallback-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            )}
+          </div>
+          <div className="tool-call-knowledge-empty">{fallbackMessage}</div>
+        </div>
+      );
+    }
+    if (isSchemaSearchToolName(toolCall.tool) && schemaSearchOutput) {
+      const schemaResult = schemaSearchOutput;
+      const queryText = schemaResult.query || (toolCall.input?.query as string) || '';
+      return (
+        <div className="tool-call-section tool-call-knowledge-section">
+          <div className="tool-call-section-header">
+            <span className="tool-call-section-label">
+              <FolderSearch size={12} />
+              <span>Schema search</span>
+            </span>
+            <div className="tool-call-terminal-header-actions">
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(effectiveOutput, 'result', `schema-search-${toolCall.tool}`)}
+                title="Copy result"
+              >
+                {isCopiedButton('result', `schema-search-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+          </div>
+          {queryText && (
+            <div className="tool-call-web-query" title={queryText}>
+              <FolderSearch size={12} aria-hidden="true" />
+              <span>{queryText}</span>
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(queryText, 'query', `schema-search-query-${toolCall.tool}`)}
+                title="Copy query"
+              >
+                {isCopiedButton('query', `schema-search-query-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+          )}
+          <div className="tool-call-web-meta">{schemaResult.message}</div>
+          <ol className="tool-call-knowledge-results">
+            {schemaResult.results.map((result, idx) => (
+              <li className="tool-call-knowledge-result" key={`${result.qualifiedName}:${idx}`}>
+                <div className="tool-call-knowledge-result-head">
+                  {result.schemaName && (
+                    <span className="tool-call-knowledge-result-index" title={`Schema: ${result.schemaName}`}>
+                      {result.schemaName}
+                    </span>
+                  )}
+                  <span className="tool-call-knowledge-result-source" title={result.qualifiedName}>
+                    {result.qualifiedName}
+                  </span>
+                  {result.similarity != null && (
+                    <span className="tool-call-knowledge-index-chip tool-call-knowledge-index-chip-ok" title="Similarity score">
+                      <span className="tool-call-knowledge-index-chip-name">score</span>
+                      <span className="tool-call-knowledge-index-chip-count">{result.similarity.toFixed(3)}</span>
+                    </span>
+                  )}
+                </div>
+                <div className="tool-call-web-meta">
+                  {[result.objectKind, result.description, result.estimatedRows ? `rows ${result.estimatedRows}` : ''].filter(Boolean).join(' · ')}
+                </div>
+                {result.columns.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Columns</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {result.columns.map((column) => (
+                        <li key={`${result.qualifiedName}:${column.name}`}>
+                          <span>{column.name}</span>
+                          <code>{[column.type, column.details].filter(Boolean).join(' | ')}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {result.primaryKeys.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Primary key</div>
+                    <div className="tool-call-userspace-json-path-list">
+                      {result.primaryKeys.map((item) => <span key={`${result.qualifiedName}:pk:${item}`}>{item}</span>)}
+                    </div>
+                  </div>
+                )}
+                {result.foreignKeys.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Foreign keys</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {result.foreignKeys.map((item) => (
+                        <li key={`${result.qualifiedName}:fk:${item.label}`}>
+                          <span>{item.label}</span>
+                          <code>{item.value}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {result.indexes.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Indexes</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {result.indexes.map((item) => (
+                        <li key={`${result.qualifiedName}:idx:${item.label}`}>
+                          <span>{item.label}</span>
+                          <code>{item.value}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ol>
+        </div>
+      );
+    }
+    if (isSchemaSearchToolName(toolCall.tool)) {
+      const fallbackMessage = effectiveOutput
+        ? 'Tool output was not valid JSON, so it could not be formatted.'
+        : toolCall.status === 'running'
+          ? 'Waiting for tool output...'
+          : 'No tool output was received.';
+      return (
+        <div className="tool-call-section">
+          <div className="tool-call-section-header">
+            <span className="tool-call-section-label">Result:</span>
+            {effectiveOutput && (
+              <button
+                className="tool-call-copy-btn"
+                onClick={() => copyToClipboard(effectiveOutput, 'result', `schema-search-fallback-${toolCall.tool}`)}
+                title="Copy raw output"
+              >
+                {isCopiedButton('result', `schema-search-fallback-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            )}
+          </div>
+          <div className="tool-call-knowledge-empty">{fallbackMessage}</div>
+        </div>
+      );
+    }
     switch (toolCall.tool) {
       case 'upsert_userspace_file':
       case 'patch_userspace_file':
@@ -5845,7 +6542,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
             </div>
           )}
-          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isUserspaceStructuredJsonTool && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && (
+          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isUserspaceStructuredJsonTool && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && !isKnowledgeSearchToolName(toolCall.tool) && (
             <div className="tool-call-section">
               <div className="tool-call-section-header">
                 <span className="tool-call-section-label">Query:</span>
@@ -6006,7 +6703,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               </div>
             </div>
           ) : null}
-          {(effectiveOutput || isUserspaceStructuredJsonTool) && !isTerminalCommand && (
+          {(effectiveOutput || isUserspaceStructuredJsonTool || isKnowledgeSearchToolName(toolCall.tool)) && !isTerminalCommand && (
             screenshotPreview && !hasErrorInOutput ? (
               <div className="tool-call-section">
                 <div className="tool-call-screenshot-meta">
