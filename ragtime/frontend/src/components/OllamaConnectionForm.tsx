@@ -7,7 +7,7 @@ interface OllamaConnectionFormProps {
   /** Current host value */
   host: string;
   /** Current port value */
-  port: number;
+  port: number | '';
   /** Current selected model */
   model: string;
   /** Whether connected to local server */
@@ -132,6 +132,7 @@ export function OllamaConnectionForm({
             onChange={(e) => onPortChange(parseInt(e.target.value, 10) || defaultPort)}
             min={1}
             max={65535}
+            placeholder={`${defaultPort}`}
           />
         </div>
         <div className="form-group form-group-button">

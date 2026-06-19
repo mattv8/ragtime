@@ -2577,46 +2577,46 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     copilotPatToken
   );
   const ollamaConfigured = Boolean(
-    (formData.llm_ollama_protocol ?? settings?.llm_ollama_protocol) &&
-    (formData.llm_ollama_host ?? settings?.llm_ollama_host)?.trim() &&
-    (formData.llm_ollama_port ?? settings?.llm_ollama_port)
+    (formData.llm_ollama_protocol) &&
+    (formData.llm_ollama_host)?.trim() &&
+    (formData.llm_ollama_port)
   );
   const llamaCppConfigured = Boolean(
-    (formData.llm_llama_cpp_protocol ?? settings?.llm_llama_cpp_protocol) &&
-    (formData.llm_llama_cpp_host ?? settings?.llm_llama_cpp_host)?.trim() &&
-    (formData.llm_llama_cpp_port ?? settings?.llm_llama_cpp_port)
+    (formData.llm_llama_cpp_protocol) &&
+    (formData.llm_llama_cpp_host)?.trim() &&
+    (formData.llm_llama_cpp_port)
   );
   const lmstudioConfigured = Boolean(
-    (formData.llm_lmstudio_protocol ?? settings?.llm_lmstudio_protocol) &&
-    (formData.llm_lmstudio_host ?? settings?.llm_lmstudio_host)?.trim() &&
-    (formData.llm_lmstudio_port ?? settings?.llm_lmstudio_port)
+    (formData.llm_lmstudio_protocol) &&
+    (formData.llm_lmstudio_host)?.trim() &&
+    (formData.llm_lmstudio_port)
   );
   const omlxConfigured = Boolean(
-    (formData.llm_omlx_protocol ?? settings?.llm_omlx_protocol) &&
-    (formData.llm_omlx_host ?? settings?.llm_omlx_host)?.trim() &&
-    (formData.llm_omlx_port ?? settings?.llm_omlx_port)
+    (formData.llm_omlx_protocol) &&
+    (formData.llm_omlx_host)?.trim() &&
+    (formData.llm_omlx_port)
   );
   const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
   const embeddingOpenRouterConfigured = Boolean((formData.openrouter_api_key ?? settings?.openrouter_api_key)?.trim());
   const embeddingOllamaConfigured = Boolean(
-    (formData.ollama_protocol ?? settings?.ollama_protocol) &&
-    (formData.ollama_host ?? settings?.ollama_host)?.trim() &&
-    (formData.ollama_port ?? settings?.ollama_port)
+    (formData.ollama_protocol) &&
+    (formData.ollama_host)?.trim() &&
+    (formData.ollama_port)
   );
   const embeddingLlamaCppConfigured = Boolean(
-    (formData.llama_cpp_protocol ?? settings?.llama_cpp_protocol) &&
-    (formData.llama_cpp_host ?? settings?.llama_cpp_host)?.trim() &&
-    (formData.llama_cpp_port ?? settings?.llama_cpp_port)
+    (formData.llama_cpp_protocol) &&
+    (formData.llama_cpp_host)?.trim() &&
+    (formData.llama_cpp_port)
   );
   const embeddingLmstudioConfigured = Boolean(
-    (formData.lmstudio_protocol ?? settings?.lmstudio_protocol) &&
-    (formData.lmstudio_host ?? settings?.lmstudio_host)?.trim() &&
-    (formData.lmstudio_port ?? settings?.lmstudio_port)
+    (formData.lmstudio_protocol) &&
+    (formData.lmstudio_host)?.trim() &&
+    (formData.lmstudio_port)
   );
   const embeddingOmlxConfigured = Boolean(
-    (formData.omlx_protocol ?? settings?.omlx_protocol) &&
-    (formData.omlx_host ?? settings?.omlx_host)?.trim() &&
-    (formData.omlx_port ?? settings?.omlx_port)
+    (formData.omlx_protocol) &&
+    (formData.omlx_host)?.trim() &&
+    (formData.omlx_port)
   );
   const activeAuthProvider = AUTH_PROVIDER_OPTIONS.find((provider) => provider.value === activeAuthProviderValue) || AUTH_PROVIDER_OPTIONS[0];
   const ldapConfigured = Boolean(ldapFormData.ldap_host.trim() || ldapConfig?.server_url?.trim());
@@ -2826,7 +2826,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             <code>{getDisplayUrl('/mcp')}</code>
             <span className="muted" style={{ fontSize: '0.85em' }}>(default - all tools)</span>
             {settings?.mcp_default_route_auth && (settings?.has_mcp_default_password || settings?.mcp_default_route_auth_method === 'oauth2') ? (
-                <span title={settings?.mcp_default_route_auth_method === 'oauth2' ? 'OAuth2 protected' : settings?.mcp_default_route_auth_method === 'client_credentials' ? 'Client credentials protected' : 'Password protected'}>
+              <span title={settings?.mcp_default_route_auth_method === 'oauth2' ? 'OAuth2 protected' : settings?.mcp_default_route_auth_method === 'client_credentials' ? 'Client credentials protected' : 'Password protected'}>
                 <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
               </span>
             ) : (
@@ -3024,169 +3024,169 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
           <div className="form-group">
             <label>Provider</label>
             <div className="input-with-button input-with-actions">
-            <select
-              value={formData.llm_provider || 'openai'}
-              onChange={(e) => {
-                const newProvider = e.target.value as 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
-                setFormData({
-                  ...formData,
-                  llm_provider: newProvider,
-                  llm_model:
-                    newProvider === 'anthropic'
-                      ? ''
-                      : newProvider === 'ollama'
+              <select
+                value={formData.llm_provider || 'openai'}
+                onChange={(e) => {
+                  const newProvider = e.target.value as 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
+                  setFormData({
+                    ...formData,
+                    llm_provider: newProvider,
+                    llm_model:
+                      newProvider === 'anthropic'
                         ? ''
-                        : '',
-                });
-                // Reset LLM models when switching providers
-                resetLlmModelsState();
-                if (newProvider !== 'ollama') {
-                  resetLlmOllamaState();
-                }
+                        : newProvider === 'ollama'
+                          ? ''
+                          : '',
+                  });
+                  // Reset LLM models when switching providers
+                  resetLlmModelsState();
+                  if (newProvider !== 'ollama') {
+                    resetLlmOllamaState();
+                  }
 
-                if (newProvider === 'github_copilot' && ((copilotAuthMode === 'oauth' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) || (copilotAuthMode === 'pat' && hasCopilotPatToken))) {
-                  fetchCopilotModels();
-                }
-              }}
-            >
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic (Claude)</option>
-              <option value="openrouter">OpenRouter</option>
-              <option value="ollama">Ollama</option>
-              <option value="llama_cpp">llama.cpp</option>
-              <option value="lmstudio">LM Studio</option>
-              <option value="omlx">oMLX</option>
-              <option value="github_copilot">GitHub Copilot</option>
-            </select>
-            {/* Quick-fill from embedding Ollama when it has a real host */}
-            {formData.llm_provider === 'ollama' && formData.embedding_provider === 'ollama' && formData.ollama_host?.trim() && (
-              <button
-                type="button"
-                className="btn btn-test"
-                onClick={() => {
-                  setFormData({
-                    ...formData,
-                    llm_ollama_protocol: formData.ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
-                    llm_ollama_host: formData.ollama_host || '',
-                    llm_ollama_port: formData.ollama_port || DEFAULT_OLLAMA_PORT,
-                  });
-                  resetLlmOllamaState();
+                  if (newProvider === 'github_copilot' && ((copilotAuthMode === 'oauth' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) || (copilotAuthMode === 'pat' && hasCopilotPatToken))) {
+                    fetchCopilotModels();
+                  }
                 }}
               >
-                Use Embedding Server
-              </button>
-            )}
-            {formData.llm_provider === 'lmstudio' && formData.embedding_provider === 'lmstudio' && formData.lmstudio_host?.trim() && (
-              <button
-                type="button"
-                className="btn btn-test"
-                onClick={() => {
-                  setFormData({
-                    ...formData,
-                    llm_lmstudio_protocol: formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-                    llm_lmstudio_host: formData.lmstudio_host || '',
-                    llm_lmstudio_port: formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-                  });
-                  resetLlmModelsState();
-                }}
-              >
-                Use Embedding Server
-              </button>
-            )}
-            {formData.llm_provider === 'omlx' && formData.embedding_provider === 'omlx' && formData.omlx_host?.trim() && (
-              <button
-                type="button"
-                className="btn btn-test"
-                onClick={() => {
-                  setFormData({
-                    ...formData,
-                    llm_omlx_protocol: formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL,
-                    llm_omlx_host: formData.omlx_host || '',
-                    llm_omlx_port: formData.omlx_port || DEFAULT_OMLX_PORT,
-                  });
-                  resetLlmModelsState();
-                }}
-              >
-                Use Embedding Server
-              </button>
-            )}
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="ollama">Ollama</option>
+                <option value="llama_cpp">llama.cpp</option>
+                <option value="lmstudio">LM Studio</option>
+                <option value="omlx">oMLX</option>
+                <option value="github_copilot">GitHub Copilot</option>
+              </select>
+              {/* Quick-fill from embedding Ollama when it has a real host */}
+              {formData.llm_provider === 'ollama' && formData.embedding_provider === 'ollama' && formData.ollama_host?.trim() && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      llm_ollama_protocol: formData.ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
+                      llm_ollama_host: formData.ollama_host || '',
+                      llm_ollama_port: formData.ollama_port || DEFAULT_OLLAMA_PORT,
+                    });
+                    resetLlmOllamaState();
+                  }}
+                >
+                  Use Embedding Server
+                </button>
+              )}
+              {formData.llm_provider === 'lmstudio' && formData.embedding_provider === 'lmstudio' && formData.lmstudio_host?.trim() && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      llm_lmstudio_protocol: formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+                      llm_lmstudio_host: formData.lmstudio_host || '',
+                      llm_lmstudio_port: formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+                    });
+                    resetLlmModelsState();
+                  }}
+                >
+                  Use Embedding Server
+                </button>
+              )}
+              {formData.llm_provider === 'omlx' && formData.embedding_provider === 'omlx' && formData.omlx_host?.trim() && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => {
+                    setFormData({
+                      ...formData,
+                      llm_omlx_protocol: formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL,
+                      llm_omlx_host: formData.omlx_host || '',
+                      llm_omlx_port: formData.omlx_port || DEFAULT_OMLX_PORT,
+                    });
+                    resetLlmModelsState();
+                  }}
+                >
+                  Use Embedding Server
+                </button>
+              )}
             </div>
           </div>
 
           {/* Ollama LLM Server Connection - only show when Ollama is selected */}
           {formData.llm_provider === 'ollama' && (
             <>
-            <OllamaConnectionForm
-              protocol={formData.llm_ollama_protocol || 'http'}
-              host={formData.llm_ollama_host || ''}
-              port={formData.llm_ollama_port || DEFAULT_OLLAMA_PORT}
-              model={formData.llm_model || ''}
-              connected={llmOllamaConnected}
-              connecting={llmOllamaConnecting}
-              error={llmOllamaError}
-              models={llmOllamaModels}
-              modelLabel="Model"
-              modelPlaceholder=""
-              connectedHelpText="Select an LLM from your Ollama server."
-              disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
-              onProtocolChange={(protocol) => {
-                setFormData({ ...formData, llm_ollama_protocol: protocol });
-                resetLlmOllamaState();
-              }}
-              onHostChange={(host) => {
-                setFormData({ ...formData, llm_ollama_host: host });
-                resetLlmOllamaState();
-              }}
-              onPortChange={(port) => {
-                setFormData({ ...formData, llm_ollama_port: port });
-                resetLlmOllamaState();
-              }}
-              onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
-              onFetchModels={() => testLlmOllamaConnection(
-                formData.llm_ollama_protocol || 'http',
-                formData.llm_ollama_host || 'localhost',
-                formData.llm_ollama_port || DEFAULT_OLLAMA_PORT
-              )}
-            />
+              <OllamaConnectionForm
+                protocol={formData.llm_ollama_protocol || 'http'}
+                host={formData.llm_ollama_host || ''}
+                port={formData.llm_ollama_port || DEFAULT_OLLAMA_PORT}
+                model={formData.llm_model || ''}
+                connected={llmOllamaConnected}
+                connecting={llmOllamaConnecting}
+                error={llmOllamaError}
+                models={llmOllamaModels}
+                modelLabel="Model"
+                modelPlaceholder=""
+                connectedHelpText="Select an LLM from your Ollama server."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to see available models, or enter manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, llm_ollama_protocol: protocol });
+                  resetLlmOllamaState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, llm_ollama_host: host });
+                  resetLlmOllamaState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, llm_ollama_port: port });
+                  resetLlmOllamaState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                onFetchModels={() => testLlmOllamaConnection(
+                  formData.llm_ollama_protocol || 'http',
+                  formData.llm_ollama_host || 'localhost',
+                  formData.llm_ollama_port || DEFAULT_OLLAMA_PORT
+                )}
+              />
             </>
           )}
 
           {formData.llm_provider === 'llama_cpp' && (
             <>
-            <OllamaConnectionForm
-              protocol={formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
-              host={formData.llm_llama_cpp_host || DEFAULT_LLAMA_CPP_HOST}
-              port={formData.llm_llama_cpp_port || DEFAULT_LLAMA_CPP_CHAT_PORT}
-              model={formData.llm_model || ''}
-              connected={llmModelsLoaded && formData.llm_provider === 'llama_cpp'}
-              connecting={llmModelsFetching}
-              error={formData.llm_provider === 'llama_cpp' ? llmModelsError : null}
-              models={llmModels.map((m) => ({ id: m.id, name: m.name, context_limit: m.context_limit }))}
-              providerLabel="llama.cpp"
-              defaultPort={DEFAULT_LLAMA_CPP_CHAT_PORT}
-              hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
-              modelLabel="Model"
-              modelPlaceholder="my-chat-model"
-              connectedHelpText="Select a model from your llama.cpp server."
-              disconnectedHelpText="Click &quot;Fetch Models&quot; to discover the active llama.cpp model, or enter its alias manually."
-              onProtocolChange={(protocol) => {
-                setFormData({ ...formData, llm_llama_cpp_protocol: protocol });
-                resetLlmModelsState();
-              }}
-              onHostChange={(host) => {
-                setFormData({ ...formData, llm_llama_cpp_host: host });
-                resetLlmModelsState();
-              }}
-              onPortChange={(port) => {
-                setFormData({ ...formData, llm_llama_cpp_port: port });
-                resetLlmModelsState();
-              }}
-              onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
-              onFetchModels={fetchLlamaCppLlmModels}
-            />
-            <p className="field-help">
-              llama.cpp does not support load/unload over its HTTP API. Start the llama.cpp server with the desired model already loaded (for example, <code>llama-server -m model.gguf</code>); Ragtime will use whichever model the server is currently serving.
-            </p>
+              <OllamaConnectionForm
+                protocol={formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
+                host={formData.llm_llama_cpp_host || ''}
+                port={formData.llm_llama_cpp_port ?? ''}
+                model={formData.llm_model || ''}
+                connected={llmModelsLoaded && formData.llm_provider === 'llama_cpp'}
+                connecting={llmModelsFetching}
+                error={formData.llm_provider === 'llama_cpp' ? llmModelsError : null}
+                models={llmModels.map((m) => ({ id: m.id, name: m.name, context_limit: m.context_limit }))}
+                providerLabel="llama.cpp"
+                defaultPort={DEFAULT_LLAMA_CPP_CHAT_PORT}
+                hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
+                modelLabel="Model"
+                modelPlaceholder="my-chat-model"
+                connectedHelpText="Select a model from your llama.cpp server."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to discover the active llama.cpp model, or enter its alias manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, llm_llama_cpp_protocol: protocol });
+                  resetLlmModelsState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, llm_llama_cpp_host: host });
+                  resetLlmModelsState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, llm_llama_cpp_port: port });
+                  resetLlmModelsState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                onFetchModels={fetchLlamaCppLlmModels}
+              />
+              <p className="field-help">
+                llama.cpp does not support load/unload over its HTTP API. Start the llama.cpp server with the desired model already loaded (for example, <code>llama-server -m model.gguf</code>); Ragtime will use whichever model the server is currently serving.
+              </p>
             </>
           )}
 
@@ -3205,8 +3205,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               </div>
               <OllamaConnectionForm
                 protocol={formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
-                host={formData.llm_lmstudio_host || DEFAULT_LMSTUDIO_HOST}
-                port={formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT}
+                host={formData.llm_lmstudio_host || ''}
+                port={formData.llm_lmstudio_port ?? ''}
                 model={formData.llm_model || ''}
                 connected={llmModelsLoaded && formData.llm_provider === 'lmstudio'}
                 connecting={llmModelsFetching}
@@ -3277,8 +3277,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               </div>
               <OllamaConnectionForm
                 protocol={formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL}
-                host={formData.llm_omlx_host || DEFAULT_OMLX_HOST}
-                port={formData.llm_omlx_port || DEFAULT_OMLX_PORT}
+                host={formData.llm_omlx_host || ''}
+                port={formData.llm_omlx_port ?? ''}
                 model={formData.llm_model || ''}
                 connected={llmModelsLoaded && formData.llm_provider === 'omlx'}
                 connecting={llmModelsFetching}
@@ -4146,93 +4146,93 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             <div className="form-group" id="setting-embedding_provider">
               <label>Provider</label>
               <div className="input-with-button input-with-actions">
-              <select
-                value={formData.embedding_provider || 'ollama'}
-                onChange={(e) => {
-                  const newProvider = e.target.value as 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
-                  setFormData({
-                    ...formData,
-                    embedding_provider: newProvider,
-                    // Set sensible default model when switching providers
-                    embedding_model:
-                      newProvider === 'ollama'
-                        ? 'nomic-embed-text'
-                        : newProvider === 'llama_cpp'
-                          ? ''
-                          : newProvider === 'lmstudio'
+                <select
+                  value={formData.embedding_provider || 'ollama'}
+                  onChange={(e) => {
+                    const newProvider = e.target.value as 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+                    setFormData({
+                      ...formData,
+                      embedding_provider: newProvider,
+                      // Set sensible default model when switching providers
+                      embedding_model:
+                        newProvider === 'ollama'
+                          ? 'nomic-embed-text'
+                          : newProvider === 'llama_cpp'
                             ? ''
-                            : newProvider === 'omlx'
+                            : newProvider === 'lmstudio'
                               ? ''
-                              : newProvider === 'openrouter'
+                              : newProvider === 'omlx'
                                 ? ''
-                                : 'text-embedding-3-small',
-                  });
-                  // Reset Ollama connection state when switching providers
-                  if (newProvider !== 'ollama') {
-                    resetEmbeddingOllamaState();
-                  }
-                  resetEmbeddingModelsState();
-                }}
-              >
-                <option value="ollama">Ollama</option>
-                <option value="llama_cpp">llama.cpp</option>
-                <option value="lmstudio">LM Studio</option>
-                <option value="omlx">oMLX</option>
-                <option value="openai">OpenAI</option>
-                <option value="openrouter">OpenRouter</option>
-              </select>
-              {/* Quick-fill from LLM Ollama when it has a real host */}
-              {formData.embedding_provider === 'ollama' && formData.llm_provider === 'ollama' && formData.llm_ollama_host?.trim() && (
-                <button
-                  type="button"
-                  className="btn btn-test"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      ollama_protocol: formData.llm_ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
-                      ollama_host: formData.llm_ollama_host || '',
-                      ollama_port: formData.llm_ollama_port || DEFAULT_OLLAMA_PORT,
+                                : newProvider === 'openrouter'
+                                  ? ''
+                                  : 'text-embedding-3-small',
                     });
-                    resetEmbeddingOllamaState();
-                  }}
-                >
-                  Use LLM Server
-                </button>
-              )}
-              {formData.embedding_provider === 'lmstudio' && formData.llm_provider === 'lmstudio' && formData.llm_lmstudio_host?.trim() && (
-                <button
-                  type="button"
-                  className="btn btn-test"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      lmstudio_protocol: formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-                      lmstudio_host: formData.llm_lmstudio_host || '',
-                      lmstudio_port: formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-                    });
+                    // Reset Ollama connection state when switching providers
+                    if (newProvider !== 'ollama') {
+                      resetEmbeddingOllamaState();
+                    }
                     resetEmbeddingModelsState();
                   }}
                 >
-                  Use LLM Server
-                </button>
-              )}
-              {formData.embedding_provider === 'omlx' && formData.llm_provider === 'omlx' && formData.llm_omlx_host?.trim() && (
-                <button
-                  type="button"
-                  className="btn btn-test"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      omlx_protocol: formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL,
-                      omlx_host: formData.llm_omlx_host || '',
-                      omlx_port: formData.llm_omlx_port || DEFAULT_OMLX_PORT,
-                    });
-                    resetEmbeddingModelsState();
-                  }}
-                >
-                  Use LLM Server
-                </button>
-              )}
+                  <option value="ollama">Ollama</option>
+                  <option value="llama_cpp">llama.cpp</option>
+                  <option value="lmstudio">LM Studio</option>
+                  <option value="omlx">oMLX</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="openrouter">OpenRouter</option>
+                </select>
+                {/* Quick-fill from LLM Ollama when it has a real host */}
+                {formData.embedding_provider === 'ollama' && formData.llm_provider === 'ollama' && formData.llm_ollama_host?.trim() && (
+                  <button
+                    type="button"
+                    className="btn btn-test"
+                    onClick={() => {
+                      setFormData({
+                        ...formData,
+                        ollama_protocol: formData.llm_ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
+                        ollama_host: formData.llm_ollama_host || '',
+                        ollama_port: formData.llm_ollama_port || DEFAULT_OLLAMA_PORT,
+                      });
+                      resetEmbeddingOllamaState();
+                    }}
+                  >
+                    Use LLM Server
+                  </button>
+                )}
+                {formData.embedding_provider === 'lmstudio' && formData.llm_provider === 'lmstudio' && formData.llm_lmstudio_host?.trim() && (
+                  <button
+                    type="button"
+                    className="btn btn-test"
+                    onClick={() => {
+                      setFormData({
+                        ...formData,
+                        lmstudio_protocol: formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
+                        lmstudio_host: formData.llm_lmstudio_host || '',
+                        lmstudio_port: formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
+                      });
+                      resetEmbeddingModelsState();
+                    }}
+                  >
+                    Use LLM Server
+                  </button>
+                )}
+                {formData.embedding_provider === 'omlx' && formData.llm_provider === 'omlx' && formData.llm_omlx_host?.trim() && (
+                  <button
+                    type="button"
+                    className="btn btn-test"
+                    onClick={() => {
+                      setFormData({
+                        ...formData,
+                        omlx_protocol: formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL,
+                        omlx_host: formData.llm_omlx_host || '',
+                        omlx_port: formData.llm_omlx_port || DEFAULT_OMLX_PORT,
+                      });
+                      resetEmbeddingModelsState();
+                    }}
+                  >
+                    Use LLM Server
+                  </button>
+                )}
               </div>
               <p className="field-help">
                 Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, LM Studio, oMLX, or OpenAI for document embeddings.
@@ -4325,40 +4325,40 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
           {formData.embedding_provider === 'llama_cpp' && (
             <>
-            <OllamaConnectionForm
-              protocol={formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
-              host={formData.llama_cpp_host || DEFAULT_LLAMA_CPP_HOST}
-              port={formData.llama_cpp_port || DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
-              model={formData.embedding_model || ''}
-              connected={embeddingModelsLoaded && formData.embedding_provider === 'llama_cpp'}
-              connecting={embeddingModelsFetching}
-              error={formData.embedding_provider === 'llama_cpp' ? embeddingModelsError : null}
-              models={embeddingModels.map((m) => ({ id: m.id, name: m.name, dimensions: m.dimensions }))}
-              providerLabel="llama.cpp"
-              defaultPort={DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
-              hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
-              modelLabel="Embedding Model"
-              modelPlaceholder="my-embed-model"
-              connectedHelpText="Select an embedding model from your llama.cpp server."
-              disconnectedHelpText="Click &quot;Fetch Models&quot; to probe the llama.cpp embedding server, or enter the model alias manually."
-              onProtocolChange={(protocol) => {
-                setFormData({ ...formData, llama_cpp_protocol: protocol });
-                resetEmbeddingModelsState();
-              }}
-              onHostChange={(host) => {
-                setFormData({ ...formData, llama_cpp_host: host });
-                resetEmbeddingModelsState();
-              }}
-              onPortChange={(port) => {
-                setFormData({ ...formData, llama_cpp_port: port });
-                resetEmbeddingModelsState();
-              }}
-              onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
-              onFetchModels={fetchLlamaCppEmbeddingModels}
-            />
-            <p className="field-help">
-              llama.cpp does not support load/unload over its HTTP API. Start the embedding server with <code>--embedding</code> and the desired model already loaded (for example, <code>llama-server --embedding -m embed-model.gguf</code>).
-            </p>
+              <OllamaConnectionForm
+                protocol={formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
+                host={formData.llama_cpp_host || ''}
+                port={formData.llama_cpp_port ?? ''}
+                model={formData.embedding_model || ''}
+                connected={embeddingModelsLoaded && formData.embedding_provider === 'llama_cpp'}
+                connecting={embeddingModelsFetching}
+                error={formData.embedding_provider === 'llama_cpp' ? embeddingModelsError : null}
+                models={embeddingModels.map((m) => ({ id: m.id, name: m.name, dimensions: m.dimensions }))}
+                providerLabel="llama.cpp"
+                defaultPort={DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
+                hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
+                modelLabel="Embedding Model"
+                modelPlaceholder="my-embed-model"
+                connectedHelpText="Select an embedding model from your llama.cpp server."
+                disconnectedHelpText="Click &quot;Fetch Models&quot; to probe the llama.cpp embedding server, or enter the model alias manually."
+                onProtocolChange={(protocol) => {
+                  setFormData({ ...formData, llama_cpp_protocol: protocol });
+                  resetEmbeddingModelsState();
+                }}
+                onHostChange={(host) => {
+                  setFormData({ ...formData, llama_cpp_host: host });
+                  resetEmbeddingModelsState();
+                }}
+                onPortChange={(port) => {
+                  setFormData({ ...formData, llama_cpp_port: port });
+                  resetEmbeddingModelsState();
+                }}
+                onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                onFetchModels={fetchLlamaCppEmbeddingModels}
+              />
+              <p className="field-help">
+                llama.cpp does not support load/unload over its HTTP API. Start the embedding server with <code>--embedding</code> and the desired model already loaded (for example, <code>llama-server --embedding -m embed-model.gguf</code>).
+              </p>
             </>
           )}
 
@@ -4377,8 +4377,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               </div>
               <OllamaConnectionForm
                 protocol={formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
-                host={formData.lmstudio_host || DEFAULT_LMSTUDIO_HOST}
-                port={formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT}
+                host={formData.lmstudio_host || ''}
+                port={formData.lmstudio_port ?? ''}
                 model={formData.embedding_model || ''}
                 connected={embeddingModelsLoaded && formData.embedding_provider === 'lmstudio'}
                 connecting={embeddingModelsFetching}
@@ -4450,8 +4450,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               </div>
               <OllamaConnectionForm
                 protocol={formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL}
-                host={formData.omlx_host || DEFAULT_OMLX_HOST}
-                port={formData.omlx_port || DEFAULT_OMLX_PORT}
+                host={formData.omlx_host || ''}
+                port={formData.omlx_port ?? ''}
                 model={formData.embedding_model || ''}
                 connected={embeddingModelsLoaded && formData.embedding_provider === 'omlx'}
                 connecting={embeddingModelsFetching}
@@ -4773,8 +4773,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                         <option value="">Select a model</option>
                         {formData.default_ocr_vision_model
                           && !visionModels.some((model) => model.name === formData.default_ocr_vision_model) && (
-                          <option value={formData.default_ocr_vision_model}>{formData.default_ocr_vision_model}</option>
-                        )}
+                            <option value={formData.default_ocr_vision_model}>{formData.default_ocr_vision_model}</option>
+                          )}
                         {visionModels.map((model) => (
                           <option key={`${model.provider || selectedOcrProvider}:${model.name}`} value={model.name}>
                             {model.name}
@@ -5647,16 +5647,16 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                       <span>Client Credentials</span>
                     </label>
                     {ldapConfigured && (
-                    <label className="radio-label">
-                      <input
-                        type="radio"
-                        name="mcp_auth_method"
-                        value="oauth2"
-                        checked={(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'}
-                        onChange={() => setFormData({ ...formData, mcp_default_route_auth_method: 'oauth2' })}
-                      />
-                      <span>OAuth2 (LDAP)</span>
-                    </label>
+                      <label className="radio-label">
+                        <input
+                          type="radio"
+                          name="mcp_auth_method"
+                          value="oauth2"
+                          checked={(formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'password') === 'oauth2'}
+                          onChange={() => setFormData({ ...formData, mcp_default_route_auth_method: 'oauth2' })}
+                        />
+                        <span>OAuth2 (LDAP)</span>
+                      </label>
                     )}
                   </div>
                   <p className="field-help">
