@@ -1247,6 +1247,14 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
         settings = AppSettings(
             llm_provider="github_copilot",
             llm_model="gpt-5.3-codex",
+            ollama_base_url="",
+            llama_cpp_base_url="",
+            lmstudio_base_url="",
+            omlx_base_url="",
+            llm_ollama_base_url="",
+            llm_llama_cpp_base_url="",
+            llm_lmstudio_base_url="",
+            llm_omlx_base_url="",
             github_copilot_access_token="",
             github_copilot_refresh_token="github-oauth-token",
             allowed_chat_models=[],
@@ -1265,49 +1273,69 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
             default_model="gpt-5.3-codex",
         )
 
-        with (
-            mock.patch.object(
-                indexer_routes.repository,
-                "get_settings",
-                mock.AsyncMock(return_value=settings),
-            ),
-            mock.patch(
-                "ragtime.indexer.routes.ensure_copilot_token_fresh",
-                new=mock.AsyncMock(return_value=None),
-            ),
-            mock.patch(
-                "ragtime.indexer.routes.is_copilot_token_refresh_in_progress",
-                return_value=False,
-            ),
-            mock.patch(
-                "ragtime.indexer.routes._fetch_github_provider_models",
-                new=mock.AsyncMock(return_value=copilot_result),
-            ) as fetch_copilot,
-            mock.patch(
-                "ragtime.indexer.routes._is_model_discovery_loading",
-                new=mock.AsyncMock(return_value=False),
-            ),
-            mock.patch(
-                "ragtime.indexer.routes._reconcile_allowed_models_with_discovery",
-                new=mock.AsyncMock(return_value=[]),
-            ),
-            mock.patch(
-                "ragtime.indexer.routes.ensure_model_metadata_loaded",
-                new=mock.AsyncMock(),
-            ),
-        ):
-            response = await indexer_routes.get_available_chat_models()
+        model_limits.invalidate_cache()
+        try:
+            with (
+                mock.patch.object(
+                    indexer_routes.repository,
+                    "get_settings",
+                    mock.AsyncMock(return_value=settings),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.ensure_copilot_token_fresh",
+                    new=mock.AsyncMock(return_value=None),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.is_copilot_token_refresh_in_progress",
+                    return_value=False,
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes._resolve_ollama_chat_base_url",
+                    return_value="",
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes._resolve_llama_cpp_chat_base_url",
+                    return_value="",
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes._resolve_lmstudio_chat_base_url",
+                    return_value="",
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes._resolve_omlx_chat_base_url",
+                    return_value="",
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes._fetch_github_provider_models",
+                    new=mock.AsyncMock(return_value=copilot_result),
+                ) as fetch_copilot,
+                mock.patch(
+                    "ragtime.indexer.routes._is_model_discovery_loading",
+                    new=mock.AsyncMock(return_value=False),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes._reconcile_allowed_models_with_discovery",
+                    new=mock.AsyncMock(return_value=[]),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.ensure_model_metadata_loaded",
+                    new=mock.AsyncMock(),
+                ),
+            ):
+                response = await indexer_routes.get_available_chat_models()
 
-        fetch_copilot.assert_awaited_once()
-        await_args = fetch_copilot.await_args
-        self.assertIsNotNone(await_args)
-        assert await_args is not None
-        fetch_kwargs = await_args.kwargs
-        self.assertEqual(fetch_kwargs["provider"], "github_copilot")
-        self.assertIs(fetch_kwargs["settings"], settings)
-        self.assertEqual([model.provider for model in response.models], ["github_copilot"])
-        copilot_state = next(state for state in response.provider_states if state.provider == "github_copilot")
-        self.assertTrue(copilot_state.available)
+            fetch_copilot.assert_awaited_once()
+            await_args = fetch_copilot.await_args
+            self.assertIsNotNone(await_args)
+            assert await_args is not None
+            fetch_kwargs = await_args.kwargs
+            self.assertEqual(fetch_kwargs["provider"], "github_copilot")
+            self.assertIs(fetch_kwargs["settings"], settings)
+            self.assertEqual([model.provider for model in response.models], ["github_copilot"])
+            copilot_state = next(state for state in response.provider_states if state.provider == "github_copilot")
+            self.assertTrue(copilot_state.available)
+        finally:
+            model_limits.invalidate_cache()
 
     async def test_github_provider_oauth_fetch_refreshes_before_missing_access_token_error(self) -> None:
         settings = AppSettings(

@@ -118,7 +118,7 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["capabilities"], capabilities_payload)
         self.assertEqual(payload["session"], session_payload)
         primitive_capabilities.assert_awaited_once_with("workspace-1", "user-1", preview_mode="workspace")
-        primitive_session.assert_awaited_once_with("workspace-1", "user-1", mode="workspace")
+        primitive_session.assert_awaited_once_with("workspace-1", "user-1", mode="workspace", same_origin_auth_endpoints=True)
 
     async def test_frontend_json_display_tools_bypass_global_output_truncation(self) -> None:
         tool = await self._tool("discover_userspace_primitives")

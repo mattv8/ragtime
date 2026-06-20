@@ -759,8 +759,25 @@ export function PublicSharedChatView(props: PublicSharedChatViewProps) {
 
   if (target === 'workspace') {
     return shareToken
-      ? <UserSpaceSharedView shareToken={shareToken} />
-      : <UserSpaceSharedView ownerUsername={ownerUsername} shareSlug={shareSlug} />;
+      ? (
+        <UserSpaceSharedView
+          shareToken={shareToken}
+          currentUser={props.currentUser}
+          authStatus={props.authStatus}
+          serverName={props.serverName}
+          onLoginSuccess={props.onLoginSuccess}
+        />
+      )
+      : (
+        <UserSpaceSharedView
+          ownerUsername={ownerUsername}
+          shareSlug={shareSlug}
+          currentUser={props.currentUser}
+          authStatus={props.authStatus}
+          serverName={props.serverName}
+          onLoginSuccess={props.onLoginSuccess}
+        />
+      );
   }
 
   return <SharedChatSurface {...props} />;

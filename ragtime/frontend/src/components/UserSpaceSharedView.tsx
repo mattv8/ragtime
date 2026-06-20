@@ -1,14 +1,33 @@
 import { useEffect, useState } from 'react';
 
 import { api } from '@/api';
+import type { AuthStatus, User } from '@/types';
+import { UserSpaceSharedAuthGate } from './UserSpaceSharedAuthGate';
 
 interface UserSpaceSharedViewProps {
   shareToken?: string;
   ownerUsername?: string;
   shareSlug?: string;
+  currentUser: User | null;
+  authStatus: AuthStatus | null;
+  serverName?: string;
+  onLoginSuccess: (user: User) => void;
 }
 
-export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: UserSpaceSharedViewProps) {
+function isAuthRequiredError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('authentication required') || normalized.includes('not authenticated');
+}
+
+export function UserSpaceSharedView({
+  shareToken,
+  ownerUsername,
+  shareSlug,
+  currentUser,
+  authStatus,
+  serverName,
+  onLoginSuccess,
+}: UserSpaceSharedViewProps) {
   const [sharePasswordDraft, setSharePasswordDraft] = useState('');
   const [submittedSharePassword, setSubmittedSharePassword] = useState<string | undefined>(undefined);
   const [passwordRequired, setPasswordRequired] = useState(false);
@@ -25,12 +44,10 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
           ? await api.launchUserSpaceSharedPreview(shareToken, {
             path: '/',
             parent_origin: window.location.origin,
-            prefer_root_proxy: true,
           }, submittedSharePassword)
           : await api.launchUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string, {
             path: '/',
             parent_origin: window.location.origin,
-            prefer_root_proxy: true,
           }, submittedSharePassword);
         if (cancelled) return;
         setPasswordRequired(false);
@@ -56,7 +73,7 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
     return () => {
       cancelled = true;
     };
-  }, [ownerUsername, shareSlug, shareToken, submittedSharePassword]);
+  }, [currentUser?.id, ownerUsername, shareSlug, shareToken, submittedSharePassword]);
 
   if (loading) {
     return <div className="userspace-shared-status">Opening shared preview...</div>;
@@ -89,6 +106,16 @@ export function UserSpaceSharedView({ shareToken, ownerUsername, shareSlug }: Us
             </div>
           </div>
         </div>
+      );
+    }
+    if (!currentUser && isAuthRequiredError(error)) {
+      return (
+        <UserSpaceSharedAuthGate
+          authStatus={authStatus}
+          onLoginSuccess={onLoginSuccess}
+          serverName={serverName}
+          detail={error}
+        />
       );
     }
     return <div className="userspace-shared-status userspace-error">{error || 'Shared dashboard not found'}</div>;

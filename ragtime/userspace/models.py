@@ -1080,6 +1080,8 @@ class UserSpaceAuthMethod(BaseModel):
 class UserSpaceBrowserAuthRequest(BaseModel):
     surfaces: list[UserSpaceBrowserSurface] = Field(default_factory=list)
     auth_method_key: str | None = None
+    username: str | None = None
+    password: str | None = None
 
 
 class UserSpaceBrowserAuthorization(BaseModel):

@@ -7936,7 +7936,7 @@ class RAGComponents:
             )
             include_session: bool = Field(
                 default=True,
-                description="Include the /__ragtime/session payload with auth methods and user_fingerprint when true.",
+                description="Include the /__ragtime/session payload with auth methods, auth.user display identity, and user_fingerprint when true.",
             )
             reason: str = Field(
                 default="",
@@ -8988,7 +8988,7 @@ class RAGComponents:
             capabilities = await _primitive_capabilities(target_ws, target_uid, preview_mode="workspace")
             session = None
             if include_session:
-                session = await _primitive_session_payload(target_ws, target_uid, mode="workspace")
+                session = await _primitive_session_payload(target_ws, target_uid, mode="workspace", same_origin_auth_endpoints=True)
 
             return _render_userspace_tool_payload(
                 tool_name="discover_userspace_primitives",

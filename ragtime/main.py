@@ -12,7 +12,6 @@ Usage:
 """
 
 import asyncio
-import html
 import os
 import secrets
 import time
@@ -86,6 +85,7 @@ from ragtime.mcp.routes import router as mcp_router
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origins
 from ragtime.rag import rag
+from ragtime.userspace.html_templates import render_share_unlock_prompt_html
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
 from ragtime.userspace.routes import router as userspace_router
 from ragtime.userspace.runtime_routes import (
@@ -866,27 +866,13 @@ def _render_share_unlock_prompt(
     error: str | None = None,
     next_target: str | None = None,
 ) -> str:
-    safe_error = html.escape(error) if error else ""
-    safe_form_action = html.escape(form_action, quote=True)
-    safe_next_target = html.escape(next_target, quote=True) if next_target else ""
-    safe_title = html.escape(title)
-    safe_subtitle = html.escape(subtitle) if subtitle else ""
-    safe_owner_label = html.escape(owner_label) if owner_label else ""
-    subtitle_block = f"<p style='margin:0 0 6px 0;color:#e2e8f0;font-size:15px;font-weight:600'>{safe_subtitle}</p>" if safe_subtitle else ""
-    owner_block = f"<p style='margin:0 0 14px 0;color:#94a3b8;font-size:13px'>{safe_owner_label}</p>" if safe_owner_label else ""
-    error_block = f"<p style='color:#fca5a5;margin:0 0 12px 0;font-size:14px'>{safe_error}</p>" if safe_error else ""
-    next_block = f"<input type='hidden' name='next' value='{safe_next_target}'>" if safe_next_target else ""
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Shared Workspace</title></head><body style='margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif'>"
-        f"<form method='post' action='{safe_form_action}' style='width:min(92vw,360px);padding:20px;border:1px solid #334155;border-radius:12px;background:#111827'>"
-        f"<h1 style='font-size:18px;margin:0 0 10px 0'>{safe_title}</h1>{subtitle_block}{owner_block}"
-        f"{error_block}"
-        f"{next_block}"
-        "<label for='share_password' style='display:block;margin-bottom:8px;font-size:13px'>Password</label>"
-        "<input id='share_password' name='share_password' type='password' required autofocus autocomplete='current-password' style='width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#0b1220;color:#e2e8f0'>"
-        "<button type='submit' style='margin-top:12px;width:100%;padding:10px 12px;border-radius:8px;border:1px solid #334155;background:#1d4ed8;color:#fff;cursor:pointer'>Continue</button>"
-        "</form></body></html>"
+    return render_share_unlock_prompt_html(
+        title=title,
+        form_action=form_action,
+        subtitle=subtitle,
+        owner_label=owner_label,
+        error=error,
+        next_target=next_target,
     )
 
 
@@ -1079,6 +1065,8 @@ async def _shared_launch_redirect_by_slug(
                 share_slug=share_slug,
             )
             return response
+        if exc.status_code in {401, 403} and request.method == "GET":
+            return _shared_chat_shell_response()
         raise
 
     # Redirect to preview origin subdomain.
@@ -1168,6 +1156,8 @@ async def _shared_launch_redirect_by_token(
                 share_token=share_token,
             )
             return response
+        if exc.status_code in {401, 403} and request.method == "GET":
+            return _shared_chat_shell_response()
         raise
 
     # Redirect to preview origin subdomain.

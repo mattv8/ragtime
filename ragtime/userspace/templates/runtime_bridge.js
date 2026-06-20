@@ -528,9 +528,14 @@
     },
     has: function () { return true; },
   });
+  var session = window.__ragtime_session && typeof window.__ragtime_session === 'object'
+    ? window.__ragtime_session
+    : null;
 
   window.__ragtime_context = Object.freeze({
     components: Object.freeze(componentsProxy),
+    session: session,
+    auth: session && session.auth ? session.auth : null,
   });
   if (!window.context) { window.context = window.__ragtime_context; }
 })();

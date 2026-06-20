@@ -13,15 +13,15 @@ import re
 import tarfile
 import uuid
 import zipfile
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from ragtime.config.settings import settings
@@ -31,7 +31,12 @@ from ragtime.core.auth_methods import build_auth_method_statuses, normalize_auth
 from ragtime.core.logging import get_logger
 from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional, get_session_token
-from ragtime.core.user_identity import USER_FINGERPRINT_SCOPE_WORKSPACE, build_user_fingerprint_subject, build_workspace_user_fingerprint
+from ragtime.core.user_identity import (
+    USER_FINGERPRINT_SCOPE_WORKSPACE,
+    build_user_fingerprint_subject,
+    build_workspace_user_fingerprint,
+    normalize_user_identity,
+)
 from ragtime.core.userspace_limits import (
     USERSPACE_PRIMITIVE_ARCHIVE_DEFAULT_MAX_ENTRIES,
     USERSPACE_PRIMITIVE_UPLOAD_DEFAULT_MAX_BYTES,
@@ -39,6 +44,7 @@ from ragtime.core.userspace_limits import (
     clamp_userspace_primitive_upload_max_bytes,
 )
 from ragtime.indexer.document_parser import extract_text_from_file_async
+from ragtime.userspace.html_templates import render_preview_host_unreachable_page_html
 from ragtime.userspace.models import (
     UserSpaceAuthMethod,
     UserSpaceBrowserAuthorization,
@@ -187,43 +193,15 @@ def _preview_host_unreachable_response(
 ) -> HTMLResponse:
     """Return an actionable 503 when the preview subdomain is not routed to Ragtime.
 
-    Mirrors the ``preview_host_unreachable`` warning condition but renders
-    inline instead of issuing a 307 into an upstream that will 502 at the
+    Mirrors the ``preview_host_unreachable`` warning condition but returns a
+    local diagnostic page instead of issuing a 307 into an upstream that will 502 at the
     reverse proxy.
     """
 
-    preview_host = _html.escape(str(getattr(warning, "preview_host", "") or ""))
-    base_domain = _html.escape(str(getattr(warning, "resolved_base_domain", "") or ""))
-    origin = _html.escape(preview_origin or "")
-    workspace = _html.escape(workspace_id)
-    body = (
-        "<!doctype html>\n"
-        '<html lang="en"><head><meta charset="utf-8">'
-        "<title>Userspace preview unreachable</title>"
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<style>"
-        "body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;"
-        "max-width:640px;margin:2rem auto;padding:0 1rem;color:#222}"
-        "h1{font-size:1.25rem;margin-bottom:.5rem}"
-        "code{background:#f3f3f3;padding:2px 6px;border-radius:3px}"
-        ".hint{background:#fff7e6;border-left:4px solid #f0ad4e;"
-        "padding:.75rem 1rem;margin-top:1rem}"
-        "p{line-height:1.5}"
-        "</style></head><body>"
-        "<h1>Preview subdomain is not routed to Ragtime</h1>"
-        f"<p>The workspace preview host <code>{preview_host}</code> is "
-        "configured but does not reach this Ragtime instance. Ragtime "
-        "refused to redirect into an upstream that will fail at the "
-        "reverse proxy.</p>"
-        f"<p><strong>Workspace:</strong> <code>{workspace}</code><br>"
-        f"<strong>Preview origin:</strong> <code>{origin}</code></p>"
-        '<div class="hint"><p><strong>Fix:</strong> configure a wildcard '
-        f"vhost <code>*.{base_domain}</code> on your reverse proxy "
-        "(Caddy/Traefik/nginx) that forwards to the Ragtime container, or "
-        "point <code>USERSPACE_PREVIEW_BASE_DOMAIN</code> at a domain whose "
-        "wildcard already proxies to Ragtime. Verify with:<br>"
-        f"<code>curl -I https://{preview_host}/__ragtime/preview-host-probe</code>"
-        "</body></html>"
+    body = render_preview_host_unreachable_page_html(
+        workspace_id=workspace_id,
+        preview_origin=preview_origin,
+        warning=warning,
     )
     return HTMLResponse(
         content=body,
@@ -258,9 +236,28 @@ _BROWSER_SURFACE_COOKIE_CONFIG: dict[str, dict[str, Any]] = {
     },
 }
 
+_PREVIEW_SESSION_CAPABILITY = "userspace.preview_session"
+
 
 def _default_browser_surfaces() -> list[UserSpaceBrowserSurface]:
     return ["collab", "runtime_pty"]
+
+
+def _auth_user_payload(user: Any, *, user_fingerprint: str | None = None) -> dict[str, Any] | None:
+    if user is None:
+        return None
+    username, display_name = normalize_user_identity(
+        str(getattr(user, "username", "") or ""),
+        str(getattr(user, "displayName", "") or getattr(user, "display_name", "") or ""),
+    )
+    display_label = display_name or username or None
+    return {
+        "display_name": display_label,
+        "username": username or None,
+        "email": getattr(user, "email", None),
+        "auth_provider": str(getattr(getattr(user, "authProvider", None), "value", getattr(user, "authProvider", None)) or "local"),
+        "user_fingerprint": user_fingerprint,
+    }
 
 
 def _normalize_browser_surfaces(
@@ -312,6 +309,7 @@ async def _primitive_session_payload(
     mode: str,
     share_access_mode: Any = None,
     user: Any = None,
+    same_origin_auth_endpoints: bool = False,
 ) -> dict[str, Any]:
     capabilities = await _primitive_capabilities(workspace_id, user_id, preview_mode=mode)
     fingerprint = None
@@ -333,6 +331,11 @@ async def _primitive_session_payload(
             or None
         )
     auth_methods = await _userspace_auth_methods()
+    browser_auth_endpoint = "/__ragtime/browser-auth"
+    browser_logout_endpoint = "/__ragtime/browser-auth/logout"
+    if mode == "workspace" and not same_origin_auth_endpoints:
+        browser_auth_endpoint = f"/indexes/userspace/runtime/workspaces/{workspace_id}/browser-auth"
+        browser_logout_endpoint = f"/indexes/userspace/runtime/workspaces/{workspace_id}/browser-auth/logout"
     return {
         "workspace_id": workspace_id,
         "mode": mode,
@@ -341,9 +344,15 @@ async def _primitive_session_payload(
         "user_fingerprint_scope": USER_FINGERPRINT_SCOPE_WORKSPACE if fingerprint else None,
         "share_access_mode": share_access_mode,
         "auth": {
+            "authenticated": bool(user_id),
+            "user": _auth_user_payload(user, user_fingerprint=fingerprint) if user_id else None,
             "methods": [method.model_dump() for method in auth_methods],
             "binding_strategy": "browser_capability_token",
-            "browser_auth_endpoint": "/__ragtime/browser-auth" if mode != "workspace" else f"/indexes/userspace/runtime/workspaces/{workspace_id}/browser-auth",
+            "interactive_auth_endpoint": "/__ragtime/browser-auth/start",
+            "login_endpoint": "/auth/login",
+            "current_user_endpoint": "/auth/me",
+            "browser_auth_endpoint": browser_auth_endpoint,
+            "browser_logout_endpoint": browser_logout_endpoint,
         },
         "capabilities": capabilities,
     }
@@ -1458,7 +1467,8 @@ def _to_websocket_url(http_url: str) -> str:
 def _sanitize_preview_query(query: str | None) -> str | None:
     if not query:
         return None
-    cleaned_pairs = [(key, value) for key, value in parse_qsl(query, keep_blank_values=True) if key != "cap_token"]
+    internal_query_params = {"cap_token", _PREVIEW_HANDOFF_QUERY_PARAM}
+    cleaned_pairs = [(key, value) for key, value in parse_qsl(query, keep_blank_values=True) if key not in internal_query_params]
     if not cleaned_pairs:
         return None
     return urlencode(cleaned_pairs, doseq=True)
@@ -1596,6 +1606,7 @@ async def _proxy_http_request(
     bridge_workspace_id: str | None = None,
     bridge_context: dict[str, Any] | None = None,
     bridge_script_src: str | None = None,
+    primitive_session_factory: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> Response:
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
@@ -1654,12 +1665,30 @@ async def _proxy_http_request(
             sandbox_flags = list(app_settings.get("userspace_preview_sandbox_flags") or [])
         except Exception:
             sandbox_flags = None
+        primitive_session: dict[str, Any] | None = None
+        auth_requirement = _extract_ragtime_auth_requirement(content)
+        if auth_requirement is not None and primitive_session_factory is not None:
+            primitive_session = await primitive_session_factory()
+            auth_payload = primitive_session.get("auth") if isinstance(primitive_session, dict) else None
+            is_authenticated = bool(auth_payload.get("authenticated")) if isinstance(auth_payload, dict) else False
+            if not is_authenticated:
+                return RedirectResponse(
+                    url=_interactive_auth_url_from_requirement(auth_requirement, _return_to_from_request(request)),
+                    status_code=302,
+                    headers={
+                        "Cache-Control": "no-store",
+                        _USERSPACE_SURFACE_HEADER: "preview-proxy",
+                        _USERSPACE_PREVIEW_PROXY_HEADER: "true",
+                    },
+                )
         content = _inject_bridge_script(
             content,
             sandbox_flags,
             workspace_id=bridge_workspace_id,
             bridge_context=bridge_context,
             bridge_script_src=bridge_script_src,
+            primitive_session=primitive_session,
+            cleanup_preview_handoff=_PREVIEW_HANDOFF_QUERY_PARAM in request.query_params,
         )
         # The response body may be decoded by httpx and is definitely mutated by
         # bridge injection, so upstream encoding and length metadata is stale.
@@ -1693,9 +1722,101 @@ async def _proxy_http_request(
 
 _BRIDGE_CONFIG_MARKER = b"__ragtime_preview_sandbox_flags"
 _BRIDGE_CONTEXT_MARKER = b"__ragtime_preview_bridge"
+_PRIMITIVE_SESSION_MARKER = b"__ragtime_session"
+_PREVIEW_HANDOFF_QUERY_PARAM = "__ragtime_preview_handoff"
+_PREVIEW_HANDOFF_CLEANUP_MARKER = b"__ragtime_cleanup_preview_handoff"
 _BRIDGE_DETECT_RE = re.compile(rb"bridge\.js", re.IGNORECASE)
 _HEAD_CLOSE_RE = re.compile(rb"(</head\s*>)", re.IGNORECASE)
 _FIRST_SCRIPT_RE = re.compile(rb"(<script[\s>])", re.IGNORECASE)
+_RAGTIME_AUTH_META_RE = re.compile(
+    rb"<meta\s+[^>]*(?:name\s*=\s*['\"]ragtime-auth['\"][^>]*content\s*=\s*['\"]([^'\"]*)['\"]|content\s*=\s*['\"]([^'\"]*)['\"][^>]*name\s*=\s*['\"]ragtime-auth['\"])[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _json_for_inline_script(value: Any) -> bytes:
+    serialized = json.dumps(value, separators=(",", ":"), default=str)
+    serialized = serialized.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    return serialized.encode("utf-8")
+
+
+def _parse_ragtime_auth_meta_content(raw_content: bytes) -> dict[str, Any] | None:
+    try:
+        content = raw_content.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    values: dict[str, str] = {}
+    required = False
+    for item in re.split(r"[;\n]+", content):
+        part = item.strip()
+        if not part:
+            continue
+        if "=" in part:
+            key, value = part.split("=", 1)
+            values[key.strip().lower()] = value.strip().strip("\"'")
+            continue
+        if part.lower() in {"required", "require", "auth_required"}:
+            required = True
+    if str(values.get("required") or "").strip().lower() in {"1", "true", "yes", "required"}:
+        required = True
+    if not required:
+        return None
+
+    raw_surfaces = values.get("surfaces") or values.get("surface") or ""
+    surfaces: list[UserSpaceBrowserSurface] = []
+    for part in re.split(r"[,\s]+", raw_surfaces):
+        surface = part.strip()
+        if surface in {"collab", "runtime_pty"}:
+            surfaces.append(cast(UserSpaceBrowserSurface, surface))
+    return {
+        "required": True,
+        "surfaces": _normalize_browser_surfaces(surfaces or None),
+        "auth_method_key": normalize_auth_method_key(values.get("auth_method_key") or values.get("method") or None) or None,
+    }
+
+
+def _extract_ragtime_auth_requirement(html: bytes) -> dict[str, Any] | None:
+    match = _RAGTIME_AUTH_META_RE.search(html)
+    if not match:
+        return None
+    raw_content = match.group(1) or match.group(2) or b""
+    return _parse_ragtime_auth_meta_content(raw_content)
+
+
+def _return_to_from_request(request: Request) -> str:
+    path = request.url.path or "/"
+    if not path.startswith("/") or path.startswith("//"):
+        path = "/"
+    query = request.url.query
+    return f"{path}?{query}" if query else path
+
+
+def _interactive_auth_url_from_requirement(requirement: dict[str, Any], return_to: str) -> str:
+    params: list[tuple[str, str]] = []
+    for surface in _normalize_browser_surfaces(requirement.get("surfaces") or None):
+        params.append(("surfaces", surface))
+    auth_method_key = normalize_auth_method_key(requirement.get("auth_method_key"))
+    if auth_method_key:
+        params.append(("auth_method_key", auth_method_key))
+    params.append(("return_to", return_to if return_to.startswith("/") and not return_to.startswith("//") else "/"))
+    return "/__ragtime/browser-auth/start?" + urlencode(params)
+
+
+def _build_primitive_session_tag(primitive_session: dict[str, Any]) -> bytes:
+    serialized_session = _json_for_inline_script(primitive_session)
+    return (
+        b"<script>window.__ragtime_session=" + serialized_session + b";window.__ragtime_auth=window.__ragtime_session&&window.__ragtime_session.auth;</script>"
+    )
+
+
+def _build_preview_handoff_cleanup_tag() -> bytes:
+    param = json.dumps(_PREVIEW_HANDOFF_QUERY_PARAM).encode("utf-8")
+    return (
+        b"<script>window.__ragtime_cleanup_preview_handoff=true;(function(){try{var url=new URL(window.location.href);"
+        b"var param="
+        + param
+        + b";if(url.searchParams.has(param)){url.searchParams.delete(param);window.history.replaceState(window.history.state,'',url.pathname+url.search+url.hash);}}catch(err){}})();</script>"
+    )
 
 
 def _build_bridge_script_tag(
@@ -1730,6 +1851,8 @@ def _inject_bridge_script(
     workspace_id: str | None = None,
     bridge_context: dict[str, Any] | None = None,
     bridge_script_src: str | None = None,
+    primitive_session: dict[str, Any] | None = None,
+    cleanup_preview_handoff: bool = False,
 ) -> bytes:
     """Inject the platform data-bridge script into HTML responses.
 
@@ -1739,10 +1862,14 @@ def _inject_bridge_script(
     Skips injection if bridge.js is already referenced.
     """
     injected = b""
+    if cleanup_preview_handoff and _PREVIEW_HANDOFF_CLEANUP_MARKER not in html:
+        injected += _build_preview_handoff_cleanup_tag() + b"\n"
     if sandbox_flags is not None and _BRIDGE_CONFIG_MARKER not in html:
         injected += _build_bridge_config_tag(sandbox_flags) + b"\n"
     if bridge_context is not None and _BRIDGE_CONTEXT_MARKER not in html:
         injected += _build_bridge_context_tag(bridge_context) + b"\n"
+    if primitive_session is not None and _PRIMITIVE_SESSION_MARKER not in html:
+        injected += _build_primitive_session_tag(primitive_session) + b"\n"
     if not _BRIDGE_DETECT_RE.search(html):
         injected += (
             _build_bridge_script_tag(
@@ -1753,12 +1880,12 @@ def _inject_bridge_script(
         )
     if not injected:
         return html
-    m = _HEAD_CLOSE_RE.search(html)
-    if m:
-        return html[: m.start()] + injected + html[m.start() :]
-    m = _FIRST_SCRIPT_RE.search(html)
-    if m:
-        return html[: m.start()] + injected + html[m.start() :]
+    head_match = _HEAD_CLOSE_RE.search(html)
+    script_match = _FIRST_SCRIPT_RE.search(html)
+    candidates = [match for match in (head_match, script_match) if match is not None]
+    if candidates:
+        insert_at = min(match.start() for match in candidates)
+        return html[:insert_at] + injected + html[insert_at:]
     return injected + html
 
 
@@ -1977,6 +2104,23 @@ async def authorize_browser_surfaces(
     response: Response,
     user: Any = Depends(get_current_user),
 ):
+    return await _authorize_browser_surfaces_for_user_id(
+        workspace_id,
+        payload,
+        request,
+        response,
+        user_id=user.id,
+    )
+
+
+async def _authorize_browser_surfaces_for_user_id(
+    workspace_id: str,
+    payload: UserSpaceBrowserAuthRequest,
+    request: Request,
+    response: Response,
+    *,
+    user_id: str,
+) -> UserSpaceBrowserAuthResponse:
     surfaces = _normalize_browser_surfaces(payload.surfaces)
     auth_method_key = await _validate_auth_binding_method(payload.auth_method_key)
     authorizations: list[UserSpaceBrowserAuthorization] = []
@@ -1985,7 +2129,7 @@ async def authorize_browser_surfaces(
         config = _BROWSER_SURFACE_COOKIE_CONFIG[surface]
         token_response = await _runtime_service().issue_capability_token(
             workspace_id,
-            user.id,
+            user_id,
             list(config["capabilities"]),
         )
         max_age = max(
@@ -2014,6 +2158,28 @@ async def authorize_browser_surfaces(
         auth_method_key=auth_method_key,
         authorizations=authorizations,
     )
+
+
+def _clear_browser_surface_cookies(
+    workspace_id: str,
+    response: Response,
+) -> None:
+    for config in _BROWSER_SURFACE_COOKIE_CONFIG.values():
+        response.delete_cookie(
+            key=str(config["cookie_name"]),
+            path=str(config["path_builder"](workspace_id)),
+        )
+
+
+@router.post("/runtime/workspaces/{workspace_id}/browser-auth/logout")
+async def logout_browser_surfaces(
+    workspace_id: str,
+    response: Response,
+    user: Any = Depends(get_current_user),
+):
+    await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
+    _clear_browser_surface_cookies(workspace_id, response)
+    return {"success": True}
 
 
 @router.post("/runtime/workspaces/{workspace_id}/documents/parse")

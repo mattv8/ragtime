@@ -819,7 +819,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 8
-_RUNTIME_BRIDGE_VERSION = 14
+_RUNTIME_BRIDGE_VERSION = 15
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
 _USERSPACE_TEMPLATES_DIR = Path(__file__).with_name("templates")
@@ -12236,12 +12236,11 @@ class UserSpaceService:
         password: str | None = None,
         share_auth_token: str | None = None,
     ) -> _ShareAuthorizationResult:
-        workspace_id = await self._resolve_workspace_id_from_share_token(share_token)
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
+        share_record = await self._find_workspace_share_by_token(share_token)
+        if not share_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         return await self._authorize_shared_workspace_record(
-            workspace_record,
+            share_record,
             current_user=current_user,
             password=password,
             share_auth_token=share_auth_token,
@@ -12292,15 +12291,12 @@ class UserSpaceService:
         password: str | None = None,
         share_auth_token: str | None = None,
     ) -> _ShareAuthorizationResult:
-        workspace_id = await self._resolve_workspace_id_from_share_slug(
-            owner_username,
-            share_slug,
-        )
-        workspace_record = await self._get_workspace_record(workspace_id)
-        if not workspace_record:
+        owner_ids = await self._resolve_share_owner_ids(owner_username)
+        share_record = await self._find_workspace_share_by_slug(owner_ids, share_slug)
+        if not share_record:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         return await self._authorize_shared_workspace_record(
-            workspace_record,
+            share_record,
             current_user=current_user,
             password=password,
             share_auth_token=share_auth_token,
