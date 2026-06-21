@@ -9,6 +9,7 @@ import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
+import { SearchFilterBar, searchFilterTextMatchesQuery, useUrlSearchFilterState } from './shared/SearchFilterBar';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
 import { Popover } from './Popover';
@@ -75,6 +76,69 @@ function getSuggestedGroupName(tool: ToolConfig | null | undefined): string {
   return `${tool.name} ${toolTypeName}`;
 }
 
+function getToolSearchText(tool: ToolConfig): string {
+  const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
+  return [
+    tool.name,
+    tool.description,
+    typeInfo?.name,
+    tool.tool_type,
+    getToolConnectionSummary(tool),
+  ].filter(Boolean).join(' ');
+}
+
+function getToolConnectionSummary(tool: ToolConfig): string {
+  const config = tool.connection_config;
+  switch (tool.tool_type) {
+    case 'postgres':
+    case 'mysql':
+      if ('host' in config && config.host) {
+        const port = 'port' in config ? config.port : (tool.tool_type === 'mysql' ? 3306 : 5432);
+        const database = 'database' in config ? config.database : '';
+        return `${config.host}:${port}/${database}`;
+      }
+      return `Container: ${'container' in config ? config.container : 'N/A'}`;
+    case 'mssql':
+    case 'solidworks_pdm':
+      if ('host' in config && config.host) {
+        const port = 'port' in config ? config.port : 1433;
+        const database = 'database' in config ? config.database : '';
+        return `${config.host}:${port}/${database}`;
+      }
+      return 'MSSQL connection';
+    case 'influxdb':
+      if ('host' in config && config.host) {
+        const port = 'port' in config ? config.port : 8086;
+        const scheme = 'use_https' in config && config.use_https ? 'https' : 'http';
+        const bucket = 'bucket' in config && config.bucket ? config.bucket : '(no bucket)';
+        return `${scheme}://${config.host}:${port}/${bucket}`;
+      }
+      return 'InfluxDB connection';
+    case 'odoo_shell':
+      if ('mode' in config && config.mode === 'ssh') {
+        if ('ssh_host' in config && 'ssh_user' in config) {
+          const port = 'ssh_port' in config ? config.ssh_port : 22;
+          return `${config.ssh_user}@${config.ssh_host}:${port}`;
+        }
+        return 'SSH connection';
+      }
+      return `Container: ${'container' in config ? config.container : 'N/A'}`;
+    case 'ssh_shell':
+      if ('host' in config && 'user' in config) {
+        const port = 'port' in config ? config.port : 22;
+        return `${config.user}@${config.host}:${port}`;
+      }
+      return 'SSH connection';
+    case 'filesystem_indexer':
+      if ('paths' in config && Array.isArray(config.paths)) {
+        return `${config.paths.length} path(s)`;
+      }
+      return 'Filesystem indexer';
+    default:
+      return 'Unknown';
+  }
+}
+
 interface ToolCardProps {
   tool: ToolConfig;
   heartbeat: HeartbeatStatus | null;
@@ -111,58 +175,6 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
     if (mb < 1) return `${Math.round(mb * 1024)} KB`;
     if (mb < 1024) return `${mb.toFixed(1)} MB`;
     return `${(mb / 1024).toFixed(2)} GB`;
-  };
-
-  const getConnectionSummary = (): string => {
-    const config = tool.connection_config;
-    switch (tool.tool_type) {
-      case 'postgres':
-      case 'mysql':
-        if ('host' in config && config.host) {
-          const port = 'port' in config ? config.port : (tool.tool_type === 'mysql' ? 3306 : 5432);
-          const database = 'database' in config ? config.database : '';
-          return `${config.host}:${port}/${database}`;
-        }
-        return `Container: ${'container' in config ? config.container : 'N/A'}`;
-      case 'mssql':
-      case 'solidworks_pdm':
-        if ('host' in config && config.host) {
-          const port = 'port' in config ? config.port : 1433;
-          const database = 'database' in config ? config.database : '';
-          return `${config.host}:${port}/${database}`;
-        }
-        return 'MSSQL connection';
-      case 'influxdb':
-        if ('host' in config && config.host) {
-          const port = 'port' in config ? config.port : 8086;
-          const scheme = 'use_https' in config && config.use_https ? 'https' : 'http';
-          const bucket = 'bucket' in config && config.bucket ? config.bucket : '(no bucket)';
-          return `${scheme}://${config.host}:${port}/${bucket}`;
-        }
-        return 'InfluxDB connection';
-      case 'odoo_shell':
-        if ('mode' in config && config.mode === 'ssh') {
-          if ('ssh_host' in config && 'ssh_user' in config) {
-            const port = 'ssh_port' in config ? config.ssh_port : 22;
-            return `${config.ssh_user}@${config.ssh_host}:${port}`;
-          }
-          return 'SSH connection';
-        }
-        return `Container: ${'container' in config ? config.container : 'N/A'}`;
-      case 'ssh_shell':
-        if ('host' in config && 'user' in config) {
-          const port = 'port' in config ? config.port : 22;
-          return `${config.user}@${config.host}:${port}`;
-        }
-        return 'SSH connection';
-      case 'filesystem_indexer':
-        if ('paths' in config && Array.isArray(config.paths)) {
-          return `${config.paths.length} path(s)`;
-        }
-        return 'Filesystem indexer';
-      default:
-        return 'Unknown';
-    }
   };
 
   // Determine heartbeat display status
@@ -321,7 +333,7 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
               </div>
             </div>
           </div>
-          <code className="tool-card-connection-sub">{getConnectionSummary()}</code>
+          <code className="tool-card-connection-sub">{getToolConnectionSummary(tool)}</code>
         </div>
       </div>
 
@@ -519,6 +531,8 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   // Selected group tab (null = show ungrouped / all)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const groupContentRef = useRef<HTMLDivElement>(null);
+  const toolFilter = useUrlSearchFilterState();
+  const toolFilterInputRef = useRef<HTMLInputElement | null>(null);
 
   // Group the tools for display — include ALL groups (even empty) as drop targets
   const { allGroups, ungroupedTools } = useMemo(() => {
@@ -563,8 +577,19 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
   }, [allGroups, selectedGroupId]);
 
-  const visibleTools = selectedGroup ? selectedGroup.tools : ungroupedTools;
-  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && visibleTools.length === 0;
+  const isToolFiltering = toolFilter.queries.length > 0;
+  const baseVisibleTools = isToolFiltering ? tools : selectedGroup ? selectedGroup.tools : ungroupedTools;
+  const visibleTools = useMemo(() => {
+    if (!isToolFiltering) {
+      return baseVisibleTools;
+    }
+
+    return baseVisibleTools.filter((tool) => (
+      searchFilterTextMatchesQuery(getToolSearchText(tool), toolFilter.queries)
+    ));
+  }, [baseVisibleTools, isToolFiltering, toolFilter.queries]);
+  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && !isToolFiltering && baseVisibleTools.length === 0;
+  const showToolFilterEmptyState = baseVisibleTools.length > 0 && visibleTools.length === 0 && toolFilter.hasActiveFilters;
 
   const loadTools = useCallback(async () => {
     try {
@@ -1623,6 +1648,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
               className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}
               onClick={handleGroupTabsClick}
             >
+              <div className="tool-group-tabs-list">
               {allGroups.length > 0 && allGroups.map(({ group, tools: groupTools }) => {
                 const isActive = selectedGroupId === group.id;
                 const isDragTarget = dragOverGroupId === group.id;
@@ -1685,12 +1711,24 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                   Ungrouped
                 </div>
               )}
+              </div>
+              <SearchFilterBar
+                state={toolFilter}
+                inputRef={toolFilterInputRef}
+                placeholder="Filter tools by keyword..."
+                ariaLabel="Filter tools by keyword"
+                className="tool-group-filter-search"
+              />
             </div>
 
             {/* Tool cards — filtered by selected group */}
             {showSelectedGroupEmptyState ? (
               <div className="tool-group-active-panel">
                 <p className="muted" style={{ textAlign: 'center', margin: 0 }}>No tools in this group yet. Drag tools here to add them.</p>
+              </div>
+            ) : showToolFilterEmptyState ? (
+              <div className={selectedGroupId ? 'tool-group-active-panel' : 'tool-group-section-panel'}>
+                <p className="muted" style={{ textAlign: 'center', margin: 0 }}>No tools match the current filters.</p>
               </div>
             ) : selectedGroupId && selectedGroup ? (
               <div className="tool-group-active-panel">

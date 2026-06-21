@@ -1,6 +1,6 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, Search, ExternalLink, X, Eye, EyeOff, Pencil } from 'lucide-react';
+import { Lock, LockOpen, Info, ExternalLink, Eye, EyeOff, Pencil } from 'lucide-react';
 import { api } from '@/api';
 import type { AppSettings, UpdateSettingsRequest, OllamaModel, VisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, AuthProviderConfig, AuthGroup, LdapUserProfile, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User, OcrMode, OcrProvider } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
@@ -13,6 +13,7 @@ import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPa
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { ModelFilterModal } from './ModelFilterModal';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
+import { SearchFilterBar, normalizeSearchFilterText, searchFilterTextMatchesQuery, useUrlSearchFilterState } from './shared/SearchFilterBar';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
@@ -101,41 +102,6 @@ function generateMcpSecret(): string {
   return generateMcpCredentialValue(32);
 }
 
-function normalizeSettingsSearchText(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-const SETTINGS_FILTER_QUERY_PARAM = 'search';
-
-function readSettingsFilterStateFromUrl(): { input: string; tags: string[] } {
-  const params = new URLSearchParams(window.location.search);
-  const rawSearch = params.get(SETTINGS_FILTER_QUERY_PARAM) || '';
-  const tags = rawSearch
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-
-  return { input: '', tags };
-}
-
-function writeSettingsFilterStateToUrl(input: string, tags: string[]): void {
-  const params = new URLSearchParams(window.location.search);
-  const searchValue = [...tags, input]
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .join(',');
-
-  if (searchValue) {
-    params.set(SETTINGS_FILTER_QUERY_PARAM, searchValue);
-  } else {
-    params.delete(SETTINGS_FILTER_QUERY_PARAM);
-  }
-
-  const nextSearch = params.toString();
-  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
-  window.history.replaceState(null, '', nextUrl);
-}
-
 function getCloudOAuthCallbackUrl(): string {
   return new URL('/indexes/userspace/cloud-oauth/callback', window.location.origin).toString();
 }
@@ -172,16 +138,8 @@ function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
   );
 }
 
-function settingsTextMatchesQuery(text: string | null | undefined, queries: string[]): boolean {
-  if (queries.length === 0) {
-    return true;
-  }
-  const normalized = normalizeSettingsSearchText(text || '');
-  return queries.some((q) => normalized.includes(q));
-}
-
 function isSettingsSaveControlButton(button: HTMLButtonElement): boolean {
-  return normalizeSettingsSearchText(button.textContent || '').includes('save');
+  return normalizeSearchFilterText(button.textContent || '').includes('save');
 }
 
 const DEFAULT_OLLAMA_PORT = PROVIDER_CONNECTIONS.ollamaEmbedding.defaultPort;
@@ -440,26 +398,14 @@ interface SettingsPanelProps {
 
 export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticatedWebglBackgroundChange, onChatCompactionThresholdChange, onChatAutoCompactionThresholdChange, highlightSetting, onHighlightComplete, authStatus }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
-  const initialSettingsFilterState = useMemo(() => readSettingsFilterStateFromUrl(), []);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [userspacePreviewSettings, setUserspacePreviewSettings] = useState<UserSpacePreviewSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [toasts, toast] = useToast();
-  const [settingsFilterTags, setSettingsFilterTags] = useState<string[]>(initialSettingsFilterState.tags);
-  const [settingsFilterInput, setSettingsFilterInput] = useState(initialSettingsFilterState.input);
-  const [debouncedFilterInput, setDebouncedFilterInput] = useState('');
+  const settingsFilter = useUrlSearchFilterState();
   const [settingsFilterHasMatches, setSettingsFilterHasMatches] = useState(true);
   const settingsFilterInputRef = useRef<HTMLInputElement | null>(null);
   const [activeAuthProviderValue, setActiveAuthProviderValue] = useState<typeof AUTH_PROVIDER_OPTIONS[number]['value']>('local_managed');
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedFilterInput(settingsFilterInput), 200);
-    return () => clearTimeout(timer);
-  }, [settingsFilterInput]);
-
-  useEffect(() => {
-    writeSettingsFilterStateToUrl(settingsFilterInput, settingsFilterTags);
-  }, [settingsFilterInput, settingsFilterTags]);
 
   useEffect(() => {
     if (loading) {
@@ -2457,8 +2403,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       return;
     }
 
-    const liveInput = normalizeSettingsSearchText(debouncedFilterInput);
-    const queries = [...settingsFilterTags.map(normalizeSettingsSearchText), ...(liveInput ? [liveInput] : [])].filter(Boolean);
+    const queries = settingsFilter.queries;
     const infoCards = form.parentElement?.querySelectorAll<HTMLElement>('[data-settings-filter-card="true"]') || [];
 
     if (queries.length === 0) {
@@ -2487,7 +2432,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
     infoCards.forEach((card) => {
       const cardText = card.textContent || '';
-      const isMatch = settingsTextMatchesQuery(cardText, queries);
+      const isMatch = searchFilterTextMatchesQuery(cardText, queries);
       card.style.display = isMatch ? '' : 'none';
       if (isMatch) {
         hasAnyMatches = true;
@@ -2498,7 +2443,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     fieldsets.forEach((fieldset) => {
       const legendText = fieldset.querySelector('legend')?.textContent || '';
       const helpText = fieldset.querySelector('.fieldset-help')?.textContent || '';
-      const fieldsetTextMatch = settingsTextMatchesQuery(`${legendText} ${helpText}`, queries);
+      const fieldsetTextMatch = searchFilterTextMatchesQuery(`${legendText} ${helpText}`, queries);
       const saveActionGroups = Array.from(fieldset.querySelectorAll<HTMLElement>('.form-group')).filter((group) => (
         Array.from(group.querySelectorAll<HTMLButtonElement>('button')).some(isSettingsSaveControlButton)
       ));
@@ -2508,7 +2453,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       formGroups.forEach((group) => {
         const labelText = group.querySelector('label')?.textContent || '';
         const groupText = group.textContent || '';
-        const isMatch = fieldsetTextMatch || settingsTextMatchesQuery(`${labelText} ${groupText}`, queries);
+        const isMatch = fieldsetTextMatch || searchFilterTextMatchesQuery(`${labelText} ${groupText}`, queries);
         group.style.display = isMatch ? '' : 'none';
         if (isMatch) {
           visibleFormGroupCount += 1;
@@ -2521,7 +2466,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         const summaryText = details.querySelector('summary')?.textContent || '';
         const detailText = details.textContent || '';
         const hasVisibleChild = Array.from(details.querySelectorAll<HTMLElement>('.form-group')).some((group) => group.style.display !== 'none');
-        const detailsMatch = fieldsetTextMatch || hasVisibleChild || settingsTextMatchesQuery(`${summaryText} ${detailText}`, queries);
+        const detailsMatch = fieldsetTextMatch || hasVisibleChild || searchFilterTextMatchesQuery(`${summaryText} ${detailText}`, queries);
         details.style.display = detailsMatch ? '' : 'none';
         if (detailsMatch) {
           visibleDetailsCount += 1;
@@ -2534,7 +2479,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
       const fieldsetHelp = fieldset.querySelector<HTMLElement>('.fieldset-help');
       if (fieldsetHelp) {
-        const helpMatch = fieldsetTextMatch || settingsTextMatchesQuery(fieldsetHelp.textContent, queries);
+        const helpMatch = fieldsetTextMatch || searchFilterTextMatchesQuery(fieldsetHelp.textContent, queries);
         fieldsetHelp.style.display = helpMatch ? '' : 'none';
       }
 
@@ -2556,7 +2501,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     });
 
     setSettingsFilterHasMatches(hasAnyMatches);
-  }, [settingsFilterTags, debouncedFilterInput, loading]);
+  }, [settingsFilter.queries, loading]);
 
   if (loading) {
     return (
@@ -2686,73 +2631,14 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     <div className="card">
       <h2>Settings</h2>
 
-      <div className="settings-filter-search" role="search" aria-label="Filter settings" onClick={() => settingsFilterInputRef.current?.focus()}>
-        <Search size={16} className="settings-filter-search-icon" aria-hidden="true" />
-        {settingsFilterTags.map((tag, i) => (
-          <span key={i} className="settings-filter-tag">
-            {tag}
-            <button
-              type="button"
-              className="settings-filter-tag-remove"
-              onClick={(e) => { e.stopPropagation(); setSettingsFilterTags((prev) => prev.filter((_, idx) => idx !== i)); }}
-              aria-label={`Remove filter: ${tag}`}
-            >
-              <X size={12} />
-            </button>
-          </span>
-        ))}
-        <input
-          ref={settingsFilterInputRef}
-          type="text"
-          placeholder={settingsFilterTags.length === 0 ? 'Filter settings by keyword...' : ''}
-          value={settingsFilterInput}
-          onChange={(e) => {
-            const val = e.target.value;
-            if (val.endsWith(',')) {
-              const tag = val.slice(0, -1).trim();
-              if (tag && !settingsFilterTags.includes(tag)) {
-                setSettingsFilterTags((prev) => [...prev, tag]);
-              }
-              setSettingsFilterInput('');
-            } else {
-              setSettingsFilterInput(val);
-            }
-          }}
-          onKeyDown={(e) => {
-            if ((e.key === 'Tab' || e.key === 'Enter') && settingsFilterInput.trim()) {
-              e.preventDefault();
-              const tag = settingsFilterInput.trim();
-              if (!settingsFilterTags.includes(tag)) {
-                setSettingsFilterTags((prev) => [...prev, tag]);
-              }
-              setSettingsFilterInput('');
-            }
-            if (e.key === 'Backspace' && !settingsFilterInput && settingsFilterTags.length > 0) {
-              setSettingsFilterTags((prev) => prev.slice(0, -1));
-            }
-          }}
-          onBlur={() => {
-            const tag = settingsFilterInput.trim();
-            if (tag && !settingsFilterTags.includes(tag)) {
-              setSettingsFilterTags((prev) => [...prev, tag]);
-            }
-            setSettingsFilterInput('');
-          }}
-          aria-label="Filter settings by keyword"
-        />
-        {(settingsFilterTags.length > 0 || settingsFilterInput.trim()) && (
-          <button
-            type="button"
-            className="settings-filter-clear"
-            onClick={(e) => { e.stopPropagation(); setSettingsFilterTags([]); setSettingsFilterInput(''); }}
-            aria-label="Clear all filters"
-          >
-            <X size={16} />
-          </button>
-        )}
-      </div>
+      <SearchFilterBar
+        state={settingsFilter}
+        inputRef={settingsFilterInputRef}
+        placeholder="Filter settings by keyword..."
+        ariaLabel="Filter settings by keyword"
+      />
 
-      {!settingsFilterHasMatches && (settingsFilterTags.length > 0 || debouncedFilterInput.trim()) && (
+      {!settingsFilterHasMatches && settingsFilter.hasActiveFilters && (
         <p className="muted settings-filter-empty">No settings match the current filters.</p>
       )}
 

@@ -1420,12 +1420,28 @@ textarea:focus {
 /* Tool group tabs row */
 .tool-group-tabs {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: var(--space-sm);
   flex-wrap: wrap;
   margin-bottom: var(--space-sm);
   position: relative;
   z-index: 1;
+}
+
+.tool-group-tabs-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 360px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.tool-group-filter-search {
+  flex: 1 1 280px;
+  max-width: 460px;
+  min-width: min(100%, 240px);
+  margin: 0 0 0 auto;
 }
 
 /* When a group is selected, remove bottom gap so panel connects */
@@ -5713,6 +5729,10 @@ textarea {
 @media (max-width: 640px) {
   .settings-filter-search input {
     min-width: 60px;
+  }
+
+  .tool-group-filter-search {
+    max-width: none;
   }
 }
 
