@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,7 @@ def render_browser_auth_start_page_html(
     return_to: str,
     username_value: str,
     password_value: str,
+    parent_origin: str | None = None,
     error: str | None = None,
 ) -> str:
     method_items = "".join(
@@ -72,6 +74,7 @@ def render_browser_auth_start_page_html(
             "__RAGTIME_RETURN_TO__": _escape_attr(return_to),
             "__RAGTIME_USERNAME_VALUE__": _escape_attr(username_value),
             "__RAGTIME_PASSWORD_VALUE__": _escape_attr(password_value),
+            "__RAGTIME_PARENT_ORIGIN_JSON__": json.dumps(str(parent_origin or "").strip()),
             "__RAGTIME_METHOD_ITEMS_HTML__": method_items,
         },
     )

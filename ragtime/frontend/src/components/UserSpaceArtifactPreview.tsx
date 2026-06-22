@@ -25,6 +25,7 @@ interface UserSpaceArtifactPreviewProps {
   ownerUsername?: string;
   shareSlug?: string;
   onExecutionStateChange?: (isExecuting: boolean) => void;
+  onNetworkActivityChange?: (isActive: boolean) => void;
   onLiveDataWarningChange?: (warning: string | null) => void;
   onLiveDataTimeout?: (message: string, timeoutSeconds?: number | null) => void;
   onPreviewSessionExpired?: () => void;
@@ -47,6 +48,7 @@ export function UserSpaceArtifactPreview({
   ownerUsername,
   shareSlug,
   onExecutionStateChange,
+  onNetworkActivityChange,
   onLiveDataWarningChange,
   onLiveDataTimeout,
   onPreviewSessionExpired,
@@ -54,6 +56,7 @@ export function UserSpaceArtifactPreview({
 }: UserSpaceArtifactPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [pendingExecutions, setPendingExecutions] = useState(0);
+  const [pendingNetworkRequests, setPendingNetworkRequests] = useState(0);
   const [sandboxFlags, setSandboxFlags] = useState<string[]>([]);
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
@@ -161,6 +164,14 @@ export function UserSpaceArtifactPreview({
         return;
       }
 
+      if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.NETWORK_ACTIVITY) {
+        const pending = typeof event.data.pending === 'number'
+          ? Math.max(0, event.data.pending)
+          : 0;
+        setPendingNetworkRequests(pending);
+        return;
+      }
+
       if (event.data.type !== USERSPACE_EXEC_MESSAGE_TYPES.EXECUTE) return;
 
       const { callId, component_id, request } = event.data;
@@ -260,7 +271,17 @@ export function UserSpaceArtifactPreview({
   }, [pendingExecutions, onExecutionStateChange]);
 
   useEffect(() => {
+    onNetworkActivityChange?.(pendingNetworkRequests > 0);
+  }, [pendingNetworkRequests, onNetworkActivityChange]);
+
+  useEffect(() => () => {
+    onExecutionStateChange?.(false);
+    onNetworkActivityChange?.(false);
+  }, [onExecutionStateChange, onNetworkActivityChange]);
+
+  useEffect(() => {
     setPendingExecutions(0);
+    setPendingNetworkRequests(0);
     setSandboxBlockedMessage(null);
     setLiveDataExecutionError(null);
     setActivePreviewNotice(null);
@@ -316,7 +337,11 @@ export function UserSpaceArtifactPreview({
   }, [runtimeError, runtimeAvailable, runtimePreviewUrl]);
 
   const sandboxAttribute = useMemo(
-    () => buildUserSpacePreviewSandboxAttribute(sandboxFlags),
+    () => buildUserSpacePreviewSandboxAttribute(
+      sandboxFlags.includes('allow-top-navigation-by-user-activation')
+        ? sandboxFlags
+        : [...sandboxFlags, 'allow-top-navigation-by-user-activation'],
+    ),
     [sandboxFlags],
   );
 
@@ -384,6 +409,7 @@ export function UserSpaceArtifactPreview({
         className="userspace-preview-frame"
         sandbox={sandboxAttribute}
         src={runtimePreviewUrl}
+        onLoad={() => setPendingNetworkRequests(0)}
       />
     </div>
   );

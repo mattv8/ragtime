@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import count
 from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket
 from fastapi.responses import RedirectResponse
@@ -534,6 +535,7 @@ async def _render_browser_auth_start_page(
     surfaces: Sequence[UserSpaceBrowserSurface],
     auth_method_key: str | None,
     return_to: str,
+    parent_origin: str | None = None,
     error: str | None = None,
     status_code: int = 200,
 ) -> HTMLResponse:
@@ -551,6 +553,7 @@ async def _render_browser_auth_start_page(
         return_to=return_to,
         username_value=username_value,
         password_value=password_value,
+        parent_origin=parent_origin,
         error=error,
     )
     return HTMLResponse(content=html_body, status_code=status_code, headers={"Cache-Control": "no-store"})
@@ -562,8 +565,16 @@ async def _complete_preview_browser_auth_redirect(
     payload: UserSpaceBrowserAuthRequest,
     return_to: str,
 ) -> RedirectResponse:
-    redirect = RedirectResponse(url=_safe_browser_auth_return_to(return_to), status_code=303)
+    safe_return_to = _safe_browser_auth_return_to(return_to)
+    redirect = RedirectResponse(url=safe_return_to, status_code=303)
     workspace_id, user = await _workspace_user_for_preview_auth(request, redirect, claims, payload)
+    handoff_nonce = str(uuid4())
+    await _register_preview_handoff(
+        request.headers.get("host", ""),
+        handoff_nonce,
+        _workspace_preview_session_claims(request, workspace_id, str(user.id)),
+    )
+    redirect.headers["location"] = _add_preview_handoff_to_target_path(safe_return_to, handoff_nonce)
     await _authorize_browser_surfaces_for_user_id(
         workspace_id,
         payload,
@@ -1091,6 +1102,7 @@ async def preview_browser_auth_start(request: Request):
                 surfaces=surfaces,
                 auth_method_key=auth_method_key,
                 return_to=return_to,
+                parent_origin=claims.get("parent_origin"),
                 error=str(exc.detail),
                 status_code=exc.status_code,
             )
@@ -1099,6 +1111,7 @@ async def preview_browser_auth_start(request: Request):
             surfaces=surfaces,
             auth_method_key=auth_method_key,
             return_to=return_to,
+            parent_origin=claims.get("parent_origin"),
         )
 
 
@@ -1126,6 +1139,7 @@ async def preview_browser_auth_start_submit(request: Request):
             surfaces=surfaces,
             auth_method_key=auth_method_key,
             return_to=return_to,
+            parent_origin=claims.get("parent_origin"),
             error=str(exc.detail),
             status_code=exc.status_code,
         )

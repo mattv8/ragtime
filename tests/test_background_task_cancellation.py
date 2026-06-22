@@ -249,9 +249,11 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
             "request_tool_state": request_tool_state,
             "prompt_additions": "",
             "user_identity_turn_line": "",
+            "current_time_turn_line": "",
             "include_sqlite_persistence": False,
             "userspace_env_var_turn_hint": "",
             "userspace_runtime_status_turn_hint": "",
+            "export_context": None,
             "workspace_id": None,
         }
 

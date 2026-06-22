@@ -5,6 +5,7 @@
   var R = 'ragtime-execute-result';
   var X = 'ragtime-execute-error';
   var S = 'ragtime-sandbox-blocked';
+  var N = 'ragtime-preview-network-activity';
   var T = __RAGTIME_RUNTIME_BRIDGE_TIMEOUT_MS__;
   var T_LABEL = '__RAGTIME_RUNTIME_BRIDGE_TIMEOUT_LABEL__';
   var CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
@@ -17,6 +18,7 @@
   var scriptLoadPromises = window.__ragtime_script_load_promises || (window.__ragtime_script_load_promises = Object.create(null));
   var preconnectedOrigins = window.__ragtime_preconnected_origins || (window.__ragtime_preconnected_origins = Object.create(null));
   var reportedSandboxBlocks = Object.create(null);
+  var pendingNetworkRequests = 0;
 
   function getBridgeConfig() {
     var config = window.__ragtime_preview_bridge;
@@ -188,6 +190,31 @@
     } catch (error) {
       console.warn('[ragtime bridge] failed to report sandbox block:', error);
     }
+  }
+
+  function reportNetworkActivity() {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(
+          { bridge: B, type: N, pending: pendingNetworkRequests },
+          getParentOrigin()
+        );
+      }
+    } catch (error) {
+      console.warn('[ragtime bridge] failed to report preview network activity:', error);
+    }
+  }
+
+  function updatePendingNetworkRequests(delta) {
+    var next = pendingNetworkRequests + delta;
+    if (next < 0) {
+      next = 0;
+    }
+    if (next === pendingNetworkRequests) {
+      return;
+    }
+    pendingNetworkRequests = next;
+    reportNetworkActivity();
   }
 
   function isLiveDataTimeoutPayload(payload) {
@@ -375,7 +402,100 @@
     }
   }
 
+  function installNetworkActivityTracking() {
+    var navigationPending = false;
+    var startNavigationActivity = function () {
+      if (navigationPending) {
+        return;
+      }
+      navigationPending = true;
+      updatePendingNetworkRequests(1);
+    };
+
+    overrideMethod(window, 'fetch', function (original) {
+      return function () {
+        updatePendingNetworkRequests(1);
+        var result;
+        try {
+          result = original.apply(this, arguments);
+        } catch (error) {
+          updatePendingNetworkRequests(-1);
+          throw error;
+        }
+        return Promise.resolve(result).then(
+          function (value) {
+            updatePendingNetworkRequests(-1);
+            return value;
+          },
+          function (error) {
+            updatePendingNetworkRequests(-1);
+            throw error;
+          }
+        );
+      };
+    });
+
+    if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+      overrideMethod(window.XMLHttpRequest.prototype, 'send', function (original) {
+        return function () {
+          var xhr = this;
+          var completed = false;
+          var finish = function () {
+            if (completed) {
+              return;
+            }
+            completed = true;
+            if (xhr && typeof xhr.removeEventListener === 'function') {
+              xhr.removeEventListener('loadend', finish);
+            }
+            updatePendingNetworkRequests(-1);
+          };
+
+          updatePendingNetworkRequests(1);
+          if (xhr && typeof xhr.addEventListener === 'function') {
+            xhr.addEventListener('loadend', finish, { once: true });
+          }
+          try {
+            return original.apply(xhr, arguments);
+          } catch (error) {
+            finish();
+            throw error;
+          }
+        };
+      });
+    }
+
+    if (document && typeof document.addEventListener === 'function') {
+      document.addEventListener('click', function (event) {
+        var target = event && event.target;
+        while (target && target !== document) {
+          if (target.tagName && String(target.tagName).toLowerCase() === 'a') {
+            var href = typeof target.getAttribute === 'function' ? target.getAttribute('href') : '';
+            if (href && href.charAt(0) !== '#') {
+              setTimeout(function () {
+                if (!event.defaultPrevented) {
+                  startNavigationActivity();
+                }
+              }, 0);
+            }
+            return;
+          }
+          target = target.parentNode;
+        }
+      }, true);
+
+      document.addEventListener('submit', function (event) {
+        setTimeout(function () {
+          if (!event.defaultPrevented) {
+            startNavigationActivity();
+          }
+        }, 0);
+      }, true);
+    }
+  }
+
   installSandboxGuards();
+  installNetworkActivityTracking();
 
   // Viz libs are loaded lazily on first execute() call, not eagerly on page
   // load — avoids parser-blocking document.write warnings for cross-site CDN

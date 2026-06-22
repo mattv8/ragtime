@@ -697,6 +697,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [selectedFileUnsupportedMessage, setSelectedFileUnsupportedMessage] = useState<string | null>(null);
   const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
+  const [previewNetworkActivity, setPreviewNetworkActivity] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
   const lastPreviewSessionExpiredRefreshRef = useRef<number>(0);
   const lastLiveDataTimeoutToastRef = useRef<string>('');
@@ -7006,6 +7007,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 Connecting data...
               </span>
             )}
+            {!previewExecuting && previewNetworkActivity && (
+              <span title="Preview network request in progress">
+                <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
+              </span>
+            )}
             {activeWorkspace && !isAdminImpersonating && !isOwner && (
               <span className="userspace-status-pill userspace-status-pill-info">
                 {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
@@ -7445,6 +7451,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
                 workspaceId={activeWorkspaceId ?? undefined}
                 onExecutionStateChange={setPreviewExecuting}
+                onNetworkActivityChange={setPreviewNetworkActivity}
                 onLiveDataWarningChange={handleLiveDataWarningChange}
                 onLiveDataTimeout={handleLiveDataTimeout}
                 previewNotice={previewNotice}

@@ -17,8 +17,8 @@ import shlex
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, List, Literal, Optional, Union, cast
 from urllib.parse import quote
@@ -79,10 +79,10 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SEARCH_RESULTS_K,
 )
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
-from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
+from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
 from ragtime.core.file_constants import (
@@ -5927,12 +5927,12 @@ class RAGComponents:
 
         if isinstance(client_clock, dict):
             try:
-                epoch_ms = int(client_clock.get("epoch_ms"))
+                epoch_ms = int(client_clock.get("epoch_ms") or 0)
             except (TypeError, ValueError):
                 epoch_ms = None
 
             try:
-                browser_utc_offset_minutes = int(client_clock.get("utc_offset_minutes"))
+                browser_utc_offset_minutes = int(client_clock.get("utc_offset_minutes") or 0)
             except (TypeError, ValueError):
                 browser_utc_offset_minutes = None
 

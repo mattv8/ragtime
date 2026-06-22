@@ -57,8 +57,7 @@ class UserSpaceTurnReminderTests(unittest.TestCase):
 
         self.assertEqual(
             reminder_line,
-            "[CURRENT TIME: server_utc=2026-06-22T16:03:11Z; "
-            "browser_local_estimate=2026-06-22T12:03:10-04:00]\n\n",
+            "[CURRENT TIME: server_utc=2026-06-22T16:03:11Z; browser_local_estimate=2026-06-22T12:03:10-04:00]\n\n",
         )
 
     def test_current_time_line_omits_browser_time_for_invalid_offset(self) -> None:

@@ -728,7 +728,9 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
             response = await _PREVIEW_HOST.preview_browser_auth_start_submit(request)
 
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/dashboard")
+        location = response.headers["location"]
+        self.assertTrue(location.startswith("/dashboard"))
+        self.assertIn("__ragtime_preview_handoff=", location)
         set_cookie = "\n".join(value.decode("latin-1") for key, value in response.raw_headers if key == b"set-cookie")
         self.assertIn("ragtime_session=root-session-token", set_cookie)
         self.assertIn("userspace_preview_session=preview-session-token", set_cookie)
