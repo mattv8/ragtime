@@ -1534,8 +1534,10 @@ export interface SSHKeyPairResponse {
 export interface HeartbeatStatus {
   tool_id: string;
   alive: boolean;
+  available?: boolean | null;
   latency_ms: number | null;
   error: string | null;
+  reason?: string | null;
   checked_at: string;
 }
 
@@ -1996,6 +1998,7 @@ export interface Conversation {
   active_task_id: string | null;  // ID of currently running background task
   active_branch_id?: string | null;  // ID of currently active chat branch
   disabled_builtin_tool_ids?: string[];
+  tool_selection_mode?: ToolSelectionMode;
   tool_output_mode: ToolOutputMode;  // Per-conversation tool output preference
   created_at: string;
   updated_at: string;
@@ -2144,6 +2147,7 @@ export interface UpdateConversationMembersRequest {
 export interface UpdateConversationToolsRequest {
   tool_config_ids: string[];
   tool_group_ids?: string[];
+  tool_selection_mode?: ToolSelectionMode;
   disabled_builtin_tool_ids?: string[];
 }
 
@@ -2251,6 +2255,7 @@ export interface UserSpaceWorkspace {
   owner_user_id: string;
   owner_username?: string | null;
   owner_display_name?: string | null;
+  tool_selection_mode?: ToolSelectionMode;
   selected_tool_ids: string[];
   selected_tool_group_ids: string[];
   conversation_ids: string[];
@@ -2481,10 +2486,13 @@ export interface UserSpaceAvailableTool {
   disabled_reason?: string | null;
 }
 
+export type ToolSelectionMode = 'default_all' | 'custom';
+
 export interface CreateUserSpaceWorkspaceRequest {
   name?: string;
   description?: string;
   sqlite_persistence_mode?: SqlitePersistenceMode;
+  tool_selection_mode?: ToolSelectionMode;
   selected_tool_ids?: string[];
   selected_tool_group_ids?: string[];
 }
@@ -2501,6 +2509,7 @@ export interface UpdateUserSpaceWorkspaceRequest {
   name?: string;
   description?: string;
   sqlite_persistence_mode?: SqlitePersistenceMode;
+  tool_selection_mode?: ToolSelectionMode;
   selected_tool_ids?: string[];
   selected_tool_group_ids?: string[];
   owner_user_id?: string;

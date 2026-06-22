@@ -10,6 +10,7 @@ from ragtime.indexer.models import WorkspaceChatStateResponse
 WorkspaceRole = Literal["owner", "editor", "viewer"]
 ArtifactType = Literal["module_ts"]
 SqlitePersistenceMode = Literal["include", "exclude"]
+ToolSelectionMode = Literal["default_all", "custom"]
 ShareAccessMode = Literal[
     "token",
     "password",
@@ -218,6 +219,7 @@ class UserSpaceWorkspace(BaseModel):
     owner_user_id: str
     owner_username: str | None = None
     owner_display_name: str | None = None
+    tool_selection_mode: ToolSelectionMode = "custom"
     selected_tool_ids: list[str] = Field(default_factory=list)
     selected_tool_group_ids: list[str] = Field(default_factory=list)
     conversation_ids: list[str] = Field(default_factory=list)
@@ -379,6 +381,10 @@ class CreateWorkspaceRequest(BaseModel):
         default=None,
         description=("Workspace-selected tool config IDs. When omitted, all enabled tools are selected by default."),
     )
+    tool_selection_mode: ToolSelectionMode | None = Field(
+        default=None,
+        description="Tool selection mode. default_all allows all healthy enabled tools; custom uses selected tool/group IDs.",
+    )
     selected_tool_group_ids: list[str] | None = Field(
         default=None,
         description="Workspace-selected tool group IDs.",
@@ -428,6 +434,7 @@ class UpdateWorkspaceRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=1000)
     sqlite_persistence_mode: SqlitePersistenceMode | None = None
+    tool_selection_mode: ToolSelectionMode | None = None
     selected_tool_ids: list[str] | None = None
     selected_tool_group_ids: list[str] | None = None
     owner_user_id: str | None = Field(default=None, description="Transfer ownership to this user (admin only)")

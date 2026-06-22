@@ -59,6 +59,7 @@ class ToolHealthMonitor:
         self.interval_seconds = interval_seconds
         self.stale_after_seconds = stale_after_seconds
         self._statuses: dict[str, ToolHeartbeatStatus] = {}
+        self._subscribers: set[asyncio.Queue[ToolHealthCheckResult]] = set()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
@@ -67,6 +68,19 @@ class ToolHealthMonitor:
         if not tool_id:
             return None
         return self._statuses.get(tool_id)
+
+    def get_statuses(self) -> dict[str, ToolHeartbeatStatus]:
+        return dict(self._statuses)
+
+    async def subscribe(self) -> asyncio.Queue[ToolHealthCheckResult]:
+        queue: asyncio.Queue[ToolHealthCheckResult] = asyncio.Queue(maxsize=10)
+        async with self._lock:
+            self._subscribers.add(queue)
+        return queue
+
+    async def unsubscribe(self, queue: asyncio.Queue[ToolHealthCheckResult]) -> None:
+        async with self._lock:
+            self._subscribers.discard(queue)
 
     def is_status_fresh(
         self,
@@ -192,6 +206,7 @@ class ToolHealthMonitor:
     async def _store_statuses(self, statuses: dict[str, ToolHeartbeatStatus]) -> ToolHealthCheckResult:
         changed_tool_ids: set[str] = set()
         now = datetime.now(timezone.utc)
+        subscribers: list[asyncio.Queue[ToolHealthCheckResult]] = []
         async with self._lock:
             for tool_id, status in statuses.items():
                 previous = self._statuses.get(tool_id)
@@ -200,9 +215,19 @@ class ToolHealthMonitor:
                 if previous is None or previous_healthy != current_healthy:
                     changed_tool_ids.add(tool_id)
                 self._statuses[tool_id] = status
+            if changed_tool_ids:
+                subscribers = list(self._subscribers)
 
         await self._persist_statuses(statuses)
-        return ToolHealthCheckResult(statuses=statuses, changed_tool_ids=changed_tool_ids)
+        result = ToolHealthCheckResult(statuses=statuses, changed_tool_ids=changed_tool_ids)
+        if changed_tool_ids:
+            for queue in subscribers:
+                if queue.full():
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(result)
+        return result
 
     async def record_tool_test_result(
         self,

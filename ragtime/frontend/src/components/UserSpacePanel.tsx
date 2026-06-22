@@ -19,7 +19,8 @@ import {
 } from '@/utils';
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
-import { fetchUserSpaceToolCatalog, getUserSpaceGroupToolIds } from '@/utils/userSpaceTools';
+import { fetchUserSpaceToolCatalog, resolveDefaultSelectedToolIds, type UserSpaceToolSelection } from '@/utils/userSpaceTools';
+import { useUserSpaceToolHealthEvents } from '@/utils/useUserSpaceToolHealthEvents';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { AgentAccessButton } from './shared/AgentAccessButton';
 import { AgentAccessModal } from './shared/AgentAccessModal';
@@ -551,17 +552,6 @@ function readStoredUserSpaceFullscreen(cookieName: string): boolean {
   return normalized === '1' || normalized === 'true';
 }
 
-function resolveDefaultSelectedToolIds(
-  selectedToolIds: string[],
-  selectedToolGroupIds: string[],
-  availableTools: UserSpaceAvailableTool[],
-): string[] {
-  if (selectedToolIds.length > 0 || selectedToolGroupIds.length > 0) {
-    return selectedToolIds;
-  }
-  return availableTools.map((tool) => tool.id);
-}
-
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -692,6 +682,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [branchRestoreSnapshotId, setBranchRestoreSnapshotId] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
+  const [pendingWorkspaceToolSelection, setPendingWorkspaceToolSelection] = useState<{
+    workspaceId: string;
+    selection: UserSpaceToolSelection;
+  } | null>(null);
+  const workspaceToolSelectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceToolSelectionSaveSeqRef = useRef(0);
 
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
@@ -1404,26 +1400,48 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return modules;
   }, [fileContent, fileContentCache, files, selectedFilePath]);
 
+  const activeWorkspaceToolSelection = useMemo<UserSpaceToolSelection>(() => {
+    const storedToolIds = activeWorkspace?.selected_tool_ids ?? [];
+    const storedGroupIds = activeWorkspace?.selected_tool_group_ids ?? [];
+    const storedMode = activeWorkspace?.tool_selection_mode;
+    return {
+      mode: storedMode ?? (storedToolIds.length === 0 && storedGroupIds.length === 0 ? 'default_all' : 'custom'),
+      toolIds: storedToolIds,
+      toolGroupIds: storedGroupIds,
+    };
+  }, [activeWorkspace?.selected_tool_group_ids, activeWorkspace?.selected_tool_ids, activeWorkspace?.tool_selection_mode]);
+  const effectiveWorkspaceToolSelection = pendingWorkspaceToolSelection && pendingWorkspaceToolSelection.workspaceId === activeWorkspace?.id
+    ? pendingWorkspaceToolSelection.selection
+    : activeWorkspaceToolSelection;
+
   const resolvedSelectedToolIds = useMemo(
     () => resolveDefaultSelectedToolIds(
-      activeWorkspace?.selected_tool_ids ?? [],
-      activeWorkspace?.selected_tool_group_ids ?? [],
+      effectiveWorkspaceToolSelection.toolIds,
+      effectiveWorkspaceToolSelection.toolGroupIds,
       availableTools,
+      effectiveWorkspaceToolSelection.mode,
     ),
-    [activeWorkspace?.selected_tool_ids, activeWorkspace?.selected_tool_group_ids, availableTools]
+    [availableTools, effectiveWorkspaceToolSelection]
   );
   const selectedToolIds = useMemo(
     () => new Set(resolvedSelectedToolIds),
     [resolvedSelectedToolIds]
   );
   const resolvedSelectedToolGroupIds = useMemo(
-    () => activeWorkspace?.selected_tool_group_ids ?? [],
-    [activeWorkspace?.selected_tool_group_ids]
+    () => effectiveWorkspaceToolSelection.toolGroupIds,
+    [effectiveWorkspaceToolSelection.toolGroupIds]
   );
   const selectedToolGroupIds = useMemo(
     () => new Set(resolvedSelectedToolGroupIds),
     [resolvedSelectedToolGroupIds]
   );
+  useUserSpaceToolHealthEvents({
+    availableTools,
+    selectedToolIds,
+    setAvailableTools,
+    toast,
+    enabled: Boolean(activeWorkspaceId),
+  });
   const fileTree = useMemo(() => buildUserSpaceTree(fileBrowserEntries), [fileBrowserEntries]);
   const folderPaths = useMemo(() => listFolderPaths(fileBrowserEntries), [fileBrowserEntries]);
 
@@ -3465,87 +3483,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, canEditWorkspace, fileContent, selectedFileArtifactType, selectedFilePath]);
 
-  const handleToggleWorkspaceTool = useCallback(async (toolId: string) => {
+  const handleWorkspaceToolSelectionChange = useCallback((selection: UserSpaceToolSelection) => {
     if (!activeWorkspace || !canEditWorkspace) return;
+    const workspaceId = activeWorkspace.id;
+    setPendingWorkspaceToolSelection({ workspaceId, selection });
+    setSavingWorkspaceTools(true);
 
-    const targetTool = availableTools.find((tool) => tool.id === toolId);
-    const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
-
-    if (targetTool?.group_id && currentGroupIds.has(targetTool.group_id)) {
-      const nextGroupIds = new Set(currentGroupIds);
-      nextGroupIds.delete(targetTool.group_id);
-      const nextSelected = new Set<string>();
-      for (const tool of availableTools) {
-        if (tool.group_id === targetTool.group_id && tool.id !== toolId) {
-          nextSelected.add(tool.id);
-        }
-      }
-
-      setSavingWorkspaceTools(true);
-      try {
-        const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
-          selected_tool_ids: Array.from(nextSelected),
-          selected_tool_group_ids: Array.from(nextGroupIds),
-        });
+    if (workspaceToolSelectionSaveTimerRef.current) {
+      clearTimeout(workspaceToolSelectionSaveTimerRef.current);
+    }
+    const seq = ++workspaceToolSelectionSaveSeqRef.current;
+    workspaceToolSelectionSaveTimerRef.current = setTimeout(() => {
+      workspaceToolSelectionSaveTimerRef.current = null;
+      void api.updateUserSpaceWorkspace(workspaceId, {
+        tool_selection_mode: selection.mode,
+        selected_tool_ids: selection.toolIds,
+        selected_tool_group_ids: selection.toolGroupIds,
+      }).then((updated) => {
+        if (workspaceToolSelectionSaveSeqRef.current !== seq) return;
         setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
-      } catch (err) {
+        setPendingWorkspaceToolSelection((current) => current?.workspaceId === workspaceId ? null : current);
+      }).catch((err) => {
+        if (workspaceToolSelectionSaveSeqRef.current !== seq) return;
+        setPendingWorkspaceToolSelection((current) => current?.workspaceId === workspaceId ? null : current);
         setError(err instanceof Error ? err.message : 'Failed to update tool selection');
-      } finally {
-        setSavingWorkspaceTools(false);
-      }
-      return;
-    }
-
-    const nextSelected = new Set(resolvedSelectedToolIds);
-    if (nextSelected.has(toolId)) {
-      nextSelected.delete(toolId);
-    } else {
-      nextSelected.add(toolId);
-    }
-
-    setSavingWorkspaceTools(true);
-    try {
-      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
-        selected_tool_ids: Array.from(nextSelected),
-        selected_tool_group_ids: Array.from(currentGroupIds),
+      }).finally(() => {
+        if (workspaceToolSelectionSaveSeqRef.current === seq) {
+          setSavingWorkspaceTools(false);
+        }
       });
-      setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update tool selection');
-    } finally {
-      setSavingWorkspaceTools(false);
-    }
-  }, [activeWorkspace, availableTools, canEditWorkspace, resolvedSelectedToolIds]);
+    }, 200);
+  }, [activeWorkspace, canEditWorkspace]);
 
-  const handleToggleWorkspaceToolGroup = useCallback(async (groupId: string) => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-
-    const groupToolIds = getUserSpaceGroupToolIds(availableTools, groupId);
-    const currentGroupIds = new Set(activeWorkspace.selected_tool_group_ids ?? []);
-    const nextGroupIds = new Set(currentGroupIds);
-    const nextToolIds = new Set(resolvedSelectedToolIds);
-    if (nextGroupIds.has(groupId)) {
-      nextGroupIds.delete(groupId);
-      for (const toolId of groupToolIds) {
-        nextToolIds.delete(toolId);
+  useEffect(() => {
+    return () => {
+      if (workspaceToolSelectionSaveTimerRef.current) {
+        clearTimeout(workspaceToolSelectionSaveTimerRef.current);
       }
-    } else {
-      nextGroupIds.add(groupId);
-    }
-
-    setSavingWorkspaceTools(true);
-    try {
-      const updated = await api.updateUserSpaceWorkspace(activeWorkspace.id, {
-        selected_tool_ids: Array.from(nextToolIds),
-        selected_tool_group_ids: Array.from(nextGroupIds),
-      });
-      setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update tool group selection');
-    } finally {
-      setSavingWorkspaceTools(false);
-    }
-  }, [activeWorkspace, availableTools, canEditWorkspace, resolvedSelectedToolIds]);
+    };
+  }, []);
 
   const [sqliteInspectorOpen, setSqliteInspectorOpen] = useState(false);
   const [sqliteHasTables, setSqliteHasTables] = useState(false);
@@ -7196,11 +7172,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             <ToolSelectorDropdown
               availableTools={availableTools}
               selectedToolIds={selectedToolIds}
-              onToggleTool={handleToggleWorkspaceTool}
+              toolSelectionMode={effectiveWorkspaceToolSelection.mode}
+              onSelectionChange={handleWorkspaceToolSelectionChange}
               selectedToolGroupIds={selectedToolGroupIds}
-              onToggleToolGroup={handleToggleWorkspaceToolGroup}
               toolGroups={toolGroups}
-              disabled={savingWorkspaceTools}
+              disabled={!activeWorkspaceId}
               readOnly={!canEditWorkspace}
               saving={savingWorkspaceTools}
               title="Workspace Tools"
@@ -7410,10 +7386,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 workspaceId={activeWorkspaceId}
                 workspaceChatState={activeWorkspaceChatSnapshot}
                 workspaceAvailableTools={availableTools}
-                workspaceSelectedToolIds={resolvedSelectedToolIds}
-                workspaceSelectedToolGroupIds={resolvedSelectedToolGroupIds}
-                onToggleWorkspaceTool={handleToggleWorkspaceTool}
-                onToggleWorkspaceToolGroup={handleToggleWorkspaceToolGroup}
+                workspaceToolSelectionMode={effectiveWorkspaceToolSelection.mode}
+                workspaceSelectedToolIds={effectiveWorkspaceToolSelection.toolIds}
+                workspaceSelectedToolGroupIds={effectiveWorkspaceToolSelection.toolGroupIds}
+                onWorkspaceToolSelectionChange={handleWorkspaceToolSelectionChange}
                 workspaceToolGroups={toolGroups}
                 workspaceSavingTools={savingWorkspaceTools}
                 conversationShareableUserIds={workspaceChatShareableUserIds}

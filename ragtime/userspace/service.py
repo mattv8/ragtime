@@ -9238,6 +9238,10 @@ class UserSpaceService:
 
         group_rows = list(getattr(record, "toolGroupSelections", []) or [])
         selected_tool_group_ids = [getattr(row, "toolGroupId", "") for row in group_rows if getattr(row, "toolGroupId", None)]
+        raw_tool_selection_mode = str(getattr(record, "toolSelectionMode", "") or "").strip()
+        tool_selection_mode = raw_tool_selection_mode if raw_tool_selection_mode in {"default_all", "custom"} else None
+        if tool_selection_mode is None:
+            tool_selection_mode = "default_all" if not selected_tool_ids and not selected_tool_group_ids else "custom"
         if conversation_ids is None:
             conversation_rows = list(getattr(record, "conversations", []) or [])
             conversation_ids = [getattr(conversation_row, "id", "") for conversation_row in conversation_rows if getattr(conversation_row, "id", None)]
@@ -9327,6 +9331,7 @@ class UserSpaceService:
             owner_user_id=record.ownerUserId,
             owner_username=owner_username,
             owner_display_name=owner_display_name,
+            tool_selection_mode=cast(Any, tool_selection_mode),
             selected_tool_ids=selected_tool_ids,
             selected_tool_group_ids=selected_tool_group_ids,
             conversation_ids=conversation_ids,
@@ -11138,6 +11143,9 @@ class UserSpaceService:
         name_normalized = _normalize_workspace_name_for_uniqueness(final_name)
         if not name_normalized:
             raise HTTPException(status_code=400, detail="Workspace name is required")
+        tool_selection_mode = request.tool_selection_mode or (
+            "default_all" if request.selected_tool_ids is None and request.selected_tool_group_ids is None else "custom"
+        )
 
         try:
             await db.workspace.create(
@@ -11149,6 +11157,7 @@ class UserSpaceService:
                         "nameNormalized": name_normalized,
                         "description": request.description,
                         "sqlitePersistenceMode": _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode),
+                        "toolSelectionMode": tool_selection_mode,
                         "ownerUserId": user_id,
                         "createdAt": now,
                         "updatedAt": now,
@@ -11180,7 +11189,7 @@ class UserSpaceService:
         )
 
         requested_tool_ids = request.selected_tool_ids
-        if requested_tool_ids is None:
+        if requested_tool_ids is None and tool_selection_mode == "custom":
             requested_tool_ids = await repository.list_healthy_enabled_tool_ids()
 
         await self._persist_workspace_tool_selections(
@@ -12446,6 +12455,8 @@ class UserSpaceService:
             update_data["description"] = request.description
         if request.sqlite_persistence_mode is not None:
             update_data["sqlitePersistenceMode"] = _normalize_sqlite_persistence_mode(request.sqlite_persistence_mode)
+        if request.tool_selection_mode is not None:
+            update_data["toolSelectionMode"] = request.tool_selection_mode
 
         try:
             await db.workspace.update(where={"id": workspace_id}, data=cast(Any, update_data))

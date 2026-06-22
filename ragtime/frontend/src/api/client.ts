@@ -1132,6 +1132,10 @@ export const api = {
     return handleResponse<HeartbeatResponse>(response);
   },
 
+  subscribeToolHealthEvents(): EventSource {
+    return new EventSource(`${API_BASE}/tools/health/events`, { withCredentials: true });
+  },
+
   /**
    * Generate a new SSH keypair
    */
@@ -2169,12 +2173,13 @@ export const api = {
   /**
    * Get conversation tools
    */
-  async getConversationTools(conversationId: string): Promise<{ tool_config_ids: string[]; tool_group_ids: string[]; disabled_builtin_tool_ids: string[] }> {
+  async getConversationTools(conversationId: string): Promise<{ tool_config_ids: string[]; tool_group_ids: string[]; tool_selection_mode: 'default_all' | 'custom'; disabled_builtin_tool_ids: string[] }> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tools`);
-    const data = await handleResponse<{ tool_config_ids: string[]; tool_group_ids?: string[]; disabled_builtin_tool_ids?: string[] }>(response);
+    const data = await handleResponse<{ tool_config_ids: string[]; tool_group_ids?: string[]; tool_selection_mode?: 'default_all' | 'custom'; disabled_builtin_tool_ids?: string[] }>(response);
     return {
       tool_config_ids: data.tool_config_ids || [],
       tool_group_ids: data.tool_group_ids || [],
+      tool_selection_mode: data.tool_selection_mode || 'custom',
       disabled_builtin_tool_ids: data.disabled_builtin_tool_ids || [],
     };
   },

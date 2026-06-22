@@ -2100,18 +2100,10 @@ class IndexerRepository:
                 "totalTokens": 0,
                 "userId": user_id,
                 "workspaceId": workspace_id,
+                "toolSelectionMode": "default_all",
             },
             include={"user": True},
         )
-
-        default_tool_ids = await self.list_healthy_enabled_tool_ids()
-        for tool_id in default_tool_ids:
-            await db.conversationtoolselection.create(
-                data={
-                    "conversationId": prisma_conv.id,
-                    "toolConfigId": tool_id,
-                }
-            )
 
         return self._prisma_conversation_to_model(prisma_conv)
 
@@ -4094,6 +4086,9 @@ class IndexerRepository:
             tool_output_mode = ToolOutputMode(tool_output_mode_raw)
         except ValueError:
             tool_output_mode = ToolOutputMode.DEFAULT
+        tool_selection_mode = str(getattr(prisma_conv, "toolSelectionMode", "") or "custom")
+        if tool_selection_mode not in {"default_all", "custom"}:
+            tool_selection_mode = "custom"
 
         return Conversation(
             id=prisma_conv.id,
@@ -4106,6 +4101,7 @@ class IndexerRepository:
             messages=messages,
             total_tokens=prisma_conv.totalTokens,
             disabled_builtin_tool_ids=_normalize_string_list(getattr(prisma_conv, "disabledBuiltinToolIds", [])),
+            tool_selection_mode=tool_selection_mode,
             created_at=prisma_conv.createdAt,
             updated_at=prisma_conv.updatedAt,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),

@@ -1038,6 +1038,9 @@ model Conversation {
   // Tool output mode for this conversation
   toolOutputMode ConversationToolOutputMode @default(default) @map("tool_output_mode")
 
+  // Tool selection mode: default_all means all healthy enabled tools are allowed; custom uses stored selections.
+  toolSelectionMode String @default("custom") @map("tool_selection_mode")
+
   // Built-in chat diagnostic tools explicitly disabled for this conversation
   disabledBuiltinToolIds Json @default("[]") @map("disabled_builtin_tool_ids")
 
@@ -1175,6 +1178,7 @@ model Workspace {
   nameNormalized             String?                     @map("name_normalized")
   description                String?                     @default("")
   sqlitePersistenceMode      SqlitePersistenceMode       @default(include) @map("sqlite_persistence_mode")
+  toolSelectionMode          String                      @default("custom") @map("tool_selection_mode")
   currentSnapshotId          String?                     @map("current_snapshot_id")
   currentSnapshotBranchId    String?                     @map("current_snapshot_branch_id")
   scmGitUrl                  String?                     @map("scm_git_url")

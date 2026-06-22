@@ -10804,14 +10804,18 @@ async def _resolve_selected_tool_ids_for_request(
     finally:
         await db.disconnect()
 
+    conversation_tool_selection_mode = str(getattr(conversation, "tool_selection_mode", "") or getattr(conversation, "toolSelectionMode", "") or "").strip()
     selected_tool_ids = set(conversation_selected_tool_ids)
-    if conversation_selected_group_ids:
-        group_tool_ids = await repository.get_tool_ids_for_groups(conversation_selected_group_ids)
-        selected_tool_ids.update(group_tool_ids)
-    elif not selected_tool_ids:
-        # Default chat behavior: when no explicit per-conversation selection
-        # exists, allow all healthy enabled tools.
+    if conversation_tool_selection_mode == "default_all":
         selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
+    else:
+        if conversation_selected_group_ids:
+            group_tool_ids = await repository.get_tool_ids_for_groups(conversation_selected_group_ids)
+            selected_tool_ids.update(group_tool_ids)
+        elif not selected_tool_ids and conversation_tool_selection_mode != "custom":
+            # Legacy chat behavior: when no explicit per-conversation selection
+            # exists, allow all healthy enabled tools.
+            selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
 
     workspace_context = None
     if effective_workspace_id:
@@ -10821,11 +10825,15 @@ async def _resolve_selected_tool_ids_for_request(
             required_role,
         )
         # Workspace scope enforces strict selected-tool bounds.
-        selected_tool_ids = set(workspace.selected_tool_ids)
-        if workspace.selected_tool_group_ids:
+        selected_tool_ids = set()
+        if getattr(workspace, "tool_selection_mode", "custom") == "default_all":
+            selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
+        else:
+            selected_tool_ids = set(workspace.selected_tool_ids)
+        if getattr(workspace, "tool_selection_mode", "custom") != "default_all" and workspace.selected_tool_group_ids:
             group_tool_ids = await repository.get_tool_ids_for_groups(workspace.selected_tool_group_ids)
             selected_tool_ids.update(group_tool_ids)
-        elif not selected_tool_ids:
+        elif not selected_tool_ids and getattr(workspace, "tool_selection_mode", "custom") != "custom":
             # Workspaces created before tool-selection persistence may have no
             # explicit rows; treat that as default-all.
             selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
@@ -13983,12 +13991,18 @@ async def get_conversation_tools(
 
         tool_config_ids = [s.toolConfigId for s in selections]
         tool_group_ids = [s.toolGroupId for s in group_selections]
-        if not tool_config_ids and not tool_group_ids:
+        tool_selection_mode = str(getattr(conversation, "toolSelectionMode", "") or "").strip()
+        if tool_selection_mode not in {"default_all", "custom"}:
+            tool_selection_mode = "default_all" if not tool_config_ids and not tool_group_ids else "custom"
+        if tool_selection_mode == "default_all":
+            tool_config_ids = await repository.list_healthy_enabled_tool_ids()
+        elif not tool_config_ids and not tool_group_ids and tool_selection_mode != "custom":
             tool_config_ids = await repository.list_healthy_enabled_tool_ids()
 
         return {
             "tool_config_ids": tool_config_ids,
             "tool_group_ids": tool_group_ids,
+            "tool_selection_mode": tool_selection_mode,
             "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(getattr(conversation, "disabledBuiltinToolIds", [])),
         }
     finally:
@@ -14021,6 +14035,9 @@ async def update_conversation_tools(
 
         tool_config_ids = request.get("tool_config_ids", [])
         tool_group_ids = request.get("tool_group_ids", [])
+        tool_selection_mode = str(request.get("tool_selection_mode", "custom") or "custom").strip()
+        if tool_selection_mode not in {"default_all", "custom"}:
+            raise HTTPException(status_code=400, detail="tool_selection_mode must be 'default_all' or 'custom'")
         has_builtin_update = "disabled_builtin_tool_ids" in request
         disabled_builtin_tool_ids = _normalize_disabled_builtin_tool_ids(request.get("disabled_builtin_tool_ids", []))
 
@@ -14036,6 +14053,10 @@ async def update_conversation_tools(
         for group_id in tool_group_ids:
             await db.conversationtoolgroupselection.create(data={"conversationId": conversation_id, "toolGroupId": group_id})
 
+        await db.conversation.update(
+            where={"id": conversation_id},
+            data={"toolSelectionMode": tool_selection_mode},
+        )
         if has_builtin_update:
             await db.conversation.update(
                 where={"id": conversation_id},

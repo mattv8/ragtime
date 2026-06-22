@@ -2381,6 +2381,7 @@ class Conversation(BaseModel):
     total_tokens: int = Field(default=0)
     active_task_id: Optional[str] = Field(default=None, description="ID of currently running background task")
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
+    tool_selection_mode: str = Field(default="custom")
     tool_output_mode: ToolOutputMode = Field(
         default=ToolOutputMode.DEFAULT,
         description="Per-conversation tool output preference: default (use global), show (always), hide (always), auto (AI decides)",
@@ -2519,6 +2520,7 @@ class ConversationResponse(BaseModel):
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
+    tool_selection_mode: str = Field(default="custom")
     tool_output_mode: ToolOutputMode = Field(default=ToolOutputMode.DEFAULT)
     created_at: datetime
     updated_at: datetime

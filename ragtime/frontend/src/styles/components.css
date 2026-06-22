@@ -1226,23 +1226,86 @@ textarea:focus {
   position: fixed;
   z-index: 9000;
   width: 320px;
-  overflow: auto;
+  overflow: visible;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.userspace-tool-dropdown-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 6px 8px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: var(--space-sm);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-lg);
 }
 
-.userspace-tool-dropdown h4 {
-  margin-bottom: var(--space-xs);
+.userspace-tool-dropdown-title h4 {
+  margin: 0;
   font-size: var(--text-sm);
+  min-width: 0;
+}
+
+.userspace-tool-title-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.userspace-tool-saving {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+}
+
+.userspace-tool-search {
+  width: 100%;
+}
+
+.userspace-tool-bulk-toggle {
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.userspace-tool-bulk-toggle:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  border-color: var(--color-text-muted);
+}
+
+.userspace-tool-bulk-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .userspace-tool-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 360px;
+  padding: 4px;
 }
 
 .userspace-tool-item {
@@ -1256,6 +1319,24 @@ textarea:focus {
 
 .userspace-tool-item:hover {
   background: var(--color-surface-hover);
+}
+
+.userspace-tool-item-disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.userspace-tool-item-disabled:hover {
+  background: transparent;
+}
+
+.userspace-tool-item-disabled input {
+  cursor: not-allowed;
+}
+
+.userspace-tool-item-disabled strong,
+.userspace-tool-item-disabled small {
+  color: var(--color-text-muted);
 }
 
 .userspace-tool-builtins {
