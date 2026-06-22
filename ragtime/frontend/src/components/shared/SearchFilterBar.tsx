@@ -19,6 +19,7 @@ interface SearchFilterBarProps {
   placeholder: string;
   ariaLabel: string;
   className?: string;
+  onClick?: () => void;
 }
 
 export function normalizeSearchFilterText(value: string): string {
@@ -98,7 +99,7 @@ export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterStat
   };
 }
 
-export function SearchFilterBar({ state, inputRef, placeholder, ariaLabel, className = '' }: SearchFilterBarProps) {
+export function SearchFilterBar({ state, inputRef, placeholder, ariaLabel, className = '', onClick }: SearchFilterBarProps) {
   const addTag = (rawTag: string) => {
     const tag = rawTag.trim();
     if (tag && !state.tags.includes(tag)) {
@@ -111,7 +112,10 @@ export function SearchFilterBar({ state, inputRef, placeholder, ariaLabel, class
       className={`settings-filter-search${className ? ` ${className}` : ''}`}
       role="search"
       aria-label={ariaLabel}
-      onClick={() => inputRef?.current?.focus()}
+      onClick={() => {
+        onClick?.();
+        inputRef?.current?.focus();
+      }}
     >
       <Search size={16} className="settings-filter-search-icon" aria-hidden="true" />
       {state.tags.map((tag, index) => (

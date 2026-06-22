@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { api } from '@/api';
 import type { ToolConfig, ToolGroup, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob, UserspaceMountSource, MountSourceAffectedWorkspacesResponse, UserCloudOAuthAccount } from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
@@ -74,6 +74,20 @@ function getSuggestedGroupName(tool: ToolConfig | null | undefined): string {
 
   const toolTypeName = TOOL_TYPE_INFO[tool.tool_type]?.name ?? 'Tool';
   return `${tool.name} ${toolTypeName}`;
+}
+
+function getUniqueGroupName(baseName: string, groups: ToolGroup[]): string {
+  const existingNames = new Set(groups.map((group) => group.name.trim().toLowerCase()));
+  if (!existingNames.has(baseName.trim().toLowerCase())) {
+    return baseName;
+  }
+
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${baseName} ${suffix}`;
+    if (!existingNames.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
 }
 
 function getToolSearchText(tool: ToolConfig): string {
@@ -577,6 +591,65 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     return allGroups.find(({ group }) => group.id === selectedGroupId) || null;
   }, [allGroups, selectedGroupId]);
 
+  const updateSelectedGroupNotch = useCallback(() => {
+    const groupContent = groupContentRef.current;
+    if (!groupContent) {
+      return;
+    }
+
+    if (!selectedGroupId) {
+      groupContent.style.removeProperty('--tool-group-notch-left');
+      groupContent.style.removeProperty('--tool-group-notch-width');
+      groupContent.style.removeProperty('--tool-group-notch-depth');
+      return;
+    }
+
+    const tabsRow = groupContent.querySelector<HTMLElement>('.tool-group-tabs');
+    const activeTab = groupContent.querySelector<HTMLElement>('.tool-group-tab.active');
+    const activePanel = groupContent.querySelector<HTMLElement>('.tool-group-active-panel');
+    if (!tabsRow || !activeTab || !activePanel) {
+      return;
+    }
+
+    const activePanelRect = activePanel.getBoundingClientRect();
+    const activeTabRect = activeTab.getBoundingClientRect();
+    const notchLeft = Math.max(0, activeTabRect.left - activePanelRect.left);
+    const notchWidth = activeTabRect.width;
+    const notchDepth = Math.max(0, activePanelRect.top - activeTabRect.bottom + 2);
+
+    groupContent.style.setProperty('--tool-group-notch-left', `${notchLeft}px`);
+    groupContent.style.setProperty('--tool-group-notch-width', `${notchWidth}px`);
+    groupContent.style.setProperty('--tool-group-notch-depth', `${notchDepth}px`);
+  }, [selectedGroupId]);
+
+  useLayoutEffect(() => {
+    updateSelectedGroupNotch();
+
+    const groupContent = groupContentRef.current;
+    if (!groupContent || !selectedGroupId || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateSelectedGroupNotch();
+    });
+
+    resizeObserver.observe(groupContent);
+
+    const tabsRow = groupContent.querySelector<HTMLElement>('.tool-group-tabs');
+    const activeTab = groupContent.querySelector<HTMLElement>('.tool-group-tab.active');
+    if (tabsRow) {
+      resizeObserver.observe(tabsRow);
+    }
+    if (activeTab) {
+      resizeObserver.observe(activeTab);
+    }
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [updateSelectedGroupNotch, selectedGroupId, editingGroupId, toolFilter.tags.length, toolFilter.input]);
+
   const isToolFiltering = toolFilter.queries.length > 0;
   const baseVisibleTools = isToolFiltering ? tools : selectedGroup ? selectedGroup.tools : ungroupedTools;
   const visibleTools = useMemo(() => {
@@ -729,7 +802,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   }, []);
 
   const createSuggestedGroup = useCallback(async (tool: ToolConfig | null | undefined) => {
-    const suggestedName = getSuggestedGroupName(tool);
+    const suggestedName = getUniqueGroupName(getSuggestedGroupName(tool), groups);
     const created = await api.createToolGroup({ name: suggestedName });
 
     setGroups((current) => current.some((group) => group.id === created.id) ? current : [...current, created]);
@@ -739,7 +812,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
 
     return { created, suggestedName };
-  }, [startEditingGroup]);
+  }, [groups, startEditingGroup]);
 
   const handleDeleteTool = async (toolId: string) => {
     try {
@@ -959,6 +1032,24 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const handleGroupTabsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (selectedGroupId && e.target === e.currentTarget) {
+      setSelectedGroupId(null);
+    }
+  }, [selectedGroupId]);
+
+  const handleGroupTabsListClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!selectedGroupId) {
+      return;
+    }
+
+    if (!(e.target instanceof Element) || e.target.closest('.tool-group-tab')) {
+      return;
+    }
+
+    setSelectedGroupId(null);
+  }, [selectedGroupId]);
+
+  const handleToolFilterClick = useCallback(() => {
+    if (selectedGroupId) {
       setSelectedGroupId(null);
     }
   }, [selectedGroupId]);
@@ -1648,7 +1739,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
               className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}
               onClick={handleGroupTabsClick}
             >
-              <div className="tool-group-tabs-list">
+              <div className="tool-group-tabs-list" onClick={handleGroupTabsListClick}>
               {allGroups.length > 0 && allGroups.map(({ group, tools: groupTools }) => {
                 const isActive = selectedGroupId === group.id;
                 const isDragTarget = dragOverGroupId === group.id;
@@ -1693,13 +1784,6 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                   </div>
                 );
               })}
-              <button
-                className="tool-group-tab tool-group-tab-add"
-                onClick={handleCreateGroup}
-                title="Create a new group"
-              >
-                + Add Group
-              </button>
               {/* "Ungrouped" drop target — visible when dragging from within a group */}
               {dragToolId && selectedGroupId && (
                 <div
@@ -1712,13 +1796,23 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
                 </div>
               )}
               </div>
-              <SearchFilterBar
-                state={toolFilter}
-                inputRef={toolFilterInputRef}
-                placeholder="Filter tools by keyword..."
-                ariaLabel="Filter tools by keyword"
-                className="tool-group-filter-search"
-              />
+              <div className="tool-group-tabs-actions" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="tool-group-tab tool-group-tab-add"
+                  onClick={handleCreateGroup}
+                  title="Create a new group"
+                >
+                  + Add Group
+                </button>
+                <SearchFilterBar
+                  state={toolFilter}
+                  inputRef={toolFilterInputRef}
+                  placeholder="Filter tools by keyword..."
+                  ariaLabel="Filter tools by keyword"
+                  className="tool-group-filter-search"
+                  onClick={handleToolFilterClick}
+                />
+              </div>
             </div>
 
             {/* Tool cards — filtered by selected group */}

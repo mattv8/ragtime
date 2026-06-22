@@ -1499,12 +1499,17 @@ textarea:focus {
 }
 
 /* Tool group tabs row */
+.tool-group-content {
+  position: relative;
+  --tool-group-notch-left: 0px;
+  --tool-group-notch-width: 0px;
+  --tool-group-notch-depth: 0px;
+}
+
 .tool-group-tabs {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  flex-wrap: wrap;
+  display: block;
   margin-bottom: var(--space-sm);
+  min-height: 38px;
   position: relative;
   z-index: 1;
 }
@@ -1513,22 +1518,81 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1 1 360px;
   flex-wrap: wrap;
+  box-sizing: border-box;
   min-width: 0;
+  padding-right: min(560px, 55%);
+}
+
+.tool-group-tabs-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  z-index: 3;
 }
 
 .tool-group-filter-search {
-  flex: 1 1 280px;
-  max-width: 460px;
-  min-width: min(100%, 240px);
-  margin: 0 0 0 auto;
+  flex: 0 0 410px;
+  width: 410px;
+  max-width: min(410px, 42vw);
+  min-width: 240px;
+}
+
+.tool-group-filter-search.settings-filter-search {
+  box-sizing: border-box;
+  flex-wrap: nowrap;
+  height: 34px;
+  margin-bottom: 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+
+.tool-group-filter-search.settings-filter-search input {
+  padding: 0;
+  font-size: var(--text-sm);
+  line-height: 1.4;
 }
 
 /* When a group is selected, remove bottom gap so panel connects */
 .tool-group-content.has-selection .tool-group-tabs {
   margin-bottom: 0;
   padding-bottom: 0;
+}
+
+.tool-group-content.has-selection .tool-group-tabs-list {
+  padding-right: 170px;
+}
+
+.tool-group-content.has-selection .tool-group-filter-search {
+  flex-basis: 34px;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  overflow: hidden;
+  justify-content: center;
+}
+
+.tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-tag,
+.tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-clear {
+  display: none;
+}
+
+.tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) input {
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tool-group-content.has-selection .tool-group-filter-search:focus-within {
+  flex-basis: 320px;
+  width: 320px;
+  min-width: 240px;
+  max-width: min(320px, 42vw);
 }
 
 .tool-group-tab {
@@ -1553,6 +1617,11 @@ textarea:focus {
   border-color: var(--color-text-muted);
 }
 
+.tool-group-content.has-selection .tool-group-tab:not(.active):hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+
 .tool-group-tab.active {
   border-color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 8%, transparent);
@@ -1567,6 +1636,19 @@ textarea:focus {
   background: color-mix(in srgb, var(--color-accent) 6%, transparent);
   margin-bottom: -1px;
   z-index: 2;
+}
+
+.tool-group-content.has-selection .tool-group-tab.active::after {
+  content: '';
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: calc(-1 * var(--tool-group-notch-depth));
+  height: var(--tool-group-notch-depth);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  border-left: 1px solid var(--color-accent);
+  border-right: 1px solid var(--color-accent);
+  pointer-events: none;
 }
 
 /* When a tool is being dragged, pulse all group tabs as drop targets */
@@ -1709,11 +1791,35 @@ textarea:focus {
 
 /* Active group panel — connected to active tab */
 .tool-group-active-panel {
+  position: relative;
   border: 1px solid var(--color-accent);
   border-radius: 0 var(--radius-sm) var(--radius-sm) var(--radius-sm);
   background: color-mix(in srgb, var(--color-accent) 6%, transparent);
   padding: var(--space-sm);
   margin-bottom: var(--space-sm);
+}
+
+.tool-group-content.has-selection .tool-group-active-panel {
+  border-top-color: transparent;
+}
+
+.tool-group-content.has-selection .tool-group-active-panel::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0,
+    var(--color-accent) var(--tool-group-notch-left),
+    transparent var(--tool-group-notch-left),
+    transparent calc(var(--tool-group-notch-left) + var(--tool-group-notch-width)),
+    var(--color-accent) calc(var(--tool-group-notch-left) + var(--tool-group-notch-width)),
+    var(--color-accent) 100%
+  );
+  pointer-events: none;
 }
 
 .tool-group-active-panel-header {
@@ -5812,8 +5918,52 @@ textarea {
     min-width: 60px;
   }
 
+  .tool-group-tabs-list,
+  .tool-group-content.has-selection .tool-group-tabs-list {
+    padding-right: 0;
+  }
+
+  .tool-group-tabs-actions {
+    position: static;
+    margin-top: var(--space-xs);
+  }
+
   .tool-group-filter-search {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
     max-width: none;
+  }
+
+  .tool-group-content.has-selection .tool-group-filter-search,
+  .tool-group-content.has-selection .tool-group-filter-search:focus-within {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) input {
+    display: block;
+  }
+
+  .tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-tag,
+  .tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-clear {
+    display: inline-flex;
+  }
+
+  .tool-group-content.has-selection .tool-group-active-panel {
+    border-top-color: var(--color-accent);
+    border-radius: var(--radius-sm);
+  }
+
+  .tool-group-content.has-selection .tool-group-active-panel::before,
+  .tool-group-content.has-selection .tool-group-active-panel::after {
+    display: none;
+  }
+
+  .tool-group-content.has-selection .tool-group-tab.active::after {
+    display: none;
   }
 }
 
