@@ -76,6 +76,29 @@ function withWorkspaceQuery(url: string, workspaceId?: string): string {
   return `${url}${separator}workspace_id=${encodeURIComponent(workspaceId)}`;
 }
 
+function buildClientClockContext(): SendMessageRequest['client_clock'] {
+  const now = new Date();
+  let timezone: string | null = null;
+  try {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    timezone = null;
+  }
+
+  return {
+    epoch_ms: now.getTime(),
+    timezone,
+    utc_offset_minutes: -now.getTimezoneOffset(),
+  };
+}
+
+function withClientClock(request: SendMessageRequest): SendMessageRequest {
+  return {
+    ...request,
+    client_clock: request.client_clock ?? buildClientClockContext(),
+  };
+}
+
 class ApiError extends Error {
   constructor(
     message: string,
@@ -1910,7 +1933,7 @@ export const api = {
     const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages`, workspaceId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(withClientClock(request)),
     });
     return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
   },
@@ -1923,7 +1946,7 @@ export const api = {
     const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages/stream`, workspaceId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(withClientClock({ message })),
       signal,
     });
 
@@ -2215,7 +2238,7 @@ export const api = {
     const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages/background`, workspaceId), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify(withClientClock({ message })),
     });
     return handleResponse<import('@/types').ChatTask>(response);
   },
@@ -3840,7 +3863,7 @@ export const api = {
     const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(withClientClock(request)),
     });
     return handleResponse<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }>(response);
   },
@@ -3850,7 +3873,7 @@ export const api = {
     const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/messages${suffix}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
+      body: JSON.stringify(withClientClock(request)),
     });
     return handleResponse<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }>(response);
   },

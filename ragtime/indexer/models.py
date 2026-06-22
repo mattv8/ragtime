@@ -4,6 +4,7 @@ Indexer data models and schemas.
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, List, Literal, Optional
@@ -2665,12 +2666,40 @@ class CreateConversationRequest(BaseModel):
     )
 
 
+class ClientClockContext(BaseModel):
+    """Browser clock sample captured when the user submitted a turn."""
+
+    epoch_ms: int = Field(ge=0, description="Browser Unix epoch timestamp in milliseconds")
+    timezone: str | None = Field(default=None, description="IANA browser timezone when available")
+    utc_offset_minutes: int = Field(
+        ge=-840,
+        le=840,
+        description="Browser UTC offset in minutes east of UTC",
+    )
+
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or len(normalized) > 64:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_+\-/]+", normalized):
+            return None
+        return normalized
+
+
 class SendMessageRequest(BaseModel):
     """Request to send a message in a conversation."""
 
     message: str = Field(description="The message content to send")
     stream: bool = Field(default=False, description="Whether to stream the response")
     background: bool = Field(default=False, description="Whether to run in background mode")
+    client_clock: ClientClockContext | None = Field(
+        default=None,
+        description="Optional browser clock sample for prompt-time awareness",
+    )
 
 
 class ChatAttachmentUploadResponse(BaseModel):

@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, List, Literal, Optional, Union, cast
@@ -78,6 +79,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SEARCH_RESULTS_K,
 )
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import ensure_copilot_token_fresh
 from ragtime.core.database import get_db
@@ -176,6 +178,7 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_COMMON_PROMPT,
     UI_VISUALIZATION_USERSPACE_PROMPT,
     build_chat_diagnostics_prompt_addition,
+    build_current_time_turn_reminder_line,
     build_current_user_prompt_fragment,
     build_current_user_turn_reminder_line,
     build_index_system_prompt,
@@ -5909,6 +5912,49 @@ class RAGComponents:
                     runtime_status_reminder_line=userspace_runtime_status_turn_hint,
                 )
         return reminder_text
+
+    @staticmethod
+    def _build_current_time_turn_reminder_line(current_time_context: dict[str, Any] | None) -> str:
+        """Build a request-scoped current-time line from backend and browser clocks."""
+        now_utc = utc_now()
+        client_clock = current_time_context.get("client_clock") if isinstance(current_time_context, dict) else None
+        server_received_at = current_time_context.get("server_received_at") if isinstance(current_time_context, dict) else None
+
+        browser_time_utc: datetime | None = None
+        browser_timezone: str | None = None
+        browser_utc_offset_minutes: int | None = None
+        browser_time_is_estimated = False
+
+        if isinstance(client_clock, dict):
+            try:
+                epoch_ms = int(client_clock.get("epoch_ms"))
+            except (TypeError, ValueError):
+                epoch_ms = None
+
+            try:
+                browser_utc_offset_minutes = int(client_clock.get("utc_offset_minutes"))
+            except (TypeError, ValueError):
+                browser_utc_offset_minutes = None
+
+            browser_timezone_raw = client_clock.get("timezone")
+            if isinstance(browser_timezone_raw, str):
+                browser_timezone = browser_timezone_raw.strip() or None
+
+            if epoch_ms is not None and browser_utc_offset_minutes is not None:
+                browser_time_utc = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+                if isinstance(server_received_at, datetime):
+                    elapsed = now_utc - coerce_utc_datetime(server_received_at)
+                    if elapsed.total_seconds() > 0:
+                        browser_time_utc += elapsed
+                        browser_time_is_estimated = True
+
+        return build_current_time_turn_reminder_line(
+            server_time_utc=now_utc,
+            browser_time_utc=browser_time_utc,
+            browser_timezone=browser_timezone,
+            browser_utc_offset_minutes=browser_utc_offset_minutes,
+            browser_time_is_estimated=browser_time_is_estimated,
+        )
 
     @staticmethod
     def _build_userspace_env_var_prompt_fragment(env_vars: list[Any]) -> str:
@@ -12389,6 +12435,7 @@ class RAGComponents:
         add_chat_visualization_prompt: bool,
         user_id: Optional[str] = None,
         current_user_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
     ) -> dict[str, Any]:
@@ -12469,6 +12516,7 @@ class RAGComponents:
             username=username,
             display_name=display_name,
         )
+        current_time_turn_line = self._build_current_time_turn_reminder_line(current_time_context)
         raw_accessible_modes = (workspace_context or {}).get("accessible_workspace_modes", {})
         accessible_workspace_modes: dict[str, str] = {}
         if isinstance(raw_accessible_modes, dict):
@@ -12720,6 +12768,7 @@ class RAGComponents:
             "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
             "userspace_runtime_status_turn_hint": userspace_runtime_status_turn_hint,
             "user_identity_turn_line": user_identity_turn_line,
+            "current_time_turn_line": current_time_turn_line,
             "request_tool_state": request_tool_state,
             "export_context": export_context,
             "workspace_id": workspace_id or None,
@@ -14054,6 +14103,7 @@ class RAGComponents:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         current_user_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
@@ -14095,6 +14145,7 @@ class RAGComponents:
                 add_chat_visualization_prompt=True,
                 user_id=user_id,
                 current_user_context=current_user_context,
+                current_time_context=current_time_context,
                 conversation_id=conversation_id,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             )
@@ -14111,6 +14162,7 @@ class RAGComponents:
 
             # Build per-turn system content (reminders + context headroom)
             turn_system_content = request_context["user_identity_turn_line"]
+            turn_system_content += request_context["current_time_turn_line"]
             turn_system_content += self._build_turn_reminder_text(
                 request_context["mode"],
                 include_sqlite_persistence=request_context["include_sqlite_persistence"],
@@ -14345,6 +14397,7 @@ class RAGComponents:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         current_user_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
         chat_task_id: Optional[str] = None,
         message_index: Optional[int] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
@@ -14396,6 +14449,7 @@ class RAGComponents:
                 add_chat_visualization_prompt=is_ui,
                 user_id=user_id,
                 current_user_context=current_user_context,
+                current_time_context=current_time_context,
                 conversation_id=conversation_id,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             )
@@ -14416,6 +14470,7 @@ class RAGComponents:
 
         # Build per-turn system content (reminders + context headroom)
         turn_system_content = request_context["user_identity_turn_line"]
+        turn_system_content += request_context["current_time_turn_line"]
         turn_system_content += self._build_turn_reminder_text(
             request_context["mode"],
             include_sqlite_persistence=request_context["include_sqlite_persistence"],

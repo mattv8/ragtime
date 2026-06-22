@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from importlib import util
 from pathlib import Path
 
@@ -41,9 +42,42 @@ finally:
 
 build_userspace_turn_reminder = _prompts.build_userspace_turn_reminder
 build_userspace_turn_reminder_with_env_vars = _prompts.build_userspace_turn_reminder_with_env_vars
+build_current_time_turn_reminder_line = _prompts.build_current_time_turn_reminder_line
 
 
 class UserSpaceTurnReminderTests(unittest.TestCase):
+    def test_current_time_line_sanitizes_browser_timezone_label(self) -> None:
+        reminder_line = build_current_time_turn_reminder_line(
+            server_time_utc=datetime(2026, 6, 22, 16, 3, 11, tzinfo=timezone.utc),
+            browser_time_utc=datetime(2026, 6, 22, 16, 3, 10, tzinfo=timezone.utc),
+            browser_timezone="America/New_York<script>",
+            browser_utc_offset_minutes=-240,
+            browser_time_is_estimated=True,
+        )
+
+        self.assertEqual(
+            reminder_line,
+            "[CURRENT TIME: server_utc=2026-06-22T16:03:11Z; "
+            "browser_local_estimate=2026-06-22T12:03:10-04:00]\n\n",
+        )
+
+    def test_current_time_line_omits_browser_time_for_invalid_offset(self) -> None:
+        reminder_line = build_current_time_turn_reminder_line(
+            server_time_utc=datetime(2026, 6, 22, 16, 3, 11, tzinfo=timezone.utc),
+            browser_time_utc=datetime(2026, 6, 22, 16, 3, 10, tzinfo=timezone.utc),
+            browser_timezone="America/New_York",
+            browser_utc_offset_minutes=9999,
+        )
+
+        self.assertEqual(reminder_line, "[CURRENT TIME: server_utc=2026-06-22T16:03:11Z]\n\n")
+
+    def test_current_time_line_falls_back_to_server_only(self) -> None:
+        reminder_line = build_current_time_turn_reminder_line(
+            server_time_utc=datetime(2026, 6, 22, 16, 3, 11, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(reminder_line, "[CURRENT TIME: server_utc=2026-06-22T16:03:11Z]\n\n")
+
     def test_runtime_status_line_is_included(self) -> None:
         runtime_line = (
             "- Current runtime blocker: session_state=running, phase=failed, "

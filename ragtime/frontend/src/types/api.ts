@@ -2128,6 +2128,13 @@ export interface CreateConversationRequest {
 export interface SendMessageRequest {
   message: string;
   stream?: boolean;
+  client_clock?: ClientClockContext;
+}
+
+export interface ClientClockContext {
+  epoch_ms: number;
+  timezone?: string | null;
+  utc_offset_minutes: number;
 }
 
 export interface SendMessageResponse {

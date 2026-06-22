@@ -64,6 +64,7 @@ from ragtime.core.copilot_auth import (
     exchange_github_token_for_copilot_token,
     is_copilot_token_refresh_in_progress,
 )
+from ragtime.core.datetimes import utc_now
 from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.embedding_models import (
     OPENAI_EMBEDDING_PRIORITY,
@@ -7902,6 +7903,7 @@ async def _create_background_chat_task_after_user_message(
     conv: Conversation,
     blocked_tool_names: Optional[set[str]],
     workspace_context: Optional[dict[str, Any]],
+    current_time_context: Optional[dict[str, Any]] = None,
     disabled_builtin_tool_ids: Optional[set[str]] = None,
     existing_task_id: Optional[str] = None,
 ) -> Any:
@@ -7924,6 +7926,7 @@ async def _create_background_chat_task_after_user_message(
                 existing_task_id=existing_task_id,
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
+                current_time_context=current_time_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
             )
@@ -7933,6 +7936,7 @@ async def _create_background_chat_task_after_user_message(
                 user_message,
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
+                current_time_context=current_time_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
             )
@@ -10431,6 +10435,7 @@ async def _send_message_to_loaded_conversation(
         conversation_id=conversation_id,
         input_tokens=input_est,
     )
+    current_time_context = _build_current_time_prompt_context(request)
     try:
         current_user_context = _build_current_user_prompt_context(user)
         answer = await rag.process_query(
@@ -10442,6 +10447,7 @@ async def _send_message_to_loaded_conversation(
             conversation_id=conversation_id,
             user_id=user.id,
             current_user_context=current_user_context,
+            current_time_context=current_time_context,
             message_index=len(conv.messages),
             disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
         )
@@ -10525,6 +10531,7 @@ async def _send_background_message_to_loaded_conversation(
     conv = updated_conversation
 
     await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    current_time_context = _build_current_time_prompt_context(request)
 
     task = await _create_background_chat_task_after_user_message(
         conversation_id=conversation_id,
@@ -10533,6 +10540,7 @@ async def _send_background_message_to_loaded_conversation(
         conv=conv,
         blocked_tool_names=blocked_tool_names,
         workspace_context=workspace_context,
+        current_time_context=current_time_context,
         disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
     )
 
@@ -10916,6 +10924,22 @@ def _build_current_user_prompt_context(
         "username": normalized_username,
         "display_name": normalized_display_name or "",
     }
+
+
+def _build_current_time_prompt_context(
+    request: SendMessageRequest,
+    *,
+    server_received_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build request-scoped time context for prompt reminder injection."""
+
+    context: dict[str, Any] = {
+        "server_received_at": server_received_at or utc_now(),
+    }
+    client_clock = getattr(request, "client_clock", None)
+    if client_clock is not None:
+        context["client_clock"] = client_clock.model_dump(exclude_none=True)
+    return context
 
 
 def _normalize_disabled_builtin_tool_ids(value: Any) -> list[str]:
@@ -12649,6 +12673,7 @@ async def send_message_stream(
         conversation_id=conversation_id,
         input_tokens=input_est,
     )
+    current_time_context = _build_current_time_prompt_context(request)
 
     async def stream_response():
         """Generate streaming response tokens."""
@@ -12671,6 +12696,7 @@ async def send_message_stream(
                 conversation_id=conversation_id,
                 user_id=user.id,
                 current_user_context=current_user_context,
+                current_time_context=current_time_context,
                 message_index=len(conv.messages),
                 disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
             ):
@@ -13580,6 +13606,8 @@ async def send_message_background(
     if not user_message:
         raise HTTPException(status_code=400, detail="Message is required")
 
+    current_time_context = _build_current_time_prompt_context(request)
+
     updated_conversation, claimed_task, created_task = await repository.add_user_message_and_create_chat_task_if_idle(
         conversation_id,
         user_message,
@@ -13608,6 +13636,7 @@ async def send_message_background(
             conv=conv,
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
+            current_time_context=current_time_context,
             disabled_builtin_tool_ids=set(conv.disabled_builtin_tool_ids),
             existing_task_id=claimed_task.id,
         )

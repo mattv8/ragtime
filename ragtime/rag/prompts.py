@@ -15,6 +15,10 @@ The system prompt is composed of these sections in order:
 8. TOOL_OUTPUT_VISIBILITY_PROMPT - (Conditional) When tool_output_mode is 'auto'
 """
 
+from __future__ import annotations
+
+import re
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from ragtime.core.entrypoint_status import EntrypointStatus
@@ -278,6 +282,60 @@ def build_current_user_turn_reminder_line(
         identity_label = normalized_display_name or normalized_username
 
     return f"[CURRENT USER: {identity_label}]\n\n"
+
+
+def _format_reminder_iso_datetime(value: datetime) -> str:
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    normalized = normalized.astimezone(timezone.utc)
+    return normalized.isoformat().replace("+00:00", "Z")
+
+
+def _normalize_browser_timezone_label(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > 64:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_+\-/]+", normalized):
+        return None
+    return normalized
+
+
+def _normalize_browser_utc_offset_minutes(value: int | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized < -840 or normalized > 840:
+        return None
+    return normalized
+
+
+def build_current_time_turn_reminder_line(
+    *,
+    server_time_utc: datetime,
+    browser_time_utc: datetime | None = None,
+    browser_timezone: str | None = None,
+    browser_utc_offset_minutes: int | None = None,
+    browser_time_is_estimated: bool = False,
+) -> str:
+    """Build a compact current-time line for the per-turn reminder."""
+
+    parts = [f"server_utc={_format_reminder_iso_datetime(server_time_utc)}"]
+    normalized_offset = _normalize_browser_utc_offset_minutes(browser_utc_offset_minutes)
+
+    if browser_time_utc is not None and normalized_offset is not None:
+        browser_timezone_info = timezone(timedelta(minutes=normalized_offset))
+        browser_local = browser_time_utc.astimezone(browser_timezone_info)
+        label = "browser_local_estimate" if browser_time_is_estimated else "browser_local"
+        parts.append(f"{label}={browser_local.isoformat()}")
+        browser_timezone = _normalize_browser_timezone_label(browser_timezone)
+        if browser_timezone:
+            parts.append(f"browser_timezone={browser_timezone}")
+
+    return "[CURRENT TIME: " + "; ".join(parts) + "]\n\n"
 
 
 # Backward-compatible constant for non-workspace callers (exclude mode default).

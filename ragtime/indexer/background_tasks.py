@@ -823,7 +823,8 @@ class BackgroundTaskService:
         user_message: str,
         existing_task_id: Optional[str] = None,
         blocked_tool_names: Optional[set[str]] = None,
-        workspace_context: Optional[dict[str, str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
     ) -> str:
@@ -967,6 +968,7 @@ class BackgroundTaskService:
                     is_ui=True,
                     blocked_tool_names=blocked_tool_names,
                     workspace_context=workspace_context,
+                    current_time_context=current_time_context,
                     conversation_model=conv.model,
                     conversation_id=conversation_id,
                     user_id=conv.user_id,
@@ -1672,7 +1674,8 @@ class BackgroundTaskService:
         conversation_id: str,
         user_message: str,
         blocked_tool_names: Optional[set[str]] = None,
-        workspace_context: Optional[dict[str, str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
+        current_time_context: Optional[dict[str, Any]] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
     ) -> str:
@@ -1699,6 +1702,7 @@ class BackgroundTaskService:
             task.id,
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
+            current_time_context=current_time_context,
             disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             usage_attempt_id=usage_attempt_id,
         )
