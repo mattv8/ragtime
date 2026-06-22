@@ -130,6 +130,42 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertIsNone(monitor.get_unavailable_reason("docker-1"))
         self.assertEqual(list(persisted_statuses[0]), ["docker-1"])
 
+    def test_older_heartbeat_does_not_overwrite_newer_manual_test(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30)
+        now = datetime.now(timezone.utc)
+        monitor._statuses = {
+            "ssh-1": ToolHeartbeatStatus(
+                tool_id="ssh-1",
+                alive=True,
+                checked_at=now,
+            )
+        }
+
+        persisted_statuses = []
+
+        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
+            persisted_statuses.append(statuses)
+
+        monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
+
+        result = asyncio.run(
+            monitor._store_statuses(
+                {
+                    "ssh-1": ToolHeartbeatStatus(
+                        tool_id="ssh-1",
+                        alive=False,
+                        error="Connection timeout",
+                        checked_at=now - timedelta(seconds=1),
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(result.statuses, {})
+        self.assertEqual(result.changed_tool_ids, set())
+        self.assertTrue(monitor.is_tool_healthy("ssh-1"))
+        self.assertEqual(persisted_statuses, [])
+
 
 if __name__ == "__main__":
     unittest.main()

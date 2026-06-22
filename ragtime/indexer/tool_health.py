@@ -33,11 +33,17 @@ class ToolHealthCheckResult:
     changed_tool_ids: set[str]
 
 
-def get_heartbeat_timeout_seconds(connection_config: dict[str, Any] | None) -> float:
+def get_heartbeat_timeout_seconds(
+    connection_config: dict[str, Any] | None,
+    tool_type: str | Any | None = None,
+) -> float:
     """Return the heartbeat timeout for a tool connection."""
     config = connection_config or {}
     has_ssh_tunnel = bool(config.get("ssh_tunnel_enabled", False))
     has_remote_docker = bool(config.get("docker_ssh_enabled", False))
+    tool_type_value = getattr(tool_type, "value", tool_type)
+    if tool_type_value == "ssh_shell":
+        return 15.0
     return 15.0 if has_ssh_tunnel or has_remote_docker else 5.0
 
 
@@ -157,7 +163,7 @@ class ToolHealthMonitor:
 
             connection_config = _tool_attr(tool, "connection_config", {}) or {}
             tool_type = _tool_attr(tool, "tool_type", "")
-            heartbeat_timeout = get_heartbeat_timeout_seconds(connection_config)
+            heartbeat_timeout = get_heartbeat_timeout_seconds(connection_config, tool_type)
             start_time = time.monotonic()
             checked_at = datetime.now(timezone.utc)
 
@@ -207,19 +213,31 @@ class ToolHealthMonitor:
         changed_tool_ids: set[str] = set()
         now = datetime.now(timezone.utc)
         subscribers: list[asyncio.Queue[ToolHealthCheckResult]] = []
+        stored_statuses: dict[str, ToolHeartbeatStatus] = {}
         async with self._lock:
             for tool_id, status in statuses.items():
                 previous = self._statuses.get(tool_id)
+                if previous and previous.checked_at and status.checked_at:
+                    previous_checked_at = previous.checked_at
+                    status_checked_at = status.checked_at
+                    if previous_checked_at.tzinfo is None:
+                        previous_checked_at = previous_checked_at.replace(tzinfo=timezone.utc)
+                    if status_checked_at.tzinfo is None:
+                        status_checked_at = status_checked_at.replace(tzinfo=timezone.utc)
+                    if status_checked_at < previous_checked_at:
+                        continue
                 previous_healthy = bool(previous and previous.alive and self.is_status_fresh(previous, now=now))
                 current_healthy = bool(status.alive and self.is_status_fresh(status, now=now))
                 if previous is None or previous_healthy != current_healthy:
                     changed_tool_ids.add(tool_id)
                 self._statuses[tool_id] = status
+                stored_statuses[tool_id] = status
             if changed_tool_ids:
                 subscribers = list(self._subscribers)
 
-        await self._persist_statuses(statuses)
-        result = ToolHealthCheckResult(statuses=statuses, changed_tool_ids=changed_tool_ids)
+        if stored_statuses:
+            await self._persist_statuses(stored_statuses)
+        result = ToolHealthCheckResult(statuses=stored_statuses, changed_tool_ids=changed_tool_ids)
         if changed_tool_ids:
             for queue in subscribers:
                 if queue.full():

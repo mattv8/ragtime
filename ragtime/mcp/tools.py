@@ -681,7 +681,7 @@ class MCPToolAdapter:
             tool_type = config.get("tool_type", "")
             conn_config = config.get("connection_config", {})
             start_time = asyncio.get_event_loop().time()
-            heartbeat_timeout = get_heartbeat_timeout_seconds(conn_config)
+            heartbeat_timeout = get_heartbeat_timeout_seconds(conn_config, tool_type)
 
             try:
                 result = await asyncio.wait_for(

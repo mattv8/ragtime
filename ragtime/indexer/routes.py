@@ -2167,6 +2167,19 @@ class HeartbeatResponse(BaseModel):
     statuses: dict[str, HeartbeatStatus]
 
 
+def _heartbeat_status_payload(status) -> dict[str, Any]:
+    available = bool(status.alive)
+    return {
+        "tool_id": status.tool_id,
+        "alive": status.alive,
+        "available": available,
+        "latency_ms": status.latency_ms,
+        "error": status.error,
+        "reason": None if available else status.error,
+        "checked_at": status.checked_at_iso(),
+    }
+
+
 @router.get("/tools/heartbeat", response_model=HeartbeatResponse, tags=["Tools"])
 async def check_tool_heartbeats(_user: User = Depends(require_admin)):
     """
@@ -2187,6 +2200,54 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
     }
 
     return HeartbeatResponse(statuses=statuses)
+
+
+@router.get("/tools/health/events", tags=["Tools"])
+async def stream_tool_health_events(_user: User = Depends(get_current_user)):
+    """Stream tool health snapshots and status changes for chat tool selectors."""
+
+    async def event_generator():
+        queue = await tool_health_monitor.subscribe()
+        try:
+            snapshot_statuses = tool_health_monitor.get_statuses()
+            if snapshot_statuses:
+                payload = {
+                    "type": "snapshot",
+                    "changed_tool_ids": list(snapshot_statuses.keys()),
+                    "statuses": {
+                        tool_id: _heartbeat_status_payload(status)
+                        for tool_id, status in snapshot_statuses.items()
+                    },
+                }
+                yield f"event: snapshot\ndata: {json.dumps(payload)}\n\n"
+
+            while True:
+                try:
+                    result = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+
+                changed_tool_ids = result.changed_tool_ids or set(result.statuses.keys())
+                statuses = {
+                    tool_id: _heartbeat_status_payload(status)
+                    for tool_id, status in result.statuses.items()
+                    if tool_id in changed_tool_ids
+                }
+                if not statuses:
+                    continue
+                payload = {
+                    "type": "delta",
+                    "changed_tool_ids": list(statuses.keys()),
+                    "statuses": statuses,
+                }
+                yield f"event: delta\ndata: {json.dumps(payload)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await tool_health_monitor.unsubscribe(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.get("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
@@ -3901,8 +3962,9 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
     SSH heartbeat check with credential validation.
 
     Uses cached credential check results (refreshed every 15 seconds) to avoid
-    blocking the UI while still validating that credentials are correct.
-    Falls back to quick port check if cache is being refreshed.
+    repeated SSH authentication work while still validating that credentials are
+    correct. This intentionally mirrors the manual SSH test instead of using a
+    separate socket/banner precheck, which can produce false timeouts under load.
     """
     host = config.get("host", "")
     port = config.get("port", 22)
@@ -3923,37 +3985,6 @@ async def _heartbeat_ssh(config: dict) -> ToolTestResponse:
             # Return cached result
             return cached_result
 
-    # Cache expired or not present - do a quick port check first
-    # to provide fast feedback, then trigger background credential refresh
-    try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
-        banner = await asyncio.wait_for(reader.readline(), timeout=1.0)
-        writer.close()
-        await writer.wait_closed()
-
-        if not (banner and b"SSH" in banner):
-            result = ToolTestResponse(
-                success=False,
-                message=f"Not an SSH server: {banner.decode('utf-8', errors='replace')[:50]}",
-            )
-            _ssh_credential_cache[cache_key] = (current_time, result)
-            return result
-
-    except asyncio.TimeoutError:
-        result = ToolTestResponse(success=False, message="Connection timeout")
-        _ssh_credential_cache[cache_key] = (current_time, result)
-        return result
-    except ConnectionRefusedError:
-        result = ToolTestResponse(success=False, message="Connection refused")
-        _ssh_credential_cache[cache_key] = (current_time, result)
-        return result
-    except OSError as e:
-        result = ToolTestResponse(success=False, message=str(e)[:100])
-        _ssh_credential_cache[cache_key] = (current_time, result)
-        return result
-
-    # Port is reachable - now do a full credential check
-    # This runs inline but is cached, so subsequent calls return quickly
     try:
         result = await asyncio.wait_for(_deep_ssh_credential_check(config), timeout=12.0)
         _ssh_credential_cache[cache_key] = (current_time, result)

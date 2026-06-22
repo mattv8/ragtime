@@ -4,10 +4,12 @@ from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_
 from ragtime.core.ssh import SSHConfig, SSHResult
 from ragtime.indexer.routes import (
     DockerDiscoverRequest,
+    ToolTestResponse,
     _discover_remote_docker_resources,
     _heartbeat_mysql,
     _heartbeat_odoo,
     _heartbeat_postgres,
+    _heartbeat_ssh,
     _test_odoo_docker_connection,
     _test_postgres_connection,
 )
@@ -76,6 +78,20 @@ def test_execute_docker_command_on_remote_host_quotes_command_and_embeds_input_h
 
 def test_remote_docker_heartbeat_uses_longer_timeout() -> None:
     assert get_heartbeat_timeout_seconds({"docker_ssh_enabled": True}) == 15.0
+    assert get_heartbeat_timeout_seconds({}, "ssh_shell") == 15.0
+
+
+@pytest.mark.anyio
+async def test_ssh_heartbeat_uses_deep_credential_check(monkeypatch) -> None:
+    async def fake_deep_check(config: dict) -> ToolTestResponse:
+        return ToolTestResponse(success=True, message="OK")
+
+    monkeypatch.setattr("ragtime.indexer.routes._deep_ssh_credential_check", fake_deep_check)
+
+    result = await _heartbeat_ssh({"host": "example.com", "user": "root", "port": 22})
+
+    assert result.success is True
+    assert result.message == "OK"
 
 
 @pytest.mark.anyio
