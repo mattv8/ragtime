@@ -2214,10 +2214,7 @@ async def stream_tool_health_events(_user: User = Depends(get_current_user)):
                 payload = {
                     "type": "snapshot",
                     "changed_tool_ids": list(snapshot_statuses.keys()),
-                    "statuses": {
-                        tool_id: _heartbeat_status_payload(status)
-                        for tool_id, status in snapshot_statuses.items()
-                    },
+                    "statuses": {tool_id: _heartbeat_status_payload(status) for tool_id, status in snapshot_statuses.items()},
                 }
                 yield f"event: snapshot\ndata: {json.dumps(payload)}\n\n"
 
@@ -2229,11 +2226,7 @@ async def stream_tool_health_events(_user: User = Depends(get_current_user)):
                     continue
 
                 changed_tool_ids = result.changed_tool_ids or set(result.statuses.keys())
-                statuses = {
-                    tool_id: _heartbeat_status_payload(status)
-                    for tool_id, status in result.statuses.items()
-                    if tool_id in changed_tool_ids
-                }
+                statuses = {tool_id: _heartbeat_status_payload(status) for tool_id, status in result.statuses.items() if tool_id in changed_tool_ids}
                 if not statuses:
                     continue
                 payload = {
@@ -10964,10 +10957,23 @@ async def _resolve_workspace_runtime_scope(
     # An empty selection means no system tools are available for this request.
     if not selected_tool_ids:
         blocked_tool_names = rag.get_blocked_config_tool_names([])
+        logger.debug(
+            "Conversation tool scope resolved: conversation=%s workspace=%s selected_count=0 blocked_config_tools=%s",
+            getattr(conversation, "id", ""),
+            effective_workspace_id,
+            sorted(blocked_tool_names),
+        )
         return effective_workspace_id, blocked_tool_names, workspace_context
 
     # Get blocked tool names (tools NOT in selected set)
     blocked_tool_names = rag.get_blocked_config_tool_names(list(selected_tool_ids))
+    logger.debug(
+        "Conversation tool scope resolved: conversation=%s workspace=%s selected_count=%d blocked_config_tools=%s",
+        getattr(conversation, "id", ""),
+        effective_workspace_id,
+        len(selected_tool_ids),
+        sorted(blocked_tool_names),
+    )
 
     return effective_workspace_id, blocked_tool_names, workspace_context
 
