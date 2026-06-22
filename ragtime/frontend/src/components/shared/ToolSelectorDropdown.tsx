@@ -38,6 +38,7 @@ interface ToolSelectorDropdownProps {
   builtInTools?: ToolSelectorTool[];
   selectedBuiltInToolIds?: Set<string>;
   onToggleBuiltInTool?: (toolId: string) => void;
+  onBulkBuiltInToggle?: (selected: boolean) => void;
   /** Selected tool group IDs. When a group is selected, all its tools are effectively enabled. */
   selectedToolGroupIds?: Set<string>;
   toolGroups?: ToolGroupInfo[];
@@ -60,6 +61,7 @@ export function ToolSelectorDropdown({
   builtInTools = [],
   selectedBuiltInToolIds,
   onToggleBuiltInTool,
+  onBulkBuiltInToggle,
   selectedToolGroupIds,
   toolGroups,
   openDirection = 'down',
@@ -255,12 +257,8 @@ export function ToolSelectorDropdown({
       isSearching ? visibleSelectableToolIds : getSelectableUserSpaceToolIds(availableTools),
       nextSelected,
     ));
-    if (onToggleBuiltInTool) {
-      for (const toolId of visibleBuiltInToolIds) {
-        if (builtInSelectedIds.has(toolId) !== nextSelected) {
-          onToggleBuiltInTool(toolId);
-        }
-      }
+    if (onBulkBuiltInToggle) {
+      onBulkBuiltInToggle(nextSelected);
     }
   };
 

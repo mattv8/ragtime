@@ -10026,32 +10026,10 @@ export function ChatPanel({
     };
   }, []);
 
-  const persistConversationBuiltInToolSelection = useCallback(async (nextDisabledBuiltInToolIds: string[]) => {
-    if (!activeConversation) return;
-
-    const normalizedDisabledBuiltInToolIds = normalizeDisabledBuiltInToolIds(nextDisabledBuiltInToolIds);
-
-    setSavingTools(true);
-    try {
-      await api.updateConversationTools(activeConversation.id, {
-        tool_selection_mode: effectiveConversationToolSelection.mode,
-        tool_config_ids: effectiveConversationToolSelection.toolIds,
-        tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
-        disabled_builtin_tool_ids: normalizedDisabledBuiltInToolIds,
-      });
-      setConversationDisabledBuiltInToolIds(normalizedDisabledBuiltInToolIds);
-      const updatedConversation: Conversation = {
-        ...activeConversation,
-        disabled_builtin_tool_ids: normalizedDisabledBuiltInToolIds,
-      };
-      setActiveConversation(updatedConversation);
-      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
-    } finally {
-      setSavingTools(false);
-    }
-  }, [activeConversation, effectiveConversationToolSelection]);
+  const conversationDisabledBuiltInToolIdsRef = useRef(conversationDisabledBuiltInToolIds);
+  useEffect(() => {
+    conversationDisabledBuiltInToolIdsRef.current = conversationDisabledBuiltInToolIds;
+  }, [conversationDisabledBuiltInToolIds]);
 
   const handleToggleConversationBuiltInTool = useCallback(async (toolId: string) => {
     if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
@@ -10070,10 +10048,60 @@ export function ChatPanel({
       }
     }
 
-    await persistConversationBuiltInToolSelection(
-      CHAT_BUILT_IN_TOOL_IDS.filter((id) => nextDisabled.has(id)),
-    );
-  }, [activeConversation, conversationDisabledBuiltInToolIds, hasWorkspaceConversationContext, isConversationViewer, persistConversationBuiltInToolSelection]);
+    const normalized = normalizeDisabledBuiltInToolIds(CHAT_BUILT_IN_TOOL_IDS.filter((id) => nextDisabled.has(id)));
+    const previous = conversationDisabledBuiltInToolIdsRef.current;
+    setConversationDisabledBuiltInToolIds(normalized);
+    setSavingTools(true);
+
+    try {
+      await api.updateConversationTools(activeConversation.id, {
+        tool_selection_mode: effectiveConversationToolSelection.mode,
+        tool_config_ids: effectiveConversationToolSelection.toolIds,
+        tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+        disabled_builtin_tool_ids: normalized,
+      });
+      const updatedConversation: Conversation = {
+        ...activeConversation,
+        disabled_builtin_tool_ids: normalized,
+      };
+      setActiveConversation(updatedConversation);
+      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
+    } catch (err) {
+      setConversationDisabledBuiltInToolIds(previous);
+      setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
+    } finally {
+      setSavingTools(false);
+    }
+  }, [activeConversation, conversationDisabledBuiltInToolIds, effectiveConversationToolSelection, hasWorkspaceConversationContext, isConversationViewer]);
+
+  const handleBulkConversationBuiltInToggle = useCallback(async (selected: boolean) => {
+    if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
+    const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
+    const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
+    const previous = conversationDisabledBuiltInToolIdsRef.current;
+    setConversationDisabledBuiltInToolIds(normalized);
+    setSavingTools(true);
+
+    try {
+      await api.updateConversationTools(activeConversation.id, {
+        tool_selection_mode: effectiveConversationToolSelection.mode,
+        tool_config_ids: effectiveConversationToolSelection.toolIds,
+        tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+        disabled_builtin_tool_ids: normalized,
+      });
+      const updatedConversation: Conversation = {
+        ...activeConversation,
+        disabled_builtin_tool_ids: normalized,
+      };
+      setActiveConversation(updatedConversation);
+      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
+    } catch (err) {
+      setConversationDisabledBuiltInToolIds(previous);
+      setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
+    } finally {
+      setSavingTools(false);
+    }
+  }, [activeConversation, effectiveConversationToolSelection, hasWorkspaceConversationContext, isConversationViewer]);
 
   const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
     const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
@@ -13087,6 +13115,7 @@ export function ChatPanel({
                     builtInTools={conversationBuiltInTools}
                     selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                     onToggleBuiltInTool={handleToggleConversationBuiltInTool}
+                    onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
                     selectedToolGroupIds={effectiveToolGroupIdSet}
                     toolGroups={effectiveToolGroups}
                     disabled={false}
@@ -13838,6 +13867,7 @@ export function ChatPanel({
                         builtInTools={conversationBuiltInTools}
                         selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                         onToggleBuiltInTool={handleToggleConversationBuiltInTool}
+                    onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
                         selectedToolGroupIds={effectiveToolGroupIdSet}
                         toolGroups={effectiveToolGroups}
                         openDirection="up"
@@ -13870,6 +13900,7 @@ export function ChatPanel({
                           builtInTools={conversationBuiltInTools}
                           selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                           onToggleBuiltInTool={handleToggleConversationBuiltInTool}
+                    onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           toolGroups={effectiveToolGroups}
                           openDirection="up"
