@@ -18,7 +18,7 @@ Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge i
 </p>
 
 <p align="center">
-  <a href="CONTRIBUTING.md">Contributing Guide</a>
+  <a href="https://youtu.be/C4FY6gv9gCk">UI Walkthrough Video</a> | <a href="CONTRIBUTING.md">Contributing Guide</a>
 </p>
 
 <div align="center">
@@ -44,11 +44,31 @@ What Ragtime provides and how the main pieces fit together.
 ### Features
 
 - **Chat UI** built in, with tool visualization, interactive charts, and DataTables: no external client required
+- **[Model providers](#model-providers)**: hosted APIs, subscription auth (OpenAI Codex, Claude Code), and local runtimes, all configurable in Settings
 - **[Workspaces](#workspaces)** with live previews run in isolated runtime sessions; shared links use clean public URLs (`/{owner}/{slug}`), with optional password-protected full-page access
 - **[MCP server](#model-context-protocol-mcp-integration)** (HTTP Streamable + stdio transports) exposing tools to Claude Desktop, VS Code Copilot, Cursor, and JetBrains IDEs with auth
 - **OpenAI-compatible API** `/v1/chat/completions` endpoint with streaming: works with [OpenWebUI](#connecting-to-openwebui), Continue, and any OpenAI client
 - **Dual vector store**: Choose FAISS or pgvector for Upload/Git indexes; pgvector for schema/PDM and optional filesystem indexing ([details](#vector-store-abstraction))
 - **[Tool security](#security)**: SQL injection prevention via allowlist patterns, LIMIT enforcement, Odoo code validation, optional write-ops flag
+
+### Model Providers
+
+Configure LLM and embedding providers in the Settings UI. Chat (LLM) and embedding models can use different providers. Models are discovered live from each provider, and overlapping families (for example Anthropic API key vs Claude Code subscription) stay labeled by the provider serving them so token spend is clear.
+
+| Provider | Auth | Chat (LLM) | Embeddings |
+|----------|------|:----------:|:----------:|
+| **OpenAI** | API key | Yes | Yes |
+| **OpenAI Codex** | ChatGPT subscription (OAuth device flow) | Yes | Yes |
+| **Anthropic** | API key | Yes | - |
+| **Claude Code** | Claude Pro/Max subscription (CLI/OAuth) | Yes | - |
+| **OpenRouter** | API key | Yes | Yes |
+| **GitHub Copilot** | OAuth device flow or PAT | Yes | - |
+| **Ollama** | Local (self-hosted) | Yes | Yes |
+| **llama.cpp** | Local (self-hosted) | Yes | Yes |
+| **LM Studio** | Local (self-hosted) | Yes | Yes |
+| **oMLX** | Local (self-hosted) | Yes | Yes |
+
+Subscription-backed providers (OpenAI Codex, Claude Code) authenticate from the Settings UI without an API key. Claude Code uses the Claude Code CLI subscription and discovers the full Claude model family your plan serves.
 
 ### Architecture
 

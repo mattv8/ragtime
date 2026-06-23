@@ -135,6 +135,11 @@ class Settings(BaseSettings):
         alias="TAVILY_API_KEY",
         description=("API key for Tavily web search. When unset, chat diagnostics uses the bundled SearXNG service."),
     )
+    claude_code_oauth_token: str = Field(
+        default="",
+        alias="CLAUDE_CODE_OAUTH_TOKEN",
+        description="Optional Claude Code OAuth token passed through to the installed claude CLI.",
+    )
 
     # Cloud userspace mount OAuth app credentials. Admins register one app per
     # provider; individual users authorize their own accounts against it.

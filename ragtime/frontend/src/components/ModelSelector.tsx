@@ -11,6 +11,7 @@ interface BaseModel {
   id: string;
   name: string;
   provider?: string;
+  model_provider?: string;
   group?: string;
   model_provider_label?: string;
   model_family?: string;
@@ -62,6 +63,10 @@ function hostProviderLabel(model: BaseModel): string {
   return model.host_provider_label || formatProviderDisplayName(model.provider);
 }
 
+function hostProviderKey(model: BaseModel): string {
+  return normalizeProviderAlias(model.provider || '') || hostProviderLabel(model).trim().toLowerCase();
+}
+
 function modelDisplayName(model: BaseModel): string {
   return model.display_name || model.name || model.id;
 }
@@ -92,6 +97,10 @@ function modelFamilyLabel(model: BaseModel): string {
 
 function modelProviderLabel(model: BaseModel): string {
   return model.model_provider_label || hostProviderLabel(model) || 'Other';
+}
+
+function modelProviderKey(model: BaseModel): string {
+  return normalizeProviderAlias(model.model_provider || '') || modelProviderLabel(model).trim().toLowerCase();
 }
 
 function sortOtherLast(a: string, b: string): number {
@@ -202,9 +211,9 @@ export function ModelSelector<T extends BaseModel>({
 
     models.forEach((model) => {
       const host = hostProviderLabel(model) || 'Other';
-      const hostKey = host.toLowerCase();
+      const hostKey = hostProviderKey(model) || 'other';
       const provider = modelProviderLabel(model);
-      const providerKey = provider.toLowerCase();
+      const providerKey = modelProviderKey(model) || 'other';
       const family = modelFamilyLabel(model);
 
       hostLabels.set(hostKey, host);
@@ -343,6 +352,8 @@ export function ModelSelector<T extends BaseModel>({
         modelDisplayName(model),
         model.name,
         model.id,
+        model.provider || '',
+        model.model_provider || '',
         model.group || '',
         model.model_family || '',
         model.model_provider_label || '',

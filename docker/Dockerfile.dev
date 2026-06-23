@@ -67,6 +67,8 @@ RUN cd /ragtime/ragtime/frontend \
     && npm ci --loglevel=error \
     && npx playwright install --with-deps chromium
 
+RUN npm install -g @anthropic-ai/claude-code@2.1.186
+
 # Copy entrypoint and scripts
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/scripts/backup-restore.sh /docker-scripts/backup-restore.sh

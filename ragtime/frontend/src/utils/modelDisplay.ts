@@ -11,6 +11,8 @@ export const CHAT_MODEL_PROVIDER_LABELS: Record<string, string> = {
   omlx: 'oMLX',
   github_copilot: 'GitHub Copilot',
   github_models: 'GitHub Copilot',
+  openai_codex: 'OpenAI Codex',
+  claude_code: 'Claude Code',
 };
 
 export const CHAT_MODEL_DISPLAY_LABELS: Record<string, string> = {

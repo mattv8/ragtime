@@ -2,7 +2,7 @@ import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Lock, LockOpen, Info, ExternalLink, Eye, EyeOff, Pencil } from 'lucide-react';
 import { api } from '@/api';
-import type { AppSettings, UpdateSettingsRequest, OllamaModel, VisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, AuthProviderConfig, AuthGroup, LdapUserProfile, CopilotAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User, OcrMode, OcrProvider } from '@/types';
+import type { AppSettings, UpdateSettingsRequest, OllamaModel, VisionModel, LLMModel, EmbeddingModel, AvailableModel, LdapConfig, McpRouteConfig, AuthStatus, AuthProviderConfig, AuthGroup, LdapUserProfile, CopilotAuthStatusResponse, OpenAICodexAuthStatusResponse, ClaudeCodeAuthStatusResponse, UserSpacePreviewSettingsResponse, LlmProviderWire, UpsertUserSpaceWorkspaceEnvVarRequest, UserSpaceWorkspaceEnvVar, User, OcrMode, OcrProvider } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
@@ -12,6 +12,7 @@ import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { ModelFilterModal } from './ModelFilterModal';
+import { ModelSelector } from './ModelSelector';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { SearchFilterBar, normalizeSearchFilterText, searchFilterTextMatchesQuery, useUrlSearchFilterState } from './shared/SearchFilterBar';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
@@ -479,6 +480,25 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const copilotPollTimerRef = useRef<number | null>(null);
   const copilotPollGenerationRef = useRef(0);
 
+  // OpenAI Codex auth state
+  const [openAiCodexAuthStatus, setOpenAiCodexAuthStatus] = useState<OpenAICodexAuthStatusResponse | null>(null);
+  const [openAiCodexConnecting, setOpenAiCodexConnecting] = useState(false);
+  const [openAiCodexDeviceCode, setOpenAiCodexDeviceCode] = useState<string>('');
+  const [openAiCodexVerificationUri, setOpenAiCodexVerificationUri] = useState<string>('');
+  const [openAiCodexRequestId, setOpenAiCodexRequestId] = useState<string | null>(null);
+  const [openAiCodexCodeCopied, setOpenAiCodexCodeCopied] = useState(false);
+  const [openAiCodexWizardVisible, setOpenAiCodexWizardVisible] = useState(false);
+  const [openAiCodexWizardStep, setOpenAiCodexWizardStep] = useState<1 | 2 | 3>(1);
+  const openAiCodexPollTimerRef = useRef<number | null>(null);
+  const openAiCodexPollGenerationRef = useRef(0);
+
+  const [claudeCodeAuthStatus, setClaudeCodeAuthStatus] = useState<ClaudeCodeAuthStatusResponse | null>(null);
+  const [claudeCodeConnecting, setClaudeCodeConnecting] = useState(false);
+  const [claudeCodeRequestId, setClaudeCodeRequestId] = useState<string | null>(null);
+  const [claudeCodeAuthorizationUrl, setClaudeCodeAuthorizationUrl] = useState<string>('');
+  const [claudeCodeCallbackCode, setClaudeCodeCallbackCode] = useState<string>('');
+  const [claudeCodeWizardVisible, setClaudeCodeWizardVisible] = useState(false);
+
   // OpenAI embedding model fetching state
   const [embeddingModelsFetching, setEmbeddingModelsFetching] = useState(false);
   const [embeddingModelsError, setEmbeddingModelsError] = useState<string | null>(null);
@@ -643,7 +663,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
 
   // Fetch LLM models from provider API
   const fetchLlmModels = useCallback(async (
-    provider: 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot',
+    provider: 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot' | 'openai_codex' | 'claude_code',
     apiKey?: string,
     options?: {
       authMode?: 'oauth' | 'pat';
@@ -903,9 +923,258 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     setCopilotWizardStep(3);
   }, [copilotVerificationUri]);
 
+  const fetchOpenAiCodexModels = useCallback(async () => {
+    await fetchLlmModels('openai_codex');
+  }, [fetchLlmModels]);
+
+  const fetchClaudeCodeModels = useCallback(async () => {
+    await fetchLlmModels('claude_code');
+  }, [fetchLlmModels]);
+
+  const refreshOpenAiCodexStatus = useCallback(async () => {
+    try {
+      const status = await api.getOpenAICodexAuthStatus();
+      setOpenAiCodexAuthStatus(status);
+      setFormData((prev) => ({
+        ...prev,
+        openai_codex_base_url: status.base_url,
+      }));
+      return status;
+    } catch {
+      setOpenAiCodexAuthStatus(null);
+      return null;
+    }
+  }, []);
+
+  const clearOpenAiCodexPollTimer = useCallback(() => {
+    openAiCodexPollGenerationRef.current += 1;
+    if (openAiCodexPollTimerRef.current !== null) {
+      window.clearTimeout(openAiCodexPollTimerRef.current);
+      openAiCodexPollTimerRef.current = null;
+    }
+  }, []);
+
+  const pollOpenAiCodexDeviceFlow = useCallback(async (requestId: string, delaySeconds: number, generation: number) => {
+    clearOpenAiCodexPollTimer();
+    openAiCodexPollGenerationRef.current = generation;
+    openAiCodexPollTimerRef.current = window.setTimeout(async () => {
+      if (openAiCodexPollGenerationRef.current !== generation) {
+        return;
+      }
+
+      try {
+        const response = await api.pollOpenAICodexDeviceFlow({ request_id: requestId });
+        if (response.status === 'pending') {
+          await pollOpenAiCodexDeviceFlow(requestId, response.retry_after_seconds || 5, generation);
+          return;
+        }
+
+        if (response.status === 'connected') {
+          setOpenAiCodexConnecting(false);
+          setOpenAiCodexRequestId(null);
+          setOpenAiCodexDeviceCode('');
+          setOpenAiCodexVerificationUri('');
+          setOpenAiCodexCodeCopied(false);
+          setOpenAiCodexWizardVisible(false);
+          setOpenAiCodexWizardStep(1);
+          await refreshOpenAiCodexStatus();
+          toast.success('OpenAI Codex connected successfully');
+          const selectedProvider = formData.llm_provider || 'openai';
+          if (selectedProvider === 'openai_codex') {
+            await fetchOpenAiCodexModels();
+          }
+          return;
+        }
+
+        setOpenAiCodexConnecting(false);
+        setOpenAiCodexRequestId(null);
+        setOpenAiCodexWizardVisible(false);
+        setOpenAiCodexWizardStep(1);
+        setLlmModelsError(response.message || 'OpenAI Codex authorization failed');
+      } catch (err) {
+        setOpenAiCodexConnecting(false);
+        setOpenAiCodexRequestId(null);
+        setOpenAiCodexWizardVisible(false);
+        setOpenAiCodexWizardStep(1);
+        const status = typeof err === 'object' && err !== null && 'status' in err
+          ? (err as { status?: number }).status
+          : undefined;
+        if (status === 404) {
+          setLlmModelsError('OpenAI Codex authorization session expired or server reloaded. Click Connect again.');
+        } else {
+          setLlmModelsError(err instanceof Error ? err.message : 'OpenAI Codex authorization failed');
+        }
+      }
+    }, Math.max(delaySeconds, 1) * 1000);
+  }, [
+    clearOpenAiCodexPollTimer,
+    fetchOpenAiCodexModels,
+    formData.llm_provider,
+    refreshOpenAiCodexStatus,
+  ]);
+
+  const startOpenAiCodexDeviceFlow = useCallback(async () => {
+    setLlmModelsError(null);
+    setOpenAiCodexConnecting(true);
+    clearOpenAiCodexPollTimer();
+    setOpenAiCodexCodeCopied(false);
+    setOpenAiCodexWizardVisible(false);
+    setOpenAiCodexWizardStep(1);
+
+    try {
+      const response = await api.startOpenAICodexDeviceFlow({ deployment_type: 'openai.com' });
+      if (!response.verification_uri) {
+        throw new Error('OpenAI did not return an authorization URL');
+      }
+      setOpenAiCodexRequestId(response.request_id);
+      setOpenAiCodexDeviceCode(response.user_code);
+      setOpenAiCodexVerificationUri(response.verification_uri);
+      setOpenAiCodexWizardVisible(true);
+      setOpenAiCodexWizardStep(1);
+      const pollGeneration = openAiCodexPollGenerationRef.current + 1;
+      openAiCodexPollGenerationRef.current = pollGeneration;
+      await pollOpenAiCodexDeviceFlow(response.request_id, response.interval || 5, pollGeneration);
+    } catch (err) {
+      setOpenAiCodexConnecting(false);
+      setOpenAiCodexRequestId(null);
+      setOpenAiCodexWizardVisible(false);
+      setOpenAiCodexWizardStep(1);
+      setLlmModelsError(err instanceof Error ? err.message : 'Failed to start OpenAI Codex authorization');
+    }
+  }, [clearOpenAiCodexPollTimer, pollOpenAiCodexDeviceFlow]);
+
+  const clearOpenAiCodexAuth = useCallback(async () => {
+    clearOpenAiCodexPollTimer();
+    setOpenAiCodexConnecting(false);
+    setOpenAiCodexRequestId(null);
+    setOpenAiCodexDeviceCode('');
+    setOpenAiCodexVerificationUri('');
+    setOpenAiCodexCodeCopied(false);
+    setOpenAiCodexWizardVisible(false);
+    setOpenAiCodexWizardStep(1);
+    try {
+      await api.clearOpenAICodexAuth();
+      await refreshOpenAiCodexStatus();
+      resetLlmModelsState();
+      toast.success('OpenAI Codex connection removed');
+    } catch (err) {
+      setLlmModelsError(err instanceof Error ? err.message : 'Failed to clear OpenAI Codex auth');
+    }
+  }, [clearOpenAiCodexPollTimer, refreshOpenAiCodexStatus, resetLlmModelsState]);
+
+  const handleOpenAiCodexDeviceCodeCopied = useCallback(() => {
+    toast.success('Device code copied');
+    setOpenAiCodexCodeCopied(true);
+    window.setTimeout(() => setOpenAiCodexCodeCopied(false), 2000);
+  }, [toast]);
+
+  const handleOpenAiCodexDeviceCodeCopyError = useCallback(() => {
+    setLlmModelsError('Unable to copy device code. Please copy it manually.');
+  }, []);
+
+  const openOpenAiCodexAuthorizationPage = useCallback(() => {
+    if (!openAiCodexVerificationUri) {
+      return;
+    }
+    window.open(openAiCodexVerificationUri, '_blank');
+    setOpenAiCodexWizardStep(3);
+  }, [openAiCodexVerificationUri]);
+
+  const refreshClaudeCodeStatus = useCallback(async () => {
+    try {
+      const status = await api.getClaudeCodeAuthStatus();
+      setClaudeCodeAuthStatus(status);
+      return status;
+    } catch {
+      setClaudeCodeAuthStatus(null);
+      return null;
+    }
+  }, []);
+
+  const startClaudeCodeAuth = useCallback(async () => {
+    setLlmModelsError(null);
+    setClaudeCodeConnecting(true);
+    setClaudeCodeRequestId(null);
+    setClaudeCodeAuthorizationUrl('');
+    setClaudeCodeCallbackCode('');
+    setClaudeCodeWizardVisible(false);
+    try {
+      const response = await api.startClaudeCodeAuth();
+      if (!response.authorization_url) {
+        throw new Error('Claude Code did not return an authorization URL');
+      }
+      setClaudeCodeRequestId(response.request_id);
+      setClaudeCodeAuthorizationUrl(response.authorization_url);
+      setClaudeCodeWizardVisible(true);
+      window.open(response.authorization_url, '_blank');
+    } catch (err) {
+      setClaudeCodeRequestId(null);
+      setClaudeCodeWizardVisible(false);
+      setLlmModelsError(err instanceof Error ? err.message : 'Failed to start Claude Code authorization');
+    } finally {
+      // Authorization has started; we're now waiting on the user to paste the
+      // code, so stop the connecting state to re-enable the input field.
+      setClaudeCodeConnecting(false);
+    }
+  }, []);
+
+  const completeClaudeCodeAuth = useCallback(async (codeOverride?: string) => {
+    if (!claudeCodeRequestId) {
+      setLlmModelsError('Start Claude Code authorization first.');
+      return;
+    }
+    const code = (codeOverride ?? claudeCodeCallbackCode).trim();
+    if (!code) {
+      setLlmModelsError('Paste the Claude authorization code.');
+      return;
+    }
+    setClaudeCodeConnecting(true);
+    setLlmModelsError(null);
+    try {
+      const response = await api.completeClaudeCodeAuth({ request_id: claudeCodeRequestId, code });
+      if (!response.success || response.status !== 'connected') {
+        throw new Error(response.message || 'Claude Code authorization failed');
+      }
+      setClaudeCodeRequestId(null);
+      setClaudeCodeAuthorizationUrl('');
+      setClaudeCodeCallbackCode('');
+      setClaudeCodeWizardVisible(false);
+      await refreshClaudeCodeStatus();
+      toast.success('Claude Code connected successfully');
+      if ((formData.llm_provider || 'openai') === 'claude_code') {
+        await fetchClaudeCodeModels();
+      }
+    } catch (err) {
+      setLlmModelsError(err instanceof Error ? err.message : 'Claude Code authorization failed');
+    } finally {
+      setClaudeCodeConnecting(false);
+    }
+  }, [claudeCodeCallbackCode, claudeCodeRequestId, fetchClaudeCodeModels, formData.llm_provider, refreshClaudeCodeStatus, toast]);
+
+  const openClaudeCodeAuthorizationPage = useCallback(() => {
+    if (!claudeCodeAuthorizationUrl) {
+      return;
+    }
+    window.open(claudeCodeAuthorizationUrl, '_blank');
+  }, [claudeCodeAuthorizationUrl]);
+
+  const cancelClaudeCodeAuth = useCallback(() => {
+    const requestId = claudeCodeRequestId;
+    setClaudeCodeRequestId(null);
+    setClaudeCodeAuthorizationUrl('');
+    setClaudeCodeCallbackCode('');
+    setClaudeCodeWizardVisible(false);
+    setClaudeCodeConnecting(false);
+    if (requestId) {
+      api.cancelClaudeCodeAuth({ request_id: requestId }).catch(() => {
+        // Best effort cleanup; expired sessions are also cleaned server-side.
+      });
+    }
+  }, [claudeCodeRequestId]);
+
   // Fetch embedding models from hosted provider APIs
-  const fetchEmbeddingModels = useCallback(async (provider: 'openai' | 'openrouter', apiKey: string) => {
-    const providerLabel = provider === 'openrouter' ? 'OpenRouter' : 'OpenAI';
+  const fetchEmbeddingModels = useCallback(async (provider: 'openai' | 'openai_codex' | 'openrouter', apiKey: string) => {
+    const providerLabel = provider === 'openrouter' ? 'OpenRouter' : provider === 'openai_codex' ? 'OpenAI Codex' : 'OpenAI';
     if (!apiKey || apiKey.length < 10) {
       setEmbeddingModelsError(`Please enter a valid ${providerLabel} API key first`);
       return;
@@ -1138,6 +1407,42 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       }
     }
 
+    if (openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth) {
+      const codexResponse = await api.fetchLLMModels({ provider: 'openai_codex' });
+      if (codexResponse.success) {
+        const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
+        const nonCodexModels = models.filter((m) => m.provider !== 'openai_codex');
+        const codexModels: AvailableModel[] = codexResponse.models.map((m) => ({
+          id: m.id,
+          name: m.name,
+          provider: 'openai_codex',
+          context_limit: contextLimitById.get(m.id) ?? m.context_limit ?? 200000,
+          max_output_tokens: m.max_output_tokens,
+          group: m.group,
+          is_latest: m.is_latest,
+        }));
+        models = [...nonCodexModels, ...codexModels];
+      }
+    }
+
+    if (claudeCodeAuthStatus?.connected || settings?.has_claude_code_auth) {
+      const claudeCodeResponse = await api.fetchLLMModels({ provider: 'claude_code' });
+      if (claudeCodeResponse.success) {
+        const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
+        const nonClaudeCodeModels = models.filter((m) => m.provider !== 'claude_code');
+        const claudeCodeModels: AvailableModel[] = claudeCodeResponse.models.map((m) => ({
+          id: m.id,
+          name: m.name,
+          provider: 'claude_code',
+          context_limit: contextLimitById.get(m.id) ?? m.context_limit ?? 200000,
+          max_output_tokens: m.max_output_tokens,
+          group: m.group,
+          is_latest: m.is_latest,
+        }));
+        models = [...nonClaudeCodeModels, ...claudeCodeModels];
+      }
+    }
+
     return { models, response };
   }, [
     copilotAuthMode,
@@ -1145,6 +1450,10 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     formData.github_models_api_token,
     settings?.github_models_api_token,
     settings?.has_github_copilot_auth,
+    openAiCodexAuthStatus?.connected,
+    settings?.has_openai_codex_auth,
+    claudeCodeAuthStatus?.connected,
+    settings?.has_claude_code_auth,
   ]);
 
   const initSelectedFromAllowed = (models: AvailableModel[], allowedModels: string[]): Set<string> => {
@@ -1272,9 +1581,12 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const refreshDefaultChatModelPreview = useCallback(async () => {
     setChatModelsLoading(true);
     try {
-      const response = await api.getAvailableModels();
-      setFilteredChatModels(response.models || []);
-      setAutomaticDefaultChatModel(response.automatic_default_model || null);
+      const [availableResponse, allResponse] = await Promise.all([
+        api.getAvailableModels(),
+        api.getAllModels(),
+      ]);
+      setFilteredChatModels(allResponse.models || []);
+      setAutomaticDefaultChatModel(availableResponse.automatic_default_model || null);
     } catch {
       setFilteredChatModels([]);
       setAutomaticDefaultChatModel(null);
@@ -1335,6 +1647,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         github_models_api_token: data.github_models_api_token,
         github_copilot_base_url: data.github_copilot_base_url,
         github_copilot_enterprise_url: data.github_copilot_enterprise_url,
+        openai_codex_base_url: data.openai_codex_base_url,
         default_chat_model: data.default_chat_model ?? null,
         max_iterations: data.max_iterations,
         chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
@@ -1387,10 +1700,15 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
       resetLlmOllamaState();
       resetLlmModelsState();
       clearCopilotPollTimer();
+      clearOpenAiCodexPollTimer();
       setCopilotConnecting(false);
       setCopilotRequestId(null);
       setCopilotDeviceCode('');
       setCopilotVerificationUri('');
+      setOpenAiCodexConnecting(false);
+      setOpenAiCodexRequestId(null);
+      setOpenAiCodexDeviceCode('');
+      setOpenAiCodexVerificationUri('');
       toast.clear();
       setCopilotAuthMode(data.github_models_api_token ? 'pat' : 'oauth');
 
@@ -1410,6 +1728,12 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
           }
         }
       }).catch(() => { /* copilot status is best-effort */ });
+
+      refreshOpenAiCodexStatus().then((codexStatus) => {
+        if (normalizedLlmProvider === 'openai_codex' && codexStatus?.connected) {
+          fetchLlmModels('openai_codex');
+        }
+      }).catch(() => { /* OpenAI Codex status is best-effort */ });
 
       // Auto-test Ollama if using ollama embedding provider
       if (data.embedding_provider === 'ollama' && !hasAutoTestedOllama.current) {
@@ -1488,9 +1812,11 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     }
   }, [
     clearCopilotPollTimer,
+    clearOpenAiCodexPollTimer,
     fetchLlmModels,
     refreshDefaultChatModelPreview,
     refreshCopilotStatus,
+    refreshOpenAiCodexStatus,
     resetEmbeddingOllamaState,
     resetLlmModelsState,
     resetLlmOllamaState,
@@ -1534,10 +1860,35 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   ]);
 
   useEffect(() => {
+    const normalizedProvider = normalizeLlmProvider(formData.llm_provider);
+    if (normalizedProvider !== 'openai_codex') {
+      return;
+    }
+
+    if (!openAiCodexAuthStatus?.connected && !settings?.has_openai_codex_auth) {
+      return;
+    }
+
+    void fetchOpenAiCodexModels();
+
+    if (showModelFilterModal) {
+      void openModelFilterModal();
+    }
+  }, [
+    fetchOpenAiCodexModels,
+    formData.llm_provider,
+    openAiCodexAuthStatus?.connected,
+    openModelFilterModal,
+    settings?.has_openai_codex_auth,
+    showModelFilterModal,
+  ]);
+
+  useEffect(() => {
     return () => {
       clearCopilotPollTimer();
+      clearOpenAiCodexPollTimer();
     };
-  }, [clearCopilotPollTimer]);
+  }, [clearCopilotPollTimer, clearOpenAiCodexPollTimer]);
 
   const handleTestOllamaConnection = async () => {
     await testOllamaConnection(
@@ -1899,6 +2250,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
         github_models_api_token: formData.github_models_api_token,
         github_copilot_base_url: formData.github_copilot_base_url,
         github_copilot_enterprise_url: formData.github_copilot_enterprise_url,
+        openai_codex_base_url: formData.openai_codex_base_url,
         default_chat_model: formData.default_chat_model,
         allowed_chat_models: formData.allowed_chat_models,
         max_iterations: formData.max_iterations,
@@ -2098,6 +2450,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const [visionModels, setVisionModels] = useState<VisionModel[]>([]);
   const [visionModelsLoading, setVisionModelsLoading] = useState(false);
   const [visionModelsError, setVisionModelsError] = useState<string | null>(null);
+  const autoVisionModelsRequestKeyRef = useRef<string | null>(null);
   const [showOcrRecommendations, setShowOcrRecommendations] = useState(false);
 
   const selectedOcrProvider = (formData.default_ocr_provider || 'ollama') as OcrProvider;
@@ -2176,9 +2529,46 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   // Auto-fetch vision models when OCR mode changes to semantic vision.
   useEffect(() => {
     if (formData.default_ocr_mode === 'vision' && visionModels.length === 0 && !visionModelsLoading) {
+      const requestKey = JSON.stringify({
+        provider: formData.default_ocr_provider || 'ollama',
+        ollama_protocol: formData.ollama_protocol,
+        ollama_host: formData.ollama_host,
+        ollama_port: formData.ollama_port,
+        openai_api_key: Boolean(formData.openai_api_key),
+        openrouter_api_key: Boolean(formData.openrouter_api_key),
+        omlx_base_url: buildLocalBaseUrl(formData.llm_omlx_protocol, formData.llm_omlx_host, formData.llm_omlx_port, PROVIDER_CONNECTIONS.omlxLlm),
+        omlx_api_key: Boolean(formData.omlx_api_key),
+        lmstudio_base_url: buildLocalBaseUrl(formData.llm_lmstudio_protocol, formData.llm_lmstudio_host, formData.llm_lmstudio_port, PROVIDER_CONNECTIONS.lmstudioLlm),
+        lmstudio_api_key: Boolean(formData.lmstudio_api_key),
+        llama_cpp_base_url: buildLocalBaseUrl(formData.llm_llama_cpp_protocol, formData.llm_llama_cpp_host, formData.llm_llama_cpp_port, PROVIDER_CONNECTIONS.llamaCppLlm),
+      });
+      if (autoVisionModelsRequestKeyRef.current === requestKey) return;
+      autoVisionModelsRequestKeyRef.current = requestKey;
       fetchVisionModels();
     }
-  }, [formData.default_ocr_mode, formData.default_ocr_provider, fetchVisionModels, visionModels.length, visionModelsLoading]);
+  }, [
+    formData.default_ocr_mode,
+    formData.default_ocr_provider,
+    formData.ollama_protocol,
+    formData.ollama_host,
+    formData.ollama_port,
+    formData.openai_api_key,
+    formData.openrouter_api_key,
+    formData.llm_omlx_protocol,
+    formData.llm_omlx_host,
+    formData.llm_omlx_port,
+    formData.omlx_api_key,
+    formData.llm_lmstudio_protocol,
+    formData.llm_lmstudio_host,
+    formData.llm_lmstudio_port,
+    formData.lmstudio_api_key,
+    formData.llm_llama_cpp_protocol,
+    formData.llm_llama_cpp_host,
+    formData.llm_llama_cpp_port,
+    fetchVisionModels,
+    visionModels.length,
+    visionModelsLoading,
+  ]);
 
 
 
@@ -2521,6 +2911,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   const copilotPatConfigured = Boolean(
     copilotPatToken
   );
+  const openAiCodexConfigured = Boolean(openAiCodexAuthStatus?.connected ?? settings?.has_openai_codex_auth);
+  const claudeCodeConfigured = Boolean(claudeCodeAuthStatus?.connected ?? settings?.has_claude_code_auth);
   const ollamaConfigured = Boolean(
     (formData.llm_ollama_protocol) &&
     (formData.llm_ollama_host)?.trim() &&
@@ -2542,6 +2934,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     (formData.llm_omlx_port)
   );
   const embeddingOpenAiConfigured = Boolean((formData.openai_api_key ?? settings?.openai_api_key)?.trim());
+  const embeddingOpenAiCodexConfigured = openAiCodexConfigured;
   const embeddingOpenRouterConfigured = Boolean((formData.openrouter_api_key ?? settings?.openrouter_api_key)?.trim());
   const embeddingOllamaConfigured = Boolean(
     (formData.ollama_protocol) &&
@@ -2582,12 +2975,8 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     }
     return settings?.default_chat_model ?? null;
   })();
-  const defaultChatModelOptions = filteredChatModels.map((model) => ({
-    value: toScopedModelIdentifier(model),
-    label: availableModelSettingsLabel(model),
-  }));
   const manualDefaultExistsInOptions = !!manualDefaultChatModel
-    && defaultChatModelOptions.some((option) => option.value === manualDefaultChatModel);
+    && filteredChatModels.some((model) => toScopedModelIdentifier(model) === manualDefaultChatModel);
   const effectiveDefaultChatModelDisplay = formatModelIdentifierForDisplay(
     manualDefaultExistsInOptions ? manualDefaultChatModel : automaticDefaultChatModel,
     filteredChatModels,
@@ -2852,12 +3241,12 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 />
                 <span className="llm-provider-status-label">OpenAI</span>
               </span>
-              <span className="llm-provider-status-item" title={claudeConfigured ? 'Claude configured' : 'Claude not configured'}>
+              <span className="llm-provider-status-item" title={claudeConfigured ? 'Anthropic configured' : 'Anthropic not configured'}>
                 <span
                   className={`llm-provider-status-dot ${claudeConfigured ? 'configured' : ''}`}
-                  aria-label={claudeConfigured ? 'Claude configured' : 'Claude not configured'}
+                  aria-label={claudeConfigured ? 'Anthropic configured' : 'Anthropic not configured'}
                 />
-                <span className="llm-provider-status-label">Claude</span>
+                <span className="llm-provider-status-label">Anthropic</span>
               </span>
               <span className="llm-provider-status-item" title={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}>
                 <span
@@ -2901,6 +3290,20 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 />
                 <span className="llm-provider-status-label">Copilot</span>
               </span>
+              <span className="llm-provider-status-item" title={openAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${openAiCodexConfigured ? 'configured' : ''}`}
+                  aria-label={openAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'}
+                />
+                <span className="llm-provider-status-label">Codex</span>
+              </span>
+              <span className="llm-provider-status-item" title={claudeCodeConfigured ? 'Claude Code configured' : 'Claude Code not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${claudeCodeConfigured ? 'configured' : ''}`}
+                  aria-label={claudeCodeConfigured ? 'Claude Code configured' : 'Claude Code not configured'}
+                />
+                <span className="llm-provider-status-label">Claude Code</span>
+              </span>
             </span>
           </legend>
           <p className="fieldset-help">
@@ -2913,7 +3316,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               <select
                 value={formData.llm_provider || 'openai'}
                 onChange={(e) => {
-                  const newProvider = e.target.value as 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
+                  const newProvider = e.target.value as 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot' | 'openai_codex' | 'claude_code';
                   setFormData({
                     ...formData,
                     llm_provider: newProvider,
@@ -2933,16 +3336,24 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   if (newProvider === 'github_copilot' && ((copilotAuthMode === 'oauth' && (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) || (copilotAuthMode === 'pat' && hasCopilotPatToken))) {
                     fetchCopilotModels();
                   }
+                  if (newProvider === 'openai_codex' && (openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth)) {
+                    fetchOpenAiCodexModels();
+                  }
+                  if (newProvider === 'claude_code' && claudeCodeConfigured) {
+                    fetchClaudeCodeModels();
+                  }
                 }}
               >
                 <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="anthropic">Anthropic</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="ollama">Ollama</option>
                 <option value="llama_cpp">llama.cpp</option>
                 <option value="lmstudio">LM Studio</option>
                 <option value="omlx">oMLX</option>
                 <option value="github_copilot">GitHub Copilot</option>
+                <option value="openai_codex">OpenAI Codex</option>
+                <option value="claude_code">Claude Code (Pro/Max)</option>
               </select>
               {/* Quick-fill from embedding Ollama when it has a real host */}
               {formData.llm_provider === 'ollama' && formData.embedding_provider === 'ollama' && formData.ollama_host?.trim() && (
@@ -3488,6 +3899,236 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   : 'PAT mode uses your personal GitHub token (Models:read) with the GitHub Models API. PAT mode does not grant Copilot subscription model access.'}
               </p>
             </div>
+          ) : formData.llm_provider === 'openai_codex' ? (
+            <div className="form-group">
+              <label>OpenAI Codex Connection</label>
+              <div className="input-with-button input-with-actions" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`btn btn-test ${openAiCodexConfigured ? 'btn-connected' : ''}`}
+                  onClick={startOpenAiCodexDeviceFlow}
+                  disabled={openAiCodexConnecting}
+                >
+                  {openAiCodexConnecting ? 'Preparing...' : openAiCodexConfigured ? 'Reauthorize' : 'Authorize'}
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai_codex' ? 'btn-connected' : ''}`}
+                  onClick={() => fetchOpenAiCodexModels()}
+                  disabled={llmModelsFetching || !openAiCodexConfigured}
+                >
+                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'openai_codex' ? 'Loaded' : 'Fetch Models'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={clearOpenAiCodexAuth}
+                  disabled={openAiCodexConnecting || !openAiCodexConfigured}
+                >
+                  Disconnect
+                </button>
+              </div>
+              {openAiCodexWizardVisible && openAiCodexRequestId && openAiCodexDeviceCode && openAiCodexVerificationUri && (
+                <div
+                  className="field-help"
+                  style={{
+                    marginTop: '0.75rem',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    padding: '0.75rem',
+                    background: 'var(--bg-secondary)',
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>OpenAI Codex Authorization</div>
+                  {openAiCodexWizardStep === 1 && (
+                    <div>
+                      <div><strong>Step 1: Copy your device code</strong></div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.45rem', flexWrap: 'wrap' }}>
+                        <code style={{ fontSize: '1.1rem', fontWeight: 700, letterSpacing: '0.08em', padding: '0.35rem 0.55rem' }}>
+                          {openAiCodexDeviceCode}
+                        </code>
+                        <InlineCopyButton
+                          copyText={openAiCodexDeviceCode}
+                          className="copilot-device-copy-btn"
+                          title="Copy device code"
+                          ariaLabel="Copy device code"
+                          copiedTitle="Device code copied"
+                          copiedAriaLabel="Device code copied"
+                          iconSize={16}
+                          feedbackMs={2000}
+                          onCopySuccess={handleOpenAiCodexDeviceCodeCopied}
+                          onCopyError={handleOpenAiCodexDeviceCodeCopyError}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          onClick={() => setOpenAiCodexWizardStep(2)}
+                          disabled={!openAiCodexCodeCopied}
+                          style={{ marginLeft: '0.25rem' }}
+                        >
+                          Continue
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {openAiCodexWizardStep === 2 && (
+                    <div>
+                      <div><strong>Step 2: Open the authorization page</strong></div>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={openOpenAiCodexAuthorizationPage}
+                        style={{
+                          marginTop: '0.45rem',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.4rem',
+                          fontSize: '1.05rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        Open OpenAI Authorization
+                        <ExternalLink size={16} />
+                      </button>
+                      <div className="muted" style={{ marginTop: '0.45rem' }}>{openAiCodexVerificationUri}</div>
+                      <div style={{ marginTop: '0.65rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={() => setOpenAiCodexWizardStep(1)}
+                        >
+                          Back
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {openAiCodexWizardStep === 3 && (
+                    <div>
+                      <div><strong>Step 3: Complete authorization in OpenAI</strong></div>
+                      <div className="muted" style={{ marginTop: '0.45rem' }}>
+                        After you approve access in OpenAI, Ragtime will connect automatically.
+                      </div>
+                      <div style={{ marginTop: '0.65rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={openOpenAiCodexAuthorizationPage}
+                        >
+                          Reopen Authorization Page
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {llmModelsError && formData.llm_provider === 'openai_codex' && (
+                <p className="field-error">{llmModelsError}</p>
+              )}
+              <p className="field-help">
+                OAuth uses OpenAI device authorization to access Codex models. Stored credentials can be removed with Disconnect.
+              </p>
+            </div>
+          ) : formData.llm_provider === 'claude_code' ? (
+            <div className="form-group">
+              <label>Claude Code Connection</label>
+              <div className="input-with-button input-with-actions" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`btn btn-test ${claudeCodeConfigured ? 'btn-connected' : ''}`}
+                  onClick={startClaudeCodeAuth}
+                  disabled={claudeCodeConnecting}
+                >
+                  {claudeCodeConnecting ? 'Authorizing...' : claudeCodeConfigured ? 'Reauthorize' : 'Authorize'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={refreshClaudeCodeStatus}
+                  disabled={claudeCodeConnecting}
+                >
+                  Check Status
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'claude_code' ? 'btn-connected' : ''}`}
+                  onClick={() => fetchClaudeCodeModels()}
+                  disabled={llmModelsFetching || !claudeCodeConfigured}
+                >
+                  {llmModelsFetching ? 'Fetching...' : llmModelsLoaded && formData.llm_provider === 'claude_code' ? 'Loaded' : 'Fetch Models'}
+                </button>
+              </div>
+              {claudeCodeWizardVisible && claudeCodeRequestId && claudeCodeAuthorizationUrl && (
+                <div className="settings-auth-wizard" style={{ marginTop: '0.75rem' }}>
+                  <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>Claude Code Authorization</div>
+                  <div className="muted" style={{ marginBottom: '0.65rem' }}>
+                    Complete sign-in in the Claude browser tab. After you authorize, Claude will display an authorization code. Copy that code and paste it here.
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={openClaudeCodeAuthorizationPage}
+                  >
+                    Reopen Claude Authorization
+                    <ExternalLink size={14} />
+                  </button>
+                  <input
+                    type="text"
+                    value={claudeCodeCallbackCode}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setClaudeCodeCallbackCode(value);
+                      // Auto-complete when a valid-looking code is pasted (format: base64#base64, ~88 chars with #)
+                      const trimmed = value.trim();
+                      if (trimmed.length >= 80 && trimmed.includes('#') && !claudeCodeConnecting) {
+                        completeClaudeCodeAuth(trimmed);
+                      }
+                    }}
+                    placeholder="Paste authorization code (e.g. SBYLRk...#OlMEg...)"
+                    style={{ marginTop: '0.65rem' }}
+                    disabled={claudeCodeConnecting}
+                  />
+                  <div style={{ marginTop: '0.65rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={cancelClaudeCodeAuth}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              {claudeCodeAuthStatus && (() => {
+                const cliLabel = claudeCodeAuthStatus.version || claudeCodeAuthStatus.command || 'installed';
+                if (!claudeCodeAuthStatus.installed) {
+                  return <p className="field-error">Claude Code CLI is not installed in the container.{claudeCodeAuthStatus.error ? ` ${claudeCodeAuthStatus.error}` : ''}</p>;
+                }
+                if (claudeCodeAuthStatus.connected) {
+                  const planDetails = [
+                    claudeCodeAuthStatus.auth_method ? claudeCodeAuthStatus.auth_method : null,
+                    claudeCodeAuthStatus.subscription_type ? `${claudeCodeAuthStatus.subscription_type} plan` : null,
+                  ].filter(Boolean).join(', ');
+                  const authPath = claudeCodeAuthStatus.has_cli_auth
+                    ? `CLI subscription${planDetails ? ` (${planDetails})` : ''}`
+                    : 'CLAUDE_CODE_OAUTH_TOKEN';
+                  return <p className="field-help" style={{ color: 'var(--color-success)' }}>Connected via {authPath}. CLI {cliLabel}.</p>;
+                }
+                return (
+                  <p className="field-error">
+                    Not connected. CLI {cliLabel} is installed but not authenticated.{' '}
+                    {claudeCodeAuthStatus.error || 'Click Authorize to sign in, or set CLAUDE_CODE_OAUTH_TOKEN.'}
+                  </p>
+                );
+              })()}
+              {llmModelsError && formData.llm_provider === 'claude_code' && (
+                <p className="field-error">{llmModelsError}</p>
+              )}
+              <p className="field-help">
+                Claude Code uses Claude Code CLI subscription auth, not an Anthropic API key. Click Authorize, sign in at Claude, then paste the authorization code shown after approval.
+              </p>
+            </div>
           ) : null}
 
           <div className="form-row-3">
@@ -3502,7 +4143,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 Configure Chat Models
               </button>
               <p className="field-help">
-                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, OpenRouter, Ollama, llama.cpp, GitHub Copilot).
+                Limit which models appear in the Chat view dropdown. Includes all configured providers (OpenAI, Anthropic, OpenRouter, Ollama, llama.cpp, GitHub Copilot, OpenAI Codex).
               </p>
             </div>
 
@@ -3510,22 +4151,22 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             <div className="form-group">
               <label>Default Chat Model{chatModelsLoading && <>{' '}<MiniLoadingSpinner variant="icon" size={12} title="Loading models..." /></>}</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <select
-                  style={{ flex: 1 }}
-                  value={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
-                  onChange={(e) => {
-                    const selectedValue = e.target.value;
-                    setFormData({
+                <div style={{ flex: 1 }}>
+                  <ModelSelector
+                    models={filteredChatModels}
+                    selectedModelId={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
+                    onModelChange={(selectedValue) => setFormData({
                       ...formData,
                       default_chat_model: selectedValue || null,
-                    });
-                  }}
-                  disabled={chatModelsLoading || filteredChatModels.length === 0}
-                >
-                  {defaultChatModelOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+                    })}
+                    getModelSelectionKey={toScopedModelIdentifier}
+                    disabled={chatModelsLoading || filteredChatModels.length === 0}
+                    loading={chatModelsLoading}
+                    placeholder="Select default chat model"
+                    variant="full"
+                    triggerClassName="settings-control-height"
+                  />
+                </div>
                 {manualDefaultChatModel && (
                   <button
                     type="button"
@@ -3578,7 +4219,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
           </div>
 
           {/* Show OpenAI key field for embeddings when the LLM uses another provider */}
-          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'openrouter' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'lmstudio' || formData.llm_provider === 'github_copilot') && formData.embedding_provider === 'openai' && (
+          {(formData.llm_provider === 'anthropic' || formData.llm_provider === 'openrouter' || formData.llm_provider === 'ollama' || formData.llm_provider === 'llama_cpp' || formData.llm_provider === 'lmstudio' || formData.llm_provider === 'github_copilot' || formData.llm_provider === 'openai_codex') && formData.embedding_provider === 'openai' && (
             <div className="form-group">
               <label>OpenAI API Key (for embeddings)</label>
               <input
@@ -3987,6 +4628,13 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 />
                 <span className="llm-provider-status-label">OpenAI</span>
               </span>
+              <span className="llm-provider-status-item" title={embeddingOpenAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'}>
+                <span
+                  className={`llm-provider-status-dot ${embeddingOpenAiCodexConfigured ? 'configured' : ''}`}
+                  aria-label={embeddingOpenAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'}
+                />
+                <span className="llm-provider-status-label">Codex</span>
+              </span>
               <span className="llm-provider-status-item" title={embeddingOpenRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}>
                 <span
                   className={`llm-provider-status-dot ${embeddingOpenRouterConfigured ? 'configured' : ''}`}
@@ -4035,7 +4683,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 <select
                   value={formData.embedding_provider || 'ollama'}
                   onChange={(e) => {
-                    const newProvider = e.target.value as 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+                    const newProvider = e.target.value as 'ollama' | 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
                     setFormData({
                       ...formData,
                       embedding_provider: newProvider,
@@ -4065,6 +4713,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                   <option value="lmstudio">LM Studio</option>
                   <option value="omlx">oMLX</option>
                   <option value="openai">OpenAI</option>
+                  <option value="openai_codex">OpenAI Codex</option>
                   <option value="openrouter">OpenRouter</option>
                 </select>
                 {/* Quick-fill from LLM Ollama when it has a real host */}
@@ -4121,7 +4770,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
                 )}
               </div>
               <p className="field-help">
-                Note: Anthropic does not offer embedding models. Use Ollama, llama.cpp, LM Studio, oMLX, or OpenAI for document embeddings.
+                Model capability filtering comes from the shared model metadata. Providers with no embedding-capable models will return an empty model list.
               </p>
             </div>
             {/* Show embedding dimension info */}

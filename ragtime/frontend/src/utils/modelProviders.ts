@@ -18,10 +18,13 @@ export const LLM_PROVIDER_KEYS = [
   'lmstudio',
   'omlx',
   'github_copilot',
+  'openai_codex',
+  'claude_code',
 ] as const;
 
 export const EMBEDDING_PROVIDER_KEYS = [
   'openai',
+  'openai_codex',
   'openrouter',
   'ollama',
   'llama_cpp',

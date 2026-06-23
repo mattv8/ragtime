@@ -242,6 +242,9 @@ RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     && npm ci --loglevel=error \
     && npx playwright install --with-deps chromium
 
+RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
+    npm install -g @anthropic-ai/claude-code@2.1.186
+
 # Copy application code (includes indexer module)
 COPY ragtime/ /ragtime/ragtime/
 

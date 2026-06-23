@@ -633,7 +633,7 @@ class AppSettings(BaseModel):
     # LLM Configuration (for chat/RAG responses)
     llm_provider: str = Field(
         default=DEFAULT_LLM_PROVIDER,
-        description="LLM provider: 'openai', 'anthropic', 'openrouter', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
+        description="LLM provider: 'openai', 'openai_codex', 'anthropic', 'claude_code', 'openrouter', 'ollama', 'llama_cpp', 'lmstudio', 'omlx', 'github_copilot', or 'github_models'",
     )
     llm_model: str = Field(
         default=DEFAULT_LLM_MODEL,
@@ -713,9 +713,19 @@ class AppSettings(BaseModel):
         default="",
         description="OpenAI API key (used for LLM and optionally embeddings)",
     )
+    openai_codex_access_token: str = Field(default="", description="OpenAI Codex OAuth access token.")
+    openai_codex_refresh_token: str = Field(default="", description="OpenAI Codex OAuth refresh token.")
+    openai_codex_token_expires_at: Optional[datetime] = Field(default=None, description="OpenAI Codex access token expiration timestamp.")
+    openai_codex_account_id: str = Field(default="", description="OpenAI Codex ChatGPT account id.")
+    openai_codex_base_url: str = Field(default="https://chatgpt.com/backend-api/codex", description="OpenAI Codex backend base URL.")
+    has_openai_codex_auth: bool = Field(default=False, description="Indicates whether OpenAI Codex OAuth credentials are configured.")
     anthropic_api_key: str = Field(
         default="",
         description="Anthropic API key (used when llm_provider is 'anthropic')",
+    )
+    has_claude_code_auth: bool = Field(
+        default=False,
+        description="Indicates whether CLAUDE_CODE_OAUTH_TOKEN is present for Claude Code CLI usage.",
     )
     openrouter_api_key: str = Field(
         default="",
@@ -1270,6 +1280,11 @@ class UpdateSettingsRequest(BaseModel):
     llm_omlx_port: Optional[int] = Field(default=None, ge=1, le=65535)
     llm_omlx_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
+    openai_codex_access_token: Optional[str] = None
+    openai_codex_refresh_token: Optional[str] = None
+    openai_codex_token_expires_at: Optional[datetime] = None
+    openai_codex_account_id: Optional[str] = None
+    openai_codex_base_url: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     openrouter_api_key: Optional[str] = None
     github_models_api_token: Optional[str] = None

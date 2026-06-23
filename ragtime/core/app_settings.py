@@ -5,6 +5,7 @@ This module provides async access to AppSettings stored in the database,
 replacing environment-based configuration for tool settings.
 """
 
+import os
 from typing import List, Optional
 
 from ragtime.core.app_setting_defaults import (
@@ -57,6 +58,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_USERSPACE_DUPLICATE_COPY_MOUNTS,
     DEFAULT_USERSPACE_MOUNT_SYNC_INTERVAL_SECONDS,
 )
+from ragtime.core.claude_code import CLAUDE_CODE_OAUTH_TOKEN_ENV
 from ragtime.core.database import get_db
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
@@ -75,6 +77,7 @@ from ragtime.core.model_providers import (
     OMLX_LLM_CONNECTION,
     ProviderConnection,
 )
+from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL
 from ragtime.core.userspace_limits import (
     ARCHIVE_MAX_FILE_COUNT_DEFAULT,
     ARCHIVE_MAX_TOTAL_SIZE_DEFAULT_BYTES,
@@ -254,6 +257,8 @@ class SettingsCache:
             github_copilot_access_token = getattr(prisma_settings, "githubCopilotAccessToken", "") or ""
             github_copilot_refresh_token = getattr(prisma_settings, "githubCopilotRefreshToken", "") or ""
             github_copilot_oauth_refresh_token = getattr(prisma_settings, "githubCopilotOauthRefreshToken", "") or ""
+            openai_codex_access_token = getattr(prisma_settings, "openaiCodexAccessToken", "") or ""
+            openai_codex_refresh_token = getattr(prisma_settings, "openaiCodexRefreshToken", "") or ""
             postgres_password = prisma_settings.postgresPassword or ""
             mcp_password = prisma_settings.mcpDefaultRoutePassword
             lmstudio_api_key = getattr(prisma_settings, "lmstudioApiKey", None) or ""
@@ -266,6 +271,8 @@ class SettingsCache:
             github_copilot_access_token = decrypt_secret(github_copilot_access_token)
             github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
             github_copilot_oauth_refresh_token = decrypt_secret(github_copilot_oauth_refresh_token)
+            openai_codex_access_token = decrypt_secret(openai_codex_access_token)
+            openai_codex_refresh_token = decrypt_secret(openai_codex_refresh_token)
             postgres_password = decrypt_secret(postgres_password)
             lmstudio_api_key = decrypt_secret(lmstudio_api_key)
             omlx_api_key = decrypt_secret(omlx_api_key)
@@ -396,7 +403,13 @@ class SettingsCache:
                     DEFAULT_IMAGE_PAYLOAD_LIMITS["max_bytes"],
                 ),
                 "openai_api_key": openai_key,
+                "openai_codex_access_token": openai_codex_access_token,
+                "openai_codex_refresh_token": openai_codex_refresh_token,
+                "openai_codex_token_expires_at": getattr(prisma_settings, "openaiCodexTokenExpiresAt", None),
+                "openai_codex_account_id": getattr(prisma_settings, "openaiCodexAccountId", "") or "",
+                "openai_codex_base_url": getattr(prisma_settings, "openaiCodexBaseUrl", OPENAI_CODEX_DEFAULT_BASE_URL) or OPENAI_CODEX_DEFAULT_BASE_URL,
                 "anthropic_api_key": anthropic_key,
+                "claude_code_oauth_token": os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV, ""),
                 "openrouter_api_key": openrouter_key,
                 "lmstudio_api_key": lmstudio_api_key,
                 "omlx_api_key": omlx_api_key,
@@ -570,7 +583,13 @@ class SettingsCache:
                 "image_payload_max_pixels": DEFAULT_IMAGE_PAYLOAD_LIMITS["max_pixels"],
                 "image_payload_max_bytes": DEFAULT_IMAGE_PAYLOAD_LIMITS["max_bytes"],
                 "openai_api_key": "",
+                "openai_codex_access_token": "",
+                "openai_codex_refresh_token": "",
+                "openai_codex_token_expires_at": None,
+                "openai_codex_account_id": "",
+                "openai_codex_base_url": OPENAI_CODEX_DEFAULT_BASE_URL,
                 "anthropic_api_key": "",
+                "claude_code_oauth_token": os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV, ""),
                 "openrouter_api_key": "",
                 "lmstudio_api_key": "",
                 "omlx_api_key": "",

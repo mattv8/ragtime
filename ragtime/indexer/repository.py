@@ -1007,6 +1007,8 @@ class IndexerRepository:
         github_copilot_access_token = getattr(settings, "githubCopilotAccessToken", "") or ""
         github_copilot_refresh_token = getattr(settings, "githubCopilotRefreshToken", "") or ""
         github_copilot_oauth_refresh_token = getattr(settings, "githubCopilotOauthRefreshToken", "") or ""
+        openai_codex_access_token = getattr(settings, "openaiCodexAccessToken", "") or ""
+        openai_codex_refresh_token = getattr(settings, "openaiCodexRefreshToken", "") or ""
         mcp_password = getattr(settings, "mcpDefaultRoutePassword", None)
 
         # Decrypt if encrypted (starts with 'enc::')
@@ -1024,6 +1026,10 @@ class IndexerRepository:
             github_copilot_refresh_token = decrypt_secret(github_copilot_refresh_token)
         if github_copilot_oauth_refresh_token:
             github_copilot_oauth_refresh_token = decrypt_secret(github_copilot_oauth_refresh_token)
+        if openai_codex_access_token:
+            openai_codex_access_token = decrypt_secret(openai_codex_access_token)
+        if openai_codex_refresh_token:
+            openai_codex_refresh_token = decrypt_secret(openai_codex_refresh_token)
         if mcp_password:
             mcp_password = decrypt_secret(mcp_password)
         omlx_api_key = decrypt_secret(getattr(settings, "omlxApiKey", None) or "")
@@ -1142,6 +1148,12 @@ class IndexerRepository:
                 "http://host.docker.internal:8000",
             ),
             openai_api_key=openai_key,
+            openai_codex_access_token=openai_codex_access_token,
+            openai_codex_refresh_token=openai_codex_refresh_token,
+            openai_codex_token_expires_at=getattr(settings, "openaiCodexTokenExpiresAt", None),
+            openai_codex_account_id=getattr(settings, "openaiCodexAccountId", "") or "",
+            openai_codex_base_url=getattr(settings, "openaiCodexBaseUrl", "https://chatgpt.com/backend-api/codex"),
+            has_openai_codex_auth=bool(openai_codex_access_token or openai_codex_refresh_token),
             anthropic_api_key=anthropic_key,
             openrouter_api_key=openrouter_key,
             github_models_api_token=github_models_api_token,
@@ -1155,6 +1167,7 @@ class IndexerRepository:
                 "githubCopilotBaseUrl",
                 DEFAULT_GITHUB_COPILOT_BASE_URL,
             ),
+            has_claude_code_auth=bool(os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()),
             include_copilot_third_party_models=getattr(
                 settings,
                 "includeCopilotThirdPartyModels",
@@ -1397,6 +1410,11 @@ class IndexerRepository:
             "llm_omlx_port": "llmOmlxPort",
             "llm_omlx_base_url": "llmOmlxBaseUrl",
             "openai_api_key": "openaiApiKey",
+            "openai_codex_access_token": "openaiCodexAccessToken",
+            "openai_codex_refresh_token": "openaiCodexRefreshToken",
+            "openai_codex_token_expires_at": "openaiCodexTokenExpiresAt",
+            "openai_codex_account_id": "openaiCodexAccountId",
+            "openai_codex_base_url": "openaiCodexBaseUrl",
             "anthropic_api_key": "anthropicApiKey",
             "openrouter_api_key": "openrouterApiKey",
             "github_models_api_token": "githubModelsApiToken",
@@ -1489,6 +1507,8 @@ class IndexerRepository:
         # These need to be reversibly encrypted so we can show them in the UI
         secret_fields = [
             "openai_api_key",
+            "openai_codex_access_token",
+            "openai_codex_refresh_token",
             "anthropic_api_key",
             "openrouter_api_key",
             "github_models_api_token",

@@ -5,6 +5,7 @@
 import type { IndexJob, IndexInfo, CreateIndexRequest, ImportFaissIndexResponse, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, VisionModelsRequest, VisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, LmStudioModelLoadRequest, LmStudioModelUnloadRequest, LmStudioModelActionResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ReorderToolsRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, ConversationSummary, ConversationCountResponse, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, BrowseCloudMountSourceRequest, CreateCloudMountSourceDirectoryRequest, DeleteUserspaceMountSourceResponse, CreateUserUserspaceMountSourceRequest, UpdateUserUserspaceMountSourceRequest, UserCloudOAuthAccount, CloudOAuthProviderStatus, CloudOAuthStartRequest, CloudOAuthStartResponse, CloudOAuthCallbackRequest, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, WorkspaceMountDirectoryEntry, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceShareLinkListResponse, CreateWorkspaceShareLinkRequest, UpdateWorkspaceShareLinkRequest, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, WorkspaceConversationSearchResponse, ConversationBranchSearchResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceSqliteImportTask, UserSpaceCollabPresenceResponse, ConversationShareLink, ConversationShareLinkStatus, ConversationShareLinkListResponse, CreateConversationShareLinkRequest, UpdateConversationShareLinkRequest, ConversationShareSlugAvailabilityResponse, UpdateConversationShareAccessRequest, SharedConversationResponse, PublicShareTargetResponse } from '@/types';
 
 import type { AuthProviderConfig, UpdateAuthProviderConfigRequest, LocalUserCreateRequest, LocalUserUpdateRequest, AuthGroup, AuthGroupListResponse, AuthGroupUpsertRequest, SetUserGroupsRequest, LdapUserSearchRequest, LdapUserProfile, LdapUserImportResponse, LdapUserTypeaheadRequest, LdapUserTypeaheadResponse, UserDirectoryEntry } from '@/types';
+import type { ClaudeCodeAuthCompleteResponse, ClaudeCodeAuthStartResponse, ClaudeCodeAuthStatusResponse, OpenAICodexAuthStatusResponse, OpenAICodexDevicePollRequest, OpenAICodexDevicePollResponse, OpenAICodexDeviceStartRequest, OpenAICodexDeviceStartResponse } from '@/types';
 
 import type {
   SqliteInspectorDatabaseListResponse,
@@ -912,6 +913,78 @@ export const api = {
       method: 'POST',
     });
     return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  /**
+   * Start OpenAI Codex OAuth device authorization flow.
+   */
+  async startOpenAICodexDeviceFlow(request: OpenAICodexDeviceStartRequest = {}): Promise<OpenAICodexDeviceStartResponse> {
+    const response = await apiFetch(`${API_BASE}/openai-codex/device/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<OpenAICodexDeviceStartResponse>(response);
+  },
+
+  /**
+   * Poll OpenAI Codex OAuth device authorization status.
+   */
+  async pollOpenAICodexDeviceFlow(request: OpenAICodexDevicePollRequest): Promise<OpenAICodexDevicePollResponse> {
+    const response = await apiFetch(`${API_BASE}/openai-codex/device/poll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<OpenAICodexDevicePollResponse>(response);
+  },
+
+  /**
+   * Get current OpenAI Codex auth status.
+   */
+  async getOpenAICodexAuthStatus(): Promise<OpenAICodexAuthStatusResponse> {
+    const response = await apiFetch(`${API_BASE}/openai-codex/auth/status`);
+    return handleResponse<OpenAICodexAuthStatusResponse>(response);
+  },
+
+  /**
+   * Clear stored OpenAI Codex auth credentials.
+   */
+  async clearOpenAICodexAuth(): Promise<{ success: boolean; message: string }> {
+    const response = await apiFetch(`${API_BASE}/openai-codex/auth/clear`, {
+      method: 'POST',
+    });
+    return handleResponse<{ success: boolean; message: string }>(response);
+  },
+
+  async getClaudeCodeAuthStatus(): Promise<ClaudeCodeAuthStatusResponse> {
+    const response = await apiFetch(`${API_BASE}/claude-code/auth/status`);
+    return handleResponse<ClaudeCodeAuthStatusResponse>(response);
+  },
+
+  async startClaudeCodeAuth(): Promise<ClaudeCodeAuthStartResponse> {
+    const response = await apiFetch(`${API_BASE}/claude-code/auth/start`, {
+      method: 'POST',
+    });
+    return handleResponse<ClaudeCodeAuthStartResponse>(response);
+  },
+
+  async completeClaudeCodeAuth(request: { request_id: string; code: string }): Promise<ClaudeCodeAuthCompleteResponse> {
+    const response = await apiFetch(`${API_BASE}/claude-code/auth/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ClaudeCodeAuthCompleteResponse>(response);
+  },
+
+  async cancelClaudeCodeAuth(request: { request_id: string }): Promise<ClaudeCodeAuthCompleteResponse> {
+    const response = await apiFetch(`${API_BASE}/claude-code/auth/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ClaudeCodeAuthCompleteResponse>(response);
   },
 
   async loadLmstudioModel(request: LmStudioModelLoadRequest): Promise<LmStudioModelActionResponse> {

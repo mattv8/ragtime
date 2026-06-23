@@ -619,7 +619,7 @@ export interface UserSpacePreviewSandboxFlagOption {
 }
 
 // Canonical providers used by current UI flows.
-export type LlmProvider = 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot';
+export type LlmProvider = 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot' | 'openai_codex' | 'claude_code';
 // Legacy wire compatibility for older persisted/provider values.
 export type LlmProviderWire = LlmProvider | 'github_models';
 
@@ -630,7 +630,7 @@ export interface AppSettings {
   authenticated_webgl_background_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   // Embedding Configuration (for FAISS indexing)
-  embedding_provider: 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  embedding_provider: 'ollama' | 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model: string;
   embedding_dimensions?: number | null;
   // Ollama connection settings for embeddings (separate fields)
@@ -688,6 +688,9 @@ export interface AppSettings {
   github_copilot_base_url: string;
   include_copilot_third_party_models: boolean;
   has_github_copilot_auth: boolean;
+  openai_codex_base_url?: string;
+  has_openai_codex_auth?: boolean;
+  has_claude_code_auth?: boolean;
   allowed_chat_models: string[];
   default_chat_model?: string | null;
   // OpenAPI-compatible endpoint model configuration
@@ -769,7 +772,7 @@ export interface UpdateSettingsRequest {
   authenticated_webgl_background_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   // Embedding settings
-  embedding_provider?: 'ollama' | 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  embedding_provider?: 'ollama' | 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
   embedding_model?: string;
   embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
@@ -825,6 +828,7 @@ export interface UpdateSettingsRequest {
   github_copilot_enterprise_url?: string | null;
   github_copilot_base_url?: string;
   include_copilot_third_party_models?: boolean;
+  openai_codex_base_url?: string;
   allowed_chat_models?: string[];
   default_chat_model?: string | null;
   allowed_openapi_models?: string[];
@@ -969,7 +973,7 @@ export interface VisionModelsResponse {
 
 // LLM Provider Model Fetching
 export interface LLMModelsRequest {
-  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot'>;
+  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot' | 'openai_codex' | 'claude_code'>;
   api_key?: string;
   base_url?: string;
   auth_mode?: 'oauth' | 'pat';
@@ -1050,9 +1054,72 @@ export interface CopilotAuthStatusResponse {
   token_expires_at?: string | null;
 }
 
+export interface OpenAICodexDeviceStartRequest {
+  deployment_type?: 'openai.com' | 'enterprise';
+  enterprise_url?: string;
+}
+
+export interface OpenAICodexDeviceStartResponse {
+  success: boolean;
+  request_id: string;
+  verification_uri: string;
+  verification_uri_complete?: string | null;
+  user_code: string;
+  interval: number;
+  expires_in: number;
+  deployment_type?: 'openai.com' | 'enterprise';
+  enterprise_url?: string | null;
+}
+
+export interface OpenAICodexDevicePollRequest {
+  request_id: string;
+}
+
+export interface OpenAICodexDevicePollResponse {
+  success: boolean;
+  status: 'pending' | 'connected' | 'expired' | 'failed';
+  message: string;
+  retry_after_seconds?: number;
+}
+
+export interface OpenAICodexAuthStatusResponse {
+  connected: boolean;
+  deployment_type?: 'openai.com' | 'enterprise';
+  enterprise_url?: string | null;
+  base_url?: string;
+  token_expires_at?: string | null;
+}
+
+export interface ClaudeCodeAuthStatusResponse {
+  connected: boolean;
+  installed: boolean;
+  command?: string | null;
+  version?: string | null;
+  has_oauth_token: boolean;
+  has_cli_auth: boolean;
+  auth_method?: string | null;
+  subscription_type?: string | null;
+  error?: string | null;
+}
+
+export interface ClaudeCodeAuthStartResponse {
+  success: boolean;
+  request_id: string;
+  authorization_url: string;
+  state?: string | null;
+  expires_in: number;
+  message: string;
+}
+
+export interface ClaudeCodeAuthCompleteResponse {
+  success: boolean;
+  status: 'pending' | 'connected' | 'expired' | 'failed';
+  message: string;
+}
+
 // Embedding Provider Model Fetching
 export interface EmbeddingModelsRequest {
-  provider: 'openai' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  provider: 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
   api_key?: string;
   base_url?: string;
   model?: string;

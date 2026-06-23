@@ -35,6 +35,10 @@ _model_supports_reasoning: dict[str, bool] = {}
 _model_supports_reasoning_effort: dict[str, bool] = {}
 # Cache for thinking budget support
 _model_supports_thinking_budget: dict[str, bool] = {}
+# Cache for embedding-capable models from models.dev modalities.
+_model_supports_embeddings: dict[str, bool] = {}
+# Cache for models that only output embeddings and should not be listed as LLMs.
+_model_is_embedding_only: dict[str, bool] = {}
 # Cache for models requiring Responses API (populated from Copilot /models)
 _model_requires_responses_api: dict[str, bool] = {}
 # Cache for models that support Responses API (including dual-endpoint models)
@@ -47,6 +51,8 @@ _provider_supports_reasoning_effort: dict[str, bool] = {}
 _provider_supports_thinking_budget: dict[str, bool] = {}
 # Cache for provider-reported or live-probed image input capabilities (authoritative)
 _provider_supports_image_input: dict[str, bool] = {}
+# Catalog of model ids published by each models.dev provider slug (normalized).
+_provider_model_catalog: dict[str, list[str]] = {}
 _cache_lock = asyncio.Lock()
 _cache_loaded = False
 
@@ -752,7 +758,9 @@ def _lookup_capability_flag(cache: dict[str, bool], model_id: str) -> bool | Non
 async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     """Fetch model limits and capabilities from models.dev."""
     global _model_supports_function_calling, _model_supports_reasoning, _model_supports_reasoning_effort, _model_supports_thinking_budget
+    global _model_supports_embeddings, _model_is_embedding_only
     global _model_family_labels_cache, _model_provider_labels_cache, _model_display_names_cache, _model_freshness_cache
+    global _provider_model_catalog
     limits: dict[str, int] = {}
     output_limits: dict[str, int] = {}
     family_labels: dict[str, str] = {}
@@ -763,6 +771,9 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
     reasoning_support: dict[str, bool] = {}
     reasoning_effort_support: dict[str, bool] = {}
     thinking_budget_support: dict[str, bool] = {}
+    embedding_support: dict[str, bool] = {}
+    embedding_only: dict[str, bool] = {}
+    provider_catalog: dict[str, list[str]] = {}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -799,10 +810,25 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
                     supports_fc = model_info.get("tool_call")
                     supports_reasoning_flag = model_info.get("reasoning")
                     supports_thinking_budget_flag = _infer_thinking_budget_support(model_info)
+                    modalities = model_info.get("modalities", {})
+                    input_modalities = modalities.get("input", []) if isinstance(modalities, dict) else []
+                    output_modalities = modalities.get("output", []) if isinstance(modalities, dict) else []
+                    input_set = {str(value).strip().lower() for value in input_modalities if isinstance(value, str)}
+                    output_set = {str(value).strip().lower() for value in output_modalities if isinstance(value, str)}
+                    is_embedding = "embedding" in output_set or "embedding" in model_id.lower()
+                    is_embedding_only = is_embedding and bool(output_set) and output_set <= {"embedding"}
+                    if is_embedding_only and input_set and not (input_set & {"text", "tokens"}):
+                        is_embedding_only = False
                     family_slug = str(model_info.get("family") or "").strip()
                     model_name = str(model_info.get("name") or "").strip()
                     provider_label = _provider_label_from_slug(str(provider))
                     freshness_rank = _parse_date_rank(model_info.get("release_date")) or _parse_date_rank(model_info.get("last_updated"))
+
+                    catalog_provider = normalize_provider_name(str(provider))
+                    if catalog_provider:
+                        catalog_ids = provider_catalog.setdefault(catalog_provider, [])
+                        if model_id not in catalog_ids:
+                            catalog_ids.append(model_id)
 
                     key_variants = _expand_model_keys(model_id, str(provider).lower())
                     key_variants.add(str(fallback_id or ""))
@@ -832,18 +858,25 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
                             reasoning_effort_support[key] = supports_reasoning_flag
                         if isinstance(supports_thinking_budget_flag, bool):
                             thinking_budget_support[key] = supports_thinking_budget_flag
+                        if is_embedding:
+                            embedding_support[key] = True
+                        if is_embedding_only:
+                            embedding_only[key] = True
 
             _model_supports_function_calling = function_calling
             _model_supports_reasoning = reasoning_support
             _model_supports_reasoning_effort = reasoning_effort_support
             _model_supports_thinking_budget = thinking_budget_support
+            _model_supports_embeddings = embedding_support
+            _model_is_embedding_only = embedding_only
             _model_family_labels_cache = family_labels
             _model_provider_labels_cache = provider_labels
             _model_display_names_cache = display_names
             _model_freshness_cache = freshness
+            _provider_model_catalog = provider_catalog
 
             logger.info(
-                "Loaded %s context limits, %s output limits, %s family labels, %s freshness entries, %s function-calling flags, %s reasoning flags, %s thinking-budget flags from models.dev",
+                "Loaded %s context limits, %s output limits, %s family labels, %s freshness entries, %s function-calling flags, %s reasoning flags, %s thinking-budget flags, %s embedding flags from models.dev",
                 len(limits),
                 len(output_limits),
                 len(_model_family_labels_cache),
@@ -851,6 +884,7 @@ async def _fetch_models_dev_data() -> tuple[dict[str, int], dict[str, int]]:
                 len(_model_supports_function_calling),
                 len(_model_supports_reasoning),
                 len(_model_supports_thinking_budget),
+                len(_model_supports_embeddings),
             )
             return limits, output_limits
 
@@ -895,7 +929,20 @@ def resolve_model_provider_label(
     provider: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> str | None:
-    """Resolve the model publisher/provider label from catalog metadata."""
+    """Resolve the model publisher/provider label from catalog metadata.
+
+    For single-publisher direct providers (OpenAI, OpenAI Codex, Anthropic,
+    Claude Code) the explicit provider is authoritative and wins over any
+    model-id or catalog-metadata heuristics. This keeps providers that serve
+    overlapping model families (e.g. Anthropic API key vs Claude Code
+    subscription, or OpenAI vs OpenAI Codex) visibly distinct so users can tell
+    which provider their token spend is coming from.
+    """
+    normalized_provider = normalize_provider_name(provider) if provider else ""
+    descriptor = get_provider(provider)
+    if descriptor and normalized_provider in {"openai", "openai_codex", "anthropic", "claude_code"}:
+        return descriptor.label
+
     if metadata:
         raw_name = str(metadata.get("name") or name or "").strip()
         if ":" in raw_name:
@@ -910,10 +957,6 @@ def resolve_model_provider_label(
         label = _provider_label_from_slug(publisher)
         if label:
             return label
-
-    descriptor = get_provider(provider)
-    if descriptor and provider in {"openai", "anthropic"}:
-        return descriptor.label
 
     inferred = _infer_provider_label_from_text(model_id, name, metadata)
     if inferred:
@@ -1318,10 +1361,13 @@ def invalidate_cache() -> None:
     _model_supports_reasoning.clear()
     _model_supports_reasoning_effort.clear()
     _model_supports_thinking_budget.clear()
+    _model_supports_embeddings.clear()
+    _model_is_embedding_only.clear()
     _model_requires_responses_api.clear()
     _provider_supports_reasoning.clear()
     _provider_supports_reasoning_effort.clear()
     _provider_supports_thinking_budget.clear()
+    _provider_model_catalog.clear()
 
 
 async def supports_function_calling(model_id: str) -> bool:
@@ -1348,6 +1394,40 @@ async def supports_function_calling(model_id: str) -> bool:
 
     # Conservative default: assume no function calling support
     return False
+
+
+async def supports_embeddings(model_id: str) -> bool:
+    """Check if a model is embedding-capable according to provider metadata."""
+    await _ensure_cache_loaded()
+
+    matched = _lookup_capability_flag(_model_supports_embeddings, model_id)
+    if matched is not None:
+        return matched
+
+    return "embedding" in str(model_id or "").lower()
+
+
+async def is_embedding_only_model(model_id: str) -> bool:
+    """Return True when a model should be excluded from LLM selectors."""
+    await _ensure_cache_loaded()
+
+    matched = _lookup_capability_flag(_model_is_embedding_only, model_id)
+    if matched is not None:
+        return matched
+
+    return "embedding" in str(model_id or "").lower()
+
+
+async def get_provider_model_catalog(provider: str) -> list[str]:
+    """Return all model ids published by a models.dev provider slug.
+
+    Used to derive complete provider catalogs (for example every Anthropic
+    Claude model available through a Claude Code subscription) instead of
+    maintaining a hand-curated list that goes stale as new models ship.
+    """
+    await _ensure_cache_loaded()
+    normalized = normalize_provider_name(provider)
+    return list(_provider_model_catalog.get(normalized, []))
 
 
 async def supports_reasoning(model_id: str) -> bool:

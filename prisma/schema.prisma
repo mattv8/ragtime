@@ -200,6 +200,11 @@ model AppSettings {
   githubCopilotTokenExpiresAt    DateTime? @map("github_copilot_token_expires_at")
   githubCopilotEnterpriseUrl     String?   @map("github_copilot_enterprise_url")
   githubCopilotBaseUrl           String    @default("https://api.githubcopilot.com") @map("github_copilot_base_url")
+  openaiCodexAccessToken         String    @default("") @map("openai_codex_access_token")
+  openaiCodexRefreshToken        String    @default("") @map("openai_codex_refresh_token")
+  openaiCodexTokenExpiresAt      DateTime? @map("openai_codex_token_expires_at")
+  openaiCodexAccountId           String    @default("") @map("openai_codex_account_id")
+  openaiCodexBaseUrl             String    @default("https://chatgpt.com/backend-api/codex") @map("openai_codex_base_url")
   includeCopilotThirdPartyModels Boolean   @default(false) @map("include_copilot_third_party_models")
   allowedChatModels              String[]  @default([]) @map("allowed_chat_models") // Empty = all models allowed
   defaultChatModel               String?   @map("default_chat_model") // Optional manual override for chat default model selection

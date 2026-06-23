@@ -745,6 +745,51 @@ class ModelResolutionTests(unittest.TestCase):
                 "Codex",
             )
 
+    def test_direct_providers_force_distinct_provider_labels(self) -> None:
+        # Single-publisher direct providers must stay separate so users can tell
+        # which provider their token spend comes from, even when the same model
+        # family is served by multiple providers (Anthropic API vs Claude Code,
+        # OpenAI vs OpenAI Codex).
+        self.assertEqual(
+            resolve_model_provider_label("claude-sonnet-4-5", provider="anthropic"),
+            "Anthropic",
+        )
+        self.assertEqual(
+            resolve_model_provider_label("claude-sonnet-4-5", provider="claude_code"),
+            "Claude Code",
+        )
+        self.assertEqual(
+            resolve_model_provider_label("gpt-5.5", provider="openai"),
+            "OpenAI",
+        )
+        self.assertEqual(
+            resolve_model_provider_label("gpt-5.5", provider="openai_codex"),
+            "OpenAI Codex",
+        )
+
+    def test_direct_provider_label_wins_over_id_and_metadata_heuristics(self) -> None:
+        # The explicit provider is authoritative: a slashed id or catalog name
+        # prefix must not collapse Claude Code back to Anthropic (or Codex to
+        # OpenAI).
+        self.assertEqual(
+            resolve_model_provider_label(
+                "anthropic/claude-sonnet-4-5",
+                "Anthropic: Claude Sonnet 4.5",
+                provider="claude_code",
+                metadata={"name": "Anthropic: Claude Sonnet 4.5"},
+            ),
+            "Claude Code",
+        )
+        self.assertEqual(
+            resolve_model_provider_label(
+                "openai/gpt-5.5",
+                "OpenAI: GPT-5.5",
+                provider="openai_codex",
+                metadata={"name": "OpenAI: GPT-5.5"},
+            ),
+            "OpenAI Codex",
+        )
+
     def test_model_variant_label_groups_gpt_date_aliases(self) -> None:
         self.assertEqual(
             clean_model_variant_label(
@@ -1332,6 +1377,18 @@ class RequestScopedLLMResolutionTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch(
                     "ragtime.indexer.routes.ensure_model_metadata_loaded",
                     new=mock.AsyncMock(),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.get_claude_code_status",
+                    new=mock.AsyncMock(
+                        return_value=SimpleNamespace(
+                            installed=True,
+                            has_oauth_token=False,
+                            has_cli_auth=False,
+                            available=False,
+                            error=None,
+                        )
+                    ),
                 ),
             ):
                 response = await indexer_routes.get_available_chat_models()

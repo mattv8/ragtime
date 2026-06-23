@@ -126,6 +126,7 @@ from ragtime.core.ollama import (
     warmup_embedding_model,
     warmup_model,
 )
+from ragtime.core.openai_codex_auth import OPENAI_CODEX_DEFAULT_BASE_URL, OPENAI_CODEX_RESPONSES_ENDPOINT, ensure_openai_codex_token_fresh
 from ragtime.core.security import (
     _SSH_ENV_VAR_RE,
     sanitize_output,
@@ -1835,6 +1836,78 @@ class _CopilotChatOpenAI(ChatOpenAI):
                 raise
 
 
+class _OpenAICodexTransport(httpx.BaseTransport):
+    """Rewrite OpenAI SDK requests to ChatGPT's Codex subscription backend."""
+
+    def __init__(self) -> None:
+        self._delegate = httpx.HTTPTransport()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        content = request.read()
+        return self._delegate.handle_request(_build_codex_request(request, content))
+
+    def close(self) -> None:
+        self._delegate.close()
+
+
+class _OpenAICodexAsyncTransport(httpx.AsyncBaseTransport):
+    """Async variant of the Codex request rewriting transport."""
+
+    def __init__(self) -> None:
+        self._delegate = httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        content = await request.aread()
+        return await self._delegate.handle_async_request(_build_codex_request(request, content))
+
+    async def aclose(self) -> None:
+        await self._delegate.aclose()
+
+
+def _build_codex_request(request: httpx.Request, content: bytes) -> httpx.Request:
+    target_url = request.url
+    path = request.url.path.lower()
+    if "/v1/responses" in path or path.endswith("/responses") or "/chat/completions" in path:
+        target_url = httpx.URL(OPENAI_CODEX_RESPONSES_ENDPOINT)
+
+    headers = httpx.Headers(request.headers)
+    headers.pop("host", None)
+    return httpx.Request(
+        request.method,
+        target_url,
+        headers=headers,
+        content=content,
+        extensions=request.extensions,
+    )
+
+
+class _OpenAICodexChatOpenAI(_CopilotChatOpenAI):
+    """ChatOpenAI variant that refreshes OpenAI Codex OAuth credentials."""
+
+    async def _refresh_expired_copilot_token(self) -> bool:
+        old_secret = getattr(self, "openai_api_key", None)
+        old_token = (old_secret.get_secret_value() if old_secret else "").strip()
+        fresh_token = await ensure_openai_codex_token_fresh()
+        if not fresh_token or fresh_token == old_token:
+            return False
+
+        self.openai_api_key = SecretStr(fresh_token)
+        root_client = getattr(self, "root_client", None)
+        if root_client is not None:
+            try:
+                root_client.api_key = fresh_token
+            except Exception:
+                logger.debug("Failed to update Codex sync client API key", exc_info=True)
+        root_async_client = getattr(self, "root_async_client", None)
+        if root_async_client is not None:
+            try:
+                root_async_client.api_key = fresh_token
+            except Exception:
+                logger.debug("Failed to update Codex async client API key", exc_info=True)
+        logger.info("Recovered from expired OpenAI Codex token by refreshing credentials and retrying request")
+        return True
+
+
 class RAGComponents:
     """Container for RAG components initialized at startup.
 
@@ -3048,6 +3121,45 @@ class RAGComponents:
                 logger.warning("langchain-anthropic not installed")
                 return None
 
+        if provider_normalized == "claude_code":
+            logger.warning("Claude Code selected but chat adapter is not implemented yet")
+            return None
+
+        if provider_normalized == "openai_codex":
+            token = await ensure_openai_codex_token_fresh()
+            if not token:
+                logger.warning("OpenAI Codex selected but OAuth token is missing/expired. Reconnect OpenAI Codex in Settings.")
+                return None
+
+            base_url = str(self._app_settings.get("openai_codex_base_url") or OPENAI_CODEX_DEFAULT_BASE_URL).rstrip("/")
+            account_id = str(self._app_settings.get("openai_codex_account_id") or "").strip()
+            headers = {"User-Agent": "ragtime"}
+            if account_id:
+                headers["ChatGPT-Account-Id"] = account_id
+
+            register_model_supported_endpoints(model, ["/responses"])
+            register_model_reasoning_capabilities(
+                model,
+                reasoning_supported=True,
+                reasoning_effort_supported=True,
+            )
+            codex_kwargs: dict[str, Any] = {
+                "model": model,
+                "temperature": 0,
+                "streaming": True,
+                "api_key": token,
+                "base_url": base_url,
+                "max_tokens": max_tokens,
+                "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
+                "default_headers": headers,
+                "http_client": httpx.Client(transport=_OpenAICodexTransport()),
+                "http_async_client": httpx.AsyncClient(transport=_OpenAICodexAsyncTransport()),
+                "use_responses_api": True,
+                "output_version": "responses/v1",
+                "reasoning": {"summary": "auto", "effort": "high"},
+            }
+            return _OpenAICodexChatOpenAI(**codex_kwargs)
+
         if provider_normalized == "openrouter":
             api_key = resolve_provider_api_key(self._app_settings, provider_normalized, "llm")
             if not api_key:
@@ -3086,20 +3198,20 @@ class RAGComponents:
         if provider_normalized == "github_copilot":
             # GitHub Copilot uses OAuth flow. Proactively refresh the
             # short-lived HMAC token if near expiry.
-            token = await ensure_copilot_token_fresh()
-            if not token:
+            copilot_token = await ensure_copilot_token_fresh()
+            if not copilot_token:
                 logger.warning("GitHub Copilot selected but OAuth token is missing/expired. Reconnect GitHub Copilot in Settings.")
                 return None
 
             # Track the token baked into this LLM instance so
             # _ensure_copilot_llm_fresh can detect when it changes.
-            self._copilot_llm_token = token
+            self._copilot_llm_token = copilot_token
 
             base_url = self._app_settings.get("github_copilot_base_url", COPILOT_DEFAULT_BASE_URL)
             base_url = str(base_url or COPILOT_DEFAULT_BASE_URL).rstrip("/")
 
             copilot_headers = build_copilot_headers(intent="conversation-panel")
-            copilot_metadata_headers = build_copilot_headers(access_token=token)
+            copilot_metadata_headers = build_copilot_headers(access_token=copilot_token)
 
             await _hydrate_openai_compatible_capabilities(
                 metadata_urls=[f"{base_url}/models"],
@@ -3114,7 +3226,7 @@ class RAGComponents:
                 "model": model,
                 "temperature": 0,
                 "streaming": True,
-                "api_key": token,
+                "api_key": copilot_token,
                 "base_url": base_url,
                 "max_tokens": max_tokens,
                 "request_timeout": LLM_REQUEST_TIMEOUT_SECONDS,
@@ -13051,8 +13163,12 @@ class RAGComponents:
         configured: list[str] = []
         if str(s.get("openai_api_key", "") or "").strip():
             configured.append("openai")
+        if str(s.get("openai_codex_access_token", "") or "").strip() or str(s.get("openai_codex_refresh_token", "") or "").strip():
+            configured.append("openai_codex")
         if str(s.get("anthropic_api_key", "") or "").strip():
             configured.append("anthropic")
+        if str(s.get("claude_code_oauth_token", "") or "").strip():
+            configured.append("claude_code")
         if str(s.get("github_copilot_access_token", "") or "").strip():
             configured.append("github_copilot")
         # Local providers are considered configured whenever a base URL is set
@@ -13164,8 +13280,16 @@ class RAGComponents:
         normalized = normalize_provider_name(provider)
         if normalized == "openai" and not str(settings.get("openai_api_key", "") or "").strip():
             return "OpenAI API key is missing"
+        if normalized == "openai_codex" and not (
+            str(settings.get("openai_codex_access_token", "") or "").strip() or str(settings.get("openai_codex_refresh_token", "") or "").strip()
+        ):
+            return "OpenAI Codex is not connected"
         if normalized == "anthropic" and not str(settings.get("anthropic_api_key", "") or "").strip():
             return "Anthropic API key is missing"
+        if normalized == "claude_code":
+            if not str(settings.get("claude_code_oauth_token", "") or "").strip():
+                return "CLAUDE_CODE_OAUTH_TOKEN is missing"
+            return "Claude Code chat adapter is not implemented yet"
         if normalized == "github_copilot" and not (
             str(settings.get("github_copilot_access_token", "") or "").strip() or str(settings.get("github_copilot_refresh_token", "") or "").strip()
         ):

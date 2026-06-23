@@ -57,6 +57,16 @@ from ragtime.chat_runtime.service import chat_runtime_service
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
+from ragtime.core.claude_code import (
+    ANTHROPIC_API_BASE,
+    CLAUDE_CODE_AUTH_SESSION_TTL_SECONDS,
+    ClaudeCodeLoginSession,
+    build_claude_code_oauth_headers,
+    complete_claude_code_login,
+    get_claude_code_oauth_token,
+    get_claude_code_status,
+    start_claude_code_login,
+)
 from ragtime.core.container_capabilities import get_container_capabilities
 from ragtime.core.copilot_api import COPILOT_DEFAULT_BASE_URL, build_copilot_headers
 from ragtime.core.copilot_auth import (
@@ -85,6 +95,7 @@ from ragtime.core.model_limits import (
     get_context_limit,
     get_model_freshness_rank,
     get_output_limit,
+    is_embedding_only_model,
     register_model_image_input_capability,
     register_model_reasoning_capabilities,
     register_model_supported_endpoints,
@@ -92,6 +103,7 @@ from ragtime.core.model_limits import (
     requires_responses_api,
     resolve_model_family_label,
     resolve_model_provider_label,
+    supports_embeddings,
     supports_function_calling,
     supports_reasoning,
     supports_reasoning_effort,
@@ -122,6 +134,15 @@ from ragtime.core.ollama import (
     list_models,
 )
 from ragtime.core.ollama import list_models as ollama_list_models
+from ragtime.core.openai_codex_auth import (
+    OPENAI_CODEX_CLIENT_ID,
+    OPENAI_CODEX_DEFAULT_BASE_URL,
+    OPENAI_CODEX_ISSUER,
+    OPENAI_CODEX_MODELS_CLIENT_VERSION,
+    OPENAI_CODEX_MODELS_ENDPOINT,
+    ensure_openai_codex_token_fresh,
+    extract_openai_codex_account_id,
+)
 from ragtime.core.security import (
     get_current_user,
     get_current_user_optional,
@@ -314,6 +335,8 @@ OAUTH_POLLING_SAFETY_MARGIN_SECONDS = 3
 
 # In-memory pending OAuth device requests (request_id -> request state)
 _copilot_device_requests: dict[str, dict[str, Any]] = {}
+_openai_codex_device_requests: dict[str, dict[str, Any]] = {}
+_claude_code_login_sessions: dict[str, ClaudeCodeLoginSession] = {}
 
 router = APIRouter(prefix="/indexes", tags=["Indexer"])
 
@@ -321,6 +344,18 @@ router = APIRouter(prefix="/indexes", tags=["Indexer"])
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 ASSETS_DIR = DIST_DIR / "assets"
+
+
+async def _cleanup_expired_claude_code_login_sessions() -> None:
+    """Remove expired Claude Code auth sessions and stop their waiting CLI processes."""
+    now = asyncio.get_running_loop().time()
+    expired = [request_id for request_id, session in _claude_code_login_sessions.items() if session.expires_at <= now]
+    for request_id in expired:
+        session = _claude_code_login_sessions.pop(request_id, None)
+        if session and session.process.returncode is None:
+            session.process.kill()
+            await session.process.wait()
+
 
 # Check if running in development mode
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -7055,7 +7090,7 @@ class LLMModelsRequest(BaseModel):
 
     provider: str = Field(
         ...,
-        description="LLM provider: 'openai', 'anthropic', 'openrouter', 'llama_cpp', 'lmstudio', 'omlx', or 'github_copilot'",
+        description="LLM provider: 'openai', 'openai_codex', 'anthropic', 'openrouter', 'llama_cpp', 'lmstudio', 'omlx', or 'github_copilot'",
     )
     api_key: str = Field(default="", description="API key/token for the provider")
     auth_mode: Optional[str] = Field(
@@ -7686,6 +7721,14 @@ async def _fetch_llm_models_for_provider(
             return LLMModelsResponse(success=False, message="OpenAI is not configured")
         return await _fetch_openai_models(token)
 
+    if normalized_provider == "openai_codex":
+        token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
+        if not token:
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail="OpenAI Codex is not connected")
+            return LLMModelsResponse(success=False, message="OpenAI Codex is not connected")
+        return await _fetch_openai_codex_models(settings)
+
     if normalized_provider == "anthropic":
         token = str(api_key or settings.anthropic_api_key or "").strip()
         if not token:
@@ -7693,6 +7736,15 @@ async def _fetch_llm_models_for_provider(
                 raise HTTPException(status_code=400, detail="Anthropic is not configured")
             return LLMModelsResponse(success=False, message="Anthropic is not configured")
         return await _fetch_anthropic_models(token)
+
+    if normalized_provider == "claude_code":
+        status = await get_claude_code_status()
+        if not status.available:
+            message = status.error or "Claude Code CLI is not authenticated. Run claude login or provide CLAUDE_CODE_OAUTH_TOKEN."
+            if raise_on_unconfigured:
+                raise HTTPException(status_code=400, detail=message)
+            return LLMModelsResponse(success=False, message=message)
+        return await _fetch_claude_code_models()
 
     if normalized_provider == "openrouter":
         token = str(api_key or resolve_provider_api_key(settings, normalized_provider, "llm") or "").strip()
@@ -8044,6 +8096,98 @@ class CopilotAuthStatusResponse(BaseModel):
     token_expires_at: Optional[datetime] = None
 
 
+class OpenAICodexDeviceStartRequest(BaseModel):
+    """Request to begin OpenAI Codex OAuth device flow."""
+
+    deployment_type: str = Field(default="openai.com")
+    enterprise_url: Optional[str] = None
+
+
+class OpenAICodexDeviceStartResponse(BaseModel):
+    """Response for OpenAI Codex OAuth device flow start."""
+
+    success: bool
+    request_id: str
+    verification_uri: str
+    verification_uri_complete: Optional[str] = None
+    user_code: str
+    interval: int
+    expires_in: int
+    deployment_type: str = "openai.com"
+    enterprise_url: Optional[str] = None
+
+
+class OpenAICodexDevicePollRequest(BaseModel):
+    """Request to poll OpenAI Codex OAuth device flow status."""
+
+    request_id: str
+
+
+class OpenAICodexDevicePollResponse(BaseModel):
+    """Response for polling OpenAI Codex OAuth device flow status."""
+
+    success: bool
+    status: str
+    message: str
+    retry_after_seconds: Optional[int] = None
+
+
+class OpenAICodexAuthStatusResponse(BaseModel):
+    """Current OpenAI Codex auth status."""
+
+    connected: bool
+    deployment_type: str = "openai.com"
+    enterprise_url: Optional[str] = None
+    base_url: str = OPENAI_CODEX_DEFAULT_BASE_URL
+    token_expires_at: Optional[datetime] = None
+
+
+class ClaudeCodeAuthStatusResponse(BaseModel):
+    """Current Claude Code CLI/auth status."""
+
+    connected: bool
+    installed: bool
+    command: Optional[str] = None
+    version: Optional[str] = None
+    has_oauth_token: bool = False
+    has_cli_auth: bool = False
+    auth_method: Optional[str] = None
+    subscription_type: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ClaudeCodeAuthStartResponse(BaseModel):
+    """Response for starting Claude Code CLI auth."""
+
+    success: bool
+    request_id: str
+    authorization_url: str
+    state: Optional[str] = None
+    expires_in: int = CLAUDE_CODE_AUTH_SESSION_TTL_SECONDS
+    message: str
+
+
+class ClaudeCodeAuthCompleteRequest(BaseModel):
+    """Request to finish Claude Code CLI auth."""
+
+    request_id: str
+    code: str
+
+
+class ClaudeCodeAuthCancelRequest(BaseModel):
+    """Request to cancel Claude Code CLI auth."""
+
+    request_id: str
+
+
+class ClaudeCodeAuthCompleteResponse(BaseModel):
+    """Response for completing Claude Code CLI auth."""
+
+    success: bool
+    status: str
+    message: str
+
+
 @router.post(
     "/github-copilot/device/start",
     response_model=CopilotDeviceStartResponse,
@@ -8299,6 +8443,277 @@ async def get_copilot_auth_status(_user: User = Depends(require_admin)):
     )
 
 
+@router.post(
+    "/openai-codex/device/start",
+    response_model=OpenAICodexDeviceStartResponse,
+    tags=["Settings"],
+)
+async def start_openai_codex_device_flow(
+    _request: OpenAICodexDeviceStartRequest,
+    _user: User = Depends(require_admin),
+):
+    """Start OpenAI Codex OAuth device flow and return verification code."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"{OPENAI_CODEX_ISSUER}/api/accounts/deviceauth/usercode",
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "ragtime",
+                },
+                json={"client_id": OPENAI_CODEX_CLIENT_ID},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenAI Codex device flow request failed ({e.response.status_code})",
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to start OpenAI Codex device flow: {str(e)}",
+        ) from e
+
+    request_id = secrets.token_urlsafe(24)
+    interval = max(int(data.get("interval") or 5), 1)
+    expires_in = max(int(data.get("expires_in") or data.get("expiresIn") or 900), 60)
+    user_code = str(data.get("user_code") or data.get("userCode") or "").strip()
+    _openai_codex_device_requests[request_id] = {
+        "device_auth_id": data.get("device_auth_id") or data.get("deviceAuthId") or "",
+        "user_code": user_code,
+        "interval": interval,
+        "expires_at": datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+    }
+
+    verification_uri = f"{OPENAI_CODEX_ISSUER}/codex/device"
+    return OpenAICodexDeviceStartResponse(
+        success=True,
+        request_id=request_id,
+        verification_uri=verification_uri,
+        verification_uri_complete=verification_uri,
+        user_code=user_code,
+        interval=interval,
+        expires_in=expires_in,
+    )
+
+
+@router.post(
+    "/openai-codex/device/poll",
+    response_model=OpenAICodexDevicePollResponse,
+    tags=["Settings"],
+)
+async def poll_openai_codex_device_flow(
+    request: OpenAICodexDevicePollRequest,
+    _user: User = Depends(require_admin),
+):
+    """Poll OpenAI Codex OAuth device flow and persist tokens on success."""
+    state = _openai_codex_device_requests.get(request.request_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Device authorization request not found")
+
+    now = datetime.now(timezone.utc)
+    if now >= state["expires_at"]:
+        _openai_codex_device_requests.pop(request.request_id, None)
+        return OpenAICodexDevicePollResponse(success=False, status="expired", message="Device authorization code expired. Start again.")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            token_probe = await client.post(
+                f"{OPENAI_CODEX_ISSUER}/api/accounts/deviceauth/token",
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "ragtime",
+                },
+                json={
+                    "device_auth_id": state["device_auth_id"],
+                    "user_code": state["user_code"],
+                },
+            )
+
+            if token_probe.status_code in {403, 404}:
+                retry_after = int(state.get("interval", 5)) + OAUTH_POLLING_SAFETY_MARGIN_SECONDS
+                return OpenAICodexDevicePollResponse(
+                    success=True,
+                    status="pending",
+                    message="Waiting for authorization in browser...",
+                    retry_after_seconds=retry_after,
+                )
+            if not token_probe.is_success:
+                _openai_codex_device_requests.pop(request.request_id, None)
+                return OpenAICodexDevicePollResponse(
+                    success=False,
+                    status="failed",
+                    message=f"OpenAI Codex OAuth polling failed ({token_probe.status_code}).",
+                )
+
+            probe_data = token_probe.json()
+            authorization_code = str(probe_data.get("authorization_code") or "").strip()
+            code_verifier = str(probe_data.get("code_verifier") or "").strip()
+            if not authorization_code or not code_verifier:
+                return OpenAICodexDevicePollResponse(success=False, status="failed", message="OpenAI Codex OAuth response was incomplete.")
+
+            token_response = await client.post(
+                f"{OPENAI_CODEX_ISSUER}/oauth/token",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "grant_type": "authorization_code",
+                    "code": authorization_code,
+                    "redirect_uri": f"{OPENAI_CODEX_ISSUER}/deviceauth/callback",
+                    "client_id": OPENAI_CODEX_CLIENT_ID,
+                    "code_verifier": code_verifier,
+                },
+            )
+            token_response.raise_for_status()
+            tokens = token_response.json()
+    except httpx.HTTPStatusError as e:
+        _openai_codex_device_requests.pop(request.request_id, None)
+        return OpenAICodexDevicePollResponse(success=False, status="failed", message=f"OpenAI Codex token exchange failed ({e.response.status_code}).")
+    except Exception as e:
+        return OpenAICodexDevicePollResponse(success=False, status="failed", message=f"OpenAI Codex OAuth polling failed: {str(e)}")
+
+    access_token = str(tokens.get("access_token") or "").strip()
+    refresh_token = str(tokens.get("refresh_token") or "").strip()
+    if not access_token or not refresh_token:
+        return OpenAICodexDevicePollResponse(success=False, status="failed", message="OpenAI Codex OAuth did not return usable tokens.")
+
+    expires_in = int(tokens.get("expires_in") or 3600)
+    try:
+        await repository.update_settings(
+            {
+                "openai_codex_access_token": access_token,
+                "openai_codex_refresh_token": refresh_token,
+                "openai_codex_token_expires_at": datetime.now(timezone.utc) + timedelta(seconds=max(expires_in, 60)),
+                "openai_codex_account_id": extract_openai_codex_account_id(tokens),
+                "openai_codex_base_url": OPENAI_CODEX_DEFAULT_BASE_URL,
+            }
+        )
+    except Exception as e:
+        logger.exception("Failed to persist OpenAI Codex OAuth tokens")
+        _openai_codex_device_requests.pop(request.request_id, None)
+        return OpenAICodexDevicePollResponse(
+            success=False,
+            status="failed",
+            message="OpenAI Codex OAuth succeeded, but Ragtime could not save the connection. Please try connecting again.",
+        )
+    invalidate_settings_cache()
+    _openai_codex_device_requests.pop(request.request_id, None)
+    return OpenAICodexDevicePollResponse(success=True, status="connected", message="OpenAI Codex connected successfully.")
+
+
+@router.get(
+    "/openai-codex/auth/status",
+    response_model=OpenAICodexAuthStatusResponse,
+    tags=["Settings"],
+)
+async def get_openai_codex_auth_status(_user: User = Depends(require_admin)):
+    """Get current OpenAI Codex auth status from settings."""
+    app_settings = await repository.get_settings()
+    connected = bool((app_settings.openai_codex_access_token or "").strip() or (app_settings.openai_codex_refresh_token or "").strip())
+    return OpenAICodexAuthStatusResponse(
+        connected=connected,
+        base_url=app_settings.openai_codex_base_url or OPENAI_CODEX_DEFAULT_BASE_URL,
+        token_expires_at=app_settings.openai_codex_token_expires_at,
+    )
+
+
+@router.get(
+    "/claude-code/auth/status",
+    response_model=ClaudeCodeAuthStatusResponse,
+    tags=["Settings"],
+)
+async def get_claude_code_auth_status(_user: User = Depends(require_admin)):
+    """Get current Claude Code CLI/auth readiness from the container environment."""
+    status = await get_claude_code_status()
+    return ClaudeCodeAuthStatusResponse(
+        connected=status.available,
+        installed=status.installed,
+        command=status.command,
+        version=status.version,
+        has_oauth_token=status.has_oauth_token,
+        has_cli_auth=status.has_cli_auth,
+        auth_method=status.auth_method,
+        subscription_type=status.subscription_type,
+        error=status.error,
+    )
+
+
+@router.post(
+    "/claude-code/auth/start",
+    response_model=ClaudeCodeAuthStartResponse,
+    tags=["Settings"],
+)
+async def start_claude_code_auth(_user: User = Depends(require_admin)):
+    """Start Claude Code CLI auth and return the browser authorization URL."""
+    await _cleanup_expired_claude_code_login_sessions()
+    try:
+        login, session = await start_claude_code_login()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    request_id = secrets.token_urlsafe(24)
+    _claude_code_login_sessions[request_id] = session
+    return ClaudeCodeAuthStartResponse(
+        success=True,
+        request_id=request_id,
+        authorization_url=login.authorization_url,
+        state=login.state,
+        expires_in=login.expires_in,
+        message="Claude Code authorization started. Complete sign-in in the browser, then paste the final callback URL or code.",
+    )
+
+
+@router.post(
+    "/claude-code/auth/complete",
+    response_model=ClaudeCodeAuthCompleteResponse,
+    tags=["Settings"],
+)
+async def complete_claude_code_auth(request: ClaudeCodeAuthCompleteRequest, _user: User = Depends(require_admin)):
+    """Finish Claude Code CLI auth by sending the OAuth code to the waiting CLI."""
+    await _cleanup_expired_claude_code_login_sessions()
+    session = _claude_code_login_sessions.pop(request.request_id, None)
+    if not session:
+        return ClaudeCodeAuthCompleteResponse(
+            success=False,
+            status="expired",
+            message="Claude Code authorization session expired or server reloaded. Start authorization again.",
+        )
+    try:
+        await complete_claude_code_login(session, request.code)
+    except ValueError as exc:
+        _claude_code_login_sessions[request.request_id] = session
+        return ClaudeCodeAuthCompleteResponse(success=False, status="pending", message=str(exc))
+    except TimeoutError:
+        return ClaudeCodeAuthCompleteResponse(success=False, status="failed", message="Claude Code authorization timed out. Start authorization again.")
+    except RuntimeError as exc:
+        return ClaudeCodeAuthCompleteResponse(success=False, status="failed", message=str(exc))
+
+    status = await get_claude_code_status()
+    if not status.available:
+        return ClaudeCodeAuthCompleteResponse(
+            success=False,
+            status="failed",
+            message=status.error or "Claude Code login completed, but Ragtime could not verify the CLI auth status.",
+        )
+    invalidate_settings_cache()
+    return ClaudeCodeAuthCompleteResponse(success=True, status="connected", message="Claude Code connected successfully.")
+
+
+@router.post(
+    "/claude-code/auth/cancel",
+    response_model=ClaudeCodeAuthCompleteResponse,
+    tags=["Settings"],
+)
+async def cancel_claude_code_auth(request: ClaudeCodeAuthCancelRequest, _user: User = Depends(require_admin)):
+    """Cancel a pending Claude Code CLI auth process."""
+    session = _claude_code_login_sessions.pop(request.request_id, None)
+    if session and session.process.returncode is None:
+        session.process.kill()
+        await session.process.wait()
+    return ClaudeCodeAuthCompleteResponse(success=True, status="failed", message="Claude Code authorization cancelled.")
+
+
 @router.post("/github-copilot/auth/clear", tags=["Settings"])
 async def clear_copilot_auth(_user: User = Depends(require_admin)):
     """Clear stored GitHub Copilot auth credentials."""
@@ -8314,6 +8729,22 @@ async def clear_copilot_auth(_user: User = Depends(require_admin)):
     )
     invalidate_settings_cache()
     return {"success": True, "message": "GitHub Copilot credentials cleared."}
+
+
+@router.post("/openai-codex/auth/clear", tags=["Settings"])
+async def clear_openai_codex_auth(_user: User = Depends(require_admin)):
+    """Clear stored OpenAI Codex auth credentials."""
+    await repository.update_settings(
+        {
+            "openai_codex_access_token": "",
+            "openai_codex_refresh_token": "",
+            "openai_codex_token_expires_at": None,
+            "openai_codex_account_id": "",
+            "openai_codex_base_url": OPENAI_CODEX_DEFAULT_BASE_URL,
+        }
+    )
+    invalidate_settings_cache()
+    return {"success": True, "message": "OpenAI Codex credentials cleared."}
 
 
 def _group_models(models: List[LLMModel], provider: str) -> List[LLMModel]:
@@ -8363,7 +8794,7 @@ def _derive_group_label(provider: str, model_id: str, match: re.Match[str]) -> s
     """Build a group label from regex captures for dynamic family patterns."""
     capture = match.group(1)
 
-    if provider in {"openai", "github_copilot", "github_models", "openrouter"} and "gpt-" in model_id:
+    if provider in {"openai", "openai_codex", "github_copilot", "github_models", "openrouter"} and "gpt-" in model_id:
         return f"GPT-{capture}"
 
     if "claude-" in model_id and (match.lastindex or 0) >= 2:
@@ -8748,60 +9179,186 @@ async def _fetch_openai_models(api_key: str) -> LLMModelsResponse:
         return LLMModelsResponse(success=False, message=f"Failed to fetch OpenAI models: {str(e)}")
 
 
+async def _fetch_openai_codex_models(settings: Any) -> LLMModelsResponse:
+    """Fetch the live Codex subscription catalog."""
+    token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
+    if not token:
+        return LLMModelsResponse(
+            success=False,
+            message="OpenAI Codex is not authenticated. Connect OpenAI Codex to fetch subscription models.",
+        )
+
+    account_id = str(getattr(settings, "openai_codex_account_id", "") or "").strip()
+    headers = {"Authorization": f"Bearer {token}"}
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(
+                OPENAI_CODEX_MODELS_ENDPOINT,
+                params={"client_version": OPENAI_CODEX_MODELS_CLIENT_VERSION},
+                headers=headers,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("OpenAI Codex live model fetch failed: %s", e)
+        return LLMModelsResponse(success=False, message=f"Failed to fetch OpenAI Codex models: {str(e)}")
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        return LLMModelsResponse(success=False, message="OpenAI Codex model response did not include a models list.")
+
+    models: list[LLMModel] = []
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        model_id = str(raw_model.get("slug") or "").strip()
+        if not model_id:
+            continue
+        register_model_supported_endpoints(model_id, ["/responses"])
+        register_model_reasoning_capabilities(
+            model_id,
+            reasoning_supported=True,
+            reasoning_effort_supported=True,
+        )
+        output_limit = coerce_int_metadata(raw_model.get("max_output_tokens")) or await get_output_limit(model_id)
+        context_limit = coerce_int_metadata(raw_model.get("context_window")) or await get_context_limit(model_id)
+        if output_limit is not None:
+            update_model_output_limit(model_id, output_limit)
+        if context_limit is not None:
+            update_model_limit(model_id, context_limit)
+        capabilities = ["reasoning", "reasoning_effort"]
+        input_modalities = raw_model.get("input_modalities")
+        if isinstance(input_modalities, list) and any(str(value).strip().lower() == "image" for value in input_modalities):
+            capabilities.append("image")
+        if bool(raw_model.get("support_verbosity")):
+            capabilities.append("verbosity")
+        models.append(
+            LLMModel(
+                id=model_id,
+                name=model_id,
+                context_limit=context_limit,
+                max_output_tokens=output_limit,
+                capabilities=capabilities,
+                supported_endpoints=["/responses"],
+                reasoning_supported=True,
+                effort_levels=["high"],
+            )
+        )
+
+    if not models:
+        return LLMModelsResponse(success=False, message="OpenAI Codex returned no chat models.")
+
+    models = _group_models(models, "openai_codex")
+    return LLMModelsResponse(
+        success=True,
+        message=f"Found {len(models)} OpenAI Codex model(s).",
+        models=models,
+        default_model=models[0].id if models else None,
+    )
+
+
+async def _fetch_claude_code_models() -> LLMModelsResponse:
+    """Return the Claude Code subscription model catalog.
+
+    Mirrors how OpenAI/OpenRouter models are fetched: query the provider's live
+    ``/v1/models`` endpoint with the configured credential. The Claude Code
+    subscription token authenticates against the same Anthropic endpoint used
+    for API-key auth, but with a Bearer token plus the OAuth beta header. This
+    returns exactly the models the subscription serves (Opus, Sonnet, Haiku, and
+    any newly released Claude models) without a hand-curated list.
+
+    """
+    token = await get_claude_code_oauth_token()
+    if not token:
+        return LLMModelsResponse(
+            success=False,
+            message="Claude Code is not authenticated. Run Claude Code login to fetch subscription models.",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{ANTHROPIC_API_BASE}/v1/models",
+                headers=build_claude_code_oauth_headers(token),
+            )
+            response.raise_for_status()
+            models = await _build_anthropic_models_from_payload(response.json(), "claude_code")
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("Claude Code live model fetch failed: %s", e)
+        return LLMModelsResponse(success=False, message=f"Failed to fetch Claude Code models: {str(e)}")
+
+    if not models:
+        return LLMModelsResponse(success=False, message="Claude Code returned no chat models.")
+
+    return LLMModelsResponse(
+        success=True,
+        message=f"Found {len(models)} Claude Code model(s).",
+        models=models,
+        default_model=models[0].id if models else None,
+    )
+
+
+async def _build_anthropic_models_from_payload(data: dict[str, Any], provider: str) -> list[LLMModel]:
+    """Build grouped LLMModel rows from an Anthropic /v1/models payload."""
+    models: list[LLMModel] = []
+    for model in data.get("data", []):
+        model_id = model.get("id", "")
+        if not model_id:
+            continue
+        display_name = model.get("display_name", model_id)
+        (
+            capabilities,
+            supported_endpoints,
+            reasoning_supported,
+            thinking_budget_supported,
+            effort_levels,
+        ) = _extract_provider_capability_metadata(model)
+
+        if supported_endpoints:
+            register_model_supported_endpoints(model_id, supported_endpoints)
+        if reasoning_supported or thinking_budget_supported:
+            register_model_reasoning_capabilities(
+                model_id,
+                reasoning_supported=bool(reasoning_supported),
+                reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
+                thinking_budget_supported=bool(thinking_budget_supported),
+            )
+        # All Claude models support function calling (chat capable)
+        output_limit = await get_output_limit(model_id)
+        models.append(
+            LLMModel(
+                id=model_id,
+                name=display_name,
+                created=None,
+                max_output_tokens=output_limit,
+                capabilities=capabilities or None,
+                supported_endpoints=supported_endpoints or None,
+                reasoning_supported=reasoning_supported,
+                thinking_budget_supported=thinking_budget_supported,
+                effort_levels=effort_levels or None,
+            )
+        )
+
+    # Curate models to remove dated duplicates and sort alphabetically.
+    models = _group_models(models, provider)
+    models.sort(key=lambda m: (m.group or "", m.is_latest, m.id), reverse=True)
+    return models
+
+
 async def _fetch_anthropic_models(api_key: str) -> LLMModelsResponse:
     """Fetch available models from Anthropic API."""
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
-                "https://api.anthropic.com/v1/models",
+                f"{ANTHROPIC_API_BASE}/v1/models",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
             )
             response.raise_for_status()
 
-            data = response.json()
-            models = []
-
-            for model in data.get("data", []):
-                model_id = model.get("id", "")
-                display_name = model.get("display_name", model_id)
-                (
-                    capabilities,
-                    supported_endpoints,
-                    reasoning_supported,
-                    thinking_budget_supported,
-                    effort_levels,
-                ) = _extract_provider_capability_metadata(model)
-
-                if supported_endpoints:
-                    register_model_supported_endpoints(model_id, supported_endpoints)
-                if reasoning_supported or thinking_budget_supported:
-                    register_model_reasoning_capabilities(
-                        model_id,
-                        reasoning_supported=bool(reasoning_supported),
-                        reasoning_effort_supported=bool(effort_levels or "reasoning_effort" in capabilities),
-                        thinking_budget_supported=bool(thinking_budget_supported),
-                    )
-                # All Claude models support function calling (chat capable)
-                output_limit = await get_output_limit(model_id)
-                models.append(
-                    LLMModel(
-                        id=model_id,
-                        name=display_name,
-                        created=None,
-                        max_output_tokens=output_limit,
-                        capabilities=capabilities or None,
-                        supported_endpoints=supported_endpoints or None,
-                        reasoning_supported=reasoning_supported,
-                        thinking_budget_supported=thinking_budget_supported,
-                        effort_levels=effort_levels or None,
-                    )
-                )
-
-            # Curate models to remove dated duplicates
-            models = _group_models(models, "anthropic")
-
-            # Sort: Alphabetically
-            models.sort(key=lambda m: (m.group or "", m.is_latest, m.id), reverse=True)
+            models = await _build_anthropic_models_from_payload(response.json(), "anthropic")
 
             return LLMModelsResponse(
                 success=True,
@@ -9660,7 +10217,9 @@ async def get_available_chat_models():
     default_model = None
     provider_states: dict[str, ProviderModelState] = {
         "openai": ProviderModelState(provider="openai"),
+        "openai_codex": ProviderModelState(provider="openai_codex"),
         "anthropic": ProviderModelState(provider="anthropic"),
+        "claude_code": ProviderModelState(provider="claude_code"),
         "openrouter": ProviderModelState(provider="openrouter"),
         "ollama": ProviderModelState(provider="ollama"),
         "llama_cpp": ProviderModelState(provider="llama_cpp"),
@@ -9676,6 +10235,20 @@ async def get_available_chat_models():
         provider_states["openai"].configured = True
         provider_states["openai"].connected = True
         tasks.append(asyncio.create_task(_safe_fetch_llm_models_task("openai", _fetch_openai_models(app_settings.openai_api_key))))
+
+    openai_codex_token = (app_settings.openai_codex_access_token or "").strip()
+    openai_codex_refresh = (app_settings.openai_codex_refresh_token or "").strip()
+    if openai_codex_token or openai_codex_refresh:
+        provider_states["openai_codex"].configured = True
+        provider_states["openai_codex"].connected = bool(openai_codex_token or openai_codex_refresh)
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openai_codex",
+                    _fetch_openai_codex_models(app_settings),
+                )
+            )
+        )
 
     if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
         provider_states["anthropic"].configured = True
@@ -9714,6 +10287,23 @@ async def get_available_chat_models():
                     _fetch_lmstudio_llm_models(lmstudio_url, api_key=_lmstudio_api_key),
                 )
             )
+        )
+
+    claude_code_status = await get_claude_code_status()
+    provider_states["claude_code"].configured = claude_code_status.installed or claude_code_status.has_oauth_token
+    provider_states["claude_code"].connected = claude_code_status.available
+    if claude_code_status.available:
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "claude_code",
+                    _fetch_claude_code_models(),
+                )
+            )
+        )
+    elif provider_states["claude_code"].configured:
+        provider_states["claude_code"].error = (
+            claude_code_status.error or "Claude Code CLI is not authenticated. Run claude login or provide CLAUDE_CODE_OAUTH_TOKEN."
         )
 
     omlx_url = _resolve_omlx_chat_base_url(app_settings)
@@ -9949,12 +10539,35 @@ async def get_all_chat_models(_user: User = Depends(require_admin)):
             )
         )
 
+    if (app_settings.openai_codex_access_token or "").strip() or (app_settings.openai_codex_refresh_token or "").strip():
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "openai_codex",
+                    _fetch_openai_codex_models(app_settings),
+                    none_on_error=True,
+                )
+            )
+        )
+
     if app_settings.anthropic_api_key and len(app_settings.anthropic_api_key) > 10:
         tasks.append(
             asyncio.create_task(
                 _safe_fetch_llm_models_task(
                     "anthropic",
                     _fetch_anthropic_models(app_settings.anthropic_api_key),
+                    none_on_error=True,
+                )
+            )
+        )
+
+    claude_code_status = await get_claude_code_status()
+    if claude_code_status.available:
+        tasks.append(
+            asyncio.create_task(
+                _safe_fetch_llm_models_task(
+                    "claude_code",
+                    _fetch_claude_code_models(),
                     none_on_error=True,
                 )
             )

@@ -2,6 +2,15 @@ import { useState, useMemo } from 'react';
 import type { AvailableModel } from '@/types';
 import { formatProviderDisplayName } from '@/utils/modelDisplay';
 
+function labelsMatch(a: string | undefined, b: string | undefined): boolean {
+  return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+}
+
+function normalizeGroupLabel(value: string | null | undefined): string {
+  const label = (value || '').trim();
+  return /^other\b/i.test(label) ? '' : label;
+}
+
 export interface ModelFilterModalProps {
   isOpen: boolean;
   title: string;
@@ -40,6 +49,13 @@ export function ModelFilterModal({
 }: ModelFilterModalProps) {
   const [filterText, setFilterText] = useState('');
 
+  const formatCombinedGroupLabel = (modelProvider: string, family: string): string => {
+    if (modelProvider && family) {
+      return `${modelProvider} ${family}`;
+    }
+    return modelProvider || family;
+  };
+
   const filteredAllowed = useMemo(() => {
     const lc = filterText.toLowerCase();
     return allModels.filter(
@@ -61,8 +77,15 @@ export function ModelFilterModal({
         providerGroups[m.provider] = {};
         providerOrder.push(m.provider);
       }
-      const modelProvider = m.model_provider_label || 'Other';
-      const family = m.model_family || m.group || 'Other';
+      const providerLabel = formatProviderDisplayName(m.provider);
+      let modelProvider = normalizeGroupLabel(m.model_provider_label);
+      if (labelsMatch(modelProvider, providerLabel)) {
+        modelProvider = '';
+      }
+      let family = normalizeGroupLabel(m.model_family || m.group);
+      if (labelsMatch(family, modelProvider || providerLabel)) {
+        family = '';
+      }
       if (!providerGroups[m.provider][modelProvider]) providerGroups[m.provider][modelProvider] = {};
       if (!providerGroups[m.provider][modelProvider][family]) providerGroups[m.provider][modelProvider][family] = [];
       providerGroups[m.provider][modelProvider][family].push(m);
@@ -121,19 +144,20 @@ export function ModelFilterModal({
                       {formatProviderDisplayName(provider)}
                     </div>
                     {Object.keys(groupedAllowed.providerGroups[provider]).sort().map((modelProvider) => (
-                      <div key={modelProvider} className="model-group">
-                        <div className="model-group-header">{modelProvider}</div>
+                      <div key={modelProvider || '__default_provider__'} className="model-group">
                         {Object.keys(groupedAllowed.providerGroups[provider][modelProvider]).sort().map((groupName) => (
-                          <div key={groupName}>
-                            <div className="model-group-header" style={{ paddingLeft: '1rem', fontSize: '0.78rem' }}>
-                              {groupName}
-                            </div>
+                          <div key={groupName || '__default_family__'}>
+                            {formatCombinedGroupLabel(modelProvider, groupName) && (
+                              <div className="model-group-header">
+                                {formatCombinedGroupLabel(modelProvider, groupName)}
+                              </div>
+                            )}
                             {groupedAllowed.providerGroups[provider][modelProvider][groupName].map((model) => (
                               <label
                                 key={`${model.provider}:${model.id}`}
                                 className="model-filter-item"
                                 style={{
-                                  paddingLeft: '1.5rem',
+                                  paddingLeft: '1rem',
                                   backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
                                   fontWeight: model.is_latest ? 500 : undefined,
                                 }}
