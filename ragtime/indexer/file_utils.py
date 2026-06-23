@@ -108,6 +108,89 @@ def build_authenticated_git_url(git_url: str, token: Optional[str] = None) -> st
     return f"{protocol}{token}@{host}{path}"
 
 
+# ==============================================================================
+# Git Clone Progress Parsing
+# ==============================================================================
+# ``git clone --progress`` emits several phases on stderr, each counting from
+# 0% to 100% independently:
+#
+#   remote: Enumerating/Counting objects: N%
+#   remote: Compressing objects: N%
+#   Receiving objects: N%   <- the network download, dominates the wall time
+#   Resolving deltas: N%
+#   Updating files: N%      <- checkout
+#
+# Reporting the raw per-phase percentage makes the bar jump around and appear
+# stuck (e.g. it hits 100% during "Counting objects" then sits while the real
+# download runs). To produce a smooth, monotonic 0-1 fraction we weight each
+# phase by its typical share of the total clone time and accumulate.
+
+_GIT_CLONE_PROGRESS_PHASES: Tuple[Tuple[str, float], ...] = (
+    ("counting", 0.05),
+    ("compressing", 0.10),
+    ("receiving", 0.70),
+    ("resolving", 0.12),
+    ("updating", 0.03),
+)
+
+_GIT_PROGRESS_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def parse_git_progress_pct(line: str) -> Optional[float]:
+    """Return the first percentage (0-100) found in a git progress line."""
+    match = _GIT_PROGRESS_PCT_RE.search(line)
+    return float(match.group(1)) if match else None
+
+
+def git_clone_progress_phase(line: str) -> Optional[str]:
+    """Classify a git clone progress line into a known phase name."""
+    lowered = line.lower()
+    if "counting objects" in lowered or "enumerating objects" in lowered:
+        return "counting"
+    if "compressing objects" in lowered:
+        return "compressing"
+    if "receiving objects" in lowered:
+        return "receiving"
+    if "resolving deltas" in lowered:
+        return "resolving"
+    if "updating files" in lowered or "checking out files" in lowered:
+        return "updating"
+    return None
+
+
+def git_clone_overall_fraction(phase: str, phase_pct: float) -> Optional[float]:
+    """Map a git clone phase + its 0-100% into an overall 0-1 fraction.
+
+    Earlier phases contribute their full weight once reached; the active phase
+    contributes a partial slice based on *phase_pct*. Returns ``None`` for an
+    unknown phase.
+    """
+    cumulative = 0.0
+    phase_fraction = max(0.0, min(1.0, phase_pct / 100.0))
+    for name, weight in _GIT_CLONE_PROGRESS_PHASES:
+        if name == phase:
+            return max(0.0, min(1.0, cumulative + weight * phase_fraction))
+        cumulative += weight
+    return None
+
+
+def git_clone_fraction_from_line(line: str) -> Optional[float]:
+    """Convenience: parse a git clone line into an overall 0-1 fraction.
+
+    Falls back to the raw percentage as a fraction when the line has a percent
+    but no recognized phase name. Returns ``None`` when no percentage present.
+    """
+    pct = parse_git_progress_pct(line)
+    if pct is None:
+        return None
+    phase = git_clone_progress_phase(line)
+    if phase is not None:
+        fraction = git_clone_overall_fraction(phase, pct)
+        if fraction is not None:
+            return fraction
+    return max(0.0, min(1.0, pct / 100.0))
+
+
 def compute_file_hash(file_path: Path, hash_algorithm: str = "sha256") -> str:
     """
     Compute hash of a file for change detection.

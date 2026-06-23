@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/api';
 import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, OcrMode, OcrProvider, VectorStoreType } from '@/types';
 import { AnalysisStats } from './AnalysisStats';
@@ -99,6 +99,40 @@ function getDepthDateEstimate(depth: number, commitHistory: CommitHistoryInfo | 
   return `~${years} years of history`;
 }
 
+const INDEX_JOB_POLL_INTERVAL_MS = 1000;
+
+function isIndexJobTerminal(job: IndexJob | null): boolean {
+  if (!job) return false;
+  return job.status === 'completed' || job.status === 'failed';
+}
+
+function formatIndexJobPhase(job: IndexJob): string {
+  const labels: Record<string, string> = {
+    preparing: 'Preparing',
+    cloning: 'Cloning repository',
+    loading: 'Loading files',
+    chunking: 'Chunking',
+    embedding: 'Embedding',
+    finalizing: 'Finalizing',
+    completed: 'Completed',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+  };
+  return labels[job.phase || ''] || 'Processing';
+}
+
+/**
+ * Display percentage for the job. During the clone phase the overall
+ * indexing percent is still 0, so surface the dedicated clone progress.
+ */
+function getIndexJobDisplayPercent(job: IndexJob): number {
+  if (job.status === 'completed') return 100;
+  if (job.phase === 'cloning' && typeof job.clone_progress === 'number') {
+    return Math.max(0, Math.min(100, Math.round(job.clone_progress * 100)));
+  }
+  return Math.max(0, Math.min(100, Math.round(job.progress_percent)));
+}
+
 interface GitIndexWizardProps {
   onJobCreated?: () => void;
   onCancel?: () => void;
@@ -127,6 +161,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   });
   const [wizardStep, setWizardStep] = useState<WizardStep>('input');
   const [analysisResult, setAnalysisResult] = useState<IndexAnalysisResult | null>(null);
+  const [indexingJob, setIndexingJob] = useState<IndexJob | null>(null);
+  const notifiedJobCreatedRef = useRef(false);
 
   const [gitUrl, setGitUrl] = useState(editIndex?.source || '');
   const [gitToken, setGitToken] = useState('');
@@ -284,6 +320,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     setStatus({ type: null, message: '' });
     setWizardStep('input');
     setAnalysisResult(null);
+    setIndexingJob(null);
+    notifiedJobCreatedRef.current = false;
     setGitUrl('');
     setGitToken('');
     setIsPrivateRepo(false);
@@ -414,6 +452,52 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     return () => clearTimeout(timer);
   }, [fetchBranches, gitToken, gitUrl, isPrivateRepo, isEditMode]);
 
+  // Poll the indexing job so the wizard can show live clone/indexing progress.
+  useEffect(() => {
+    if (!indexingJob || isIndexJobTerminal(indexingJob)) {
+      return;
+    }
+    const jobId = indexingJob.id;
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollJob = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const nextJob = await api.getJob(jobId);
+        if (cancelled) return;
+        setIndexingJob(nextJob);
+        if (nextJob.status === 'completed') {
+          setStatus({ type: 'success', message: `Indexing complete: ${nextJob.name}` });
+          if (!notifiedJobCreatedRef.current) {
+            notifiedJobCreatedRef.current = true;
+            onJobCreated?.();
+          }
+        } else if (nextJob.status === 'failed') {
+          setStatus({ type: 'error', message: nextJob.error_message || 'Indexing failed.' });
+          if (!notifiedJobCreatedRef.current) {
+            notifiedJobCreatedRef.current = true;
+            onJobCreated?.();
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setStatus({ type: 'error', message: `Failed to refresh job: ${err instanceof Error ? err.message : 'Request failed'}` });
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollJob();
+    const intervalId = window.setInterval(() => { void pollJob(); }, INDEX_JOB_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [indexingJob, onJobCreated]);
+
   const handleAnalyze = async () => {
     if (!gitUrl) {
       setStatus({ type: 'error', message: 'Please enter a Git URL' });
@@ -425,6 +509,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       setStatus({ type: 'error', message: 'Invalid Git URL format' });
       return;
     }
+    const name = parsed.repo.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
 
     setWizardStep('analyzing');
     setIsLoading(true);
@@ -433,6 +518,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
     try {
       const result = await api.analyzeRepository({
+        index_name: name,
         git_url: gitUrl,
         git_branch: selectedBranch || 'main',
         git_token: isPrivateRepo ? gitToken : undefined,
@@ -485,6 +571,8 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
     setWizardStep('indexing');
     setIsLoading(true);
+    notifiedJobCreatedRef.current = false;
+    setIndexingJob(null);
     setStatus({ type: 'info', message: 'Starting git clone and indexing...' });
 
     try {
@@ -512,10 +600,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           reindex_timezone: reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
         },
       });
-      const successMessage = `Job started - ID: ${job.id}`;
-      resetState();
-      setStatus({ type: 'success', message: successMessage });
-      onJobCreated?.();
+      // Keep the job in state and poll it so the wizard shows live
+      // clone + indexing progress instead of dismissing immediately.
+      setIndexingJob(job);
+      setStatus({ type: 'info', message: 'Cloning repository...' });
     } catch (err) {
       setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Request failed'}` });
       setWizardStep('review');
@@ -534,6 +622,67 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const handleCancel = () => {
     resetState();
     onCancel?.();
+  };
+
+  const handleClearFields = async () => {
+    if (isLoading) return;
+
+    const parsedForClear = parseGitUrl(gitUrl);
+    const clearTokenIndexName = isEditMode && editIndex && hasStoredToken
+      ? editIndex.name
+      : !isEditMode && analysisResult && isPrivateRepo && gitToken.trim() && parsedForClear
+        ? parsedForClear.repo.toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+        : null;
+
+    setStatus({ type: null, message: '' });
+    setWizardStep('input');
+    setAnalysisResult(null);
+    setIndexingJob(null);
+    notifiedJobCreatedRef.current = false;
+    setGitUrl(isEditMode ? editIndex?.source || '' : '');
+    setGitToken('');
+    setIsPrivateRepo(false);
+    setStoredTokenValid(true);
+    setBranches([]);
+    setSelectedBranch('');
+    setLoadingBranches(false);
+    setBranchError(null);
+    setFilePatterns(DEFAULT_FILE_PATTERNS);
+    setExcludePatterns('');
+    setChunkSize(1000);
+    setChunkOverlap(200);
+    setMaxFileSizeKb(500);
+    setOcrMode('disabled');
+    setOcrProvider(null);
+    setOcrVisionModel('');
+    setVectorStoreType(existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss');
+    setGitHistoryDepth(1);
+    setGitCloneTimeoutMinutes(5);
+    setTimeoutManuallySet(false);
+    setReindexIntervalHours(0);
+    setReindexStartMinute(null);
+    setReindexTimezone(null);
+    setExclusionsApplied(false);
+    setPatternsExpanded(false);
+
+    if (clearTokenIndexName) {
+      setIsLoading(true);
+      setStatus({ type: 'info', message: 'Clearing fields and removing stored token...' });
+      try {
+        await api.updateIndexConfig(clearTokenIndexName, { git_token: null });
+        setHasStoredToken(false);
+        setStatus({ type: 'success', message: 'Fields cleared and stored token removed.' });
+        onConfigSaved?.();
+      } catch (err) {
+        setStatus({ type: 'error', message: `Fields cleared, but stored token could not be removed: ${err instanceof Error ? err.message : 'Request failed'}` });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    setHasStoredToken(false);
+    setStatus({ type: 'success', message: 'Fields cleared.' });
   };
 
   /**
@@ -566,8 +715,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       await api.updateIndexDescription(currentName, description);
 
       // Update config
+      const trimmedToken = gitToken.trim();
       const updated = await api.updateIndexConfig(currentName, {
         git_branch: selectedBranch || undefined,
+        git_token: trimmedToken || undefined,
         file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
         exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
         chunk_size: chunkSize,
@@ -605,6 +756,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         ? `Index renamed to "${indexName}" and configuration saved. Click "Pull & Re-index" to apply changes.`
         : 'Configuration saved. Click "Pull & Re-index" to apply changes.';
       setStatus({ type: 'success', message: savedMessage });
+      if (trimmedToken) {
+        setGitToken('');
+        setHasStoredToken(true);
+        setStoredTokenValid(true);
+      }
       onConfigSaved?.();
     } catch (err) {
       setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Save failed'}` });
@@ -740,6 +896,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               Cancel
             </button>
           )}
+          <button type="button" className="btn btn-secondary" onClick={handleClearFields} disabled={isLoading}>
+            Clear Fields
+          </button>
           <button type="button" className="btn" onClick={handleSaveConfig} disabled={isLoading}>
             {isLoading ? 'Saving...' : 'Save Configuration'}
           </button>
@@ -957,6 +1116,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               Cancel
             </button>
           )}
+          <button type="button" className="btn btn-secondary" onClick={handleClearFields} disabled={isLoading}>
+            Clear Fields
+          </button>
           <button type="button" className="btn" onClick={handleAnalyze} disabled={isLoading || !gitUrl}>
             {isLoading ? 'Analyzing...' : 'Analyze Repository'}
           </button>
@@ -1049,11 +1211,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               : gitHistoryDepth === 1
                 ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
                 : (() => {
-                    const dateEstimate = getDepthDateEstimate(gitHistoryDepth, analysisResult.commit_history);
-                    return dateEstimate
-                      ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
-                      : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
-                  })()}
+                  const dateEstimate = getDepthDateEstimate(gitHistoryDepth, analysisResult.commit_history);
+                  return dateEstimate
+                    ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
+                    : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
+                })()}
           </small>
         </div>
 
@@ -1097,6 +1259,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               Cancel
             </button>
           )}
+          <button type="button" className="btn btn-secondary" onClick={handleClearFields} disabled={isLoading}>
+            Clear Fields
+          </button>
           <button type="button" className="btn" onClick={handleStartIndexing} disabled={isLoading}>
             {isLoading ? 'Starting...' : 'Start Indexing'}
           </button>
@@ -1107,9 +1272,58 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     );
   }
 
+  const jobDone = isIndexJobTerminal(indexingJob);
+  const jobFailed = indexingJob?.status === 'failed';
+  const displayPercent = indexingJob ? getIndexJobDisplayPercent(indexingJob) : 0;
+
   return (
-    <div style={{ textAlign: 'center', padding: '40px' }}>
-      <div style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Starting indexing job...</div>
+    <div style={{ padding: '24px' }}>
+      {!indexingJob ? (
+        <div style={{ textAlign: 'center', padding: '16px' }}>
+          <div style={{ fontSize: '1.2rem', marginBottom: '16px' }}>Starting indexing job...</div>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: '16px' }}>
+          <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
+            {jobFailed ? 'Indexing failed' : jobDone ? 'Indexing complete' : formatIndexJobPhase(indexingJob)}
+          </div>
+
+          {!jobFailed && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '6px' }}>
+                <span>
+                  {indexingJob.phase === 'cloning'
+                    ? 'Cloning repository'
+                    : formatIndexJobPhase(indexingJob)}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{displayPercent}%</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 999, background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${displayPercent}%`, background: 'var(--accent, #60a5fa)', transition: 'width 200ms ease' }} />
+              </div>
+              {indexingJob.phase !== 'cloning' && indexingJob.total_files > 0 && (
+                <small style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '6px' }}>
+                  {indexingJob.processed_files}/{indexingJob.total_files} files
+                  {indexingJob.total_chunks > 0 ? ` · ${indexingJob.processed_chunks}/${indexingJob.total_chunks} chunks` : ''}
+                </small>
+              )}
+            </div>
+          )}
+
+          {jobFailed && indexingJob.error_message && (
+            <div className="status-message error">{indexingJob.error_message}</div>
+          )}
+
+          {jobDone && (
+            <div className="wizard-actions">
+              <button type="button" className="btn" onClick={handleCancel}>
+                Done
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {status.type && <div className={`status-message ${status.type}`}>{status.message}</div>}
     </div>
   );

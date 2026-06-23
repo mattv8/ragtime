@@ -236,6 +236,9 @@ class IndexJob(BaseModel):
     total_chunks: int = 0
     processed_chunks: int = 0
     error_message: Optional[str] = None
+    # Live git clone progress (0.0-1.0) while the repo is being cloned.
+    # In-memory only (served from the active job), not persisted.
+    clone_progress: Optional[float] = Field(default=None, exclude=True)
 
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -269,6 +272,10 @@ class IndexJob(BaseModel):
             if self.error_message and "cancel" in self.error_message.lower():
                 return "cancelled"
             return "failed"
+        # While cloning, no files are known yet; report the clone phase so the
+        # UI can show clone-specific progress instead of an idle "preparing".
+        if self.clone_progress is not None and self.total_files == 0:
+            return "cloning"
         if self.total_files == 0:
             return "preparing"
         if self.processed_files < self.total_files:
@@ -434,6 +441,7 @@ class IndexAnalysisResult(BaseModel):
 class AnalyzeIndexRequest(BaseModel):
     """Request to analyze a git repository before indexing."""
 
+    index_name: Optional[str] = Field(default=None, description="Index name to use for optimistic metadata/token storage")
     git_url: str = Field(description="Git repository URL to analyze")
     git_branch: str = Field(default="main", description="Git branch to analyze")
     git_token: Optional[str] = Field(default=None, description="Token for private repos")
@@ -478,6 +486,10 @@ class IndexJobResponse(BaseModel):
         description="Current phase of the indexing job: preparing|loading|chunking|embedding|finalizing|completed|failed|cancelled",
     )
     progress_percent: float
+    clone_progress: Optional[float] = Field(
+        default=None,
+        description="Git clone progress (0.0-1.0) while cloning; null when not applicable.",
+    )
     total_files: int
     processed_files: int
     total_chunks: int

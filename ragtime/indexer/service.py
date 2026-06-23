@@ -63,6 +63,7 @@ from ragtime.indexer.file_utils import (
     get_directory_size_bytes,
     get_matching_file_pattern,
     get_matching_pattern,
+    git_clone_fraction_from_line,
     is_excluded_by_patterns,
     is_excluded_directory,
     should_index_file_type,
@@ -90,6 +91,7 @@ from ragtime.indexer.models import (
     VectorStoreType,
 )
 from ragtime.indexer.repository import repository
+from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_utils import (
     EMBEDDING_SUB_BATCH_SIZE,
     append_embedding_dimension_warning,
@@ -99,6 +101,8 @@ from ragtime.indexer.vector_utils import (
 )
 
 logger = get_logger(__name__)
+
+ANALYZE_ONLY_GIT_TOKEN_METADATA_TTL_SECONDS = 24 * 60 * 60
 
 # Persistent storage for uploaded files
 UPLOAD_TMP_DIR = Path(settings.index_data_path) / "_tmp"
@@ -905,6 +909,7 @@ class IndexerService:
         source: str | None,
         git_branch: str | None = None,
         git_token: str | None = None,
+        analyze_only_git_token: bool = False,
     ) -> None:
         """Create optimistic index_metadata so the index shows up in UI immediately.
 
@@ -954,6 +959,8 @@ class IndexerService:
         else:
             description = config.description or ""
             config_snapshot = config.model_dump(mode="json")
+            if analyze_only_git_token:
+                config_snapshot["_analyze_only_git_token"] = True
             document_count = 0
             chunk_count = 0
             size_bytes = 0
@@ -973,6 +980,49 @@ class IndexerService:
             git_token=git_token,
             vector_store_type=config.vector_store_type,
         )
+
+    async def _prune_stale_analyze_only_git_metadata(self) -> None:
+        try:
+            stale_metadata = await repository.list_stale_analyze_only_git_metadata(ANALYZE_ONLY_GIT_TOKEN_METADATA_TTL_SECONDS)
+            for metadata in stale_metadata:
+                if await repository.count_jobs(metadata.name) > 0:
+                    continue
+                index_path = Path(metadata.path) if metadata.path else self.index_base_path / metadata.name
+                if index_path.exists():
+                    continue
+                await repository.delete_index_metadata(metadata.name)
+                logger.info("Pruned abandoned git analyze metadata for index '%s'", metadata.name)
+        except Exception:
+            logger.debug("Failed to prune stale analyze-only git metadata", exc_info=True)
+
+    @staticmethod
+    def _is_git_auth_error(detail: str) -> bool:
+        normalized = detail.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "invalid username or token",
+                "authentication failed",
+                "bad credentials",
+                "could not read username",
+            )
+        )
+
+    async def _delete_analyze_only_git_metadata_if_unused(self, name: str) -> None:
+        metadata = await repository.get_index_metadata(name)
+        if not metadata:
+            return
+        snapshot = getattr(metadata, "configSnapshot", None)
+        if not isinstance(snapshot, dict) or snapshot.get("_analyze_only_git_token") is not True:
+            return
+        if (metadata.documentCount or 0) > 0 or (metadata.chunkCount or 0) > 0:
+            return
+        if await repository.count_jobs(metadata.name) > 0:
+            return
+        index_path = Path(metadata.path) if metadata.path else self.index_base_path / metadata.name
+        if index_path.exists():
+            return
+        await repository.delete_index_metadata(metadata.name)
 
     async def list_indexes(self) -> List[IndexInfo]:
         """List all available document indexes.
@@ -1271,9 +1321,34 @@ class IndexerService:
         The temporary clone is deleted after analysis.
         """
         temp_dir = UPLOAD_TMP_DIR / f"analysis_{uuid.uuid4().hex[:8]}"
+        optimistic_index_name: str | None = None
 
         try:
+            await self._prune_stale_analyze_only_git_metadata()
             temp_dir.mkdir(parents=True, exist_ok=True)
+
+            if request.index_name and request.git_token:
+                index_name = safe_tool_name(request.index_name)
+                if index_name:
+                    optimistic_index_name = index_name
+                    await self._create_optimistic_index_metadata(
+                        config=IndexConfig(
+                            name=index_name,
+                            file_patterns=request.file_patterns,
+                            exclude_patterns=request.exclude_patterns,
+                            chunk_size=request.chunk_size,
+                            chunk_overlap=request.chunk_overlap,
+                            max_file_size_kb=request.max_file_size_kb,
+                            ocr_mode=request.ocr_mode,
+                            ocr_provider=request.ocr_provider,
+                            ocr_vision_model=request.ocr_vision_model,
+                        ),
+                        source_type="git",
+                        source=request.git_url,
+                        git_branch=request.git_branch,
+                        git_token=request.git_token,
+                        analyze_only_git_token=True,
+                    )
 
             # Build authenticated URL if token provided
             clone_url = build_authenticated_git_url(request.git_url, request.git_token)
@@ -1334,6 +1409,15 @@ class IndexerService:
             analysis_result.commit_history = commit_history
 
             return analysis_result
+
+        except Exception as exc:
+            detail = str(exc).strip()
+            if optimistic_index_name and self._is_git_auth_error(detail):
+                try:
+                    await self._delete_analyze_only_git_metadata_if_unused(optimistic_index_name)
+                except Exception:
+                    logger.debug("Failed to delete analyze-only git metadata after auth failure", exc_info=True)
+            raise
 
         finally:
             # Cleanup in thread to avoid blocking event loop
@@ -2314,14 +2398,17 @@ class IndexerService:
         last_update_time = asyncio.get_event_loop().time()
         update_interval = 1.0  # Update job status at most once per second
 
-        # Pattern to match git progress output like:
-        # "Receiving objects:  45% (12345/27000), 156.00 MiB | 5.23 MiB/s"
-        progress_pattern = re.compile(r"(Receiving objects|Resolving deltas|Updating files):\s+(\d+)%")
+        # Initialize clone progress so the UI can immediately show a cloning
+        # phase instead of an idle "preparing" state.
+        if job.clone_progress is None:
+            job.clone_progress = 0.0
 
         async def read_with_timeout():
             start_time = asyncio.get_event_loop().time()
             nonlocal last_update_time
             last_update_time = start_time
+            buffer = ""
+            last_fraction = job.clone_progress or 0.0
 
             while True:
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -2343,16 +2430,25 @@ class IndexerService:
                     text = chunk.decode("utf-8", errors="replace")
                     stderr_chunks.append(text)
 
-                    # Parse progress and update job
-                    current_time = asyncio.get_event_loop().time()
+                    # git refreshes progress with \r and ends phases with \n;
+                    # split on both so each refresh is parsed for the latest
+                    # monotonic overall fraction.
+                    buffer += text
+                    parts = re.split(r"[\r\n]+", buffer)
+                    buffer = parts.pop() if parts else ""
+                    for line in parts:
+                        if not line:
+                            continue
+                        fraction = git_clone_fraction_from_line(line)
+                        if fraction is not None and fraction > last_fraction:
+                            last_fraction = fraction
 
+                    # Throttle job status writes to at most once per second.
+                    current_time = asyncio.get_event_loop().time()
                     if current_time - last_update_time >= update_interval:
-                        # Find the latest progress percentage
-                        match = progress_pattern.search(text)
-                        if match:
-                            phase = match.group(1)
-                            percent = match.group(2)
-                            job.error_message = f"Cloning: {phase} {percent}%"
+                        if last_fraction != (job.clone_progress or 0.0):
+                            job.clone_progress = last_fraction
+                            job.error_message = f"Cloning: {round(last_fraction * 100)}%"
                             await repository.update_job(job)
                             last_update_time = current_time
 
@@ -2362,12 +2458,20 @@ class IndexerService:
                         break
                     continue
 
+            # Parse any trailing buffered progress line.
+            if buffer:
+                fraction = git_clone_fraction_from_line(buffer)
+                if fraction is not None and fraction > last_fraction:
+                    last_fraction = fraction
+                    job.clone_progress = last_fraction
+
             # Wait for process to complete
             await process.wait()
 
         await read_with_timeout()
 
-        # Clear the cloning message
+        # Clear the cloning state once the clone finishes.
+        job.clone_progress = None
         job.error_message = None
         await repository.update_job(job)
 

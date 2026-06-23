@@ -626,6 +626,32 @@ class IndexerRepository:
             }
         )
 
+    async def count_jobs(self, name: str) -> int:
+        """Count all jobs for an index name."""
+        db = await self._get_db()
+        return await db.indexjob.count(where={"name": name})
+
+    async def list_stale_analyze_only_git_metadata(self, max_age_seconds: int) -> list[PrismaIndexMetadata]:
+        """List abandoned analyze-only git metadata rows that can be pruned."""
+        db = await self._get_db()
+        cutoff = utc_now() - timedelta(seconds=max_age_seconds)
+        candidates = await db.indexmetadata.find_many(
+            where={  # type: ignore[arg-type]
+                "sourceType": "git",
+                "gitToken": {"not": None},
+                "documentCount": 0,
+                "chunkCount": 0,
+                "lastModified": {"lt": cutoff},
+            }
+        )
+
+        stale: list[PrismaIndexMetadata] = []
+        for metadata in candidates:
+            snapshot = getattr(metadata, "configSnapshot", None)
+            if isinstance(snapshot, dict) and snapshot.get("_analyze_only_git_token") is True:
+                stale.append(metadata)
+        return stale
+
     def _prisma_job_to_model(self, prisma_job: PrismaIndexJob) -> IndexJob:
         """Convert Prisma job to Pydantic model."""
         if prisma_job.config is None:
@@ -886,15 +912,21 @@ class IndexerRepository:
         name: str,
         git_branch: str | None = None,
         config_snapshot: dict | None = None,
+        git_token: str | None = None,
+        clear_git_token: bool = False,
     ) -> bool:
         """Update the git branch and/or config snapshot for an index."""
         db = await self._get_db()
 
-        update_data = {}
+        update_data: dict[str, Any] = {}
         if git_branch is not None:
             update_data["gitBranch"] = git_branch
         if config_snapshot is not None:
             update_data["configSnapshot"] = Json(_normalize_ocr_snapshot(config_snapshot))
+        if clear_git_token:
+            update_data["gitToken"] = None
+        elif git_token:
+            update_data["gitToken"] = encrypt_secret(git_token.strip())
 
         if not update_data:
             return True  # Nothing to update

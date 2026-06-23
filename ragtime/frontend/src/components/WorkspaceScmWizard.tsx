@@ -14,6 +14,8 @@ import type {
   UserSpaceWorkspace,
   UserSpaceWorkspaceScmExportRequest,
   UserSpaceWorkspaceScmImportRequest,
+  UserSpaceWorkspaceScmImportTask,
+  UserSpaceWorkspaceScmImportTaskPhase,
   UserSpaceWorkspaceScmPreviewResponse,
   UserSpaceWorkspaceScmSettingsRequest,
   UserSpaceWorkspaceScmStatus,
@@ -31,9 +33,123 @@ type StatusType = 'info' | 'success' | 'error' | null;
 type ArchiveMode = 'export' | 'import';
 type ArchiveStep = 'choose' | 'configure';
 
+type WorkspaceScmWizardActivity =
+  | {
+    kind: 'preview';
+    workspaceId: string;
+    status: 'running' | 'ready' | 'failed';
+    direction: 'import' | 'export';
+    preview?: UserSpaceWorkspaceScmPreviewResponse;
+    error?: string;
+  }
+  | {
+    kind: 'import-task';
+    workspaceId: string;
+    status: 'running';
+    taskId: string;
+  };
+
 const EMPTY_STATUS = { type: null, message: '' } as const;
 const ARCHIVE_POLL_INTERVAL_MS = 1000;
 const SQLITE_IMPORT_POLL_INTERVAL_MS = ARCHIVE_POLL_INTERVAL_MS;
+const SCM_IMPORT_POLL_INTERVAL_MS = ARCHIVE_POLL_INTERVAL_MS;
+
+const scmWizardActivityByWorkspace = new Map<string, WorkspaceScmWizardActivity>();
+const scmWizardActivityListeners = new Set<() => void>();
+
+function workspaceScmWizardActivityStorageKey(workspaceId: string): string {
+  return `ragtime:workspace-scm-wizard-activity:${workspaceId}`;
+}
+
+function readStoredWorkspaceScmWizardActivity(workspaceId: string): WorkspaceScmWizardActivity | null {
+  try {
+    const raw = window.sessionStorage.getItem(workspaceScmWizardActivityStorageKey(workspaceId));
+    if (!raw) return null;
+    const activity = JSON.parse(raw) as WorkspaceScmWizardActivity;
+    if (activity.workspaceId !== workspaceId) return null;
+    return activity;
+  } catch {
+    return null;
+  }
+}
+
+function setWorkspaceScmWizardActivity(workspaceId: string, activity: WorkspaceScmWizardActivity | null): void {
+  if (activity) {
+    scmWizardActivityByWorkspace.set(workspaceId, activity);
+    if (activity.kind === 'preview' && activity.status === 'ready') {
+      try {
+        window.sessionStorage.setItem(workspaceScmWizardActivityStorageKey(workspaceId), JSON.stringify(activity));
+      } catch {
+        // Session persistence is best-effort; in-memory state still works.
+      }
+    } else {
+      try {
+        window.sessionStorage.removeItem(workspaceScmWizardActivityStorageKey(workspaceId));
+      } catch {
+        // Ignore storage failures.
+      }
+    }
+  } else {
+    scmWizardActivityByWorkspace.delete(workspaceId);
+    try {
+      window.sessionStorage.removeItem(workspaceScmWizardActivityStorageKey(workspaceId));
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+  scmWizardActivityListeners.forEach((listener) => listener());
+}
+
+export function useWorkspaceScmWizardActivity(workspace: UserSpaceWorkspace | null | undefined): WorkspaceScmWizardActivity | null {
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    const listener = () => setVersion((version) => version + 1);
+    scmWizardActivityListeners.add(listener);
+    return () => {
+      scmWizardActivityListeners.delete(listener);
+    };
+  }, []);
+
+  return useMemo(() => {
+    if (!workspace) return null;
+    if (workspace.scm_import_task_id && isScmImportPhaseInProgress(workspace.scm_import_task_phase)) {
+      return {
+        kind: 'import-task',
+        workspaceId: workspace.id,
+        status: 'running',
+        taskId: workspace.scm_import_task_id,
+      };
+    }
+
+    const localActivity = scmWizardActivityByWorkspace.get(workspace.id);
+    if (localActivity) {
+      if (localActivity.kind === 'import-task') {
+        if (workspace.scm_import_task_id === localActivity.taskId && !isScmImportPhaseInProgress(workspace.scm_import_task_phase)) {
+          scmWizardActivityByWorkspace.delete(workspace.id);
+          return null;
+        }
+        return localActivity;
+      }
+      return localActivity;
+    }
+
+    const storedActivity = readStoredWorkspaceScmWizardActivity(workspace.id);
+    if (storedActivity) {
+      if (storedActivity.kind === 'import-task') {
+        scmWizardActivityByWorkspace.delete(workspace.id);
+        try {
+          window.sessionStorage.removeItem(workspaceScmWizardActivityStorageKey(workspace.id));
+        } catch {
+          // Ignore storage failures.
+        }
+        return null;
+      }
+      scmWizardActivityByWorkspace.set(workspace.id, storedActivity);
+      return storedActivity;
+    }
+    return null;
+  }, [version, workspace?.id, workspace?.scm_import_task_id, workspace?.scm_import_task_phase]);
+}
 
 interface WorkspaceScmWizardProps {
   workspace: UserSpaceWorkspace;
@@ -177,6 +293,40 @@ function isApiErrorWithStatus(error: unknown, status: number): error is { status
   return typeof error === 'object' && error !== null && 'status' in error && error.status === status;
 }
 
+function isScmImportTaskTerminal(phase: UserSpaceWorkspaceScmImportTaskPhase): boolean {
+  return phase === 'preview_ready' || phase === 'completed' || phase === 'failed';
+}
+
+function shouldPollScmImportTask(task: UserSpaceWorkspaceScmImportTask | null): boolean {
+  if (!task) return false;
+  return !isScmImportTaskTerminal(task.phase) || (task.phase === 'preview_ready' && !task.preview);
+}
+
+function isScmImportPhaseInProgress(phase: UserSpaceWorkspaceScmImportTaskPhase | null | undefined): boolean {
+  return Boolean(phase && ['queued', 'previewing', 'cloning', 'importing', 'backfilling'].includes(phase));
+}
+
+function formatScmImportTaskPhase(phase: UserSpaceWorkspaceScmImportTaskPhase): string {
+  const labels: Record<UserSpaceWorkspaceScmImportTaskPhase, string> = {
+    queued: 'Queued',
+    previewing: 'Analyzing repository',
+    preview_ready: 'Ready to review',
+    cloning: 'Cloning repository',
+    importing: 'Importing files',
+    backfilling: 'Backfilling history',
+    completed: 'Completed',
+    failed: 'Failed',
+  };
+  return labels[phase];
+}
+
+function getScmImportTaskProgressPercent(phase: UserSpaceWorkspaceScmImportTaskPhase, progress?: number): number {
+  if (phase === 'completed' || phase === 'preview_ready') return 100;
+  if (phase === 'failed') return 0;
+  const clamped = Math.max(0, Math.min(1, progress ?? 0));
+  return Math.round(clamped * 100);
+}
+
 function buildArchiveExportTaskPlaceholder(workspace: UserSpaceWorkspace): UserSpaceWorkspaceArchiveExportTask | null {
   if (!workspace.archive_export_task_id) {
     return null;
@@ -224,16 +374,45 @@ function buildArchiveImportTaskPlaceholder(workspace: UserSpaceWorkspace): UserS
   };
 }
 
+function buildScmImportTaskPlaceholder(workspace: UserSpaceWorkspace): UserSpaceWorkspaceScmImportTask | null {
+  if (!workspace.scm_import_task_id) {
+    return null;
+  }
+  return {
+    task_id: workspace.scm_import_task_id,
+    workspace_id: workspace.id,
+    workspace_name: workspace.name,
+    git_url: workspace.scm?.git_url || '',
+    git_branch: workspace.scm?.git_branch || 'main',
+    phase: workspace.scm_import_task_phase ?? 'queued',
+    progress: 0,
+    error: null,
+    scm: null,
+    suggested_setup_prompt: null,
+    remote_commit_hash: null,
+    summary: null,
+    queued_at: workspace.updated_at,
+    updated_at: workspace.updated_at,
+  };
+}
+
 export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAgent, onWorkspaceChanged }: WorkspaceScmWizardProps) {
   const initialScm = workspace.scm;
+  const scmWizardActivity = useWorkspaceScmWizardActivity(workspace);
   const hasActiveArchiveExportTask = Boolean(workspace.archive_export_task_id) && isArchiveExportPhaseInProgress(workspace.archive_export_task_phase);
   const hasActiveArchiveImportTask = Boolean(workspace.archive_import_task_id) && isArchiveImportPhaseInProgress(workspace.archive_import_task_phase);
+  const hasActiveScmImportTask = Boolean(
+    workspace.scm_import_task_id && isScmImportPhaseInProgress(workspace.scm_import_task_phase)
+    || workspace.scm_import_task_id && workspace.scm_import_task_phase === 'preview_ready'
+    || scmWizardActivity?.kind === 'import-task'
+    || scmWizardActivity?.kind === 'preview'
+  );
   const shouldOpenArchiveByDefault = hasActiveArchiveExportTask || hasActiveArchiveImportTask;
   const defaultArchiveMode: ArchiveMode = hasActiveArchiveImportTask ? 'import' : 'export';
   const [toasts, toast] = useToast();
-  const [activeTab, setActiveTab] = useState<ModalTab>('archive');
+  const [activeTab, setActiveTab] = useState<ModalTab>(hasActiveScmImportTask ? 'git-source' : 'archive');
   const [mode, setMode] = useState<WizardMode>('import');
-  const [step, setStep] = useState<WizardStep>('input');
+  const [step, setStep] = useState<WizardStep>(hasActiveScmImportTask ? 'result' : 'input');
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({ type: null, message: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [gitUrl, setGitUrl] = useState(initialScm?.git_url || '');
@@ -251,6 +430,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [createRepoDescription, setCreateRepoDescription] = useState(workspace.description || '');
   const [sqlFile, setSqlFile] = useState<File | null>(null);
   const [sqlImportResult, setSqlImportResult] = useState<UserSpaceWorkspaceSqliteImportTask | null>(null);
+  const [lastSetupPrompt, setLastSetupPrompt] = useState<string | null>(null);
   const [sqlImportMaxBytes, setSqlImportMaxBytes] = useState(SQLITE_IMPORT_DEFAULT_MAX_BYTES);
   const [sqlImportLimitLoaded, setSqlImportLimitLoaded] = useState(false);
   const [sqlDragOver, setSqlDragOver] = useState(false);
@@ -263,12 +443,14 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [archiveDragOver, setArchiveDragOver] = useState(false);
   const [archiveExportTask, setArchiveExportTask] = useState<UserSpaceWorkspaceArchiveExportTask | null>(null);
   const [archiveImportTask, setArchiveImportTask] = useState<UserSpaceWorkspaceArchiveImportTask | null>(null);
+  const [scmImportTask, setScmImportTask] = useState<UserSpaceWorkspaceScmImportTask | null>(() => buildScmImportTaskPlaceholder(workspace));
   const onWorkspaceChangedRef = useRef(onWorkspaceChanged);
+  const lastNotifiedScmImportTaskIdRef = useRef<string | null>(null);
   const [archiveExports, setArchiveExports] = useState<UserSpaceWorkspaceArchiveExportListItem[]>([]);
   const [archiveExportsScanned, setArchiveExportsScanned] = useState(false);
   const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
   const [downloadedExportTaskIds, setDownloadedExportTaskIds] = useState<Set<string>>(new Set());
-  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | 'save-settings' | 'disconnect' | null>(null);
+  const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | 'save-settings' | 'disconnect' | 'clear-fields' | null>(null);
   const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
   const [scmState, setScmState] = useState<UserSpaceWorkspaceScmStatus | null>(null);
   const [autoPushEnabled, setAutoPushEnabled] = useState(initialScm?.auto_sync_policy === 'auto_push');
@@ -286,6 +468,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const lastNotifiedArchiveImportTaskIdRef = useRef<string | null>(null);
   const activeScm = scmState ?? result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
+  const setupPrompt = lastSetupPrompt ?? activeScm?.last_setup_prompt ?? null;
   const clearStatus = useCallback(() => setStatus(EMPTY_STATUS), []);
 
   const resetGitSourceState = useCallback((nextScm?: UserSpaceWorkspaceScmStatus | null) => {
@@ -342,12 +525,24 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }, [archiveImportTask, workspace.archive_import_task_id, workspace.archive_import_task_phase, workspace.id, workspace.name, workspace.updated_at]);
 
   useEffect(() => {
+    if (scmImportTask) {
+      return;
+    }
+    const nextTask = buildScmImportTaskPlaceholder(workspace);
+    if (nextTask) {
+      setScmImportTask(nextTask);
+    }
+  }, [scmImportTask, workspace.scm_import_task_id, workspace.scm_import_task_phase, workspace.id, workspace.name, workspace.updated_at]);
+
+  useEffect(() => {
     setArchiveExports([]);
     setArchiveExportsScanned(false);
     setDownloadedExportTaskIds(new Set());
     setScmState(null);
     setPreview(null);
     setResult(null);
+    setLastSetupPrompt(null);
+    setScmImportTask(buildScmImportTaskPlaceholder(workspace));
     setGitUrl(workspace.scm?.git_url || '');
     setGitBranch(workspace.scm?.git_branch || 'main');
     setGitToken('');
@@ -369,6 +564,26 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setStep('input');
   }, [hasActiveArchiveExportTask, hasActiveArchiveImportTask, workspace.id]);
 
+  useEffect(() => {
+    if (!hasActiveScmImportTask) {
+      return;
+    }
+    setActiveTab('git-source');
+    if (scmWizardActivity?.kind === 'preview' && scmWizardActivity.status === 'ready' && scmWizardActivity.preview) {
+      setPreview(scmWizardActivity.preview);
+      setMode(scmWizardActivity.preview.direction === 'export' ? 'export' : 'import');
+      setStep('review');
+      setStatus({ type: null, message: '' });
+      return;
+    }
+    if (scmWizardActivity?.kind === 'preview' && scmWizardActivity.status === 'failed') {
+      setStep('input');
+      setStatus({ type: 'error', message: scmWizardActivity.error || 'Failed to preview sync.' });
+      return;
+    }
+    setStep('result');
+  }, [hasActiveScmImportTask, scmWizardActivity, workspace.id]);
+
   const tokenRequired = useMemo(() => {
     if (mode === 'export') {
       return !hasStoredToken;
@@ -379,10 +594,11 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const shouldShowStatus = useMemo(() => {
     if (!status.type || !status.message) return false;
     if (activeTab === 'sql-import' && sqlImportResult && status.type !== 'error') return false;
+    if (activeTab === 'git-source' && step === 'result' && scmImportTask && status.type !== 'error') return false;
     if (step === 'review' && preview && status.message === preview.summary) return false;
     if (step === 'result' && result && status.message === result.summary) return false;
     return true;
-  }, [activeTab, preview, result, sqlImportResult, status.message, status.type, step]);
+  }, [activeTab, preview, result, scmImportTask, sqlImportResult, status.message, status.type, step]);
 
   const syncStatusClassName = useMemo(() => {
     const syncStatus = activeScm?.last_sync_status?.toLowerCase();
@@ -410,6 +626,12 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }, [activeScm?.auto_pull_enabled, activeScm?.auto_pull_interval_seconds, activeScm?.auto_pull_start_minute, activeScm?.auto_pull_timezone, activeScm?.auto_push_interval_seconds, activeScm?.auto_push_start_minute, activeScm?.auto_push_timezone, activeScm?.auto_sync_policy]);
 
   const hasPendingPatToken = useMemo(() => hasConfiguredRemote && gitToken.trim().length > 0, [gitToken, hasConfiguredRemote]);
+
+  const hasRunningGitSourceTask = useMemo(() => {
+    if (scmWizardActivity?.kind === 'preview' && scmWizardActivity.status === 'running') return true;
+    if (scmWizardActivity?.kind === 'import-task') return true;
+    return Boolean(scmImportTask && !isScmImportTaskTerminal(scmImportTask.phase));
+  }, [scmImportTask, scmWizardActivity]);
 
   const hasDirtyUpstreamSyncSettings = useMemo(() => {
     if (!hasConfiguredRemote || activeScm?.remote_role !== 'upstream') {
@@ -540,6 +762,60 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     }
   }
 
+  async function handleClearGitSourceFields(): Promise<void> {
+    if (isLoading || hasRunningGitSourceTask) {
+      return;
+    }
+
+    const shouldClearStoredToken = hasStoredToken
+      || Boolean(preview && gitToken.trim())
+      || Boolean(scmWizardActivity?.kind === 'preview' && scmWizardActivity.status === 'ready');
+
+    setWorkspaceScmWizardActivity(workspace.id, null);
+    setPreview(null);
+    setResult(null);
+    setScmImportTask(null);
+    setGitUrl('');
+    setGitBranch('main');
+    setGitToken('');
+    setRepoVisibility(null);
+    setHasStoredToken(false);
+    setStoredTokenValid(false);
+    setBranches([]);
+    setBranchError(null);
+    setShowOverwriteMenu(false);
+    setCreateRepoIfMissing(true);
+    setCreateRepoPrivate(true);
+    setCreateRepoDescription(workspace.description || '');
+    setStep('input');
+    setMode('import');
+    clearStatus();
+
+    if (hasConfiguredRemote) {
+      toast.info('Use Disconnect Remote to clear the configured Git source.');
+      return;
+    }
+
+    if (!shouldClearStoredToken) {
+      toast.success('Git source fields cleared.');
+      return;
+    }
+
+    setIsLoading(true);
+    setLoadingAction('clear-fields');
+    try {
+      const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, { clear_git_token: true });
+      setScmState(resp.scm);
+      toast.success('Git source fields and stored token cleared.');
+      await onWorkspaceChanged?.();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Fields cleared, but failed to clear stored token.');
+    } finally {
+      setIsLoading(false);
+      setLoadingAction(null);
+    }
+  }
+
   useEffect(() => {
     if (hasConfiguredRemote) return;
     if (!gitUrl.trim()) {
@@ -612,6 +888,17 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         force_overwrite: options?.forceOverwrite || undefined,
       };
       let nextPreview: UserSpaceWorkspaceScmPreviewResponse;
+      const requestedDirection = explicitDirection ?? (hasConfiguredRemote ? 'import' : mode === 'export' ? 'export' : 'import');
+      if (requestedDirection === 'import') {
+        const task = await api.queueUserSpaceWorkspaceScmPreviewImport(workspace.id, payload);
+        lastNotifiedScmImportTaskIdRef.current = null;
+        setWorkspaceScmWizardActivity(workspace.id, null);
+        setScmImportTask(task);
+        setStep('result');
+        await onWorkspaceChanged?.();
+        return;
+      }
+
       if (explicitDirection === 'import') {
         nextPreview = await api.previewUserSpaceWorkspaceScmImport(workspace.id, payload);
       } else if (explicitDirection === 'export') {
@@ -627,7 +914,15 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       setStep('review');
       setStatus({ type: null, message: '' });
     } catch (error) {
-      setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to preview sync.' });
+      const message = error instanceof Error ? error.message : 'Failed to preview sync.';
+      setWorkspaceScmWizardActivity(workspace.id, {
+        kind: 'preview',
+        workspaceId: workspace.id,
+        status: 'failed',
+        direction: explicitDirection ?? (mode === 'export' ? 'export' : 'import'),
+        error: message,
+      });
+      setStatus({ type: 'error', message });
     } finally {
       setIsLoading(false);
       setLoadingAction(null);
@@ -639,7 +934,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setIsLoading(true);
     setLoadingAction('execute');
     const direction = preview.direction;
-    setStatus({ type: 'info', message: direction === 'import' ? 'Pulling from remote...' : 'Pushing to remote...' });
+    setStatus({ type: null, message: '' });
     try {
       const payload = {
         git_url: preview.git_url,
@@ -650,14 +945,28 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         create_repo_description: createRepoDescription.trim() || undefined,
         overwrite_preview_token: preview.preview_token || undefined,
       } satisfies UserSpaceWorkspaceScmImportRequest | UserSpaceWorkspaceScmExportRequest;
-      const nextResult = direction === 'import'
-        ? await api.importUserSpaceWorkspaceFromScm(workspace.id, payload as UserSpaceWorkspaceScmImportRequest)
-        : await api.exportUserSpaceWorkspaceToScm(workspace.id, payload as UserSpaceWorkspaceScmExportRequest);
-      setScmState(nextResult.scm);
-      setResult(nextResult);
-      setStatus({ type: 'success', message: nextResult.summary });
-      setStep('result');
-      await onSyncComplete(nextResult);
+
+      if (direction === 'import') {
+        const task = await api.queueUserSpaceWorkspaceScmImport(workspace.id, payload as UserSpaceWorkspaceScmImportRequest);
+        lastNotifiedScmImportTaskIdRef.current = null;
+        setWorkspaceScmWizardActivity(workspace.id, {
+          kind: 'import-task',
+          workspaceId: workspace.id,
+          status: 'running',
+          taskId: task.task_id,
+        });
+        setScmImportTask(task);
+        setStep('result');
+        await onWorkspaceChanged?.();
+      } else {
+        const nextResult = await api.exportUserSpaceWorkspaceToScm(workspace.id, payload as UserSpaceWorkspaceScmExportRequest);
+        setWorkspaceScmWizardActivity(workspace.id, null);
+        setScmState(nextResult.scm);
+        setResult(nextResult);
+        setStatus({ type: 'success', message: nextResult.summary });
+        setStep('result');
+        await onSyncComplete(nextResult);
+      }
     } catch (error) {
       setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Sync failed.' });
     } finally {
@@ -670,6 +979,12 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     if (!result?.suggested_setup_prompt || !onAskAgent) return;
     onClose();
     await onAskAgent(result.suggested_setup_prompt);
+  }
+
+  async function handleAskAgentFromScmTask(): Promise<void> {
+    if (!scmImportTask?.suggested_setup_prompt || !onAskAgent) return;
+    onClose();
+    await onAskAgent(scmImportTask.suggested_setup_prompt);
   }
 
   async function handleDisconnectScm(): Promise<void> {
@@ -928,6 +1243,88 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }, [archiveImportTask, onWorkspaceChanged, toast]);
 
   useEffect(() => {
+    if (!scmImportTask || !shouldPollScmImportTask(scmImportTask)) {
+      return;
+    }
+    const taskId = scmImportTask.task_id;
+
+    let cancelled = false;
+    let pollInFlight = false;
+
+    const pollTask = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      try {
+        const nextTask = await api.getUserSpaceWorkspaceScmImportTask(taskId);
+        if (cancelled) return;
+        let displayTask = nextTask;
+        if (nextTask.phase === 'preview_ready' && !nextTask.preview) {
+          displayTask = await api.getUserSpaceWorkspaceScmImportTask(nextTask.task_id);
+          if (cancelled) return;
+        }
+        setScmImportTask(displayTask);
+        if (displayTask.phase === 'preview_ready' && displayTask.preview) {
+          setWorkspaceScmWizardActivity(workspace.id, {
+            kind: 'preview',
+            workspaceId: workspace.id,
+            status: 'ready',
+            direction: displayTask.preview.direction === 'export' ? 'export' : 'import',
+            preview: displayTask.preview,
+          });
+          setPreview(displayTask.preview);
+          setMode(displayTask.preview.direction === 'export' ? 'export' : 'import');
+          setStep('review');
+          setStatus({ type: null, message: '' });
+          await onWorkspaceChanged?.();
+        } else if (displayTask.phase === 'completed' && lastNotifiedScmImportTaskIdRef.current !== displayTask.task_id) {
+          setWorkspaceScmWizardActivity(workspace.id, null);
+          lastNotifiedScmImportTaskIdRef.current = displayTask.task_id;
+          if (displayTask.suggested_setup_prompt) {
+            setLastSetupPrompt(displayTask.suggested_setup_prompt);
+          }
+          if (displayTask.scm) {
+            setScmState(displayTask.scm);
+          }
+          const syncResponse: UserSpaceWorkspaceScmSyncResponse = {
+            workspace_id: workspace.id,
+            direction: 'import',
+            state: 'success',
+            summary: displayTask.summary || 'Import completed.',
+            scm: displayTask.scm || workspace.scm || {} as UserSpaceWorkspaceScmStatus,
+            remote_commit_hash: displayTask.remote_commit_hash || null,
+            suggested_setup_prompt: displayTask.suggested_setup_prompt || null,
+          };
+          await onSyncComplete(syncResponse);
+          await onWorkspaceChanged?.();
+        } else if (displayTask.phase === 'failed' && lastNotifiedScmImportTaskIdRef.current !== displayTask.task_id) {
+          setWorkspaceScmWizardActivity(workspace.id, null);
+          toast.error(displayTask.error?.trim() || 'SCM import failed.');
+          lastNotifiedScmImportTaskIdRef.current = displayTask.task_id;
+          await onWorkspaceChanged?.();
+        }
+      } catch (error) {
+        if (!cancelled) {
+          if (isApiErrorWithStatus(error, 404)) {
+            setScmImportTask(null);
+            await onWorkspaceChanged?.();
+            return;
+          }
+          toast.error(error instanceof Error ? error.message : 'Failed to refresh import task.');
+        }
+      } finally {
+        pollInFlight = false;
+      }
+    };
+
+    void pollTask();
+    const intervalId = window.setInterval(() => { void pollTask(); }, SCM_IMPORT_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [scmImportTask, onSyncComplete, onWorkspaceChanged, toast, workspace.id, workspace.scm]);
+
+  useEffect(() => {
     onWorkspaceChangedRef.current = onWorkspaceChanged;
   }, [onWorkspaceChanged]);
 
@@ -1022,11 +1419,90 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       setArchiveStep('choose');
       setStatus({ type: null, message: '' });
     } else {
+      if (scmWizardActivity?.kind === 'preview') {
+        setMode(scmWizardActivity.direction === 'export' ? 'export' : 'import');
+        if (scmWizardActivity.status === 'ready' && scmWizardActivity.preview) {
+          setPreview(scmWizardActivity.preview);
+          setStep('review');
+          setStatus({ type: null, message: '' });
+          return;
+        }
+        if (scmWizardActivity.status === 'running') {
+          setStep('result');
+          setStatus({ type: null, message: '' });
+          return;
+        }
+      }
+      if (scmImportTask && !isScmImportTaskTerminal(scmImportTask.phase)) {
+        setMode('import');
+        setStep('result');
+        setStatus({ type: null, message: '' });
+        return;
+      }
       setMode(hasConfiguredRemote ? 'import' : mode === 'sql-import' ? 'import' : mode);
       setStep('input');
       setStatus({ type: null, message: '' });
     }
   }
+
+  const scmSummaryItems = activeScm
+    ? [
+      {
+        label: 'Branch',
+        value: activeScm.git_branch || gitBranch || 'main',
+        mono: true,
+      },
+      {
+        label: 'Remote',
+        value: activeScm.remote_role === 'upstream' ? 'Upstream' : 'Connected',
+      },
+      {
+        label: 'Status',
+        value: activeScm.sync_paused
+          ? 'Sync paused'
+          : activeScm.last_sync_message || activeScm.last_sync_status || 'Connected',
+      },
+      ...(formatSyncTimestamp(activeScm.last_sync_at)
+        ? [{
+          label: `Last ${formatSyncDirection(activeScm.last_sync_direction).toLowerCase()}`,
+          value: formatSyncTimestamp(activeScm.last_sync_at) || 'Unknown',
+        }]
+        : []),
+    ]
+    : [];
+
+  const upstreamSyncRows = activeScm?.remote_role === 'upstream'
+    ? [
+      {
+        key: 'push' as const,
+        label: 'Auto-push',
+        description: 'Commit and push local workspace changes on a schedule.',
+        enabled: autoPushEnabled,
+        setEnabled: setAutoPushEnabled,
+        interval: autoPushIntervalSeconds,
+        setInterval: setAutoPushIntervalSeconds,
+        startMinute: autoPushStartMinute,
+        setStartMinute: setAutoPushStartMinute,
+        timezone: autoPushTimezone,
+        setTimezone: setAutoPushTimezone,
+      },
+      {
+        key: 'pull' as const,
+        label: 'Auto-pull',
+        description: 'Check the remote branch and import changes on a schedule.',
+        enabled: autoPullEnabled,
+        setEnabled: setAutoPullEnabled,
+        interval: autoPullIntervalSeconds,
+        setInterval: setAutoPullIntervalSeconds,
+        startMinute: autoPullStartMinute,
+        setStartMinute: setAutoPullStartMinute,
+        timezone: autoPullTimezone,
+        setTimezone: setAutoPullTimezone,
+      },
+    ]
+    : [];
+  const enabledUpstreamSyncCount = upstreamSyncRows.filter((row) => row.enabled).length;
+  const useSingleEnabledSyncLayout = enabledUpstreamSyncCount === 1;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -1416,9 +1892,9 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
           {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && (
             <div style={{ display: 'grid', gap: 14 }}>
               {hasConfiguredRemote && activeScm && (
-                <div style={{ display: 'grid', gap: 10, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
+                <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <Link2 size={14} />
+                    <Link2 size={14} style={{ flexShrink: 0 }} />
                     <strong style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {activeScm.git_url || gitUrl}
                     </strong>
@@ -1433,140 +1909,200 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                       <span className="userspace-status-pill userspace-status-pill-muted" style={{ fontSize: 11 }}>upstream</span>
                     )}
                   </div>
-                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }} className="userspace-muted">
-                    <span>Branch: {activeScm.git_branch || gitBranch || 'main'}</span>
-                    {activeScm.last_sync_message && !activeScm.sync_paused && <span>{activeScm.last_sync_message}</span>}
-                    {formatSyncTimestamp(activeScm.last_sync_at) && (
-                      <span>Last {formatSyncDirection(activeScm.last_sync_direction).toLowerCase()}: {formatSyncTimestamp(activeScm.last_sync_at)}</span>
-                    )}
-                  </div>
 
-                  {activeScm.sync_paused && activeScm.sync_paused_reason && (
-                    <div style={{ fontSize: 12, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-warning, #d69d2a)', background: 'rgba(214, 157, 42, 0.08)' }}>
-                      <AlertCircle size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-                      {activeScm.sync_paused_reason}
+                  <div style={{ display: 'grid', gap: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+                      {scmSummaryItems.map((item) => (
+                        <div
+                          key={item.label}
+                          style={{
+                            display: 'grid',
+                            gap: 4,
+                            padding: '10px 12px',
+                            border: '1px solid var(--color-border-subtle)',
+                            borderRadius: 8,
+                            background: 'color-mix(in srgb, var(--color-bg-secondary) 84%, transparent)',
+                            minWidth: 0,
+                          }}
+                        >
+                          <span className="userspace-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{item.label}</span>
+                          <span
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 600,
+                              fontFamily: item.mono ? 'var(--font-mono)' : undefined,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                            title={item.value}
+                          >
+                            {item.value}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  )}
 
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingTop: 8, borderTop: '1px solid var(--color-border-subtle)', flexWrap: 'wrap' }}>
-                    <span className="userspace-muted" style={{ fontSize: 12, flex: 1 }}>
-                      {activeScm.remote_role === 'upstream'
-                        ? activeScm.auto_sync_policy === 'auto_push' && activeScm.auto_pull_enabled
-                          ? 'Snapshots auto-push and upstream changes auto-pull when available.'
-                          : activeScm.auto_sync_policy === 'auto_push'
-                            ? 'Snapshots are automatically pushed to the upstream remote.'
-                            : activeScm.auto_pull_enabled
-                              ? 'Upstream changes auto-pull when available. Local snapshots stay local until you push.'
-                              : 'Snapshots stay local. Use Pull to fetch upstream changes, Push to send local changes.'
-                        : 'Snapshots from this workspace are automatically synced to the remote.'}
-                    </span>
-                    {activeScm.sync_paused && (
-                      <button
-                        className="btn btn-sm btn-secondary"
-                        disabled={isLoading}
-                        onClick={async () => {
-                          try {
-                            const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, { clear_sync_paused: true });
-                            setScmState(resp.scm);
-                            await onSyncComplete({ workspace_id: workspace.id, direction: 'export', state: 'resumed', summary: 'Sync resumed', scm: resp.scm });
-                          } catch (error) {
-                            setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to resume sync' });
-                          }
-                        }}
-                      >
-                        <RefreshCcw size={12} /> Resume sync
-                      </button>
-                    )}
-                  </div>
-                  {activeScm.remote_role === 'upstream' && (
-                    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-                      <div style={{ display: 'grid', gap: 8, padding: 10, border: '1px solid var(--color-border-subtle)', borderRadius: 8 }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={autoPushEnabled}
-                            onChange={(event) => setAutoPushEnabled(event.target.checked)}
+                    {(setupPrompt || activeScm.sync_paused) && (
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {setupPrompt && (
+                          <button
+                            className="btn btn-sm btn-secondary"
+                            title="Copy the setup prompt from the last import to the clipboard"
+                            onClick={() => navigator.clipboard.writeText(setupPrompt)}
+                          >
+                            Copy Prompt
+                          </button>
+                        )}
+                        {activeScm.sync_paused && (
+                          <button
+                            className="btn btn-sm btn-secondary"
                             disabled={isLoading}
-                          />
-                          <strong style={{ fontSize: 12 }}>Auto-push</strong>
-                        </label>
-                        {autoPushEnabled && (
-                          <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span className="userspace-muted" style={{ fontSize: 11 }}>Interval</span>
-                              <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{formatSyncInterval(autoPushIntervalSeconds)}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>5m</span>
-                              <input
-                                type="range"
-                                min="0"
-                                max="100"
-                                step="1"
-                                value={syncIntervalToSlider(autoPushIntervalSeconds)}
-                                style={{ flex: 1 }}
-                                onChange={(event) => setAutoPushIntervalSeconds(sliderToSyncInterval(parseInt(event.target.value, 10)))}
-                                disabled={isLoading}
-                              />
-                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
-                            </div>
-                            <ScheduleStartTimeInput
-                              enabled={autoPushEnabled}
-                              startMinute={autoPushStartMinute}
-                              timezone={autoPushTimezone}
-                              onStartMinuteChange={setAutoPushStartMinute}
-                              onTimezoneChange={setAutoPushTimezone}
-                              disabled={isLoading}
-                              label="Start Time"
-                            />
-                          </>
+                            onClick={async () => {
+                              try {
+                                const resp = await api.updateUserSpaceWorkspaceScmSettings(workspace.id, { clear_sync_paused: true });
+                                setScmState(resp.scm);
+                                await onSyncComplete({ workspace_id: workspace.id, direction: 'export', state: 'resumed', summary: 'Sync resumed', scm: resp.scm });
+                              } catch (error) {
+                                setStatus({ type: 'error', message: error instanceof Error ? error.message : 'Failed to resume sync' });
+                              }
+                            }}
+                          >
+                            <RefreshCcw size={12} /> Resume sync
+                          </button>
                         )}
                       </div>
+                    )}
 
-                      <div style={{ display: 'grid', gap: 8, padding: 10, border: '1px solid var(--color-border-subtle)', borderRadius: 8 }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={autoPullEnabled}
-                            onChange={(event) => setAutoPullEnabled(event.target.checked)}
-                            disabled={isLoading}
-                          />
-                          <strong style={{ fontSize: 12 }}>Auto-pull</strong>
-                        </label>
-                        {autoPullEnabled && (
-                          <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span className="userspace-muted" style={{ fontSize: 11 }}>Interval</span>
-                              <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)' }}>{formatSyncInterval(autoPullIntervalSeconds)}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>5m</span>
-                              <input
-                                type="range"
-                                min="0"
-                                max="100"
-                                step="1"
-                                value={syncIntervalToSlider(autoPullIntervalSeconds)}
-                                style={{ flex: 1 }}
-                                onChange={(event) => setAutoPullIntervalSeconds(sliderToSyncInterval(parseInt(event.target.value, 10)))}
-                                disabled={isLoading}
-                              />
-                              <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
-                            </div>
-                            <ScheduleStartTimeInput
-                              enabled={autoPullEnabled}
-                              startMinute={autoPullStartMinute}
-                              timezone={autoPullTimezone}
-                              onStartMinuteChange={setAutoPullStartMinute}
-                              onTimezoneChange={setAutoPullTimezone}
+                    {activeScm.sync_paused && activeScm.sync_paused_reason && (
+                      <div style={{ fontSize: 12, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--color-warning, #d69d2a)', background: 'rgba(214, 157, 42, 0.08)' }}>
+                        <AlertCircle size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                        {activeScm.sync_paused_reason}
+                      </div>
+                    )}
+
+                    {activeScm.remote_role === 'upstream' && (
+                      <div style={{ display: 'grid', gap: 10 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, alignItems: 'start' }}>
+                          {upstreamSyncRows.map((row) => (
+                            <button
+                              key={row.key}
+                              type="button"
+                              aria-pressed={row.enabled}
                               disabled={isLoading}
-                              label="Start Time"
-                            />
-                          </>
+                              title={row.enabled ? `Disable ${row.label.toLowerCase()}` : `Enable ${row.label.toLowerCase()}`}
+                              onClick={() => row.setEnabled(!row.enabled)}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 10,
+                                width: '100%',
+                                padding: '12px 14px',
+                                borderRadius: 10,
+                                border: row.enabled ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
+                                background: row.enabled
+                                  ? 'color-mix(in srgb, var(--color-accent) 9%, var(--color-bg-secondary))'
+                                  : 'var(--color-bg-secondary)',
+                                boxShadow: row.enabled
+                                  ? '0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent)'
+                                  : 'none',
+                                color: 'inherit',
+                                cursor: isLoading ? 'default' : 'pointer',
+                                transition: 'border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease',
+                                textAlign: 'left',
+                              }}
+                            >
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  width: 30,
+                                  height: 30,
+                                  borderRadius: 999,
+                                  flexShrink: 0,
+                                  background: row.enabled
+                                    ? 'color-mix(in srgb, var(--color-accent) 18%, transparent)'
+                                    : 'var(--color-bg-tertiary)',
+                                  color: row.enabled ? 'var(--color-accent)' : 'var(--color-text-muted)',
+                                }}
+                              >
+                                {row.key === 'push' ? <ArrowUpToLine size={14} /> : <ArrowDownToLine size={14} />}
+                              </span>
+                              <span style={{ display: 'grid', gap: 3, minWidth: 0, flex: 1 }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <strong style={{ fontSize: 13 }}>{row.label}</strong>
+                                  <span className={`userspace-status-pill ${row.enabled ? 'userspace-status-pill-success' : 'userspace-status-pill-muted'}`} style={{ fontSize: 11 }}>
+                                    {row.enabled ? 'On' : 'Off'}
+                                  </span>
+                                  {row.enabled && (
+                                    <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>
+                                      {hasDirtyUpstreamSyncSettings ? 'Unsaved' : `Every ${formatSyncInterval(row.interval)}`}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="userspace-muted" style={{ fontSize: 12 }}>
+                                  {row.enabled ? `Runs every ${formatSyncInterval(row.interval)}.` : row.description}
+                                </span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+
+                        {enabledUpstreamSyncCount > 0 && (
+                          <div style={{ display: 'grid', gridTemplateColumns: useSingleEnabledSyncLayout ? '1fr' : 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, alignItems: 'start' }}>
+                            {upstreamSyncRows.filter((row) => row.enabled).map((row) => (
+                              <div
+                                key={row.key}
+                                style={{
+                                  display: 'grid',
+                                  gap: 8,
+                                  padding: '10px 12px 12px',
+                                  border: '1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border))',
+                                  borderRadius: 8,
+                                  background: 'color-mix(in srgb, var(--color-accent) 5%, transparent)',
+                                }}
+                              >
+                                <div style={{ display: 'grid', gap: 10, gridTemplateColumns: useSingleEnabledSyncLayout ? 'repeat(auto-fit, minmax(260px, 1fr))' : '1fr', alignItems: 'start' }}>
+                                  <div style={{ display: 'grid', gap: 8 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                      <span className="userspace-muted" style={{ fontSize: 12 }}>Interval</span>
+                                      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                                        {formatSyncInterval(row.interval)}
+                                      </span>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                      <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>5m</span>
+                                      <input
+                                        type="range"
+                                        min="0"
+                                        max="100"
+                                        step="1"
+                                        value={syncIntervalToSlider(row.interval)}
+                                        style={{ flex: 1 }}
+                                        onChange={(event) => row.setInterval(sliderToSyncInterval(parseInt(event.target.value, 10)))}
+                                        disabled={isLoading}
+                                      />
+                                      <span className="userspace-muted" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>30d</span>
+                                    </div>
+                                  </div>
+                                  <ScheduleStartTimeInput
+                                    enabled={row.enabled}
+                                    startMinute={row.startMinute}
+                                    timezone={row.timezone}
+                                    onStartMinuteChange={row.setStartMinute}
+                                    onTimezoneChange={row.setTimezone}
+                                    disabled={isLoading}
+                                    label="Start time"
+                                    style={{ marginBottom: 0 }}
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1578,22 +2114,22 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
               )}
 
               {(!hasConfiguredRemote || !storedTokenValid) && repoVisibility && (
-              <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Link2 size={14} />
-                  <strong>Personal Access Token</strong>
-                </div>
-                {hasStoredToken && storedTokenValid && (
-                  <div className="userspace-muted" style={{ fontSize: 12 }}>
-                    A stored token is already available for this workspace connection.
+                <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Link2 size={14} />
+                    <strong>Personal Access Token</strong>
                   </div>
-                )}
-                {(tokenRequired || !storedTokenValid || mode === 'export') && (
-                  <label className="form-group" style={{ marginBottom: 0 }}>
-                    <input type="password" value={gitToken} onChange={(event) => setGitToken(event.target.value)} placeholder={mode === 'export' ? 'Required for push or repo creation' : 'Only needed for private repos'} disabled={isLoading} autoComplete="off" />
-                  </label>
-                )}
-              </div>
+                  {hasStoredToken && storedTokenValid && (
+                    <div className="userspace-muted" style={{ fontSize: 12 }}>
+                      A stored token is already available for this workspace connection.
+                    </div>
+                  )}
+                  {(tokenRequired || !storedTokenValid || mode === 'export') && (
+                    <label className="form-group" style={{ marginBottom: 0 }}>
+                      <input type="password" value={gitToken} onChange={(event) => setGitToken(event.target.value)} placeholder={mode === 'export' ? 'Required for push or repo creation' : 'Only needed for private repos'} disabled={isLoading} autoComplete="off" />
+                    </label>
+                  )}
+                </div>
               )}
 
               {!hasConfiguredRemote && (
@@ -1835,16 +2371,122 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             </div>
           )}
 
-          {activeTab === 'git-source' && step === 'result' && mode !== 'sql-import' && result && (
+          {activeTab === 'git-source' && step === 'result' && mode !== 'sql-import' && scmWizardActivity?.kind === 'preview' && scmWizardActivity.status === 'running' && (
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <MiniLoadingSpinner size={12} />
+                    Analyzing repository
+                  </span>
+                  <span>Preview</span>
+                </div>
+                <div style={{ height: 6, borderRadius: 999, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: '35%', background: 'var(--color-accent)', transition: 'width 160ms ease' }} />
+                </div>
+                <div className="userspace-muted" style={{ fontSize: 12, marginTop: 8 }}>
+                  Checking the remote branch and calculating the import plan. You can close this modal and return to this progress from the SCM button.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'git-source' && step === 'result' && mode !== 'sql-import' && scmImportTask && scmWizardActivity?.kind !== 'preview' && (
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 10, border: '1px solid var(--color-border)', borderRadius: 8, background: 'var(--color-bg-tertiary)' }}>
+                <GitBranch size={14} />
+                <span style={{ fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {scmImportTask.git_branch}
+                </span>
+                <span className="userspace-muted" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
+                  {scmImportTask.git_url}
+                </span>
+              </div>
+
+              {scmImportTask.phase === 'failed' ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: 12, borderRadius: 8, border: '1px solid var(--color-danger, #c53030)', background: 'rgba(197, 48, 48, 0.08)' }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <strong>Import failed</strong>
+                    {scmImportTask.error && (
+                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>{scmImportTask.error}</div>
+                    )}
+                  </div>
+                </div>
+              ) : scmImportTask.phase === 'completed' ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 12, border: '1px solid var(--color-success, #2b7a2b)', borderRadius: 8, background: 'rgba(43, 122, 43, 0.08)' }}>
+                  <Check size={16} style={{ flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <strong>{scmImportTask.summary || 'Import completed.'}</strong>
+                    {scmImportTask.remote_commit_hash && (
+                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                        Remote commit: {scmImportTask.remote_commit_hash}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : scmImportTask.phase === 'preview_ready' ? (
+                <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                    <MiniLoadingSpinner size={12} />
+                    Loading preview details...
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <MiniLoadingSpinner size={12} />
+                      {formatScmImportTaskPhase(scmImportTask.phase)}
+                    </span>
+                    <span>{getScmImportTaskProgressPercent(scmImportTask.phase, scmImportTask.progress)}%</span>
+                  </div>
+                  <div style={{ height: 6, borderRadius: 999, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${getScmImportTaskProgressPercent(scmImportTask.phase, scmImportTask.progress)}%`, background: 'var(--color-accent)', transition: 'width 160ms ease' }} />
+                  </div>
+                </div>
+              )}
+
+              {scmImportTask.phase === 'completed' && scmImportTask.suggested_setup_prompt && (
+                <div style={{ display: 'grid', gap: 8, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
+                  <strong>Prepare the imported workspace</strong>
+                  <div className="userspace-muted" style={{ fontSize: 12 }}>
+                    This keeps bring-up suggestion-only. The agent will inspect the imported repo first, then repair entrypoint and bootstrap configuration only if needed.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={() => void handleAskAgentFromScmTask()} disabled={!onAskAgent}>
+                      <RefreshCw size={14} />
+                      Ask Agent to Prepare
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard.writeText(scmImportTask.suggested_setup_prompt || '')}>
+                      Copy Prompt
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'git-source' && step === 'result' && mode !== 'sql-import' && !scmImportTask && result && (
             <div style={{ display: 'grid', gap: 14 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 12, border: '1px solid var(--color-success, #2b7a2b)', borderRadius: 8, background: 'rgba(43, 122, 43, 0.08)' }}>
-                <Check size={16} />
-                <div>
+                <Check size={16} style={{ flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <strong>{result.summary}</strong>
                   <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
                     Remote commit: {result.remote_commit_hash || 'unknown'}
                   </div>
                 </div>
+                {result.direction === 'import' && result.suggested_setup_prompt && (
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    style={{ flexShrink: 0 }}
+                    title="Copy setup prompt to clipboard"
+                    onClick={() => navigator.clipboard.writeText(result.suggested_setup_prompt || '')}
+                  >
+                    Copy Prompt
+                  </button>
+                )}
               </div>
 
               {result.direction === 'import' && result.suggested_setup_prompt && (
@@ -1876,7 +2518,12 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
         <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
           <div>
             {activeTab === 'git-source' && step === 'review' && mode !== 'sql-import' && (
-              <button className="btn btn-secondary" onClick={() => setStep('input')} disabled={isLoading}>
+              <button className="btn btn-secondary" onClick={() => { setWorkspaceScmWizardActivity(workspace.id, null); setStep('input'); }} disabled={isLoading}>
+                Back
+              </button>
+            )}
+            {activeTab === 'git-source' && step === 'result' && mode !== 'sql-import' && scmImportTask && isScmImportTaskTerminal(scmImportTask.phase) && (
+              <button className="btn btn-secondary" onClick={() => { setWorkspaceScmWizardActivity(workspace.id, null); setScmImportTask(null); setStep('input'); setStatus({ type: null, message: '' }); }} disabled={isLoading}>
                 Back
               </button>
             )}
@@ -1895,6 +2542,12 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             <button className="btn btn-secondary" onClick={onClose} disabled={isLoading}>
               <X size={14} /> Close
             </button>
+            {activeTab === 'git-source' && step !== 'result' && mode !== 'sql-import' && !hasConfiguredRemote && (
+              <button className="btn btn-secondary" onClick={() => void handleClearGitSourceFields()} disabled={isLoading || hasRunningGitSourceTask}>
+                {loadingAction === 'clear-fields' ? <MiniLoadingSpinner variant="icon" size={14} /> : <X size={14} />}
+                Clear Fields
+              </button>
+            )}
             {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && hasScmSettingsMutations && (
               <button className="btn btn-primary" onClick={() => void handleSaveScmSettings()} disabled={isLoading || loadingAction === 'save-settings'}>
                 {loadingAction === 'save-settings' ? <MiniLoadingSpinner variant="icon" size={14} /> : <Check size={14} />}

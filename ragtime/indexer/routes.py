@@ -642,6 +642,7 @@ async def list_jobs(_user: User = Depends(require_admin)):
             status=job.status,
             phase=job.phase,
             progress_percent=job.progress_percent,
+            clone_progress=job.clone_progress,
             total_files=job.total_files,
             processed_files=job.processed_files,
             total_chunks=job.total_chunks,
@@ -668,6 +669,7 @@ async def get_job(job_id: str, _user: User = Depends(require_admin)):
         status=job.status,
         phase=job.phase,
         progress_percent=job.progress_percent,
+        clone_progress=job.clone_progress,
         total_files=job.total_files,
         processed_files=job.processed_files,
         total_chunks=job.total_chunks,
@@ -828,7 +830,9 @@ async def index_from_git(
             id=job.id,
             name=job.name,
             status=job.status,
+            phase=job.phase,
             progress_percent=job.progress_percent,
+            clone_progress=job.clone_progress,
             total_files=job.total_files,
             processed_files=job.processed_files,
             total_chunks=job.total_chunks,
@@ -1158,6 +1162,7 @@ class UpdateIndexConfigRequest(BaseModel):
     """Request to update index configuration for next re-index."""
 
     git_branch: Optional[str] = Field(default=None, description="Git branch to use for re-indexing")
+    git_token: Optional[str] = Field(default=None, description="Git token to store for future re-indexing")
     file_patterns: Optional[List[str]] = Field(default=None, description="Glob patterns for files to include")
     exclude_patterns: Optional[List[str]] = Field(default=None, description="Glob patterns for files to exclude")
     chunk_size: Optional[int] = Field(default=None, ge=100, le=4000, description="Chunk size for text splitting")
@@ -1230,6 +1235,21 @@ async def update_index_config(
     existing_snapshot = getattr(metadata, "configSnapshot", None)
     existing_config: dict[str, Any] = existing_snapshot if isinstance(existing_snapshot, dict) else {}
     new_config = {}
+    clear_git_token = "git_token" in request.model_fields_set and not (request.git_token or "").strip()
+
+    if (
+        clear_git_token
+        and existing_config.get("_analyze_only_git_token") is True
+        and (getattr(metadata, "documentCount", 0) or 0) == 0
+        and (getattr(metadata, "chunkCount", 0) or 0) == 0
+        and await repository.count_jobs(name) == 0
+    ):
+        await repository.delete_index_metadata(name)
+        return {
+            "message": f"Cleared analyze-only git metadata for '{name}'",
+            "git_branch": getattr(metadata, "gitBranch", None),
+            "config_snapshot": existing_config,
+        }
 
     # Copy existing values
     for key in [
@@ -1282,6 +1302,8 @@ async def update_index_config(
         name=name,
         git_branch=request.git_branch,
         config_snapshot=new_config if new_config else None,
+        git_token=request.git_token,
+        clear_git_token=clear_git_token,
     )
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update config")

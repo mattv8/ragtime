@@ -244,6 +244,42 @@ async def check_repo_visibility(
         )
 
 
+def _build_repo_api_request(
+    parsed: ParsedGitUrl,
+    token: Optional[str] = None,
+    path: str = "",
+) -> tuple[str, dict[str, str]]:
+    """Build (api_url, headers) for a GitHub or GitLab repo API call.
+
+    Args:
+        parsed: Parsed Git URL with provider info.
+        token: Optional personal access token for authentication.
+        path: Suffix appended to the repo/project API endpoint path.
+
+    Returns:
+        Tuple of (full_api_url, request_headers).
+
+    Raises:
+        ValueError: If the provider is unsupported.
+    """
+    headers: dict[str, str] = {}
+
+    if parsed.provider == GitProvider.GITHUB:
+        api_url = f"{parsed.api_base_url}/repos/{parsed.owner}/{parsed.repo}{path}"
+        headers["Accept"] = "application/vnd.github.v3+json"
+        if token:
+            headers["Authorization"] = f"token {token}"
+    elif parsed.provider == GitProvider.GITLAB:
+        project_path = quote_plus(f"{parsed.owner}/{parsed.repo}", safe="")
+        api_url = f"{parsed.api_base_url}/projects/{project_path}{path}"
+        if token:
+            headers["PRIVATE-TOKEN"] = token
+    else:
+        raise ValueError("Unsupported provider")
+
+    return api_url, headers
+
+
 async def _check_repo_access(
     client: httpx.AsyncClient,
     parsed: ParsedGitUrl,
@@ -260,26 +296,8 @@ async def _check_repo_access(
     Returns:
         True if accessible, False otherwise
     """
-    headers: dict[str, str] = {}
-
-    if parsed.provider == GitProvider.GITHUB:
-        # GitHub API - check repo endpoint
-        api_url = f"https://api.github.com/repos/{parsed.owner}/{parsed.repo}"
-        headers["Accept"] = "application/vnd.github.v3+json"
-        if token:
-            headers["Authorization"] = f"token {token}"
-
-    elif parsed.provider == GitProvider.GITLAB:
-        # GitLab API - check project endpoint (supports self-hosted)
-        project_path = f"{parsed.owner}/{parsed.repo}".replace("/", "%2F")
-        api_url = f"https://{parsed.host}/api/v4/projects/{project_path}"
-        if token:
-            headers["PRIVATE-TOKEN"] = token
-
-    else:
-        return False  # Can't check generic providers
-
     try:
+        api_url, headers = _build_repo_api_request(parsed, token)
         response = await client.get(api_url, headers=headers)
         return response.status_code == 200
     except Exception:
@@ -314,23 +332,8 @@ async def fetch_branches(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            headers: dict[str, str] = {}
-
-            if parsed.provider == GitProvider.GITHUB:
-                api_url = f"https://api.github.com/repos/{parsed.owner}/{parsed.repo}/branches?per_page=100"
-                headers["Accept"] = "application/vnd.github.v3+json"
-                if token:
-                    headers["Authorization"] = f"token {token}"
-
-            elif parsed.provider == GitProvider.GITLAB:
-                # Supports self-hosted GitLab instances
-                project_path = f"{parsed.owner}/{parsed.repo}".replace("/", "%2F")
-                api_url = f"https://{parsed.host}/api/v4/projects/{project_path}/repository/branches?per_page=100"
-                if token:
-                    headers["PRIVATE-TOKEN"] = token
-
-            else:
-                return [], None
+            path = "/branches?per_page=100" if parsed.provider == GitProvider.GITHUB else "/repository/branches?per_page=100"
+            api_url, headers = _build_repo_api_request(parsed, token, path=path)
 
             logger.debug(f"Fetching branches from: {api_url}")
             response = await client.get(api_url, headers=headers)
@@ -477,19 +480,7 @@ async def _get_repo_api_response(
     parsed: ParsedGitUrl,
     token: Optional[str] = None,
 ) -> httpx.Response:
-    headers: dict[str, str] = {}
-    if parsed.provider == GitProvider.GITHUB:
-        api_url = f"{parsed.api_base_url}/repos/{parsed.owner}/{parsed.repo}"
-        headers["Accept"] = "application/vnd.github.v3+json"
-        if token:
-            headers["Authorization"] = f"token {token}"
-    elif parsed.provider == GitProvider.GITLAB:
-        project_path = quote_plus(f"{parsed.owner}/{parsed.repo}", safe="")
-        api_url = f"{parsed.api_base_url}/projects/{project_path}"
-        if token:
-            headers["PRIVATE-TOKEN"] = token
-    else:
-        raise ValueError("Unsupported provider")
+    api_url, headers = _build_repo_api_request(parsed, token)
     return await client.get(api_url, headers=headers)
 
 

@@ -6,6 +6,7 @@ import type { IndexJob, IndexInfo, CreateIndexRequest, ImportFaissIndexResponse,
 
 import type { AuthProviderConfig, UpdateAuthProviderConfigRequest, LocalUserCreateRequest, LocalUserUpdateRequest, AuthGroup, AuthGroupListResponse, AuthGroupUpsertRequest, SetUserGroupsRequest, LdapUserSearchRequest, LdapUserProfile, LdapUserImportResponse, LdapUserTypeaheadRequest, LdapUserTypeaheadResponse, UserDirectoryEntry } from '@/types';
 import type { ClaudeCodeAuthCompleteResponse, ClaudeCodeAuthStartResponse, ClaudeCodeAuthStatusResponse, OpenAICodexAuthStatusResponse, OpenAICodexDevicePollRequest, OpenAICodexDevicePollResponse, OpenAICodexDeviceStartRequest, OpenAICodexDeviceStartResponse } from '@/types';
+import type { UserSpaceWorkspaceScmImportTask } from '@/types';
 
 import type {
   SqliteInspectorDatabaseListResponse,
@@ -2595,6 +2596,35 @@ export const api = {
   async getUserSpaceWorkspaceArchiveImportTask(taskId: string): Promise<UserSpaceWorkspaceArchiveImportTask> {
     const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-import-tasks/${encodeURIComponent(taskId)}`);
     return handleResponse<UserSpaceWorkspaceArchiveImportTask>(response);
+  },
+
+  async queueUserSpaceWorkspaceScmImport(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmImportRequest,
+  ): Promise<UserSpaceWorkspaceScmImportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/import-task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpaceWorkspaceScmImportTask>(response);
+  },
+
+  async queueUserSpaceWorkspaceScmPreviewImport(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+  ): Promise<UserSpaceWorkspaceScmImportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-import-task`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<UserSpaceWorkspaceScmImportTask>(response);
+  },
+
+  async getUserSpaceWorkspaceScmImportTask(taskId: string): Promise<UserSpaceWorkspaceScmImportTask> {
+    const response = await apiFetch(`${API_BASE}/userspace/workspace-scm-import-tasks/${encodeURIComponent(taskId)}`);
+    return handleResponse<UserSpaceWorkspaceScmImportTask>(response);
   },
 
   async getUserSpaceWorkspace(workspaceId: string): Promise<UserSpaceWorkspace> {

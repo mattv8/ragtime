@@ -369,7 +369,9 @@ export interface IndexJob {
   id: string;
   name: string;
   status: IndexStatus;
+  phase?: string;  // preparing|cloning|loading|chunking|embedding|finalizing|completed|failed|cancelled
   progress_percent: number;
+  clone_progress?: number | null;  // 0.0-1.0 git clone progress while cloning
   total_files: number;
   processed_files: number;
   total_chunks: number;
@@ -424,6 +426,7 @@ export interface IndexInfo {
 
 export interface UpdateIndexConfigRequest {
   git_branch?: string;
+  git_token?: string | null;
   file_patterns?: string[];
   exclude_patterns?: string[];
   chunk_size?: number;
@@ -530,6 +533,7 @@ export interface IndexAnalysisResult {
 }
 
 export interface AnalyzeIndexRequest {
+  index_name?: string;
   git_url: string;
   git_branch: string;
   git_token?: string;
@@ -2270,6 +2274,15 @@ export type UserSpaceWorkspaceArchiveImportTaskPhase =
   | 'importing_chats'
   | 'completed'
   | 'failed';
+export type UserSpaceWorkspaceScmImportTaskPhase =
+  | 'queued'
+  | 'previewing'
+  | 'preview_ready'
+  | 'cloning'
+  | 'importing'
+  | 'backfilling'
+  | 'completed'
+  | 'failed';
 export type UserSpaceRuntimeRestartBatchTaskPhase =
   | 'queued'
   | 'restarting'
@@ -2319,6 +2332,7 @@ export interface UserSpaceWorkspaceScmStatus {
   last_sync_message?: string | null;
   last_remote_commit_hash?: string | null;
   last_synced_snapshot_id?: string | null;
+  last_setup_prompt?: string | null;
 }
 
 export interface UserSpaceWorkspace {
@@ -2339,6 +2353,8 @@ export interface UserSpaceWorkspace {
   archive_export_task_phase?: UserSpaceWorkspaceArchiveExportTaskPhase | null;
   archive_import_task_id?: string | null;
   archive_import_task_phase?: UserSpaceWorkspaceArchiveImportTaskPhase | null;
+  scm_import_task_id?: string | null;
+  scm_import_task_phase?: UserSpaceWorkspaceScmImportTaskPhase | null;
   created_at: string;
   updated_at: string;
 }
@@ -2423,6 +2439,7 @@ export interface UserSpaceWorkspaceScmSettingsRequest {
   auto_pull_start_minute?: number | null;
   auto_pull_timezone?: string | null;
   clear_sync_paused?: boolean;
+  clear_git_token?: boolean;
 }
 
 export interface UserSpaceWorkspaceArchiveExportRequest {
@@ -2519,6 +2536,24 @@ export interface UserSpaceWorkspaceArchiveImportTask {
   imported_chat_count: number;
   imported_snapshot_count: number;
   error?: string | null;
+  queued_at: string;
+  updated_at: string;
+}
+
+export interface UserSpaceWorkspaceScmImportTask {
+  task_id: string;
+  workspace_id: string;
+  workspace_name: string;
+  git_url: string;
+  git_branch: string;
+  phase: UserSpaceWorkspaceScmImportTaskPhase;
+  progress: number;
+  error?: string | null;
+  scm?: UserSpaceWorkspaceScmStatus | null;
+  suggested_setup_prompt?: string | null;
+  remote_commit_hash?: string | null;
+  summary?: string | null;
+  preview?: UserSpaceWorkspaceScmPreviewResponse | null;
   queued_at: string;
   updated_at: string;
 }

@@ -85,7 +85,10 @@ from ragtime.core.workspace_ops import (
     workspace_mount_target_repo_relative_path,
     workspace_path_matches_mount_prefix,
 )
-from ragtime.indexer.file_utils import build_authenticated_git_url
+from ragtime.indexer.file_utils import (
+    build_authenticated_git_url,
+    git_clone_fraction_from_line,
+)
 from ragtime.indexer.filesystem_service import filesystem_indexer
 from ragtime.indexer.models import (
     ConversationShareLink,
@@ -190,6 +193,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest,
     UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmImportTask,
     UserSpaceWorkspaceScmPreviewRequest,
     UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmSettingsRequest,
@@ -220,6 +224,7 @@ from ragtime.userspace.models import (
     WorkspaceRole,
     WorkspaceScmAutoSyncPolicy,
     WorkspaceScmDirection,
+    WorkspaceScmImportTaskPhase,
     WorkspaceScmPreviewState,
     WorkspaceScmProvider,
     WorkspaceScmRemoteRole,
@@ -303,6 +308,42 @@ class _GitCommandResult:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class _WorkspaceScmImportResult:
+    """Result of an SCM import operation, shared by sync and async paths."""
+
+    __slots__ = (
+        "scm",
+        "imported_snapshot",
+        "remote_commit_hash",
+        "is_first_import",
+        "inferred_entrypoint",
+        "normalization_actions",
+        "task_summary",
+        "suggested_prompt",
+    )
+
+    def __init__(
+        self,
+        *,
+        scm: Any,
+        imported_snapshot: Any,
+        remote_commit_hash: str,
+        is_first_import: bool,
+        inferred_entrypoint: dict[str, str] | None = None,
+        normalization_actions: list[str] | None = None,
+        task_summary: str = "",
+        suggested_prompt: str | None = None,
+    ) -> None:
+        self.scm = scm
+        self.imported_snapshot = imported_snapshot
+        self.remote_commit_hash = remote_commit_hash
+        self.is_first_import = is_first_import
+        self.inferred_entrypoint = inferred_entrypoint
+        self.normalization_actions = normalization_actions
+        self.task_summary = task_summary
+        self.suggested_prompt = suggested_prompt
 
 
 class _WorkspaceMountSyncPreviewRecord:
@@ -592,6 +633,65 @@ class _WorkspaceArchiveImportTaskRecord:
         self.updated_at = updated_at
 
 
+class _WorkspaceScmImportTaskRecord:
+    """In-memory status for an asynchronous workspace SCM import task."""
+
+    __slots__ = (
+        "task_id",
+        "workspace_id",
+        "workspace_name",
+        "requested_by_user_id",
+        "git_url",
+        "git_branch",
+        "git_token",
+        "overwrite_preview_token",
+        "phase",
+        "progress",
+        "error",
+        "scm",
+        "suggested_setup_prompt",
+        "remote_commit_hash",
+        "summary",
+        "preview",
+        "queued_at",
+        "updated_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        workspace_name: str,
+        requested_by_user_id: str,
+        git_url: str,
+        git_branch: str,
+        git_token: str | None,
+        overwrite_preview_token: str | None,
+        phase: "WorkspaceScmImportTaskPhase",
+        queued_at: datetime,
+        updated_at: datetime,
+    ) -> None:
+        self.task_id = task_id
+        self.workspace_id = workspace_id
+        self.workspace_name = workspace_name
+        self.requested_by_user_id = requested_by_user_id
+        self.git_url = git_url
+        self.git_branch = git_branch
+        self.git_token = git_token
+        self.overwrite_preview_token = overwrite_preview_token
+        self.phase = phase
+        self.progress: float = 0.0
+        self.error: str | None = None
+        self.scm: Any | None = None
+        self.suggested_setup_prompt: str | None = None
+        self.remote_commit_hash: str | None = None
+        self.summary: str | None = None
+        self.preview: UserSpaceWorkspaceScmPreviewResponse | None = None
+        self.queued_at = queued_at
+        self.updated_at = updated_at
+
+
 class _WorkspaceSqliteImportTaskRecord:
     """In-memory status for an asynchronous workspace SQLite import task."""
 
@@ -805,6 +905,7 @@ _WORKSPACE_DUPLICATE_TASK_TTL_SECONDS = 300
 _WORKSPACE_DELETE_TASK_TTL_SECONDS = 300
 _WORKSPACE_ARCHIVE_EXPORT_TASK_TTL_SECONDS = 900
 _WORKSPACE_ARCHIVE_IMPORT_TASK_TTL_SECONDS = 900
+_WORKSPACE_SCM_IMPORT_TASK_TTL_SECONDS = 900
 _RUNTIME_RESTART_BATCH_TASK_TTL_SECONDS = 900
 
 _MODULE_SOURCE_EXTENSIONS = (
@@ -1168,6 +1269,10 @@ class UserSpaceService:
         self._workspace_archive_import_task_statuses: dict[str, _WorkspaceArchiveImportTaskRecord] = {}
         self._workspace_archive_import_active_task_ids_by_workspace: dict[str, str] = {}
         self._workspace_archive_tasks_lock = asyncio.Lock()
+        self._workspace_scm_import_tasks: dict[str, asyncio.Task[None]] = {}
+        self._workspace_scm_import_task_statuses: dict[str, _WorkspaceScmImportTaskRecord] = {}
+        self._workspace_scm_import_active_task_ids_by_workspace: dict[str, str] = {}
+        self._workspace_scm_import_tasks_lock = asyncio.Lock()
         self._workspace_sqlite_import_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_SQLITE_IMPORT_CONCURRENCY", 1))
         self._workspace_sqlite_import_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_sqlite_import_task_statuses: dict[str, _WorkspaceSqliteImportTaskRecord] = {}
@@ -1517,7 +1622,7 @@ class UserSpaceService:
     def _prune_expired_workspace_create_task_statuses(self) -> None:
         cutoff = utc_now() - timedelta(seconds=_WORKSPACE_CREATE_TASK_TTL_SECONDS)
         for task_id, record in list(self._workspace_create_task_statuses.items()):
-            if record.phase not in {"completed", "failed"}:
+            if record.phase not in {"preview_ready", "completed", "failed"}:
                 continue
             if record.updated_at > cutoff:
                 continue
@@ -4217,6 +4322,646 @@ class UserSpaceService:
         if record.requested_by_user_id != user_id and not is_admin:
             raise HTTPException(status_code=404, detail="Archive import task not found")
         return self._workspace_archive_import_task_model(record)
+
+    @staticmethod
+    def _workspace_scm_import_task_model(
+        record: _WorkspaceScmImportTaskRecord,
+    ) -> UserSpaceWorkspaceScmImportTask:
+        return UserSpaceWorkspaceScmImportTask(
+            task_id=record.task_id,
+            workspace_id=record.workspace_id,
+            workspace_name=record.workspace_name,
+            git_url=record.git_url,
+            git_branch=record.git_branch,
+            phase=cast(WorkspaceScmImportTaskPhase, record.phase),
+            progress=record.progress,
+            error=record.error,
+            scm=record.scm,
+            suggested_setup_prompt=record.suggested_setup_prompt,
+            remote_commit_hash=record.remote_commit_hash,
+            summary=record.summary,
+            preview=record.preview,
+            queued_at=record.queued_at,
+            updated_at=record.updated_at,
+        )
+
+    def _prune_expired_workspace_scm_import_task_statuses(self) -> None:
+        cutoff = utc_now() - timedelta(seconds=_WORKSPACE_SCM_IMPORT_TASK_TTL_SECONDS)
+        for task_id, record in list(self._workspace_scm_import_task_statuses.items()):
+            if record.phase not in {"completed", "failed"}:
+                continue
+            if record.updated_at > cutoff:
+                continue
+            self._workspace_scm_import_task_statuses.pop(task_id, None)
+
+    def _prune_workspace_scm_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._workspace_scm_import_tasks.get(task_id) is task:
+            self._workspace_scm_import_tasks.pop(task_id, None)
+        if self._workspace_scm_import_active_task_ids_by_workspace.get(workspace_id) == task_id:
+            self._workspace_scm_import_active_task_ids_by_workspace.pop(workspace_id, None)
+
+    def _attach_workspace_scm_import_task_cleanup(
+        self,
+        task_id: str,
+        workspace_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        task.add_done_callback(partial(self._prune_workspace_scm_import_task, task_id, workspace_id))
+
+    def _set_workspace_scm_import_task_phase(
+        self,
+        task_id: str,
+        phase: WorkspaceScmImportTaskPhase,
+        *,
+        progress: float | None = None,
+        error: str | None = None,
+        scm: Any | None = None,
+        suggested_setup_prompt: str | None = None,
+        remote_commit_hash: str | None = None,
+        summary: str | None = None,
+        preview: UserSpaceWorkspaceScmPreviewResponse | None = None,
+    ) -> None:
+        record = self._workspace_scm_import_task_statuses.get(task_id)
+        if record is None:
+            return
+        if record.phase != phase and progress is None:
+            progress = 0.0 if phase in {"queued", "previewing", "cloning", "importing", "backfilling"} else 1.0
+        record.phase = phase
+        record.updated_at = utc_now()
+        if progress is not None:
+            record.progress = max(0.0, min(1.0, float(progress)))
+        if error is not None:
+            record.error = error
+        if scm is not None:
+            record.scm = scm
+        if suggested_setup_prompt is not None:
+            record.suggested_setup_prompt = suggested_setup_prompt
+        if remote_commit_hash is not None:
+            record.remote_commit_hash = remote_commit_hash
+        if summary is not None:
+            record.summary = summary
+        if preview is not None:
+            record.preview = preview
+
+    async def _persist_workspace_scm_import_task_reference(
+        self,
+        workspace_id: str,
+        task_id: str | None,
+        phase: WorkspaceScmImportTaskPhase | None,
+    ) -> None:
+        db = await get_db()
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                "scmImportTaskId": task_id,
+                "scmImportTaskPhase": phase,
+            },
+        )
+
+    async def _update_workspace_scm_import_task_phase(
+        self,
+        workspace_id: str,
+        task_id: str,
+        phase: WorkspaceScmImportTaskPhase,
+        *,
+        error: str | None = None,
+        scm: Any | None = None,
+        suggested_setup_prompt: str | None = None,
+        remote_commit_hash: str | None = None,
+        summary: str | None = None,
+        preview: UserSpaceWorkspaceScmPreviewResponse | None = None,
+    ) -> None:
+        self._set_workspace_scm_import_task_phase(
+            task_id,
+            phase,
+            error=error,
+            scm=scm,
+            suggested_setup_prompt=suggested_setup_prompt,
+            remote_commit_hash=remote_commit_hash,
+            summary=summary,
+            preview=preview,
+        )
+        await self._persist_workspace_scm_import_task_reference(workspace_id, task_id, phase)
+
+    async def _clear_missing_workspace_scm_import_task_reference(self, task_id: str) -> None:
+        db = await get_db()
+        await db.workspace.update_many(
+            where={"scmImportTaskId": task_id},
+            data={
+                "scmImportTaskId": None,
+                "scmImportTaskPhase": None,
+            },
+        )
+
+    async def enqueue_workspace_scm_import_task(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmImportRequest,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceScmImportTask:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+            is_admin=is_admin,
+        )
+        self._prune_expired_workspace_scm_import_task_statuses()
+
+        async with self._workspace_scm_import_tasks_lock:
+            existing_record = self._get_active_workspace_background_task_record(
+                workspace_id,
+                self._workspace_scm_import_active_task_ids_by_workspace,
+                self._workspace_scm_import_task_statuses,
+            )
+            if existing_record is not None:
+                return self._workspace_scm_import_task_model(existing_record)
+
+            db = await get_db()
+            workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+            if not workspace_record:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
+            git_url = str(request.git_url or getattr(workspace_record, "scmGitUrl", "") or "").strip()
+            if not git_url:
+                raise HTTPException(status_code=400, detail="Git repository URL is required")
+            git_branch = self._normalize_workspace_scm_branch(
+                request.git_branch or getattr(workspace_record, "scmGitBranch", None),
+            )
+            await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
+
+            task_id = str(uuid4())
+            now = utc_now()
+            record = _WorkspaceScmImportTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace.name,
+                requested_by_user_id=user_id,
+                git_url=git_url,
+                git_branch=git_branch,
+                git_token=(request.git_token or "").strip() or None,
+                overwrite_preview_token=request.overwrite_preview_token,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+            )
+
+            task = asyncio.create_task(
+                self._run_workspace_scm_import_task(task_id, workspace_id, user_id, request),
+                name=f"userspace-workspace-scm-import:{workspace_id}",
+            )
+            self._register_workspace_background_task(
+                workspace_id,
+                task_id,
+                record,
+                task,
+                self._workspace_scm_import_task_statuses,
+                self._workspace_scm_import_tasks,
+                self._workspace_scm_import_active_task_ids_by_workspace,
+                lambda current_task_id, current_task: self._attach_workspace_scm_import_task_cleanup(
+                    current_task_id,
+                    workspace_id,
+                    current_task,
+                ),
+            )
+            await self._persist_workspace_scm_import_task_reference(workspace_id, task_id, "queued")
+            return self._workspace_scm_import_task_model(record)
+
+    async def enqueue_workspace_scm_preview_import_task(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceScmImportTask:
+        workspace = await self._enforce_workspace_access(
+            workspace_id,
+            user_id,
+            required_role="editor",
+            is_admin=is_admin,
+        )
+        self._prune_expired_workspace_scm_import_task_statuses()
+
+        async with self._workspace_scm_import_tasks_lock:
+            existing_record = self._get_active_workspace_background_task_record(
+                workspace_id,
+                self._workspace_scm_import_active_task_ids_by_workspace,
+                self._workspace_scm_import_task_statuses,
+            )
+            if existing_record is not None:
+                return self._workspace_scm_import_task_model(existing_record)
+
+            db = await get_db()
+            workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+            if not workspace_record:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+
+            git_url = str(request.git_url or getattr(workspace_record, "scmGitUrl", "") or "").strip()
+            if not git_url:
+                raise HTTPException(status_code=400, detail="Git repository URL is required")
+            git_branch = self._normalize_workspace_scm_branch(
+                request.git_branch or getattr(workspace_record, "scmGitBranch", None),
+            )
+            await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
+
+            task_id = str(uuid4())
+            now = utc_now()
+            record = _WorkspaceScmImportTaskRecord(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                workspace_name=workspace.name,
+                requested_by_user_id=user_id,
+                git_url=git_url,
+                git_branch=git_branch,
+                git_token=(request.git_token or "").strip() or None,
+                overwrite_preview_token=None,
+                phase="queued",
+                queued_at=now,
+                updated_at=now,
+            )
+
+            task = asyncio.create_task(
+                self._run_workspace_scm_preview_import_task(task_id, workspace_id, user_id, request),
+                name=f"userspace-workspace-scm-preview-import:{workspace_id}",
+            )
+            self._register_workspace_background_task(
+                workspace_id,
+                task_id,
+                record,
+                task,
+                self._workspace_scm_import_task_statuses,
+                self._workspace_scm_import_tasks,
+                self._workspace_scm_import_active_task_ids_by_workspace,
+                lambda current_task_id, current_task: self._attach_workspace_scm_import_task_cleanup(
+                    current_task_id,
+                    workspace_id,
+                    current_task,
+                ),
+            )
+            await self._persist_workspace_scm_import_task_reference(workspace_id, task_id, "queued")
+            return self._workspace_scm_import_task_model(record)
+
+    async def get_workspace_scm_import_task(
+        self,
+        task_id: str,
+        user_id: str,
+        *,
+        is_admin: bool = False,
+    ) -> UserSpaceWorkspaceScmImportTask:
+        self._prune_expired_workspace_scm_import_task_statuses()
+        record = self._workspace_scm_import_task_statuses.get(task_id)
+        if record is None:
+            await self._clear_missing_workspace_scm_import_task_reference(task_id)
+            raise HTTPException(status_code=404, detail="SCM import task not found")
+        if record.requested_by_user_id != user_id and not is_admin:
+            raise HTTPException(status_code=404, detail="SCM import task not found")
+        return self._workspace_scm_import_task_model(record)
+
+    async def _run_workspace_scm_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmImportRequest,
+    ) -> None:
+        try:
+            async with self._workspace_scm_sync_semaphore:
+                operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
+                async with operation_lock:
+                    await self._run_workspace_scm_import_task_body(
+                        task_id,
+                        workspace_id,
+                        user_id,
+                        request,
+                    )
+        except Exception as exc:
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "SCM import failed"
+            logger.exception("SCM import task failed for workspace %s: %s", workspace_id, detail)
+            if self._is_workspace_scm_auth_error(detail):
+                try:
+                    await self._clear_workspace_scm_token_if_matches(workspace_id, request.git_token)
+                except Exception:
+                    logger.debug("Failed to clear workspace SCM token after auth failure", exc_info=True)
+            try:
+                await self._update_workspace_scm_import_task_phase(
+                    workspace_id,
+                    task_id,
+                    "failed",
+                    error=detail,
+                )
+            except Exception:
+                logger.debug("Failed to persist SCM import failure state for %s", workspace_id, exc_info=True)
+
+    async def _run_workspace_scm_preview_import_task(
+        self,
+        task_id: str,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmPreviewRequest,
+    ) -> None:
+        try:
+            async with self._workspace_scm_sync_semaphore:
+                operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
+                async with operation_lock:
+                    await self._update_workspace_scm_import_task_phase(workspace_id, task_id, "previewing")
+                    preview, _ = await self._build_workspace_scm_preview(
+                        workspace_id,
+                        user_id,
+                        "import",
+                        request,
+                        store_preview=True,
+                        progress_callback=lambda pct: self._set_workspace_scm_import_task_phase(
+                            task_id,
+                            "previewing",
+                            progress=pct,
+                        ),
+                    )
+                    await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
+                    await self._update_workspace_scm_import_task_phase(
+                        workspace_id,
+                        task_id,
+                        "preview_ready",
+                        summary=preview.summary,
+                        remote_commit_hash=preview.remote_commit_hash,
+                        preview=preview,
+                    )
+        except Exception as exc:
+            detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "SCM import preview failed"
+            logger.exception("SCM import preview task failed for workspace %s: %s", workspace_id, detail)
+            if self._is_workspace_scm_auth_error(detail):
+                try:
+                    await self._clear_workspace_scm_token_if_matches(workspace_id, request.git_token)
+                except Exception:
+                    logger.debug("Failed to clear workspace SCM token after auth failure", exc_info=True)
+            try:
+                await self._update_workspace_scm_import_task_phase(
+                    workspace_id,
+                    task_id,
+                    "failed",
+                    error=detail,
+                )
+            except Exception:
+                logger.debug("Failed to persist SCM import preview failure state for %s", workspace_id, exc_info=True)
+
+    async def _execute_workspace_scm_import(
+        self,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmImportRequest,
+        preview: UserSpaceWorkspaceScmPreviewResponse,
+        *,
+        task_id: str | None = None,
+    ) -> _WorkspaceScmImportResult:
+        """Execute workspace SCM import (clone, file ops, snapshot, metadata, backfill).
+
+        Shared by the sync ``import_workspace_from_scm`` path and the async
+        ``_run_workspace_scm_import_task_body`` task path.
+
+        When *task_id* is provided phase updates are emitted during execution.
+        """
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        _, _, git_token, _, _ = await self._resolve_workspace_scm_target(workspace_record, request)
+
+        remote_dir, remote_commit_hash, clone_error = await self._clone_remote_branch_to_tempdir(
+            preview.git_url,
+            preview.git_branch,
+            git_token,
+            full_history=True,
+            progress_callback=(
+                (
+                    lambda pct: self._set_workspace_scm_import_task_phase(
+                        task_id,
+                        "cloning",
+                        progress=0.15 + (pct * 0.85),
+                    )
+                )
+                if task_id
+                else None
+            ),
+        )
+        if remote_dir is None or not remote_commit_hash:
+            raise HTTPException(
+                status_code=400,
+                detail=clone_error or "Failed to clone remote repository branch",
+            )
+
+        try:
+            if task_id:
+                await self._update_workspace_scm_import_task_phase(workspace_id, task_id, "importing")
+
+            if preview.will_overwrite_local and (preview.local_changed or preview.local_has_uncommitted_changes):
+                await self.create_snapshot(
+                    workspace_id,
+                    user_id,
+                    f"SCM backup before import from {preview.git_url} ({preview.git_branch})",
+                    auto_sync_to_scm=False,
+                )
+
+            is_upstream = getattr(workspace_record, "scmRemoteRole", None) == "upstream"
+            last_remote_hash = getattr(workspace_record, "scmLastRemoteCommitHash", None)
+            is_first_import = not is_upstream and not last_remote_hash
+
+            import_progress = (lambda pct: self._set_workspace_scm_import_task_phase(task_id, "importing", progress=pct)) if task_id else None
+
+            if preview.will_overwrite_local:
+                await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir, progress_callback=import_progress)
+            elif is_upstream and last_remote_hash:
+                await self._merge_workspace_from_upstream_dir(
+                    workspace_id,
+                    remote_dir,
+                    base_commit_hash=last_remote_hash,
+                    head_commit_hash=remote_commit_hash,
+                    progress_callback=import_progress,
+                )
+            else:
+                await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir, progress_callback=import_progress)
+
+            inferred_entrypoint: dict[str, str] | None = None
+            normalization_actions: list[str] | None = None
+            if is_first_import:
+                inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
+                normalization_actions = _dedupe_preserve_order(self._normalize_imported_replit_runtime_artifacts(workspace_id))
+
+            snapshot_message = f"Pull from {preview.git_url} ({preview.git_branch})" if is_upstream else f"Import from {preview.git_url} ({preview.git_branch})"
+            imported_snapshot = await self.create_snapshot(
+                workspace_id,
+                user_id,
+                snapshot_message,
+                auto_sync_to_scm=False,
+            )
+
+            db = await get_db()
+            await db.execute_raw(f"""
+                UPDATE userspace_snapshots
+                SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
+                    updated_at = NOW()
+                WHERE id = {self._sql_quote(imported_snapshot.id)}
+                """)
+            imported_snapshot.remote_commit_hash = remote_commit_hash
+
+            sync_message = f"Pulled from {preview.git_branch}" if is_upstream else f"Imported from {preview.git_branch}"
+            scm = await self._update_workspace_scm_sync_metadata(
+                workspace_id,
+                git_url=preview.git_url,
+                git_branch=preview.git_branch,
+                provider=preview.provider,
+                repo_visibility=preview.repo_visibility,
+                git_token=request.git_token,
+                remote_commit_hash=remote_commit_hash,
+                snapshot_id=imported_snapshot.id,
+                status="success",
+                message=sync_message,
+                direction="import",
+            )
+
+            if is_first_import:
+                db = await get_db()
+                updated_ws = await db.workspace.update(
+                    where={"id": workspace_id},
+                    data={
+                        "scmRemoteRole": cast(Any, "upstream"),
+                        "scmAutoSyncPolicy": cast(Any, "manual"),
+                        "scmSyncPaused": False,
+                        "scmSyncPausedReason": None,
+                    },
+                )
+                scm = self._workspace_from_record(updated_ws).scm or scm
+
+                if task_id:
+                    await self._update_workspace_scm_import_task_phase(workspace_id, task_id, "backfilling")
+                await self._backfill_workspace_scm_remote_commits(
+                    workspace_id,
+                    git_branch=preview.git_branch,
+                    remote_dir=remote_dir,
+                    remote_git_url=preview.git_url,
+                    git_token=git_token,
+                    remote_head_hash=remote_commit_hash,
+                    branch_id=imported_snapshot.branch_id,
+                    imported_snapshot_id=imported_snapshot.id,
+                    progress_callback=((lambda pct: self._set_workspace_scm_import_task_phase(task_id, "backfilling", progress=pct)) if task_id else None),
+                )
+            else:
+                db = await get_db()
+                await db.workspace.update(
+                    where={"id": workspace_id},
+                    data={
+                        "scmSyncPaused": False,
+                        "scmSyncPausedReason": None,
+                    },
+                )
+
+            task_summary = "Upstream changes pulled successfully." if is_upstream and not is_first_import else "Workspace imported successfully."
+            suggested_prompt = (
+                self._workspace_scm_setup_prompt(
+                    workspace_id,
+                    preview.git_url,
+                    preview.git_branch,
+                    inferred_entrypoint=inferred_entrypoint,
+                    normalization_actions=normalization_actions,
+                )
+                if is_first_import
+                else None
+            )
+
+            return _WorkspaceScmImportResult(
+                scm=scm,
+                imported_snapshot=imported_snapshot,
+                remote_commit_hash=remote_commit_hash,
+                is_first_import=is_first_import,
+                inferred_entrypoint=inferred_entrypoint,
+                normalization_actions=normalization_actions,
+                task_summary=task_summary,
+                suggested_prompt=suggested_prompt,
+            )
+        finally:
+            shutil.rmtree(remote_dir, ignore_errors=True)
+
+    async def _run_workspace_scm_import_task_body(
+        self,
+        task_id: str,
+        workspace_id: str,
+        user_id: str,
+        request: UserSpaceWorkspaceScmImportRequest,
+    ) -> None:
+        await self._update_workspace_scm_import_task_phase(workspace_id, task_id, "cloning")
+
+        preview, state_fingerprint = await self._build_workspace_scm_preview(
+            workspace_id,
+            user_id,
+            "import",
+            request,
+            store_preview=False,
+            progress_callback=lambda pct: self._set_workspace_scm_import_task_phase(
+                task_id,
+                "cloning",
+                progress=pct * 0.15,
+            ),
+        )
+        await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
+
+        if preview.state == "up_to_date":
+            db = await get_db()
+            workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+            scm_status: Any = None
+            if workspace_record:
+                scm_status = self._workspace_from_record(workspace_record).scm
+            await self._update_workspace_scm_import_task_phase(
+                workspace_id,
+                task_id,
+                "completed",
+                scm=scm_status,
+                summary=preview.summary,
+                remote_commit_hash=preview.remote_commit_hash,
+            )
+            return
+
+        if preview.state == "missing_branch":
+            raise HTTPException(status_code=404, detail=preview.summary)
+
+        if preview.state == "destructive":
+            await self._consume_workspace_scm_preview(
+                workspace_id=workspace_id,
+                direction="import",
+                preview_token=request.overwrite_preview_token,
+                state_fingerprint=state_fingerprint or "",
+            )
+
+        result = await self._execute_workspace_scm_import(
+            workspace_id,
+            user_id,
+            request,
+            preview,
+            task_id=task_id,
+        )
+
+        await self._update_workspace_scm_import_task_phase(
+            workspace_id,
+            task_id,
+            "completed",
+            scm=result.scm,
+            suggested_setup_prompt=result.suggested_prompt,
+            remote_commit_hash=result.remote_commit_hash,
+            summary=result.task_summary,
+        )
+        if result.suggested_prompt:
+            db = await get_db()
+            await db.workspace.update(
+                where={"id": workspace_id},
+                data={"scmLastSetupPrompt": result.suggested_prompt},
+            )
+        from ragtime.userspace.runtime_service import userspace_runtime_service
+
+        await userspace_runtime_service.invalidate_workspace_runtime_state(workspace_id)
 
     async def enqueue_workspace_sqlite_import_task(
         self,
@@ -9318,6 +10063,7 @@ class UserSpaceService:
             last_sync_message=getattr(record, "scmLastSyncMessage", None),
             last_remote_commit_hash=getattr(record, "scmLastRemoteCommitHash", None),
             last_synced_snapshot_id=getattr(record, "scmLastSyncedSnapshotId", None),
+            last_setup_prompt=getattr(record, "scmLastSetupPrompt", None),
         )
 
         return UserSpaceWorkspace(
@@ -9341,6 +10087,8 @@ class UserSpaceService:
             archive_export_task_phase=getattr(record, "archiveExportTaskPhase", None),
             archive_import_task_id=getattr(record, "archiveImportTaskId", None),
             archive_import_task_phase=getattr(record, "archiveImportTaskPhase", None),
+            scm_import_task_id=getattr(record, "scmImportTaskId", None),
+            scm_import_task_phase=getattr(record, "scmImportTaskPhase", None),
             created_at=record.createdAt,
             updated_at=record.updatedAt,
         )
@@ -9435,6 +10183,7 @@ class UserSpaceService:
         *,
         full_history: bool = False,
         checkout: bool = True,
+        progress_callback: Callable[[float], None] | None = None,
     ) -> tuple[Path | None, str | None, str | None]:
         temp_dir = Path(tempfile.mkdtemp(prefix="ragtime-workspace-scm-"))
         auth_url = build_authenticated_git_url(git_url, git_token)
@@ -9445,25 +10194,74 @@ class UserSpaceService:
                 "--single-branch",
                 "--branch",
                 git_branch,
+                "--progress",
             ]
             if not checkout:
                 clone_args.append("--no-checkout")
             if not full_history:
                 clone_args.extend(["--depth", "1"])
             clone_args.extend([auth_url, str(temp_dir)])
-            result = await self._run_git_in_dir(
-                temp_dir.parent,
-                clone_args,
-                check=False,
+
+            stderr_lines: list[str] = []
+
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                *clone_args,
+                cwd=str(temp_dir.parent),
                 env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            if result.returncode != 0:
+
+            async def _read_stderr() -> None:
+                if process.stderr is None:
+                    return
+                last_fraction = -1.0
+
+                def _emit(line: str) -> None:
+                    nonlocal last_fraction
+                    if progress_callback is None:
+                        return
+                    fraction = git_clone_fraction_from_line(line)
+                    if fraction is None or fraction <= last_fraction:
+                        return
+                    last_fraction = fraction
+                    progress_callback(fraction)
+
+                buffer = ""
+                while True:
+                    chunk = await process.stderr.read(1024)
+                    if not chunk:
+                        break
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    # git writes intra-phase progress with \r and ends phases
+                    # with \n; split on both so each refresh is parsed.
+                    parts = re.split(r"[\r\n]+", buffer)
+                    buffer = parts.pop() if parts else ""
+                    for line in parts:
+                        if not line:
+                            continue
+                        stderr_lines.append(line)
+                        _emit(line)
+                if buffer:
+                    stderr_lines.append(buffer)
+                    _emit(buffer)
+
+            stderr_task = asyncio.ensure_future(_read_stderr())
+            if process.stdout is not None:
+                await process.stdout.read()
+            await stderr_task
+            returncode = await process.wait()
+
+            if returncode != 0:
+                stderr_text = "\n".join(stderr_lines).strip()
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return (
                     None,
                     None,
-                    result.stderr.strip() or result.stdout.strip() or "Clone failed",
+                    stderr_text or "Clone failed",
                 )
+
             head = await self._run_git_in_dir(temp_dir, ["rev-parse", "HEAD"], check=False)
             return temp_dir, head.stdout.strip() or None, None
         except Exception as exc:
@@ -9476,6 +10274,8 @@ class UserSpaceService:
         *,
         git_branch: str,
         remote_dir: Path,
+        remote_git_url: str,
+        git_token: str | None,
         remote_head_hash: str,
         branch_id: str,
         imported_snapshot_id: str,
@@ -9490,6 +10290,8 @@ class UserSpaceService:
                     workspace_id,
                     git_branch=git_branch,
                     remote_dir=remote_dir,
+                    remote_git_url=remote_git_url,
+                    git_token=git_token,
                     remote_head_hash=remote_head_hash,
                     branch_id=branch_id,
                     imported_snapshot_id=imported_snapshot_id,
@@ -9508,9 +10310,12 @@ class UserSpaceService:
         *,
         git_branch: str,
         remote_dir: Path,
+        remote_git_url: str,
+        git_token: str | None,
         remote_head_hash: str,
         branch_id: str,
         imported_snapshot_id: str,
+        progress_callback: Callable[[float], None] | None = None,
     ) -> None:
         """Import the remote branch's full commit history as snapshot records.
 
@@ -9525,9 +10330,12 @@ class UserSpaceService:
                 workspace_id,
                 git_branch=git_branch,
                 remote_dir=remote_dir,
+                remote_git_url=remote_git_url,
+                git_token=git_token,
                 remote_head_hash=remote_head_hash,
                 branch_id=branch_id,
                 imported_snapshot_id=imported_snapshot_id,
+                progress_callback=progress_callback,
             )
         finally:
             shutil.rmtree(remote_dir, ignore_errors=True)
@@ -9538,9 +10346,12 @@ class UserSpaceService:
         *,
         git_branch: str,
         remote_dir: Path,
+        remote_git_url: str,
+        git_token: str | None,
         remote_head_hash: str,
         branch_id: str,
         imported_snapshot_id: str,
+        progress_callback: Callable[[float], None] | None = None,
     ) -> None:
         """Import the remote branch's full commit history as snapshot records.
 
@@ -9551,6 +10362,9 @@ class UserSpaceService:
         # ------------------------------------------------------------------
         # 1. Read first-parent history (oldest → newest) from the clone.
         # ------------------------------------------------------------------
+        if progress_callback is not None:
+            progress_callback(0.02)
+
         log_result = await self._run_git_in_dir(
             remote_dir,
             [
@@ -9595,10 +10409,14 @@ class UserSpaceService:
             )
             return
 
+        if progress_callback is not None:
+            progress_callback(0.08)
+
         # ------------------------------------------------------------------
         # 2. Compute file counts per historical commit.
         # ------------------------------------------------------------------
-        for commit in history_commits:
+        total_history_commits = max(1, len(history_commits))
+        for index, commit in enumerate(history_commits, start=1):
             tree_result = await self._run_git_in_dir(
                 remote_dir,
                 ["ls-tree", "-r", "--name-only", commit["hash"]],
@@ -9608,35 +10426,40 @@ class UserSpaceService:
                 commit["file_count"] = sum(1 for f in tree_result.stdout.splitlines() if f.strip() and not self._is_reserved_internal_path(f))
             else:
                 commit["file_count"] = 0
+            if progress_callback is not None:
+                progress_callback(0.08 + (index / total_history_commits) * 0.27)
 
         # ------------------------------------------------------------------
         # 3. Fetch remote objects into the local workspace git repo so that
         #    every historical commit is locally restorable.
         # ------------------------------------------------------------------
+        if progress_callback is not None:
+            progress_callback(0.38)
         env = self._git_network_env()
+        fetch_url = build_authenticated_git_url(remote_git_url, git_token)
+        # Clean up the legacy temporary-path remote if a previous attempt left
+        # it behind. The direct URL fetch below avoids cross-container /tmp
+        # visibility issues.
         await self._run_git(
             workspace_id,
-            ["remote", "add", "_scm_import", str(remote_dir)],
+            ["remote", "remove", "_scm_import"],
             check=False,
         )
-        try:
-            await self._run_git(
-                workspace_id,
-                ["fetch", "--no-tags", "_scm_import", git_branch],
-                env=env,
-            )
-        finally:
-            await self._run_git(
-                workspace_id,
-                ["remote", "remove", "_scm_import"],
-                check=False,
-            )
+        await self._run_git(
+            workspace_id,
+            ["fetch", "--no-tags", fetch_url, git_branch],
+            env=env,
+        )
+        if progress_callback is not None:
+            progress_callback(0.55)
 
         # Persistent ref prevents GC from pruning the fetched objects.
         await self._run_git(
             workspace_id,
             ["update-ref", f"refs/scm-history/{git_branch}", remote_head_hash],
         )
+        if progress_callback is not None:
+            progress_callback(0.60)
 
         # ------------------------------------------------------------------
         # 4. Determine which commits already have snapshot records.
@@ -9658,9 +10481,11 @@ class UserSpaceService:
         # ------------------------------------------------------------------
         created_count = 0
         prev_snapshot_id: str | None = None
-        for commit in history_commits:
+        for index, commit in enumerate(history_commits, start=1):
             if commit["hash"] in existing_by_hash:
                 prev_snapshot_id = existing_by_hash[commit["hash"]]
+                if progress_callback is not None:
+                    progress_callback(0.60 + (index / total_history_commits) * 0.30)
                 continue
 
             snapshot_id = str(uuid4())
@@ -9688,6 +10513,8 @@ class UserSpaceService:
             existing_by_hash[commit["hash"]] = snapshot_id
             prev_snapshot_id = snapshot_id
             created_count += 1
+            if progress_callback is not None:
+                progress_callback(0.60 + (index / total_history_commits) * 0.30)
 
         # ------------------------------------------------------------------
         # 6. Reparent the imported snapshot so the timeline is continuous.
@@ -9716,6 +10543,11 @@ class UserSpaceService:
                   AND remote_commit_hash IS NULL
                   AND git_commit_hash IN ({chunk_clause})
                 """)
+            if progress_callback is not None:
+                progress_callback(0.90 + ((start + len(chunk)) / max(1, len(full_hash_list))) * 0.10)
+
+        if progress_callback is not None:
+            progress_callback(1.0)
 
         logger.info(
             "Imported %s historical snapshots for workspace %s from %s (%s remote commits)",
@@ -9853,6 +10685,8 @@ class UserSpaceService:
         if request.clear_sync_paused:
             update_data["scmSyncPaused"] = False
             update_data["scmSyncPausedReason"] = None
+        if request.clear_git_token:
+            update_data["scmToken"] = None
         if not update_data:
             ws = await db.workspace.find_unique(where={"id": workspace_id})
             if not ws:
@@ -10040,23 +10874,43 @@ class UserSpaceService:
         self,
         workspace_id: str,
         source_root: Path,
+        *,
+        progress_callback: Callable[[float], None] | None = None,
     ) -> None:
         target_root = self._workspace_files_dir(workspace_id)
+        loop = asyncio.get_running_loop()
+
+        def _emit_progress(progress: float) -> None:
+            if progress_callback is not None:
+                loop.call_soon_threadsafe(progress_callback, progress)
 
         def _sync() -> None:
             target_files = self._sync_scope_relative_paths(target_root)
             source_files = self._sync_scope_relative_paths(source_root)
+            delete_paths = [path for relative_path, path in target_files.items() if relative_path not in source_files and path.exists()]
+            copy_items = list(source_files.items())
+            total_ops = max(1, len(delete_paths) + len(copy_items))
+            completed_ops = 0
 
-            for relative_path, target_path in target_files.items():
-                if relative_path not in source_files and target_path.exists():
-                    target_path.unlink()
+            def _tick() -> None:
+                nonlocal completed_ops
+                completed_ops += 1
+                _emit_progress(min(1.0, completed_ops / total_ops))
 
-            for relative_path, source_path in source_files.items():
+            for target_path in delete_paths:
+                target_path.unlink()
+                _tick()
+
+            for relative_path, source_path in copy_items:
                 destination_path = target_root / relative_path
                 destination_path.parent.mkdir(parents=True, exist_ok=True)
                 if destination_path.exists() and self._compute_file_sha256(destination_path) == self._compute_file_sha256(source_path):
+                    _tick()
                     continue
                 shutil.copy2(source_path, destination_path)
+                _tick()
+
+            _emit_progress(1.0)
 
             for directory in sorted(
                 [path for path in target_root.rglob("*") if path.is_dir()],
@@ -10084,12 +10938,19 @@ class UserSpaceService:
         source_root: Path,
         base_commit_hash: str,
         head_commit_hash: str,
+        *,
+        progress_callback: Callable[[float], None] | None = None,
     ) -> list[str]:
         """Merge only the files that changed between *base_commit_hash* and
         *head_commit_hash* from the cloned *source_root* into the workspace,
         preserving local-only files.  Returns a list of affected relative paths.
         """
         target_root = self._workspace_files_dir(workspace_id)
+        loop = asyncio.get_running_loop()
+
+        def _emit_progress(progress: float) -> None:
+            if progress_callback is not None:
+                loop.call_soon_threadsafe(progress_callback, progress)
 
         def _merge() -> list[str]:
             import subprocess
@@ -10119,22 +10980,29 @@ class UserSpaceService:
             if not diff_lines:
                 # Fallback: treat every remote file as changed (safe but noisier)
                 affected: list[str] = []
-                for rel, src in self._sync_scope_relative_paths(source_root).items():
+                source_items = list(self._sync_scope_relative_paths(source_root).items())
+                total_ops = max(1, len(source_items))
+                for index, (rel, src) in enumerate(source_items, start=1):
                     dest = target_root / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     if dest.exists() and self._compute_file_sha256(dest) == self._compute_file_sha256(src):
+                        _emit_progress(index / total_ops)
                         continue
                     shutil.copy2(src, dest)
                     affected.append(rel)
+                    _emit_progress(index / total_ops)
                 return affected
 
             affected = []
-            for line in diff_lines:
+            total_ops = max(1, len(diff_lines))
+            for index, line in enumerate(diff_lines, start=1):
                 parts = line.split("\t", 1)
                 if len(parts) != 2:
+                    _emit_progress(index / total_ops)
                     continue
                 status_char, rel_path = parts[0].strip(), parts[1].strip()
                 if rel_path.startswith(".git/") or rel_path == ".git":
+                    _emit_progress(index / total_ops)
                     continue
 
                 dest = target_root / rel_path
@@ -10149,9 +11017,11 @@ class UserSpaceService:
                     if src.exists():
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         if dest.exists() and self._compute_file_sha256(dest) == self._compute_file_sha256(src):
+                            _emit_progress(index / total_ops)
                             continue
                         shutil.copy2(src, dest)
                         affected.append(rel_path)
+                _emit_progress(index / total_ops)
 
             # Clean up empty dirs left behind by deletions
             for directory in sorted(
@@ -10236,6 +11106,50 @@ class UserSpaceService:
             },
         )
 
+    @staticmethod
+    def _is_workspace_scm_auth_error(detail: str) -> bool:
+        normalized = detail.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "invalid username or token",
+                "authentication failed",
+                "bad credentials",
+                "could not read username",
+            )
+        )
+
+    async def _clear_workspace_scm_token_if_matches(
+        self,
+        workspace_id: str,
+        git_token: str | None,
+    ) -> None:
+        normalized_token = (git_token or "").strip()
+        if not normalized_token:
+            return
+
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            return
+        stored_token_encrypted = getattr(workspace_record, "scmToken", None)
+        if not stored_token_encrypted:
+            return
+        try:
+            stored_token = decrypt_secret(stored_token_encrypted)
+        except Exception:
+            logger.debug("Failed to decrypt workspace SCM token while cleaning auth failure", exc_info=True)
+            return
+        if stored_token != normalized_token:
+            return
+        await db.workspace.update(
+            where={"id": workspace_id},
+            data={
+                "scmToken": None,
+                "updatedAt": utc_now(),
+            },
+        )
+
     async def _build_workspace_scm_preview(
         self,
         workspace_id: str,
@@ -10244,6 +11158,7 @@ class UserSpaceService:
         request: UserSpaceWorkspaceScmPreviewRequest,
         *,
         store_preview: bool,
+        progress_callback: Callable[[float], None] | None = None,
     ) -> tuple[UserSpaceWorkspaceScmPreviewResponse, str | None]:
         await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
         db = await get_db()
@@ -10269,6 +11184,7 @@ class UserSpaceService:
             git_url,
             git_branch,
             git_token,
+            progress_callback=progress_callback,
         )
 
         remote_exists = remote_commit_hash is not None
@@ -10549,6 +11465,7 @@ class UserSpaceService:
                     "scmAutoPullIntervalSeconds": _WORKSPACE_SCM_AUTO_SYNC_DEFAULT_INTERVAL_SECONDS,
                     "scmSyncPaused": False,
                     "scmSyncPausedReason": None,
+                    "scmLastSetupPrompt": None,
                     "updatedAt": utc_now(),
                 },
             )
@@ -10574,6 +11491,7 @@ class UserSpaceService:
             request,
             store_preview=True,
         )
+        await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
         return preview
 
     async def preview_workspace_scm_export(
@@ -10589,6 +11507,7 @@ class UserSpaceService:
             request,
             store_preview=True,
         )
+        await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
         return preview
 
     async def preview_workspace_scm_sync(
@@ -10627,6 +11546,7 @@ class UserSpaceService:
                 request,
                 store_preview=True,
             )
+        await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
         return preview
 
     async def import_workspace_from_scm(
@@ -10660,150 +11580,22 @@ class UserSpaceService:
                 state_fingerprint=state_fingerprint or "",
             )
 
-        db = await get_db()
-        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
-        if not workspace_record:
-            raise HTTPException(status_code=404, detail="Workspace not found")
-        _, _, git_token, _, _ = await self._resolve_workspace_scm_target(
-            workspace_record,
-            request,
-        )
-
-        remote_dir, remote_commit_hash, clone_error = await self._clone_remote_branch_to_tempdir(
-            preview.git_url,
-            preview.git_branch,
-            git_token,
-            full_history=True,
-        )
-        if remote_dir is None or not remote_commit_hash:
-            raise HTTPException(
-                status_code=400,
-                detail=clone_error or "Failed to clone remote repository branch",
-            )
-
-        if preview.will_overwrite_local and (preview.local_changed or preview.local_has_uncommitted_changes):
-            await self.create_snapshot(
-                workspace_id,
-                user_id,
-                f"SCM backup before import from {preview.git_url} ({preview.git_branch})",
-                auto_sync_to_scm=False,
-            )
-
-        # Upstream workspaces always merge; destructive full-replace only when
-        # the user explicitly confirmed overwrite via preview token.
-        is_upstream = getattr(workspace_record, "scmRemoteRole", None) == "upstream"
-        last_remote_hash = getattr(workspace_record, "scmLastRemoteCommitHash", None)
-        is_first_import = not is_upstream and not last_remote_hash
-
-        if preview.will_overwrite_local:
-            # User confirmed destructive overwrite.
-            await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
-        elif is_upstream and last_remote_hash:
-            # Upstream merge: apply only remote-changed files.
-            await self._merge_workspace_from_upstream_dir(
-                workspace_id,
-                remote_dir,
-                base_commit_hash=last_remote_hash,
-                head_commit_hash=remote_commit_hash,
-            )
-        else:
-            # First import or no prior sync: full replace.
-            await self._replace_workspace_sync_scope_from_dir(workspace_id, remote_dir)
-
-        # Entrypoint inference and Replit normalization only on first import.
-        inferred_entrypoint: dict[str, str] | None = None
-        normalization_actions: list[str] | None = None
-        if is_first_import:
-            inferred_entrypoint = self._seed_entrypoint_from_import(workspace_id)
-            normalization_actions = _dedupe_preserve_order(self._normalize_imported_replit_runtime_artifacts(workspace_id))
-
-        snapshot_message = f"Pull from {preview.git_url} ({preview.git_branch})" if is_upstream else f"Import from {preview.git_url} ({preview.git_branch})"
-        imported_snapshot = await self.create_snapshot(
+        result = await self._execute_workspace_scm_import(
             workspace_id,
             user_id,
-            snapshot_message,
-            auto_sync_to_scm=False,
+            request,
+            preview,
         )
 
-        db = await get_db()
-        await db.execute_raw(f"""
-            UPDATE userspace_snapshots
-            SET remote_commit_hash = {self._sql_quote(remote_commit_hash)},
-                updated_at = NOW()
-            WHERE id = {self._sql_quote(imported_snapshot.id)}
-            """)
-        imported_snapshot.remote_commit_hash = remote_commit_hash
-
-        sync_message = f"Pulled from {preview.git_branch}" if is_upstream else f"Imported from {preview.git_branch}"
-        scm = await self._update_workspace_scm_sync_metadata(
-            workspace_id,
-            git_url=preview.git_url,
-            git_branch=preview.git_branch,
-            provider=preview.provider,
-            repo_visibility=preview.repo_visibility,
-            git_token=request.git_token,
-            remote_commit_hash=remote_commit_hash,
-            snapshot_id=imported_snapshot.id,
-            status="success",
-            message=sync_message,
-            direction="import",
-        )
-
-        if is_first_import:
-            # Mark as upstream / manual-push so snapshots stay local by default.
-            db = await get_db()
-            updated_ws = await db.workspace.update(
-                where={"id": workspace_id},
-                data={
-                    "scmRemoteRole": cast(Any, "upstream"),
-                    "scmAutoSyncPolicy": cast(Any, "manual"),
-                    "scmSyncPaused": False,
-                    "scmSyncPausedReason": None,
-                },
-            )
-            scm = self._workspace_from_record(updated_ws).scm or scm
-
-            # Import full remote commit history as snapshot records inline
-            # so the timeline is complete before returning to the caller.
-            await self._backfill_workspace_scm_remote_commits(
-                workspace_id,
-                git_branch=preview.git_branch,
-                remote_dir=remote_dir,
-                remote_head_hash=remote_commit_hash,
-                branch_id=imported_snapshot.branch_id,
-                imported_snapshot_id=imported_snapshot.id,
-            )
-        else:
-            # Clear any paused state on successful pull/import.
-            db = await get_db()
-            await db.workspace.update(
-                where={"id": workspace_id},
-                data={
-                    "scmSyncPaused": False,
-                    "scmSyncPausedReason": None,
-                },
-            )
-
-        summary = "Upstream changes pulled successfully." if is_upstream and not is_first_import else "Workspace imported successfully."
         return UserSpaceWorkspaceScmSyncResponse(
             workspace_id=workspace_id,
             direction="import",
             state="success",
-            summary=summary,
-            scm=scm,
-            snapshot=imported_snapshot,
-            remote_commit_hash=remote_commit_hash,
-            suggested_setup_prompt=(
-                self._workspace_scm_setup_prompt(
-                    workspace_id,
-                    preview.git_url,
-                    preview.git_branch,
-                    inferred_entrypoint=inferred_entrypoint,
-                    normalization_actions=normalization_actions,
-                )
-                if is_first_import
-                else None
-            ),
+            summary=result.task_summary,
+            scm=result.scm,
+            snapshot=result.imported_snapshot,
+            remote_commit_hash=result.remote_commit_hash,
+            suggested_setup_prompt=result.suggested_prompt,
         )
 
     async def export_workspace_to_scm(

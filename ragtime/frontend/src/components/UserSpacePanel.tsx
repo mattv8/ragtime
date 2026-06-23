@@ -59,7 +59,7 @@ import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspector
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import { Popover } from './Popover';
 import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
-import { WorkspaceScmWizard } from './WorkspaceScmWizard';
+import { useWorkspaceScmWizardActivity, WorkspaceScmWizard } from './WorkspaceScmWizard';
 
 interface UserSpacePanelProps {
   currentUser: User;
@@ -283,25 +283,25 @@ const WORKSPACE_MOUNT_SYNC_MODE_OPTIONS: Array<{
   icon: typeof ArrowRight;
   description: string;
 }> = [
-  {
-    value: 'merge',
-    label: 'Merge',
-    icon: ArrowLeftRight,
-    description: 'Bidirectional merge. Newer files win and nothing is deleted.',
-  },
-  {
-    value: 'source_authoritative',
-    label: 'Source',
-    icon: ArrowRight,
-    description: 'Remote source is authoritative. Target-only files are deleted on sync.',
-  },
-  {
-    value: 'target_authoritative',
-    label: 'Target',
-    icon: ArrowLeft,
-    description: 'Workspace target is authoritative. Source-only files are deleted on sync.',
-  },
-];
+    {
+      value: 'merge',
+      label: 'Merge',
+      icon: ArrowLeftRight,
+      description: 'Bidirectional merge. Newer files win and nothing is deleted.',
+    },
+    {
+      value: 'source_authoritative',
+      label: 'Source',
+      icon: ArrowRight,
+      description: 'Remote source is authoritative. Target-only files are deleted on sync.',
+    },
+    {
+      value: 'target_authoritative',
+      label: 'Target',
+      icon: ArrowLeft,
+      description: 'Workspace target is authoritative. Source-only files are deleted on sync.',
+    },
+  ];
 
 function isDestructiveMountSyncMode(syncMode: WorkspaceMountSyncMode): boolean {
   return syncMode !== 'merge';
@@ -675,9 +675,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [renamingSnapshotId, setRenamingSnapshotId] = useState<string | null>(null);
   const [snapshotEditValue, setSnapshotEditValue] = useState('');
   const [savingSnapshotRename, setSavingSnapshotRename] = useState(false);
-    const [deletingSnapshotId, setDeletingSnapshotId] = useState<string | null>(null);
-    const [deleteConfirmSnapshotId, setDeleteConfirmSnapshotId] = useState<string | null>(null);
-    const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
+  const [deletingSnapshotId, setDeletingSnapshotId] = useState<string | null>(null);
+  const [deleteConfirmSnapshotId, setDeleteConfirmSnapshotId] = useState<string | null>(null);
+  const [navigatingSnapshots, setNavigatingSnapshots] = useState(false);
   const [restoringSnapshotId, setRestoringSnapshotId] = useState<string | null>(null);
   const [branchRestoreSnapshotId, setBranchRestoreSnapshotId] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
@@ -1290,7 +1290,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     leftPaneFractionLiveRef.current = stored.rightPaneCollapsed ? 1 : restoredLeftPaneFraction;
     editorFractionLiveRef.current = stored.editorChatCollapsedSide === 'before' ? 0
       : stored.editorChatCollapsedSide === 'after' ? 1
-      : restoredEditorFraction;
+        : restoredEditorFraction;
 
     setSidebarCollapsed(stored.sidebarCollapsed);
     setSidebarWidth(stored.sidebarCollapsed ? 0 : restoredSidebarWidth);
@@ -1512,14 +1512,52 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
   const archiveExportInProgress = Boolean(
     activeWorkspace?.archive_export_task_id
-      && activeWorkspace.archive_export_task_phase
-      && !['completed', 'failed'].includes(activeWorkspace.archive_export_task_phase)
+    && activeWorkspace.archive_export_task_phase
+    && !['completed', 'failed'].includes(activeWorkspace.archive_export_task_phase)
   );
   const archiveImportInProgress = Boolean(
     activeWorkspace?.archive_import_task_id
-      && activeWorkspace.archive_import_task_phase
-      && !['completed', 'failed'].includes(activeWorkspace.archive_import_task_phase)
+    && activeWorkspace.archive_import_task_phase
+    && !['completed', 'failed'].includes(activeWorkspace.archive_import_task_phase)
   );
+  const workspaceScmWizardActivity = useWorkspaceScmWizardActivity(activeWorkspace);
+  const scmImportInProgress = Boolean(
+    workspaceScmWizardActivity
+    && workspaceScmWizardActivity.status === 'running'
+  );
+
+  useEffect(() => {
+    if (!activeWorkspaceId || workspaceScmWizardActivity?.kind !== 'import-task') {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshWorkspace = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
+        if (cancelled) return;
+        setWorkspaces((current) => current.map((workspace) => (
+          workspace.id === refreshedWorkspace.id ? refreshedWorkspace : workspace
+        )));
+      } catch {
+        // Best-effort status refresh; the wizard poll handles detailed errors when open.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void refreshWorkspace();
+    const intervalId = window.setInterval(() => { void refreshWorkspace(); }, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeWorkspaceId, workspaceScmWizardActivity?.kind, workspaceScmWizardActivity && 'taskId' in workspaceScmWizardActivity ? workspaceScmWizardActivity.taskId : null]);
+
   const workspaceChatShareableUserIds = useMemo(() => {
     if (!activeWorkspace) return [];
     return Array.from(new Set([
@@ -4005,7 +4043,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     previewLaunchRequestIdRef.current += 1;
     previewLaunchExpiresAtMsRef.current = 0;
     browserSurfaceAuthExpiryRef.current = {};
-  previousRuntimeDisplayStateRef.current = null;
+    previousRuntimeDisplayStateRef.current = null;
     setError(null);
     setRuntimeStatus(null);
     setActiveWorkspaceChatSnapshot(null);
@@ -4144,7 +4182,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     let reconnectEnabled = true;
     const MAX_COLLAB_RECONNECT_ATTEMPTS = 8;
-        const scheduleReconnect = () => {
+    const scheduleReconnect = () => {
       if (!reconnectEnabled || collabReconnectTimerRef.current !== null) {
         return;
       }
@@ -5552,11 +5590,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setMounts((prev) => prev.map((mount) => (
       mount.id === mountId
         ? {
-            ...mount,
-            sync_status: 'error',
-            sync_notice: null,
-            last_sync_error: message,
-          }
+          ...mount,
+          sync_status: 'error',
+          sync_notice: null,
+          last_sync_error: message,
+        }
         : mount
     )));
     setError(message);
@@ -6044,8 +6082,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const shareSubdomainDisabledReason = activeShareLinkStatus?.subdomain_share_disabled_reason ?? null;
   const showProtectedSubdomainNotice = Boolean(
     activeShareLinkStatus?.has_share_link
-      && shareLinkType === 'subdomain'
-      && shareAccessMode !== 'token',
+    && shareLinkType === 'subdomain'
+    && shareAccessMode !== 'token',
   );
 
   useEffect(() => {
@@ -6402,10 +6440,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           const mountStatusClass = isMountSyncInProgress
             ? 'userspace-status-pill-warning'
             : mountInfo?.syncStatus === 'synced'
-            ? 'userspace-status-pill-success'
-            : mountInfo?.syncStatus === 'pending'
-              ? 'userspace-status-pill-info'
-              : 'userspace-status-pill-danger';
+              ? 'userspace-status-pill-success'
+              : mountInfo?.syncStatus === 'pending'
+                ? 'userspace-status-pill-info'
+                : 'userspace-status-pill-danger';
           const mountBadgeLabel = isMountDisconnected
             ? 'disconnected'
             : isMountDisabled
@@ -6753,207 +6791,207 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       );
                     }
                     return filteredWorkspacePickerWorkspaces.map((ws) => {
-                    const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
-                    const workspaceSearchSnippet = workspacePickerChatSearch.snippetsByWorkspaceId[ws.id];
-                    const canDeleteWorkspace =
-                      ws.owner_user_id === currentUser.id ||
-                      ws.members.some((member) => member.user_id === currentUser.id && member.role === 'owner');
-                    const canRenameWorkspace = currentUser.role === 'admin'
-                      || ws.owner_user_id === currentUser.id
-                      || ws.members.some((member) => (
-                        member.user_id === currentUser.id && (member.role === 'owner' || member.role === 'editor')
-                      ));
-                    const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
-                    const isDeletingWorkspace = Boolean(deletingWorkspaceTasks[ws.id]);
-                    const duplicateTask = activeWorkspaceDuplicateTaskBySourceId[ws.id] ?? null;
-                    const isDuplicatingWorkspace = Boolean(duplicateTask);
-                    const workspaceActionBusy = isDeletingWorkspace || isDuplicatingWorkspace;
-                    const isRenamingWorkspace = editingWorkspaceNameId === ws.id;
-                    return (
-                      <div
-                        key={ws.id}
-                        className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''}${isDeletingWorkspace ? ' is-deleting' : ''}${isDuplicatingWorkspace ? ' is-duplicating' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
-                      >
-                        {isRenamingWorkspace ? (
-                          <div className="userspace-workspace-inline-edit">
-                            <textarea
-                              ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
-                              className="userspace-workspace-rename-input"
-                              value={workspaceNameDraft}
-                              onChange={(event) => {
-                                setWorkspaceNameDraft(event.target.value);
-                                event.target.style.height = 'auto';
-                                event.target.style.height = `${event.target.scrollHeight}px`;
-                              }}
-                              onClick={(event) => event.stopPropagation()}
-                              onKeyDown={(event) => {
-                                event.stopPropagation();
-                                if (event.key === 'Enter' && !event.shiftKey) {
-                                  event.preventDefault();
-                                  void handleSaveWorkspaceRename(ws);
+                      const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
+                      const workspaceSearchSnippet = workspacePickerChatSearch.snippetsByWorkspaceId[ws.id];
+                      const canDeleteWorkspace =
+                        ws.owner_user_id === currentUser.id ||
+                        ws.members.some((member) => member.user_id === currentUser.id && member.role === 'owner');
+                      const canRenameWorkspace = currentUser.role === 'admin'
+                        || ws.owner_user_id === currentUser.id
+                        || ws.members.some((member) => (
+                          member.user_id === currentUser.id && (member.role === 'owner' || member.role === 'editor')
+                        ));
+                      const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
+                      const isDeletingWorkspace = Boolean(deletingWorkspaceTasks[ws.id]);
+                      const duplicateTask = activeWorkspaceDuplicateTaskBySourceId[ws.id] ?? null;
+                      const isDuplicatingWorkspace = Boolean(duplicateTask);
+                      const workspaceActionBusy = isDeletingWorkspace || isDuplicatingWorkspace;
+                      const isRenamingWorkspace = editingWorkspaceNameId === ws.id;
+                      return (
+                        <div
+                          key={ws.id}
+                          className={`model-selector-item userspace-workspace-item ${ws.id === activeWorkspaceId ? 'is-selected' : ''}${isDeletingWorkspace ? ' is-deleting' : ''}${isDuplicatingWorkspace ? ' is-duplicating' : ''} ${!canDeleteWorkspace ? 'is-shared' : ''}`}
+                        >
+                          {isRenamingWorkspace ? (
+                            <div className="userspace-workspace-inline-edit">
+                              <textarea
+                                ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+                                className="userspace-workspace-rename-input"
+                                value={workspaceNameDraft}
+                                onChange={(event) => {
+                                  setWorkspaceNameDraft(event.target.value);
+                                  event.target.style.height = 'auto';
+                                  event.target.style.height = `${event.target.scrollHeight}px`;
+                                }}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => {
+                                  event.stopPropagation();
+                                  if (event.key === 'Enter' && !event.shiftKey) {
+                                    event.preventDefault();
+                                    void handleSaveWorkspaceRename(ws);
+                                  }
+                                  if (event.key === 'Escape') {
+                                    event.preventDefault();
+                                    handleCancelWorkspaceRename();
+                                  }
+                                }}
+                                autoFocus
+                                rows={1}
+                              />
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={ws.id === activeWorkspaceId}
+                              className="userspace-workspace-select-btn"
+                              disabled={isDeletingWorkspace}
+                              onClick={() => {
+                                if (ws.id !== activeWorkspaceId) {
+                                  setRuntimeStatus(null);
                                 }
-                                if (event.key === 'Escape') {
-                                  event.preventDefault();
-                                  handleCancelWorkspaceRename();
-                                }
+                                selectActiveWorkspace(ws.id);
+                                setIsWorkspaceMenuOpen(false);
+                                setDeleteConfirmWorkspaceId(null);
                               }}
-                              autoFocus
-                              rows={1}
-                            />
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={ws.id === activeWorkspaceId}
-                            className="userspace-workspace-select-btn"
-                            disabled={isDeletingWorkspace}
-                            onClick={() => {
-                              if (ws.id !== activeWorkspaceId) {
-                                setRuntimeStatus(null);
-                              }
-                              selectActiveWorkspace(ws.id);
-                              setIsWorkspaceMenuOpen(false);
-                              setDeleteConfirmWorkspaceId(null);
-                            }}
-                          >
-                            <span className="userspace-workspace-select-copy">
-                              <span className="model-selector-item-name">
-                                <SearchHighlightedText text={ws.name} query={workspacePickerSearch} />
+                            >
+                              <span className="userspace-workspace-select-copy">
+                                <span className="model-selector-item-name">
+                                  <SearchHighlightedText text={ws.name} query={workspacePickerSearch} />
+                                </span>
+                                {workspaceSearchSnippet && !ws.name.toLowerCase().includes(workspacePickerSearch.trim().toLowerCase()) && (
+                                  <span className="chat-conversation-snippet userspace-workspace-search-snippet">
+                                    <SearchHighlightedText text={workspaceSearchSnippet} query={workspacePickerSearch} />
+                                  </span>
+                                )}
                               </span>
-                              {workspaceSearchSnippet && !ws.name.toLowerCase().includes(workspacePickerSearch.trim().toLowerCase()) && (
-                                <span className="chat-conversation-snippet userspace-workspace-search-snippet">
-                                  <SearchHighlightedText text={workspaceSearchSnippet} query={workspacePickerSearch} />
+                              {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
+                                <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
+                                  <AlertCircle size={13} />
                                 </span>
                               )}
+                            </button>
+                          )}
+
+                          {(canDeleteWorkspace || canRenameWorkspace || isRenamingWorkspace) && (
+                            <div className="userspace-workspace-item-actions">
+                              {isRenamingWorkspace ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn confirm-delete"
+                                    disabled={workspaceActionBusy}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleSaveWorkspaceRename(ws);
+                                    }}
+                                    title="Save workspace name"
+                                  >
+                                    <Check size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn cancel-delete"
+                                    disabled={isDeletingWorkspace}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleCancelWorkspaceRename();
+                                    }}
+                                    title="Cancel rename"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </>
+                              ) : isConfirmingDelete ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn confirm-delete"
+                                    disabled={workspaceActionBusy}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void handleDeleteWorkspace(ws.id);
+                                    }}
+                                    title="Confirm delete workspace"
+                                  >
+                                    {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="chat-action-btn cancel-delete"
+                                    disabled={isDeletingWorkspace}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setDeleteConfirmWorkspaceId(null);
+                                    }}
+                                    title="Cancel"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  {canRenameWorkspace && (
+                                    <button
+                                      type="button"
+                                      className="chat-action-btn"
+                                      disabled={workspaceActionBusy}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void handleDuplicateWorkspace(ws.id);
+                                      }}
+                                      title={isDuplicatingWorkspace ? (formatWorkspaceDuplicateTaskStatus(duplicateTask) || 'Duplicating workspace...') : 'Duplicate workspace'}
+                                    >
+                                      {isDuplicatingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <CopyPlus size={12} />}
+                                    </button>
+                                  )}
+                                  {canRenameWorkspace && (
+                                    <button
+                                      type="button"
+                                      className="chat-action-btn"
+                                      disabled={workspaceActionBusy}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        handleStartWorkspaceRename(ws);
+                                      }}
+                                      title="Rename workspace"
+                                    >
+                                      <Pencil size={12} />
+                                    </button>
+                                  )}
+                                  {canDeleteWorkspace && (
+                                    <button
+                                      type="button"
+                                      className="chat-action-btn"
+                                      disabled={workspaceActionBusy}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setDeleteConfirmWorkspaceId(ws.id);
+                                      }}
+                                      title="Delete workspace"
+                                    >
+                                      {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          {!canDeleteWorkspace && (
+                            <span className="userspace-workspace-owner-hint" title="Only workspace owners can delete workspaces">
+                              Shared
                             </span>
-                            {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
-                              <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
-                                <AlertCircle size={13} />
-                              </span>
-                            )}
-                          </button>
-                        )}
+                          )}
 
-                        {(canDeleteWorkspace || canRenameWorkspace || isRenamingWorkspace) && (
-                          <div className="userspace-workspace-item-actions">
-                            {isRenamingWorkspace ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className="chat-action-btn confirm-delete"
-                                  disabled={workspaceActionBusy}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void handleSaveWorkspaceRename(ws);
-                                  }}
-                                  title="Save workspace name"
-                                >
-                                  <Check size={12} />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="chat-action-btn cancel-delete"
-                                  disabled={isDeletingWorkspace}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleCancelWorkspaceRename();
-                                  }}
-                                  title="Cancel rename"
-                                >
-                                  <X size={12} />
-                                </button>
-                              </>
-                            ) : isConfirmingDelete ? (
-                              <>
-                                <button
-                                  type="button"
-                                  className="chat-action-btn confirm-delete"
-                                  disabled={workspaceActionBusy}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void handleDeleteWorkspace(ws.id);
-                                  }}
-                                  title="Confirm delete workspace"
-                                >
-                                  {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="chat-action-btn cancel-delete"
-                                  disabled={isDeletingWorkspace}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setDeleteConfirmWorkspaceId(null);
-                                  }}
-                                  title="Cancel"
-                                >
-                                  <X size={12} />
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                {canRenameWorkspace && (
-                                  <button
-                                    type="button"
-                                    className="chat-action-btn"
-                                    disabled={workspaceActionBusy}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void handleDuplicateWorkspace(ws.id);
-                                    }}
-                                    title={isDuplicatingWorkspace ? (formatWorkspaceDuplicateTaskStatus(duplicateTask) || 'Duplicating workspace...') : 'Duplicate workspace'}
-                                  >
-                                    {isDuplicatingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <CopyPlus size={12} />}
-                                  </button>
-                                )}
-                                {canRenameWorkspace && (
-                                  <button
-                                    type="button"
-                                    className="chat-action-btn"
-                                    disabled={workspaceActionBusy}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      handleStartWorkspaceRename(ws);
-                                    }}
-                                    title="Rename workspace"
-                                  >
-                                    <Pencil size={12} />
-                                  </button>
-                                )}
-                                {canDeleteWorkspace && (
-                                  <button
-                                    type="button"
-                                    className="chat-action-btn"
-                                    disabled={workspaceActionBusy}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setDeleteConfirmWorkspaceId(ws.id);
-                                    }}
-                                    title="Delete workspace"
-                                  >
-                                    {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
-
-                        {!canDeleteWorkspace && (
-                          <span className="userspace-workspace-owner-hint" title="Only workspace owners can delete workspaces">
-                            Shared
-                          </span>
-                        )}
-
-                        {workspaceChatState.hasLive && (
-                          <span className="userspace-workspace-item-state" title="Chat in progress">
-                            <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
-                          </span>
-                        )}
-                      </div>
-                    );
-                  });
+                          {workspaceChatState.hasLive && (
+                            <span className="userspace-workspace-item-state" title="Chat in progress">
+                              <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
+                            </span>
+                          )}
+                        </div>
+                      );
+                    });
                   })()}
                 </div>
               </div>
@@ -6973,7 +7011,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           </button>
           {canEditWorkspace && activeWorkspaceId && (
             <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Backup or restore this workspace">
-              {(archiveExportInProgress || archiveImportInProgress)
+              {(archiveExportInProgress || archiveImportInProgress || scmImportInProgress)
                 ? <MiniLoadingSpinner variant="icon" size={14} />
                 : <FolderGit2Icon size={14} />}
             </button>
@@ -7045,6 +7083,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 Archive import: {activeWorkspace.archive_import_task_phase.replace(/_/g, ' ')}
               </span>
             )}
+            {scmImportInProgress && workspaceScmWizardActivity && (
+              <span className="userspace-status-pill userspace-status-pill-info" title="Workspace SCM import status">
+                SCM: {workspaceScmWizardActivity.kind === 'preview'
+                  ? workspaceScmWizardActivity.status === 'ready' ? 'ready to pull' : 'previewing'
+                  : 'importing'}
+              </span>
+            )}
             {isAdminImpersonating && (
               <span
                 className="userspace-status-pill userspace-status-pill-warning"
@@ -7094,15 +7139,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             )}
             {runtimeStatus && (
               <span
-                className={`userspace-status-pill ${
-                  runtimeDisplayState === 'running'
+                className={`userspace-status-pill ${runtimeDisplayState === 'running'
                     ? 'userspace-status-pill-success'
                     : runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping'
                       ? 'userspace-status-pill-warning'
                       : runtimeDisplayState === 'error' || runtimeDisplayState === 'stopped'
                         ? 'userspace-status-pill-danger'
                         : 'userspace-status-pill-muted'
-                }`}
+                  }`}
                 title={runtimeStatus.last_error || 'Workspace runtime session state'}
               >
                 {runtimeDisplayState === 'starting'
@@ -7273,47 +7317,47 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           <div className="userspace-editor-section" ref={editorSectionRef} style={{ display: editorChatCollapsedSide === 'before' ? 'none' : undefined, flex: editorFractionLiveRef.current }}>
             {/* File sidebar */}
             {!sidebarCollapsed && (
-            <div className="userspace-file-sidebar" ref={fileSidebarRef} style={{ width: sidebarWidthLiveRef.current }}>
-              <div className="userspace-file-sidebar-header">
-                <h4><File size={14} /> Files</h4>
-              </div>
-              <div className="userspace-file-list">
-                {renderTreeNodes(fileTree)}
-                {newFileName !== null ? (
-                  <div className="userspace-file-item userspace-tree-row userspace-tree-new-file-row">
-                    <input
-                      className="userspace-file-rename-input"
-                      style={{ paddingLeft: `${newFileParentPath ? 20 : 6}px` }}
-                      value={newFileName}
-                      onChange={(e) => setNewFileName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleCreateNewFile(newFileName, newFileParentPath);
-                        if (e.key === 'Escape') {
-                          setNewFileName(null);
-                          setNewFileParentPath('');
-                        }
-                      }}
-                      placeholder={newFileParentPath ? `${newFileParentPath}/file.ts` : 'path/to/file.ts'}
-                      autoFocus
-                    />
-                    <div className="userspace-item-actions" style={{ opacity: 1 }}>
-                      <button className="chat-action-btn" onClick={() => handleCreateNewFile(newFileName, newFileParentPath)} title="Create">
-                        <Check size={12} />
-                      </button>
-                      <button className="chat-action-btn" onClick={() => { setNewFileName(null); setNewFileParentPath(''); }} title="Cancel">
-                        <X size={12} />
-                      </button>
+              <div className="userspace-file-sidebar" ref={fileSidebarRef} style={{ width: sidebarWidthLiveRef.current }}>
+                <div className="userspace-file-sidebar-header">
+                  <h4><File size={14} /> Files</h4>
+                </div>
+                <div className="userspace-file-list">
+                  {renderTreeNodes(fileTree)}
+                  {newFileName !== null ? (
+                    <div className="userspace-file-item userspace-tree-row userspace-tree-new-file-row">
+                      <input
+                        className="userspace-file-rename-input"
+                        style={{ paddingLeft: `${newFileParentPath ? 20 : 6}px` }}
+                        value={newFileName}
+                        onChange={(e) => setNewFileName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleCreateNewFile(newFileName, newFileParentPath);
+                          if (e.key === 'Escape') {
+                            setNewFileName(null);
+                            setNewFileParentPath('');
+                          }
+                        }}
+                        placeholder={newFileParentPath ? `${newFileParentPath}/file.ts` : 'path/to/file.ts'}
+                        autoFocus
+                      />
+                      <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                        <button className="chat-action-btn" onClick={() => handleCreateNewFile(newFileName, newFileParentPath)} title="Create">
+                          <Check size={12} />
+                        </button>
+                        <button className="chat-action-btn" onClick={() => { setNewFileName(null); setNewFileParentPath(''); }} title="Cancel">
+                          <X size={12} />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ) : canEditWorkspace ? (
-                  <button className="userspace-new-file-btn" onClick={() => handleStartCreateFile('')} title="New file">
-                    <Plus size={12} /> New file
-                  </button>
-                ) : fileTree.length === 0 ? (
-                  <p className="userspace-muted" style={{ padding: '8px' }}>No files yet</p>
-                ) : null}
+                  ) : canEditWorkspace ? (
+                    <button className="userspace-new-file-btn" onClick={() => handleStartCreateFile('')} title="New file">
+                      <Plus size={12} /> New file
+                    </button>
+                  ) : fileTree.length === 0 ? (
+                    <p className="userspace-muted" style={{ padding: '8px' }}>No files yet</p>
+                  ) : null}
+                </div>
               </div>
-            </div>
             )}
 
             <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} onResizeEnd={commitSidebarWidth} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
@@ -7530,34 +7574,34 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         const isMainBranch = branch.name === 'Main';
                         return (
                           <button
-                              key={`legend-${branch.id}`}
-                              type="button"
-                              className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
-                              onClick={() => handleSwitchSnapshotBranch(branch.id)}
-                              disabled={!canEditWorkspace || snapshotUiLocked}
-                              title={branch.git_ref_name}
-                              style={{ '--userspace-branch-color': branchColor } as CSSProperties}
-                            >
-                              <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
-                              <span className="userspace-snapshot-branch-legend-count">{branchSnapshots.length}</span>
-                              {branch.branched_from_snapshot_id && (
-                                <span className="userspace-snapshot-branch-legend-fork">
-                                  from {branch.branched_from_snapshot_id.slice(0, 8)}
-                                </span>
-                              )}
-                              {!isMainBranch && canEditWorkspace && (
-                                <span
-                                  role="button"
-                                  tabIndex={0}
-                                  className="userspace-snapshot-branch-promote"
-                                  onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
-                                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
-                                  title="Promote this branch to Main"
-                                >
-                                  <Crown size={10} />
-                                </span>
-                              )}
-                            </button>
+                            key={`legend-${branch.id}`}
+                            type="button"
+                            className={`userspace-snapshot-branch-legend ${currentSnapshotBranchId === branch.id ? 'active' : ''}`}
+                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                            disabled={!canEditWorkspace || snapshotUiLocked}
+                            title={branch.git_ref_name}
+                            style={{ '--userspace-branch-color': branchColor } as CSSProperties}
+                          >
+                            <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
+                            <span className="userspace-snapshot-branch-legend-count">{branchSnapshots.length}</span>
+                            {branch.branched_from_snapshot_id && (
+                              <span className="userspace-snapshot-branch-legend-fork">
+                                from {branch.branched_from_snapshot_id.slice(0, 8)}
+                              </span>
+                            )}
+                            {!isMainBranch && canEditWorkspace && (
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="userspace-snapshot-branch-promote"
+                                onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
+                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
+                                title="Promote this branch to Main"
+                              >
+                                <Crown size={10} />
+                              </span>
+                            )}
+                          </button>
                         );
                       })}
                       <button
@@ -7582,28 +7626,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       )}
                       {showStaleBranches && staleBranches.map((branch) => (
                         <button
-                            key={`stale-legend-${branch.id}`}
-                            type="button"
-                            className="userspace-snapshot-branch-legend stale"
-                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
-                            disabled={!canEditWorkspace || snapshotUiLocked}
-                            title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
-                          >
-                            <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
-                            <span className="userspace-snapshot-branch-legend-count">{branch.commits_behind ?? 0} behind</span>
-                            {canEditWorkspace && (
-                              <span
-                                role="button"
-                                tabIndex={0}
-                                className="userspace-snapshot-branch-promote"
-                                onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
-                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
-                                title="Promote this branch to Main"
-                              >
-                                <Crown size={10} />
-                              </span>
-                            )}
-                          </button>
+                          key={`stale-legend-${branch.id}`}
+                          type="button"
+                          className="userspace-snapshot-branch-legend stale"
+                          onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                          disabled={!canEditWorkspace || snapshotUiLocked}
+                          title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
+                        >
+                          <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
+                          <span className="userspace-snapshot-branch-legend-count">{branch.commits_behind ?? 0} behind</span>
+                          {canEditWorkspace && (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              className="userspace-snapshot-branch-promote"
+                              onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
+                              title="Promote this branch to Main"
+                            >
+                              <Crown size={10} />
+                            </span>
+                          )}
+                        </button>
                       ))}
                     </div>
 
@@ -7642,15 +7686,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 const laneState = laneStates[branchIndex];
                                 const laneColor = snapshotBranchColorById.get(branch.id);
                                 return (
-                                <div key={`${snapshot.id}-${branch.id}`} className="userspace-snapshot-lane-cell">
-                                  <span
-                                    className={`userspace-snapshot-lane-line ${laneState?.isActive ? 'active' : ''} ${laneState?.isStart ? 'start' : ''} ${laneState?.isEnd ? 'end' : ''}`}
-                                    style={{ '--userspace-branch-color': laneColor } as CSSProperties}
-                                  />
-                                  {branchIndex === laneIndex && (
-                                    <span className={`userspace-snapshot-node-dot ${isCurrentSnapshot ? 'current' : ''}`} />
-                                  )}
-                                </div>
+                                  <div key={`${snapshot.id}-${branch.id}`} className="userspace-snapshot-lane-cell">
+                                    <span
+                                      className={`userspace-snapshot-lane-line ${laneState?.isActive ? 'active' : ''} ${laneState?.isStart ? 'start' : ''} ${laneState?.isEnd ? 'end' : ''}`}
+                                      style={{ '--userspace-branch-color': laneColor } as CSSProperties}
+                                    />
+                                    {branchIndex === laneIndex && (
+                                      <span className={`userspace-snapshot-node-dot ${isCurrentSnapshot ? 'current' : ''}`} />
+                                    )}
+                                  </div>
                                 );
                               })}
                               {forkLinks.map((forkLink) => {
@@ -7659,15 +7703,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                   return null;
                                 }
                                 return (
-                                <span
-                                  key={`${snapshot.id}-${forkLink.branchId}`}
-                                  className="userspace-snapshot-fork-link"
-                                  style={{
-                                    left: `${forkLink.fromLaneIndex * 18 + 9}px`,
-                                    width: `${forkWidth * 18}px`,
-                                    '--userspace-branch-color': snapshotBranchColorById.get(forkLink.branchId),
-                                  } as CSSProperties}
-                                />
+                                  <span
+                                    key={`${snapshot.id}-${forkLink.branchId}`}
+                                    className="userspace-snapshot-fork-link"
+                                    style={{
+                                      left: `${forkLink.fromLaneIndex * 18 + 9}px`,
+                                      width: `${forkWidth * 18}px`,
+                                      '--userspace-branch-color': snapshotBranchColorById.get(forkLink.branchId),
+                                    } as CSSProperties}
+                                  />
                                 );
                               })}
                             </div>
@@ -7958,909 +8002,909 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               <button className="modal-close" onClick={handleCloseMountsModal}>&times;</button>
             </div>
             <div className="modal-body">
-            {mountsModalTab === 'object-storage' ? (
-              showObjectStorageWizard ? (
-                <WorkspaceObjectStorageWizard
-                  workspaceId={activeWorkspaceId}
-                  existingBucket={editingObjectStorageBucket}
-                  existingBucketNames={objectStorageConfig?.buckets.map((bucket) => bucket.name) ?? []}
-                  onClose={() => {
-                    setShowObjectStorageWizard(false);
-                    setEditingObjectStorageBucket(null);
-                  }}
-                  onSaved={handleObjectStorageWizardSaved}
-                />
-              ) : (
-                <div style={{ display: 'grid', gap: 16 }}>
-                  <p className="userspace-muted" style={{ marginBottom: 0 }}>
-                    S3-compatible object storage with auto-injected credentials at runtime.
-                  </p>
-                  {objectStorageLoading ? (
-                    <p className="userspace-muted">Loading...</p>
-                  ) : objectStorageConfig ? (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <strong>Buckets</strong>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => {
-                            setEditingObjectStorageBucket(null);
-                            setShowObjectStorageWizard(true);
-                          }}
-                        >
-                          <Plus size={14} />
-                          New Bucket
-                        </button>
-                      </div>
+              {mountsModalTab === 'object-storage' ? (
+                showObjectStorageWizard ? (
+                  <WorkspaceObjectStorageWizard
+                    workspaceId={activeWorkspaceId}
+                    existingBucket={editingObjectStorageBucket}
+                    existingBucketNames={objectStorageConfig?.buckets.map((bucket) => bucket.name) ?? []}
+                    onClose={() => {
+                      setShowObjectStorageWizard(false);
+                      setEditingObjectStorageBucket(null);
+                    }}
+                    onSaved={handleObjectStorageWizardSaved}
+                  />
+                ) : (
+                  <div style={{ display: 'grid', gap: 16 }}>
+                    <p className="userspace-muted" style={{ marginBottom: 0 }}>
+                      S3-compatible object storage with auto-injected credentials at runtime.
+                    </p>
+                    {objectStorageLoading ? (
+                      <p className="userspace-muted">Loading...</p>
+                    ) : objectStorageConfig ? (
+                      <>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <strong>Buckets</strong>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => {
+                              setEditingObjectStorageBucket(null);
+                              setShowObjectStorageWizard(true);
+                            }}
+                          >
+                            <Plus size={14} />
+                            New Bucket
+                          </button>
+                        </div>
 
-                      <div style={{ display: 'grid', gap: 10 }}>
-                        {objectStorageConfig.buckets.map((bucket) => (
-                          <div key={bucket.name} style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 8 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <strong>{bucket.name}</strong>
-                              {bucket.is_default && (
-                                <span className="userspace-muted" style={{ fontSize: 12, padding: '2px 6px', borderRadius: 999, background: 'var(--color-bg-tertiary)' }}>
-                                  Default
+                        <div style={{ display: 'grid', gap: 10 }}>
+                          {objectStorageConfig.buckets.map((bucket) => (
+                            <div key={bucket.name} style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 8 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <strong>{bucket.name}</strong>
+                                {bucket.is_default && (
+                                  <span className="userspace-muted" style={{ fontSize: 12, padding: '2px 6px', borderRadius: 999, background: 'var(--color-bg-tertiary)' }}>
+                                    Default
+                                  </span>
+                                )}
+                                <span style={{ marginLeft: 'auto' }} />
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => {
+                                    setEditingObjectStorageBucket(bucket);
+                                    setShowObjectStorageWizard(true);
+                                  }}
+                                  title="Edit bucket"
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => { void handleDeleteObjectStorageBucket(bucket.name); }}
+                                  disabled={objectStorageConfig.buckets.length <= 1 || deletingObjectStorageBucket === bucket.name}
+                                  title={objectStorageConfig.buckets.length <= 1 ? 'At least one bucket must remain' : 'Delete bucket'}
+                                >
+                                  {deletingObjectStorageBucket === bucket.name ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                </button>
+                              </div>
+                              <div className="userspace-muted" style={{ fontSize: 12 }}>
+                                {bucket.description || 'No description'}
+                              </div>
+                              <div style={{ display: 'grid', gap: 4 }}>
+                                <span className="userspace-muted" style={{ fontSize: 12 }}>
+                                  Public root: <code>/{bucket.name}/{bucket.public_prefix}</code>
                                 </span>
-                              )}
-                              <span style={{ marginLeft: 'auto' }} />
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => {
-                                  setEditingObjectStorageBucket(bucket);
-                                  setShowObjectStorageWizard(true);
-                                }}
-                                title="Edit bucket"
-                              >
-                                <Pencil size={12} />
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => { void handleDeleteObjectStorageBucket(bucket.name); }}
-                                disabled={objectStorageConfig.buckets.length <= 1 || deletingObjectStorageBucket === bucket.name}
-                                title={objectStorageConfig.buckets.length <= 1 ? 'At least one bucket must remain' : 'Delete bucket'}
-                              >
-                                {deletingObjectStorageBucket === bucket.name ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
-                              </button>
+                                <span className="userspace-muted" style={{ fontSize: 12 }}>
+                                  Private root: <code>/{bucket.name}/{bucket.private_prefix}</code>
+                                </span>
+                              </div>
                             </div>
-                            <div className="userspace-muted" style={{ fontSize: 12 }}>
-                              {bucket.description || 'No description'}
-                            </div>
-                            <div style={{ display: 'grid', gap: 4 }}>
-                              <span className="userspace-muted" style={{ fontSize: 12 }}>
-                                Public root: <code>/{bucket.name}/{bucket.public_prefix}</code>
-                              </span>
-                              <span className="userspace-muted" style={{ fontSize: 12 }}>
-                                Private root: <code>/{bucket.name}/{bucket.private_prefix}</code>
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : (
-                    <p className="userspace-muted">Object storage is unavailable for this workspace.</p>
-                  )}
-                </div>
-              )
-            ) : (
-              <>
-              {!mountsLoading && mounts.length === 0 && (
-                <p className="userspace-muted" style={{ marginBottom: 12 }}>
-                    Attach folders from your connected tools so apps running in this workspace can read and write to them.
-                </p>
-              )}
-              {mountsLoading ? (
-                <p className="userspace-muted">Loading...</p>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="userspace-muted">Object storage is unavailable for this workspace.</p>
+                    )}
+                  </div>
+                )
               ) : (
                 <>
-                  {mounts.length > 0 && (
-                    <div style={{ marginBottom: 16 }}>
-                      <strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>Active mounts</strong>
-                      <div className="userspace-mount-list">
-                      {mounts.map((mount) => {
-                        const isEjected = !mount.enabled;
-                        const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
-                        const displaySourcePath = resolveSourceDisplayPath(mount.source_path, undefined, { sourceType: mount.source_type });
-                        const isMountEditable = mount.editable !== false;
-                        const mountCloudProvider = isCloudMountProvider(mount.source_type) ? mount.source_type : null;
-                        const hasCloudSourceAuthIssue = !isEjected
-                          && !mount.source_available
-                          && mount.source_unavailable_kind === 'cloud_auth';
-                        const mountSyncErrorMessage =
-                          isEjected
-                            ? null
-                            : hasCloudSourceAuthIssue
-                            ? mount.source_unavailable_reason || 'Cloud connection is no longer available. Reconnect OAuth for this mount source, then sync again.'
-                            : mount.last_sync_error;
-                        const shouldShowSyncNotice = Boolean(mount.sync_notice) && !hasCloudSourceAuthIssue;
-                        const canRunManualSync = mount.source_available && !isEjected && isMountEditable;
-                        const mountReadOnlyReason = 'Read-only: access to this source was revoked by an admin.';
-                        return (
-                        <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
-                          <div className="userspace-mount-primary-row">
-                            <span className="userspace-mount-path-flow">
-                              <HardDrive size={13} className="userspace-mount-target-icon" />
-                              <span className="userspace-mount-source-path">{displaySourcePath}</span>
-                              <ArrowRight size={12} className="userspace-mount-path-arrow" />
-                              <span className="userspace-mount-target-path">{mount.target_path}</span>
-                              <span className="userspace-mount-tool-label">({mount.source_name ?? 'Unknown source'})</span>
-                            </span>
-                            <div className="userspace-mount-controls">
-                              <span className="userspace-mount-sync-status">
-                                {isEjected && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }} title="Mount is currently unmounted">Unmounted</span>}
-                                {!isEjected && !mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
-                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
-                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
-                                  <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
-                                )}
-                                {!isEjected && mount.source_available && !isWorkspaceMountSyncCapableSourceType(mount.source_type) && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
-                              </span>
-                              <div className="userspace-mount-actions">
-                                {isWorkspaceMountSyncCapableSourceType(mount.source_type) && (
-                                  <>
-                                    <button
-                                      className="btn btn-sm btn-secondary"
-                                      onClick={() => {
-                                        const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
-                                        const currentIndex = modes.indexOf(mount.sync_mode);
-                                        const nextMode = modes[(currentIndex + 1) % modes.length];
-                                        void handleUpdateMountSyncMode(mount, nextMode);
-                                      }}
-                                      disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
-                                      title={isMountEditable ? getMountSyncModeDescription(mount.sync_mode) : mountReadOnlyReason}
-                                      style={{
-                                        minWidth: 100,
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 5,
-                                      }}
-                                    >
-                                      {savingMountWatchId === mount.id
-                                        ? <MiniLoadingSpinner variant="icon" size={12} />
-                                        : <><SyncModeIcon size={12} /> {getMountSyncModeLabel(mount.sync_mode)}</>}
-                                      <span
-                                        role="button"
-                                        onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` && v.mode === 'pinned' ? null : { id: `sync-mode-${mount.id}`, mode: 'pinned' }); }}
-                                        onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? v : { id: `sync-mode-${mount.id}`, mode: 'hover' })}
-                                        onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
-                                        title="About sync modes"
-                                        style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
-                                      >
-                                        <Info size={11} />
-                                        {expandedSyncModeInfo?.id === `sync-mode-${mount.id}` && (
+                  {!mountsLoading && mounts.length === 0 && (
+                    <p className="userspace-muted" style={{ marginBottom: 12 }}>
+                      Attach folders from your connected tools so apps running in this workspace can read and write to them.
+                    </p>
+                  )}
+                  {mountsLoading ? (
+                    <p className="userspace-muted">Loading...</p>
+                  ) : (
+                    <>
+                      {mounts.length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>Active mounts</strong>
+                          <div className="userspace-mount-list">
+                            {mounts.map((mount) => {
+                              const isEjected = !mount.enabled;
+                              const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
+                              const displaySourcePath = resolveSourceDisplayPath(mount.source_path, undefined, { sourceType: mount.source_type });
+                              const isMountEditable = mount.editable !== false;
+                              const mountCloudProvider = isCloudMountProvider(mount.source_type) ? mount.source_type : null;
+                              const hasCloudSourceAuthIssue = !isEjected
+                                && !mount.source_available
+                                && mount.source_unavailable_kind === 'cloud_auth';
+                              const mountSyncErrorMessage =
+                                isEjected
+                                  ? null
+                                  : hasCloudSourceAuthIssue
+                                    ? mount.source_unavailable_reason || 'Cloud connection is no longer available. Reconnect OAuth for this mount source, then sync again.'
+                                    : mount.last_sync_error;
+                              const shouldShowSyncNotice = Boolean(mount.sync_notice) && !hasCloudSourceAuthIssue;
+                              const canRunManualSync = mount.source_available && !isEjected && isMountEditable;
+                              const mountReadOnlyReason = 'Read-only: access to this source was revoked by an admin.';
+                              return (
+                                <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
+                                  <div className="userspace-mount-primary-row">
+                                    <span className="userspace-mount-path-flow">
+                                      <HardDrive size={13} className="userspace-mount-target-icon" />
+                                      <span className="userspace-mount-source-path">{displaySourcePath}</span>
+                                      <ArrowRight size={12} className="userspace-mount-path-arrow" />
+                                      <span className="userspace-mount-target-path">{mount.target_path}</span>
+                                      <span className="userspace-mount-tool-label">({mount.source_name ?? 'Unknown source'})</span>
+                                    </span>
+                                    <div className="userspace-mount-controls">
+                                      <span className="userspace-mount-sync-status">
+                                        {isEjected && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }} title="Mount is currently unmounted">Unmounted</span>}
+                                        {!isEjected && !mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
+                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
+                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
+                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
+                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
+                                          <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
+                                        )}
+                                        {!isEjected && mount.source_available && !isWorkspaceMountSyncCapableSourceType(mount.source_type) && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                                      </span>
+                                      <div className="userspace-mount-actions">
+                                        {isWorkspaceMountSyncCapableSourceType(mount.source_type) && (
                                           <>
-                                            {expandedSyncModeInfo?.mode === 'pinned' && (
-                                              <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
-                                            )}
-                                            <div
-                                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? { ...v, mode: 'hover' } : v)}
-                                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                            <button
+                                              className="btn btn-sm btn-secondary"
+                                              onClick={() => {
+                                                const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
+                                                const currentIndex = modes.indexOf(mount.sync_mode);
+                                                const nextMode = modes[(currentIndex + 1) % modes.length];
+                                                void handleUpdateMountSyncMode(mount, nextMode);
+                                              }}
+                                              disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
+                                              title={isMountEditable ? getMountSyncModeDescription(mount.sync_mode) : mountReadOnlyReason}
                                               style={{
-                                              position: 'absolute',
-                                              top: '100%',
-                                              right: 0,
-                                              marginTop: 8,
-                                              padding: 12,
-                                              background: 'var(--color-bg-primary, #fff)',
-                                              border: '1px solid var(--color-border, #ddd)',
-                                              borderRadius: 8,
-                                              boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                                              fontSize: 12,
-                                              display: 'grid',
-                                              gap: 8,
-                                              minWidth: 280,
-                                              zIndex: 1000,
-                                              whiteSpace: 'normal',
-                                              textAlign: 'left',
-                                            }}>
-                                              {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
-                                                const OptionIcon = option.icon;
-                                                return (
-                                                  <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                                                    <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                                                    <span><strong>{option.label}</strong>: {option.description}</span>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
+                                                minWidth: 100,
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 5,
+                                              }}
+                                            >
+                                              {savingMountWatchId === mount.id
+                                                ? <MiniLoadingSpinner variant="icon" size={12} />
+                                                : <><SyncModeIcon size={12} /> {getMountSyncModeLabel(mount.sync_mode)}</>}
+                                              <span
+                                                role="button"
+                                                onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` && v.mode === 'pinned' ? null : { id: `sync-mode-${mount.id}`, mode: 'pinned' }); }}
+                                                onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? v : { id: `sync-mode-${mount.id}`, mode: 'hover' })}
+                                                onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                                title="About sync modes"
+                                                style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
+                                              >
+                                                <Info size={11} />
+                                                {expandedSyncModeInfo?.id === `sync-mode-${mount.id}` && (
+                                                  <>
+                                                    {expandedSyncModeInfo?.mode === 'pinned' && (
+                                                      <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                                    )}
+                                                    <div
+                                                      onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? { ...v, mode: 'hover' } : v)}
+                                                      onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                                      style={{
+                                                        position: 'absolute',
+                                                        top: '100%',
+                                                        right: 0,
+                                                        marginTop: 8,
+                                                        padding: 12,
+                                                        background: 'var(--color-bg-primary, #fff)',
+                                                        border: '1px solid var(--color-border, #ddd)',
+                                                        borderRadius: 8,
+                                                        boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                                        fontSize: 12,
+                                                        display: 'grid',
+                                                        gap: 8,
+                                                        minWidth: 280,
+                                                        zIndex: 1000,
+                                                        whiteSpace: 'normal',
+                                                        textAlign: 'left',
+                                                      }}>
+                                                      {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
+                                                        const OptionIcon = option.icon;
+                                                        return (
+                                                          <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                                            <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                                                            <span><strong>{option.label}</strong>: {option.description}</span>
+                                                          </div>
+                                                        );
+                                                      })}
+                                                    </div>
+                                                  </>
+                                                )}
+                                              </span>
+                                            </button>
+                                            <button
+                                              className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
+                                              onClick={() => handleToggleMountAutoSync(mount, !mount.auto_sync_enabled)}
+                                              disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
+                                              title={isMountEditable
+                                                ? (mount.auto_sync_enabled ? 'Disable Auto Sync and switch to on-demand syncing' : 'Enable Auto Sync to keep this mount in sync on a schedule')
+                                                : mountReadOnlyReason}
+                                            >
+                                              {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
+                                                <span className="userspace-mount-toggle-icon">
+                                                  Auto Sync
+                                                </span>
+                                              )}
+                                            </button>
+                                            {mount.auto_sync_enabled && (
+                                              <div className="userspace-mount-interval-menu-anchor">
+                                                <button
+                                                  className="btn btn-sm btn-secondary userspace-mount-interval-trigger"
+                                                  onClick={(e) => {
+                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                    if (expandedMountIntervalMenuId === mount.id) {
+                                                      setExpandedMountIntervalMenuId(null);
+                                                      setMountIntervalMenuRect(null);
+                                                    } else {
+                                                      setMountIntervalMenuRect({ top: rect.bottom + 8, left: rect.right });
+                                                      setExpandedMountIntervalMenuId(mount.id);
+                                                    }
+                                                  }}
+                                                  disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
+                                                  title={isMountEditable
+                                                    ? (mount.sync_interval_seconds == null
+                                                      ? `Using default sync cadence (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})`
+                                                      : `Auto Sync checks every ${formatMountSyncInterval(mount.sync_interval_seconds)}`)
+                                                    : mountReadOnlyReason}
+                                                >
+                                                  {savingMountIntervalId === mount.id
+                                                    ? <MiniLoadingSpinner variant="icon" size={12} />
+                                                    : <>
+                                                      <span>{getMountIntervalLabel(mount.sync_interval_seconds)}</span>
+                                                      <ChevronDown size={11} />
+                                                    </>}
+                                                </button>
+                                                {expandedMountIntervalMenuId === mount.id && mountIntervalMenuRect && (
+                                                  <>
+                                                    <div
+                                                      onClick={() => { setExpandedMountIntervalMenuId(null); setMountIntervalMenuRect(null); }}
+                                                      style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
+                                                    />
+                                                    <div className="userspace-mount-interval-menu" role="menu" aria-label="Auto sync interval" style={{ position: 'fixed', top: mountIntervalMenuRect.top, right: `calc(100vw - ${mountIntervalMenuRect.left}px)`, left: 'auto', bottom: 'auto', zIndex: 10001 }}>
+                                                      <div className="userspace-mount-interval-menu-copy">
+                                                        Choose how often Auto Sync checks this mount.
+                                                      </div>
+                                                      <button
+                                                        type="button"
+                                                        className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds == null ? 'active' : ''}`}
+                                                        onClick={() => {
+                                                          setExpandedMountIntervalMenuId(null);
+                                                          setMountIntervalMenuRect(null);
+                                                          void handleUpdateMountSyncInterval(mount, null);
+                                                        }}
+                                                      >
+                                                        <span>Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</span>
+                                                        {mount.sync_interval_seconds == null && <Check size={11} />}
+                                                      </button>
+                                                      {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                                        <button
+                                                          key={seconds}
+                                                          type="button"
+                                                          className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds === seconds ? 'active' : ''}`}
+                                                          onClick={() => {
+                                                            setExpandedMountIntervalMenuId(null);
+                                                            setMountIntervalMenuRect(null);
+                                                            void handleUpdateMountSyncInterval(mount, seconds, mount.sync_start_minute, mount.sync_timezone);
+                                                          }}
+                                                        >
+                                                          <span>Every {formatMountSyncInterval(seconds)}</span>
+                                                          {mount.sync_interval_seconds === seconds && <Check size={11} />}
+                                                        </button>
+                                                      ))}
+                                                      {mount.sync_interval_seconds != null && !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(mount.sync_interval_seconds) && (
+                                                        <button
+                                                          type="button"
+                                                          className="userspace-mount-interval-menu-item active"
+                                                          onClick={() => {
+                                                            setExpandedMountIntervalMenuId(null);
+                                                            setMountIntervalMenuRect(null);
+                                                            void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, mount.sync_timezone);
+                                                          }}
+                                                        >
+                                                          <span>Every {formatMountSyncInterval(mount.sync_interval_seconds)}</span>
+                                                          <Check size={11} />
+                                                        </button>
+                                                      )}
+                                                    </div>
+                                                  </>
+                                                )}
+                                              </div>
+                                            )}
+                                            {mount.auto_sync_enabled && mount.sync_interval_seconds != null && (
+                                              <ScheduleStartTimeInput
+                                                enabled={true}
+                                                startMinute={mount.sync_start_minute}
+                                                timezone={mount.sync_timezone}
+                                                onStartMinuteChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, value, mount.sync_timezone)}
+                                                onTimezoneChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, value)}
+                                                disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
+                                                label="Start Time"
+                                                style={{ marginBottom: 0, minWidth: 220 }}
+                                              />
+                                            )}
+                                            <button
+                                              className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
+                                              onClick={() => handleSyncMount(mount)}
+                                              disabled={syncingMountId === mount.id || previewingMountId === mount.id || !canRunManualSync}
+                                              title={canRunManualSync
+                                                ? (mount.auto_sync_enabled
+                                                  ? 'Run an immediate sync now (Auto Sync remains enabled)'
+                                                  : 'Run a one-time on-demand sync now')
+                                                : (!mount.source_available
+                                                  ? 'Reconnect OAuth for this mount source before syncing'
+                                                  : mountReadOnlyReason)}
+                                            >
+                                              {syncingMountId === mount.id || previewingMountId === mount.id
+                                                ? <MiniLoadingSpinner variant="icon" size={12} />
+                                                : <RefreshCw size={12} />}
+                                            </button>
+                                          </>
+                                        )}
+                                        {isEjected ? (
+                                          <>
+                                            <button
+                                              className="btn btn-secondary btn-sm userspace-mount-icon-btn"
+                                              onClick={() => void handleRemount(mount)}
+                                              disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
+                                              title={isMountEditable ? 'Remount' : mountReadOnlyReason}
+                                            >
+                                              {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveDownload size={12} />}
+                                            </button>
+                                            <button
+                                              className="btn btn-secondary btn-sm userspace-mount-icon-btn"
+                                              onClick={() => void handleDeleteMount(mount.id)}
+                                              disabled={deletingMountId === mount.id || !isMountEditable}
+                                              title={isMountEditable ? 'Delete mount permanently' : mountReadOnlyReason}
+                                            >
+                                              {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                            </button>
+                                          </>
+                                        ) : (
+                                          <button
+                                            className="btn btn-secondary btn-sm userspace-mount-icon-btn"
+                                            onClick={() => void handleEjectMount(mount)}
+                                            disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
+                                            title={isMountEditable ? 'Unmount' : mountReadOnlyReason}
+                                          >
+                                            {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveUpload size={12} />}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="userspace-mount-desc-row">
+                                    {editingMountDescriptionId === mount.id ? (
+                                      <div className="userspace-mount-desc-edit">
+                                        <input
+                                          type="text"
+                                          className="form-input userspace-mount-desc-input"
+                                          placeholder="Description for agents (optional)"
+                                          value={editingMountDescriptionDraft}
+                                          onChange={(e) => setEditingMountDescriptionDraft(e.target.value)}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') void handleSaveMountDescription();
+                                            if (e.key === 'Escape') {
+                                              setEditingMountDescriptionId(null);
+                                              setEditingMountDescriptionDraft('');
+                                            }
+                                          }}
+                                          autoFocus
+                                        />
+                                        <button
+                                          className="btn btn-primary btn-sm"
+                                          onClick={() => void handleSaveMountDescription()}
+                                          disabled={savingMountDescriptionId === mount.id || !isMountEditable}
+                                          title={isMountEditable ? 'Save description' : mountReadOnlyReason}
+                                        >
+                                          {savingMountDescriptionId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                        </button>
+                                        <button
+                                          className="btn btn-secondary btn-sm"
+                                          onClick={() => {
+                                            setEditingMountDescriptionId(null);
+                                            setEditingMountDescriptionDraft('');
+                                          }}
+                                          title="Cancel"
+                                        >
+                                          <X size={12} />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div
+                                        className="userspace-mount-desc-display"
+                                        onClick={() => {
+                                          if (!isMountEditable) return;
+                                          setEditingMountDescriptionId(mount.id);
+                                          setEditingMountDescriptionDraft(mount.description ?? '');
+                                        }}
+                                      >
+                                        <span className="userspace-mount-desc-text">
+                                          {mount.description || 'No description for agents'}
+                                        </span>
+                                        <button
+                                          className="inline-edit-btn userspace-mount-desc-edit-btn"
+                                          title={isMountEditable ? 'Edit description' : mountReadOnlyReason}
+                                          disabled={!isMountEditable}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!isMountEditable) return;
+                                            setEditingMountDescriptionId(mount.id);
+                                            setEditingMountDescriptionDraft(mount.description ?? '');
+                                          }}
+                                        >
+                                          <Pencil size={11} />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  {mount.sync_status === 'error' && mountSyncErrorMessage && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
+                                      <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                      <span>
+                                        {mountSyncErrorMessage}
+                                        {hasCloudSourceAuthIssue && mount.mount_source_scope === 'global' && onNavigateToTools && (
+                                          <>
+                                            {' '}
+                                            <a
+                                              href="#"
+                                              onClick={(event) => {
+                                                event.preventDefault();
+                                                onNavigateToTools('mount-sources');
+                                              }}
+                                              style={{ color: 'inherit', textDecoration: 'underline' }}
+                                            >
+                                              Open Mount Sources
+                                            </a>
+                                          </>
+                                        )}
+                                        {hasCloudSourceAuthIssue && mount.mount_source_scope === 'user' && showPersonalCloudDrives && mountCloudProvider && (
+                                          <>
+                                            {' '}
+                                            <a
+                                              href="#"
+                                              onClick={(event) => {
+                                                event.preventDefault();
+                                                void handleConnectCloudProvider(mountCloudProvider);
+                                              }}
+                                              style={{ color: 'inherit', textDecoration: 'underline' }}
+                                            >
+                                              Reconnect OAuth
+                                            </a>
                                           </>
                                         )}
                                       </span>
-                                    </button>
-                                    <button
-                                      className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
-                                      onClick={() => handleToggleMountAutoSync(mount, !mount.auto_sync_enabled)}
-                                      disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
-                                      title={isMountEditable
-                                        ? (mount.auto_sync_enabled ? 'Disable Auto Sync and switch to on-demand syncing' : 'Enable Auto Sync to keep this mount in sync on a schedule')
-                                        : mountReadOnlyReason}
-                                    >
-                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
-                                        <span className="userspace-mount-toggle-icon">
-                                          Auto Sync
-                                        </span>
-                                      )}
-                                    </button>
-                                    {mount.auto_sync_enabled && (
-                                      <div className="userspace-mount-interval-menu-anchor">
-                                        <button
-                                          className="btn btn-sm btn-secondary userspace-mount-interval-trigger"
-                                          onClick={(e) => {
-                                            const rect = e.currentTarget.getBoundingClientRect();
-                                            if (expandedMountIntervalMenuId === mount.id) {
-                                              setExpandedMountIntervalMenuId(null);
-                                              setMountIntervalMenuRect(null);
-                                            } else {
-                                              setMountIntervalMenuRect({ top: rect.bottom + 8, left: rect.right });
-                                              setExpandedMountIntervalMenuId(mount.id);
-                                            }
-                                          }}
-                                          disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
-                                          title={isMountEditable
-                                            ? (mount.sync_interval_seconds == null
-                                              ? `Using default sync cadence (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})`
-                                              : `Auto Sync checks every ${formatMountSyncInterval(mount.sync_interval_seconds)}`)
-                                            : mountReadOnlyReason}
-                                        >
-                                          {savingMountIntervalId === mount.id
-                                            ? <MiniLoadingSpinner variant="icon" size={12} />
-                                            : <>
-                                              <span>{getMountIntervalLabel(mount.sync_interval_seconds)}</span>
-                                              <ChevronDown size={11} />
-                                            </>}
-                                        </button>
-                                        {expandedMountIntervalMenuId === mount.id && mountIntervalMenuRect && (
-                                          <>
-                                            <div
-                                              onClick={() => { setExpandedMountIntervalMenuId(null); setMountIntervalMenuRect(null); }}
-                                              style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
-                                            />
-                                            <div className="userspace-mount-interval-menu" role="menu" aria-label="Auto sync interval" style={{ position: 'fixed', top: mountIntervalMenuRect.top, right: `calc(100vw - ${mountIntervalMenuRect.left}px)`, left: 'auto', bottom: 'auto', zIndex: 10001 }}>
-                                              <div className="userspace-mount-interval-menu-copy">
-                                                Choose how often Auto Sync checks this mount.
-                                              </div>
-                                              <button
-                                                type="button"
-                                                className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds == null ? 'active' : ''}`}
-                                                onClick={() => {
-                                                  setExpandedMountIntervalMenuId(null);
-                                                  setMountIntervalMenuRect(null);
-                                                  void handleUpdateMountSyncInterval(mount, null);
-                                                }}
-                                              >
-                                                <span>Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</span>
-                                                {mount.sync_interval_seconds == null && <Check size={11} />}
-                                              </button>
-                                              {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
-                                                <button
-                                                  key={seconds}
-                                                  type="button"
-                                                  className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds === seconds ? 'active' : ''}`}
-                                                  onClick={() => {
-                                                    setExpandedMountIntervalMenuId(null);
-                                                    setMountIntervalMenuRect(null);
-                                                    void handleUpdateMountSyncInterval(mount, seconds, mount.sync_start_minute, mount.sync_timezone);
-                                                  }}
-                                                >
-                                                  <span>Every {formatMountSyncInterval(seconds)}</span>
-                                                  {mount.sync_interval_seconds === seconds && <Check size={11} />}
-                                                </button>
-                                              ))}
-                                              {mount.sync_interval_seconds != null && !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(mount.sync_interval_seconds) && (
-                                                <button
-                                                  type="button"
-                                                  className="userspace-mount-interval-menu-item active"
-                                                  onClick={() => {
-                                                    setExpandedMountIntervalMenuId(null);
-                                                    setMountIntervalMenuRect(null);
-                                                    void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, mount.sync_timezone);
-                                                  }}
-                                                >
-                                                  <span>Every {formatMountSyncInterval(mount.sync_interval_seconds)}</span>
-                                                  <Check size={11} />
-                                                </button>
-                                              )}
-                                            </div>
-                                          </>
-                                        )}
-                                      </div>
-                                    )}
-                                    {mount.auto_sync_enabled && mount.sync_interval_seconds != null && (
-                                      <ScheduleStartTimeInput
-                                        enabled={true}
-                                        startMinute={mount.sync_start_minute}
-                                        timezone={mount.sync_timezone}
-                                        onStartMinuteChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, value, mount.sync_timezone)}
-                                        onTimezoneChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, value)}
-                                        disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
-                                        label="Start Time"
-                                        style={{ marginBottom: 0, minWidth: 220 }}
-                                      />
-                                    )}
-                                    <button
-                                      className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
-                                      onClick={() => handleSyncMount(mount)}
-                                      disabled={syncingMountId === mount.id || previewingMountId === mount.id || !canRunManualSync}
-                                      title={canRunManualSync
-                                        ? (mount.auto_sync_enabled
-                                          ? 'Run an immediate sync now (Auto Sync remains enabled)'
-                                          : 'Run a one-time on-demand sync now')
-                                        : (!mount.source_available
-                                          ? 'Reconnect OAuth for this mount source before syncing'
-                                          : mountReadOnlyReason)}
-                                    >
-                                      {syncingMountId === mount.id || previewingMountId === mount.id
-                                        ? <MiniLoadingSpinner variant="icon" size={12} />
-                                        : <RefreshCw size={12} />}
-                                    </button>
-                                  </>
-                                )}
-                                {isEjected ? (
-                                  <>
-                                    <button
-                                      className="btn btn-secondary btn-sm userspace-mount-icon-btn"
-                                      onClick={() => void handleRemount(mount)}
-                                      disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
-                                      title={isMountEditable ? 'Remount' : mountReadOnlyReason}
-                                    >
-                                      {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveDownload size={12} />}
-                                    </button>
-                                    <button
-                                      className="btn btn-secondary btn-sm userspace-mount-icon-btn"
-                                      onClick={() => void handleDeleteMount(mount.id)}
-                                      disabled={deletingMountId === mount.id || !isMountEditable}
-                                      title={isMountEditable ? 'Delete mount permanently' : mountReadOnlyReason}
-                                    >
-                                      {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    className="btn btn-secondary btn-sm userspace-mount-icon-btn"
-                                    onClick={() => void handleEjectMount(mount)}
-                                    disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
-                                    title={isMountEditable ? 'Unmount' : mountReadOnlyReason}
-                                  >
-                                    {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveUpload size={12} />}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="userspace-mount-desc-row">
-                            {editingMountDescriptionId === mount.id ? (
-                              <div className="userspace-mount-desc-edit">
-                                <input
-                                  type="text"
-                                  className="form-input userspace-mount-desc-input"
-                                  placeholder="Description for agents (optional)"
-                                  value={editingMountDescriptionDraft}
-                                  onChange={(e) => setEditingMountDescriptionDraft(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') void handleSaveMountDescription();
-                                    if (e.key === 'Escape') {
-                                      setEditingMountDescriptionId(null);
-                                      setEditingMountDescriptionDraft('');
-                                    }
-                                  }}
-                                  autoFocus
-                                />
-                                <button
-                                  className="btn btn-primary btn-sm"
-                                  onClick={() => void handleSaveMountDescription()}
-                                  disabled={savingMountDescriptionId === mount.id || !isMountEditable}
-                                  title={isMountEditable ? 'Save description' : mountReadOnlyReason}
-                                >
-                                  {savingMountDescriptionId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
-                                </button>
-                                <button
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => {
-                                    setEditingMountDescriptionId(null);
-                                    setEditingMountDescriptionDraft('');
-                                  }}
-                                  title="Cancel"
-                                >
-                                  <X size={12} />
-                                </button>
-                              </div>
-                            ) : (
-                              <div
-                                className="userspace-mount-desc-display"
-                                onClick={() => {
-                                  if (!isMountEditable) return;
-                                  setEditingMountDescriptionId(mount.id);
-                                  setEditingMountDescriptionDraft(mount.description ?? '');
-                                }}
-                              >
-                                <span className="userspace-mount-desc-text">
-                                  {mount.description || 'No description for agents'}
-                                </span>
-                                <button
-                                  className="inline-edit-btn userspace-mount-desc-edit-btn"
-                                  title={isMountEditable ? 'Edit description' : mountReadOnlyReason}
-                                  disabled={!isMountEditable}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (!isMountEditable) return;
-                                    setEditingMountDescriptionId(mount.id);
-                                    setEditingMountDescriptionDraft(mount.description ?? '');
-                                  }}
-                                >
-                                  <Pencil size={11} />
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                          {mount.sync_status === 'error' && mountSyncErrorMessage && (
-                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
-                              <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                              <span>
-                                {mountSyncErrorMessage}
-                                {hasCloudSourceAuthIssue && mount.mount_source_scope === 'global' && onNavigateToTools && (
-                                  <>
-                                    {' '}
-                                    <a
-                                      href="#"
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        onNavigateToTools('mount-sources');
-                                      }}
-                                      style={{ color: 'inherit', textDecoration: 'underline' }}
-                                    >
-                                      Open Mount Sources
-                                    </a>
-                                  </>
-                                )}
-                                {hasCloudSourceAuthIssue && mount.mount_source_scope === 'user' && showPersonalCloudDrives && mountCloudProvider && (
-                                  <>
-                                    {' '}
-                                    <a
-                                      href="#"
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        void handleConnectCloudProvider(mountCloudProvider);
-                                      }}
-                                      style={{ color: 'inherit', textDecoration: 'underline' }}
-                                    >
-                                      Reconnect OAuth
-                                    </a>
-                                  </>
-                                )}
-                              </span>
-                            </div>
-                          )}
-                          {shouldShowSyncNotice && (
-                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
-                              <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                              <span>{mount.sync_notice}</span>
-                            </div>
-                          )}
-                          {!isMountEditable && (
-                            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
-                              <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                              <span>{mountReadOnlyReason}</span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                    </div>
-                    </div>
-                  )}
-
-                  {showConfiguredCloudMountPanel && configuredCloudProviders.length > 0 && (
-                  <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10, marginBottom: 16 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <strong style={{ fontSize: 13 }}>Personal cloud drives</strong>
-                      <span style={{ marginLeft: 'auto' }} />
-                      {configuredCloudProviders.map((provider) => {
-                        const label = provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
-                        const hasConnectedAccount = cloudOAuthAccounts.some((account) => account.provider === provider);
-                        return (
-                          <button
-                            key={provider}
-                            type="button"
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => void handleConnectCloudProvider(provider)}
-                            disabled={savingCloudProvider === provider}
-                            title={`Connect ${label}`}
-                          >
-                            {savingCloudProvider === provider ? <MiniLoadingSpinner variant="icon" size={12} /> : <ExternalLink size={12} />}
-                            {provider === 'microsoft_drive'
-                              ? (hasConnectedAccount ? 'Reconnect OneDrive' : 'Connect OneDrive')
-                              : (hasConnectedAccount ? 'Reconnect Google' : 'Connect Google')}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {(visiblePersonalCloudOAuthAccounts.length > 0 || visiblePersonalMountSources.length > 0) && (
-                      <div style={{ display: 'grid', gap: 8 }}>
-                        {visiblePersonalCloudOAuthAccounts.map((account) => {
-                          const hasSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
-                          return (
-                            <div key={account.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                              <HardDrive size={12} />
-                              <span>{account.provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
-                              <span className="userspace-muted">{account.account_email || account.account_name || 'Connected account'}</span>
-                              <span style={{ marginLeft: 'auto' }} />
-                              {!hasSource && (
-                                <button className="btn btn-secondary btn-sm" onClick={() => void handleCreatePersonalCloudSource(account)}>
-                                  <Plus size={12} />
-                                  Add Source
-                                </button>
-                              )}
-                              <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => void handleDisconnectCloudAccount(account)}
-                                disabled={deletingCloudAccountId === account.id || hasSource}
-                                title={hasSource ? 'Remove this personal source before disconnecting the account' : 'Remove OAuth account'}
-                                aria-label={`Remove ${account.account_email || account.account_name || 'OAuth account'}`}
-                              >
-                                {deletingCloudAccountId === account.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
-                              </button>
-                            </div>
-                          );
-                        })}
-                        {visiblePersonalMountSources.map((source) => {
-                          const sourceCloudProvider: UserCloudOAuthProvider | null = isCloudMountProvider(source.source_type) ? source.source_type : null;
-                          return (
-                          <div key={source.id} style={{ display: 'grid', gap: 4 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-                              <Check size={12} />
-                              <span>{source.name}</span>
-                              <span className="userspace-muted">{source.source_type === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
-                              {source.source_available === false && (
-                                <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={source.source_unavailable_reason || undefined}>
-                                  Disconnected
-                                </span>
-                              )}
-                              <span style={{ marginLeft: 'auto' }} />
-                              {source.usage_count === 0 && (
-                                <button className="btn btn-secondary btn-sm" onClick={() => void handleDeletePersonalCloudSource(source.id)} title="Delete personal source">
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
-                            </div>
-                            {source.source_available === false && (
-                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: 'var(--color-error, #c0392b)', fontSize: 12, marginLeft: 20 }}>
-                                <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                                <span>
-                                  {source.source_unavailable_reason || 'Cloud connection is no longer available.'}
-                                  {source.source_unavailable_kind === 'cloud_auth' && sourceCloudProvider && (
-                                    <>
-                                      {' '}
-                                      <a
-                                        href="#"
-                                        onClick={(event) => {
-                                          event.preventDefault();
-                                          void handleConnectCloudProvider(sourceCloudProvider);
-                                        }}
-                                        style={{ color: 'inherit', textDecoration: 'underline' }}
-                                      >
-                                        Reconnect OAuth
-                                      </a>
-                                    </>
+                                    </div>
                                   )}
-                                </span>
-                              </div>
-                            )}
+                                  {shouldShowSyncNotice && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                                      <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                      <span>{mount.sync_notice}</span>
+                                    </div>
+                                  )}
+                                  {!isMountEditable && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                                      <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                      <span>{mountReadOnlyReason}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  )}
+                        </div>
+                      )}
 
-                  {mountableSources.length > 0 ? (
-                    <div className="userspace-env-var-form" style={{ marginTop: 12 }}>
-                      <strong className="userspace-env-var-form-title">Add mount</strong>
-                      {/* Source + Target in same row */}
-                      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', alignItems: 'start' }}>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 6 }}>
-                            <div className="userspace-muted" style={{ fontSize: 12, marginRight: 8 }}>
-                              <strong>Source</strong>
-                            </div>
-                            {mountableSources.map((src) => {
-                              const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
-                              const isActive = createMountActiveSourceTab === tabKey
-                                || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                      {showConfiguredCloudMountPanel && configuredCloudProviders.length > 0 && (
+                        <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10, marginBottom: 16 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <strong style={{ fontSize: 13 }}>Personal cloud drives</strong>
+                            <span style={{ marginLeft: 'auto' }} />
+                            {configuredCloudProviders.map((provider) => {
+                              const label = provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
+                              const hasConnectedAccount = cloudOAuthAccounts.some((account) => account.provider === provider);
                               return (
                                 <button
-                                  key={tabKey}
+                                  key={provider}
                                   type="button"
-                                  style={{
-                                    background: 'transparent',
-                                    border: 'none',
-                                    borderBottom: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
-                                    padding: '4px 10px',
-                                    cursor: 'pointer',
-                                    color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                                    fontSize: 12,
-                                    transition: 'color 0.15s, border-color 0.15s',
-                                  }}
-                                  onClick={() => setCreateMountActiveSourceTab(tabKey)}
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => void handleConnectCloudProvider(provider)}
+                                  disabled={savingCloudProvider === provider}
+                                  title={`Connect ${label}`}
                                 >
-                                  <span style={{ marginRight: 5, opacity: 0.5, display: 'inline-flex', verticalAlign: 'middle' }}>
-                                    {src.source_type === 'ssh' ? <Terminal size={11} /> : <HardDrive size={11} />}
-                                  </span>
-                                  {src.source_name}
+                                  {savingCloudProvider === provider ? <MiniLoadingSpinner variant="icon" size={12} /> : <ExternalLink size={12} />}
+                                  {provider === 'microsoft_drive'
+                                    ? (hasConnectedAccount ? 'Reconnect OneDrive' : 'Connect OneDrive')
+                                    : (hasConnectedAccount ? 'Reconnect Google' : 'Connect Google')}
                                 </button>
                               );
                             })}
                           </div>
-                          {mountableSources.map((src) => {
-                            const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
-                            const isActiveTab = createMountActiveSourceTab === tabKey
-                              || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
-                            if (!isActiveTab) return null;
-                            const browserRootPath = sourcePathToBrowserPath(src.source_path);
-                            const isSelectedSource = (
-                              src.mount_source_id === createMountSourceId
-                              && src.source_scope === createMountSourceScope
-                              && src.source_path === createMountRootSourcePath
-                              && !!createMountSourcePath
-                            );
+                          {(visiblePersonalCloudOAuthAccounts.length > 0 || visiblePersonalMountSources.length > 0) && (
+                            <div style={{ display: 'grid', gap: 8 }}>
+                              {visiblePersonalCloudOAuthAccounts.map((account) => {
+                                const hasSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
+                                return (
+                                  <div key={account.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                    <HardDrive size={12} />
+                                    <span>{account.provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
+                                    <span className="userspace-muted">{account.account_email || account.account_name || 'Connected account'}</span>
+                                    <span style={{ marginLeft: 'auto' }} />
+                                    {!hasSource && (
+                                      <button className="btn btn-secondary btn-sm" onClick={() => void handleCreatePersonalCloudSource(account)}>
+                                        <Plus size={12} />
+                                        Add Source
+                                      </button>
+                                    )}
+                                    <button
+                                      className="btn btn-secondary btn-sm"
+                                      onClick={() => void handleDisconnectCloudAccount(account)}
+                                      disabled={deletingCloudAccountId === account.id || hasSource}
+                                      title={hasSource ? 'Remove this personal source before disconnecting the account' : 'Remove OAuth account'}
+                                      aria-label={`Remove ${account.account_email || account.account_name || 'OAuth account'}`}
+                                    >
+                                      {deletingCloudAccountId === account.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                              {visiblePersonalMountSources.map((source) => {
+                                const sourceCloudProvider: UserCloudOAuthProvider | null = isCloudMountProvider(source.source_type) ? source.source_type : null;
+                                return (
+                                  <div key={source.id} style={{ display: 'grid', gap: 4 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                      <Check size={12} />
+                                      <span>{source.name}</span>
+                                      <span className="userspace-muted">{source.source_type === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
+                                      {source.source_available === false && (
+                                        <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={source.source_unavailable_reason || undefined}>
+                                          Disconnected
+                                        </span>
+                                      )}
+                                      <span style={{ marginLeft: 'auto' }} />
+                                      {source.usage_count === 0 && (
+                                        <button className="btn btn-secondary btn-sm" onClick={() => void handleDeletePersonalCloudSource(source.id)} title="Delete personal source">
+                                          <Trash2 size={12} />
+                                        </button>
+                                      )}
+                                    </div>
+                                    {source.source_available === false && (
+                                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: 'var(--color-error, #c0392b)', fontSize: 12, marginLeft: 20 }}>
+                                        <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                        <span>
+                                          {source.source_unavailable_reason || 'Cloud connection is no longer available.'}
+                                          {source.source_unavailable_kind === 'cloud_auth' && sourceCloudProvider && (
+                                            <>
+                                              {' '}
+                                              <a
+                                                href="#"
+                                                onClick={(event) => {
+                                                  event.preventDefault();
+                                                  void handleConnectCloudProvider(sourceCloudProvider);
+                                                }}
+                                                style={{ color: 'inherit', textDecoration: 'underline' }}
+                                              >
+                                                Reconnect OAuth
+                                              </a>
+                                            </>
+                                          )}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {mountableSources.length > 0 ? (
+                        <div className="userspace-env-var-form" style={{ marginTop: 12 }}>
+                          <strong className="userspace-env-var-form-title">Add mount</strong>
+                          {/* Source + Target in same row */}
+                          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', alignItems: 'start' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 6 }}>
+                                <div className="userspace-muted" style={{ fontSize: 12, marginRight: 8 }}>
+                                  <strong>Source</strong>
+                                </div>
+                                {mountableSources.map((src) => {
+                                  const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
+                                  const isActive = createMountActiveSourceTab === tabKey
+                                    || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                                  return (
+                                    <button
+                                      key={tabKey}
+                                      type="button"
+                                      style={{
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderBottom: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
+                                        padding: '4px 10px',
+                                        cursor: 'pointer',
+                                        color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                                        fontSize: 12,
+                                        transition: 'color 0.15s, border-color 0.15s',
+                                      }}
+                                      onClick={() => setCreateMountActiveSourceTab(tabKey)}
+                                    >
+                                      <span style={{ marginRight: 5, opacity: 0.5, display: 'inline-flex', verticalAlign: 'middle' }}>
+                                        {src.source_type === 'ssh' ? <Terminal size={11} /> : <HardDrive size={11} />}
+                                      </span>
+                                      {src.source_name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {mountableSources.map((src) => {
+                                const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
+                                const isActiveTab = createMountActiveSourceTab === tabKey
+                                  || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                                if (!isActiveTab) return null;
+                                const browserRootPath = sourcePathToBrowserPath(src.source_path);
+                                const isSelectedSource = (
+                                  src.mount_source_id === createMountSourceId
+                                  && src.source_scope === createMountSourceScope
+                                  && src.source_path === createMountRootSourcePath
+                                  && !!createMountSourcePath
+                                );
+                                return (
+                                  <div key={tabKey}>
+                                    <ConstrainedPathBrowser
+                                      currentPath={isSelectedSource ? createMountBrowserPath : ''}
+                                      rootPath={browserRootPath}
+                                      rootLabel={resolveSourceDisplayPath(src.source_path, createMountBrowserPathDisplayMap, { sourceType: src.source_type })}
+                                      defaultExpanded={isSelectedSource}
+                                      cacheKey={`${src.mount_source_id}:${src.source_path}`}
+                                      pathDisplayMap={createMountBrowserPathDisplayMap}
+                                      pathDisplayOptions={{ sourceType: src.source_type }}
+                                      stagedDirectories={createMountStagedSourceDirectories[
+                                        getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path)
+                                      ] ?? []}
+                                      onStageDirectory={(path) => {
+                                        const stageKey = getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path);
+                                        const normalizedPath = normalizeMountBrowserPath(path);
+                                        setCreateMountStagedSourceDirectories((current) => {
+                                          const existingPaths = current[stageKey] ?? [];
+                                          if (existingPaths.includes(normalizedPath)) {
+                                            return current;
+                                          }
+                                          return {
+                                            ...current,
+                                            [stageKey]: [...existingPaths, normalizedPath].sort((left, right) => left.localeCompare(right)),
+                                          };
+                                        });
+                                      }}
+                                      onSelectPath={(selectedPath) => {
+                                        setCreateMountSourceId(src.mount_source_id);
+                                        setCreateMountSourceScope(src.source_scope);
+                                        setCreateMountRootSourcePath(src.source_path);
+                                        setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
+                                        setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
+                                      }}
+                                      onBrowsePath={async (path) => {
+                                        const result = await api.browseWorkspaceMountSource(activeWorkspaceId, {
+                                          mount_source_id: src.mount_source_id,
+                                          source_scope: src.source_scope,
+                                          root_source_path: src.source_path,
+                                          path,
+                                        });
+                                        setCreateMountBrowserPathDisplayMap((current) =>
+                                          mergeBrowserPathDisplayMapFromBrowseResponse(current, result, { sourceType: src.source_type }),
+                                        );
+                                        return result;
+                                      }}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div>
+                              <div className="userspace-muted" style={{ marginBottom: 11, fontSize: 12 }}>
+                                <strong>Target in workspace</strong>
+                              </div>
+                              <ConstrainedPathBrowser
+                                currentPath={createMountTargetBrowserPath}
+                                rootPath="/"
+                                rootLabel="/"
+                                defaultExpanded={false}
+                                cacheKey={workspaceMountTargetBrowserCacheKey}
+                                emptyMessage="Workspace directory is empty"
+                                canSelectPath={(path) => {
+                                  const normalized = normalizeMountBrowserPath(path);
+                                  if (normalized === '/') return false;
+                                  const asTargetPath = `/workspace${normalized}`;
+                                  return !mounts.some((m) => m.target_path === asTargetPath);
+                                }}
+                                cannotSelectPathMessage="This path is already mounted"
+                                isPathDisabled={(path) => {
+                                  const asTargetPath = `/workspace${normalizeMountBrowserPath(path)}`;
+                                  return mounts.some((m) => m.target_path === asTargetPath) ? 'Mounted' : null;
+                                }}
+                                stagedDirectories={createMountStagedTargetDirectories}
+                                onStageDirectory={(path) => {
+                                  const normalizedPath = normalizeMountBrowserPath(path);
+                                  setCreateMountStagedTargetDirectories((current) => (
+                                    current.includes(normalizedPath)
+                                      ? current
+                                      : [...current, normalizedPath].sort((left, right) => left.localeCompare(right))
+                                  ));
+                                }}
+                                onSelectPath={(selectedPath) => {
+                                  const normalizedPath = normalizeMountBrowserPath(selectedPath);
+                                  setCreateMountTargetBrowserPath(normalizedPath);
+                                  setCreateMountTargetPath(browserPathToWorkspaceMountTargetPath(normalizedPath));
+                                }}
+                                onBrowsePath={browseWorkspaceMountTargetPath}
+                              />
+                            </div>
+                          </div>
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder="Description for agents (optional)"
+                            value={createMountDescription}
+                            onChange={(e) => setCreateMountDescription(e.target.value)}
+                          />
+                          {isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && (() => {
+                            const CreateSyncModeIcon = getMountSyncModeIcon(createMountSyncMode);
                             return (
-                              <div key={tabKey}>
-                                <ConstrainedPathBrowser
-                                  currentPath={isSelectedSource ? createMountBrowserPath : ''}
-                                  rootPath={browserRootPath}
-                                  rootLabel={resolveSourceDisplayPath(src.source_path, createMountBrowserPathDisplayMap, { sourceType: src.source_type })}
-                                  defaultExpanded={isSelectedSource}
-                                  cacheKey={`${src.mount_source_id}:${src.source_path}`}
-                                  pathDisplayMap={createMountBrowserPathDisplayMap}
-                                  pathDisplayOptions={{ sourceType: src.source_type }}
-                                  stagedDirectories={createMountStagedSourceDirectories[
-                                    getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path)
-                                  ] ?? []}
-                                  onStageDirectory={(path) => {
-                                    const stageKey = getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path);
-                                    const normalizedPath = normalizeMountBrowserPath(path);
-                                    setCreateMountStagedSourceDirectories((current) => {
-                                      const existingPaths = current[stageKey] ?? [];
-                                      if (existingPaths.includes(normalizedPath)) {
-                                        return current;
+                              <div style={{ display: 'grid', gap: 6 }}>
+                                <label className="userspace-muted" style={{ fontSize: 12 }}>
+                                  <strong>Sync mode</strong>
+                                </label>
+                                <button
+                                  className="btn btn-sm btn-secondary"
+                                  type="button"
+                                  onClick={() => {
+                                    const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
+                                    const currentIndex = modes.indexOf(createMountSyncMode);
+                                    setCreateMountSyncMode(modes[(currentIndex + 1) % modes.length]);
+                                  }}
+                                  title={getMountSyncModeDescription(createMountSyncMode)}
+                                  style={{
+                                    padding: '8px 10px',
+                                    borderRadius: 6,
+                                    textAlign: 'left',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                  }}
+                                >
+                                  <CreateSyncModeIcon size={13} /> {getMountSyncModeLabel(createMountSyncMode)}
+                                  <span
+                                    role="button"
+                                    onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' && v.mode === 'pinned' ? null : { id: 'sync-mode-add-mount', mode: 'pinned' }); }}
+                                    onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? v : { id: 'sync-mode-add-mount', mode: 'hover' })}
+                                    onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                    title="About sync modes"
+                                    style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
+                                  >
+                                    <Info size={11} />
+                                    {expandedSyncModeInfo?.id === 'sync-mode-add-mount' && (
+                                      <>
+                                        {expandedSyncModeInfo?.mode === 'pinned' && (
+                                          <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                        )}
+                                        <div
+                                          onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? { ...v, mode: 'hover' } : v)}
+                                          onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                          style={{
+                                            position: 'absolute',
+                                            top: '100%',
+                                            left: 0,
+                                            marginTop: 8,
+                                            padding: 12,
+                                            background: 'var(--color-bg-primary, #fff)',
+                                            border: '1px solid var(--color-border, #ddd)',
+                                            borderRadius: 8,
+                                            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                            fontSize: 12,
+                                            display: 'grid',
+                                            gap: 8,
+                                            minWidth: 280,
+                                            zIndex: 1000,
+                                            whiteSpace: 'normal',
+                                            textAlign: 'left',
+                                          }}>
+                                          {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
+                                            const OptionIcon = option.icon;
+                                            return (
+                                              <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                                                <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                                                <span><strong>{option.label}</strong>: {option.description}</span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </>
+                                    )}
+                                  </span>
+                                </button>
+                                <label className="userspace-muted" style={{ fontSize: 12, display: 'grid', gap: 6 }}>
+                                  <strong>Auto Sync cadence</strong>
+                                  <select
+                                    className="form-input"
+                                    value={mountIntervalSelectValue(createMountSyncIntervalSeconds)}
+                                    onChange={(e) => {
+                                      const value = e.target.value;
+                                      if (value === 'custom') return;
+                                      setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
+                                      if (value === 'inherit') {
+                                        setCreateMountSyncStartMinute(null);
+                                        setCreateMountSyncTimezone(null);
+                                      } else {
+                                        setCreateMountSyncStartMinute((current) => current ?? defaultScheduleStartMinute());
+                                        setCreateMountSyncTimezone((current) => current ?? defaultScheduleTimezone());
                                       }
-                                      return {
-                                        ...current,
-                                        [stageKey]: [...existingPaths, normalizedPath].sort((left, right) => left.localeCompare(right)),
-                                      };
-                                    });
-                                  }}
-                                  onSelectPath={(selectedPath) => {
-                                    setCreateMountSourceId(src.mount_source_id);
-                                    setCreateMountSourceScope(src.source_scope);
-                                    setCreateMountRootSourcePath(src.source_path);
-                                    setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
-                                    setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
-                                  }}
-                                  onBrowsePath={async (path) => {
-                                    const result = await api.browseWorkspaceMountSource(activeWorkspaceId, {
-                                      mount_source_id: src.mount_source_id,
-                                      source_scope: src.source_scope,
-                                      root_source_path: src.source_path,
-                                      path,
-                                    });
-                                    setCreateMountBrowserPathDisplayMap((current) =>
-                                      mergeBrowserPathDisplayMapFromBrowseResponse(current, result, { sourceType: src.source_type }),
-                                    );
-                                    return result;
-                                  }}
-                                />
+                                    }}
+                                    title="How often Auto Sync checks this mount"
+                                    style={{
+                                      width: '100%',
+                                      maxWidth: 168,
+                                      height: 30,
+                                      minHeight: 30,
+                                      padding: '4px 8px',
+                                      fontSize: 12,
+                                      lineHeight: '16px',
+                                    }}
+                                  >
+                                    <option value="inherit">Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</option>
+                                    {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                      <option key={seconds} value={seconds}>
+                                        Every {formatMountSyncInterval(seconds)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <ScheduleStartTimeInput
+                                    enabled={createMountSyncIntervalSeconds != null}
+                                    startMinute={createMountSyncStartMinute}
+                                    timezone={createMountSyncTimezone}
+                                    onStartMinuteChange={setCreateMountSyncStartMinute}
+                                    onTimezoneChange={setCreateMountSyncTimezone}
+                                    label="Start Time"
+                                  />
+                                </label>
                               </div>
                             );
-                          })}
-                        </div>
-                        <div>
-                          <div className="userspace-muted" style={{ marginBottom: 11, fontSize: 12 }}>
-                            <strong>Target in workspace</strong>
+                          })()}
+                          <div className="userspace-env-var-form-actions">
+                            <button
+                              className="btn btn-primary btn-sm"
+                              onClick={handleCreateMount}
+                              disabled={isCreateMountDisabled}
+                              title={createMountEffectiveTargetPath === '/workspace' ? 'Select a folder under /workspace before adding the mount' : undefined}
+                            >
+                              {savingMount ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
+                              Add
+                            </button>
                           </div>
-                          <ConstrainedPathBrowser
-                            currentPath={createMountTargetBrowserPath}
-                            rootPath="/"
-                            rootLabel="/"
-                            defaultExpanded={false}
-                            cacheKey={workspaceMountTargetBrowserCacheKey}
-                            emptyMessage="Workspace directory is empty"
-                            canSelectPath={(path) => {
-                              const normalized = normalizeMountBrowserPath(path);
-                              if (normalized === '/') return false;
-                              const asTargetPath = `/workspace${normalized}`;
-                              return !mounts.some((m) => m.target_path === asTargetPath);
-                            }}
-                            cannotSelectPathMessage="This path is already mounted"
-                            isPathDisabled={(path) => {
-                              const asTargetPath = `/workspace${normalizeMountBrowserPath(path)}`;
-                              return mounts.some((m) => m.target_path === asTargetPath) ? 'Mounted' : null;
-                            }}
-                            stagedDirectories={createMountStagedTargetDirectories}
-                            onStageDirectory={(path) => {
-                              const normalizedPath = normalizeMountBrowserPath(path);
-                              setCreateMountStagedTargetDirectories((current) => (
-                                current.includes(normalizedPath)
-                                  ? current
-                                  : [...current, normalizedPath].sort((left, right) => left.localeCompare(right))
-                              ));
-                            }}
-                            onSelectPath={(selectedPath) => {
-                              const normalizedPath = normalizeMountBrowserPath(selectedPath);
-                              setCreateMountTargetBrowserPath(normalizedPath);
-                              setCreateMountTargetPath(browserPathToWorkspaceMountTargetPath(normalizedPath));
-                            }}
-                            onBrowsePath={browseWorkspaceMountTargetPath}
-                          />
                         </div>
-                      </div>
-                      <input
-                        type="text"
-                        className="form-input"
-                        placeholder="Description for agents (optional)"
-                        value={createMountDescription}
-                        onChange={(e) => setCreateMountDescription(e.target.value)}
-                      />
-                      {isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && (() => {
-                        const CreateSyncModeIcon = getMountSyncModeIcon(createMountSyncMode);
-                        return (
-                        <div style={{ display: 'grid', gap: 6 }}>
-                          <label className="userspace-muted" style={{ fontSize: 12 }}>
-                            <strong>Sync mode</strong>
-                          </label>
-                          <button
-                            className="btn btn-sm btn-secondary"
-                            type="button"
-                            onClick={() => {
-                              const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
-                              const currentIndex = modes.indexOf(createMountSyncMode);
-                              setCreateMountSyncMode(modes[(currentIndex + 1) % modes.length]);
-                            }}
-                            title={getMountSyncModeDescription(createMountSyncMode)}
-                            style={{
-                              padding: '8px 10px',
-                              borderRadius: 6,
-                              textAlign: 'left',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                            }}
-                          >
-                            <CreateSyncModeIcon size={13} /> {getMountSyncModeLabel(createMountSyncMode)}
-                            <span
-                              role="button"
-                              onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' && v.mode === 'pinned' ? null : { id: 'sync-mode-add-mount', mode: 'pinned' }); }}
-                              onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? v : { id: 'sync-mode-add-mount', mode: 'hover' })}
-                              onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
-                              title="About sync modes"
-                              style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
-                            >
-                              <Info size={11} />
-                              {expandedSyncModeInfo?.id === 'sync-mode-add-mount' && (
-                                <>
-                                  {expandedSyncModeInfo?.mode === 'pinned' && (
-                                    <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
-                                  )}
-                                  <div
-                                    onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? { ...v, mode: 'hover' } : v)}
-                                    onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
-                                    style={{
-                                    position: 'absolute',
-                                    top: '100%',
-                                    left: 0,
-                                    marginTop: 8,
-                                    padding: 12,
-                                    background: 'var(--color-bg-primary, #fff)',
-                                    border: '1px solid var(--color-border, #ddd)',
-                                    borderRadius: 8,
-                                    boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                                    fontSize: 12,
-                                    display: 'grid',
-                                    gap: 8,
-                                    minWidth: 280,
-                                    zIndex: 1000,
-                                    whiteSpace: 'normal',
-                                    textAlign: 'left',
-                                  }}>
-                                    {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
-                                      const OptionIcon = option.icon;
-                                      return (
-                                        <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                                          <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                                          <span><strong>{option.label}</strong>: {option.description}</span>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </>
-                              )}
-                            </span>
-                          </button>
-                          <label className="userspace-muted" style={{ fontSize: 12, display: 'grid', gap: 6 }}>
-                            <strong>Auto Sync cadence</strong>
-                            <select
-                              className="form-input"
-                              value={mountIntervalSelectValue(createMountSyncIntervalSeconds)}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                if (value === 'custom') return;
-                                setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
-                                if (value === 'inherit') {
-                                  setCreateMountSyncStartMinute(null);
-                                  setCreateMountSyncTimezone(null);
-                                } else {
-                                  setCreateMountSyncStartMinute((current) => current ?? defaultScheduleStartMinute());
-                                  setCreateMountSyncTimezone((current) => current ?? defaultScheduleTimezone());
-                                }
-                              }}
-                              title="How often Auto Sync checks this mount"
-                              style={{
-                                width: '100%',
-                                maxWidth: 168,
-                                height: 30,
-                                minHeight: 30,
-                                padding: '4px 8px',
-                                fontSize: 12,
-                                lineHeight: '16px',
-                              }}
-                            >
-                              <option value="inherit">Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</option>
-                              {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
-                                <option key={seconds} value={seconds}>
-                                  Every {formatMountSyncInterval(seconds)}
-                                </option>
-                              ))}
-                            </select>
-                            <ScheduleStartTimeInput
-                              enabled={createMountSyncIntervalSeconds != null}
-                              startMinute={createMountSyncStartMinute}
-                              timezone={createMountSyncTimezone}
-                              onStartMinuteChange={setCreateMountSyncStartMinute}
-                              onTimezoneChange={setCreateMountSyncTimezone}
-                              label="Start Time"
-                            />
-                          </label>
-                        </div>
-                        );
-                      })()}
-                      <div className="userspace-env-var-form-actions">
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={handleCreateMount}
-                          disabled={isCreateMountDisabled}
-                          title={createMountEffectiveTargetPath === '/workspace' ? 'Select a folder under /workspace before adding the mount' : undefined}
-                        >
-                          {savingMount ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
-                          Add
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="userspace-muted" style={{ marginTop: 12 }}>
-                      No mount sources are configured.{' '}
-                      {onNavigateToTools ? (
-                        <a
-                          href="#"
-                          onClick={(e) => { e.preventDefault(); handleCloseMountsModal(); onNavigateToTools('mount-sources'); }}
-                          style={{ color: 'var(--color-accent)' }}
-                        >
-                          Add a source in Tools
-                        </a>
                       ) : (
-                        'Add a mount source in Tools'
-                      )}, then attach it here.
-                    </p>
+                        <p className="userspace-muted" style={{ marginTop: 12 }}>
+                          No mount sources are configured.{' '}
+                          {onNavigateToTools ? (
+                            <a
+                              href="#"
+                              onClick={(e) => { e.preventDefault(); handleCloseMountsModal(); onNavigateToTools('mount-sources'); }}
+                              style={{ color: 'var(--color-accent)' }}
+                            >
+                              Add a source in Tools
+                            </a>
+                          ) : (
+                            'Add a mount source in Tools'
+                          )}, then attach it here.
+                        </p>
+                      )}
+                    </>
                   )}
                 </>
               )}
-              </>
-            )}
             </div>
           </div>
         </div>
@@ -8985,10 +9029,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
                 {(mountSyncPreview.delete_from_source_count > mountSyncPreview.delete_from_source_paths.length
                   || mountSyncPreview.delete_from_target_count > mountSyncPreview.delete_from_target_paths.length) && (
-                  <div className="userspace-muted" style={{ fontSize: 12 }}>
-                    Full list truncated. Run preview again right before syncing if the source or target changes.
-                  </div>
-                )}
+                    <div className="userspace-muted" style={{ fontSize: 12 }}>
+                      Full list truncated. Run preview again right before syncing if the source or target changes.
+                    </div>
+                  )}
               </div>
             </div>
             <div className="modal-footer" style={{ justifyContent: 'space-between' }}>

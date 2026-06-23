@@ -147,6 +147,7 @@ from ragtime.userspace.models import (
     UserSpaceWorkspaceScmConnectionResponse,
     UserSpaceWorkspaceScmExportRequest,
     UserSpaceWorkspaceScmImportRequest,
+    UserSpaceWorkspaceScmImportTask,
     UserSpaceWorkspaceScmPreviewRequest,
     UserSpaceWorkspaceScmPreviewResponse,
     UserSpaceWorkspaceScmSettingsRequest,
@@ -575,6 +576,60 @@ async def get_workspace_archive_import_task(
 ):
     is_admin = user.role == "admin"
     return await userspace_service.get_workspace_archive_import_task(
+        task_id,
+        user.id,
+        is_admin=is_admin,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/preview-import-task",
+    response_model=UserSpaceWorkspaceScmImportTask,
+    status_code=202,
+)
+async def queue_workspace_scm_preview_import_task(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.enqueue_workspace_scm_preview_import_task(
+        workspace_id,
+        user.id,
+        request,
+        is_admin=is_admin,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/import-task",
+    response_model=UserSpaceWorkspaceScmImportTask,
+    status_code=202,
+)
+async def queue_workspace_scm_import_task(
+    workspace_id: str,
+    request: UserSpaceWorkspaceScmImportRequest,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.enqueue_workspace_scm_import_task(
+        workspace_id,
+        user.id,
+        request,
+        is_admin=is_admin,
+    )
+
+
+@router.get(
+    "/workspace-scm-import-tasks/{task_id}",
+    response_model=UserSpaceWorkspaceScmImportTask,
+)
+async def get_workspace_scm_import_task(
+    task_id: str,
+    user: Any = Depends(get_current_user),
+):
+    is_admin = user.role == "admin"
+    return await userspace_service.get_workspace_scm_import_task(
         task_id,
         user.id,
         is_admin=is_admin,

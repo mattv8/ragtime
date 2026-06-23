@@ -119,6 +119,16 @@ WorkspaceArchiveImportTaskPhase = Literal[
     "completed",
     "failed",
 ]
+WorkspaceScmImportTaskPhase = Literal[
+    "queued",
+    "cloning",
+    "importing",
+    "backfilling",
+    "completed",
+    "failed",
+    "previewing",
+    "preview_ready",
+]
 WorkspaceSqliteImportTaskPhase = Literal[
     "queued",
     "staging_upload",
@@ -229,6 +239,8 @@ class UserSpaceWorkspace(BaseModel):
     archive_export_task_phase: WorkspaceArchiveExportTaskPhase | None = None
     archive_import_task_id: str | None = None
     archive_import_task_phase: WorkspaceArchiveImportTaskPhase | None = None
+    scm_import_task_id: str | None = None
+    scm_import_task_phase: WorkspaceScmImportTaskPhase | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -321,6 +333,24 @@ class UserSpaceWorkspaceArchiveImportTask(BaseModel):
     imported_chat_count: int = 0
     imported_snapshot_count: int = 0
     error: str | None = None
+    queued_at: datetime
+    updated_at: datetime
+
+
+class UserSpaceWorkspaceScmImportTask(BaseModel):
+    task_id: str
+    workspace_id: str
+    workspace_name: str
+    git_url: str
+    git_branch: str
+    phase: WorkspaceScmImportTaskPhase
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    error: str | None = None
+    scm: "UserSpaceWorkspaceScmStatus | None" = None
+    suggested_setup_prompt: str | None = None
+    remote_commit_hash: str | None = None
+    summary: str | None = None
+    preview: "UserSpaceWorkspaceScmPreviewResponse | None" = None
     queued_at: datetime
     updated_at: datetime
 
@@ -465,6 +495,7 @@ class UserSpaceWorkspaceScmStatus(BaseModel):
     last_sync_message: str | None = None
     last_remote_commit_hash: str | None = None
     last_synced_snapshot_id: str | None = None
+    last_setup_prompt: str | None = None
 
 
 class UserSpaceWorkspaceScmConnectionRequest(BaseModel):
@@ -584,6 +615,10 @@ class UserSpaceWorkspaceScmSettingsRequest(BaseModel):
     clear_sync_paused: bool = Field(
         default=False,
         description="Clear the paused/conflict state and resume auto-sync.",
+    )
+    clear_git_token: bool = Field(
+        default=False,
+        description="Clear the stored Git token without changing the configured remote.",
     )
 
 
