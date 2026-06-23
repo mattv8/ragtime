@@ -2469,6 +2469,8 @@ class UserSpaceService:
         user_id: str,
         scm_meta: dict[str, Any],
         warnings: list[str],
+        *,
+        is_admin: bool = False,
     ) -> None:
         connection_request = self._workspace_archive_scm_connection_request(scm_meta)
         if connection_request is None:
@@ -2478,11 +2480,13 @@ class UserSpaceService:
                 workspace_id,
                 user_id,
                 connection_request,
+                is_admin=is_admin,
             )
             await self.update_workspace_scm_settings(
                 workspace_id,
                 user_id,
                 self._workspace_archive_scm_settings_request(scm_meta),
+                is_admin=is_admin,
             )
         except Exception as exc:
             detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "failed to restore SCM settings"
@@ -2497,6 +2501,7 @@ class UserSpaceService:
         *,
         log_message: str,
         persist_failure_message: str,
+        is_admin: bool = False,
     ) -> None:
         try:
             async with self._workspace_archive_semaphore:
@@ -2506,6 +2511,7 @@ class UserSpaceService:
                         workspace_id,
                         user_id,
                         required_role="owner",
+                        is_admin=is_admin,
                     )
                     await task_body(workspace)
         except Exception as exc:
@@ -3762,6 +3768,7 @@ class UserSpaceService:
         include_snapshots: bool,
         include_chat_history: bool,
         extract_dir: Path,
+        is_admin: bool = False,
     ) -> tuple[list[str], int, int]:
         warnings: list[str] = []
         workspace_meta = cast(dict[str, Any], manifest.get("workspace") or {})
@@ -3791,7 +3798,7 @@ class UserSpaceService:
                 allowed_tool_group_ids,
             ),
         )
-        await self.update_workspace(workspace_id, update_request, user_id)
+        await self.update_workspace(workspace_id, update_request, user_id, is_admin=is_admin)
 
         env_created_count, env_preserved_count = await self._import_workspace_env_var_placeholders(
             workspace_id,
@@ -3815,6 +3822,7 @@ class UserSpaceService:
             user_id,
             cast(dict[str, Any], manifest.get("scm") or {}),
             warnings,
+            is_admin=is_admin,
         )
 
         imported_snapshot_count = 0
@@ -3843,12 +3851,14 @@ class UserSpaceService:
         workspace_id: str,
         request: UserSpaceWorkspaceArchiveExportRequest,
         user_id: str,
+        *,
+        is_admin: bool = False,
     ) -> None:
         task_dir = self._workspace_archive_task_dir(task_id)
         warnings: list[str] = []
 
         async def _task_body(workspace: Any) -> None:
-            mounts = await self.list_workspace_mounts(workspace_id, user_id)
+            mounts = await self.list_workspace_mounts(workspace_id, user_id, is_admin=is_admin)
             await self._update_workspace_archive_export_task_phase(
                 workspace_id,
                 task_id,
@@ -3951,6 +3961,7 @@ class UserSpaceService:
             _on_failure,
             log_message="Workspace archive export task failed",
             persist_failure_message="Failed to persist archive export failure state",
+            is_admin=is_admin,
         )
 
     async def _run_workspace_archive_import_task(
@@ -3961,6 +3972,8 @@ class UserSpaceService:
         include_snapshots: bool,
         include_chat_history: bool,
         uploaded_archive_path: Path,
+        *,
+        is_admin: bool = False,
     ) -> None:
         warnings: list[str] = []
         task_dir = self._workspace_archive_task_dir(task_id)
@@ -3982,6 +3995,7 @@ class UserSpaceService:
             workspace_mounts = await self.list_workspace_mounts(
                 workspace_id,
                 user_id,
+                is_admin=is_admin,
             )
             await self._update_workspace_archive_import_task_phase(
                 workspace_id,
@@ -4012,6 +4026,7 @@ class UserSpaceService:
                 include_snapshots=include_snapshots,
                 include_chat_history=include_chat_history,
                 extract_dir=extract_dir,
+                is_admin=is_admin,
             )
             warnings[:] = imported_warnings
             if imported_snapshot_count == 0:
@@ -4050,6 +4065,7 @@ class UserSpaceService:
             _on_failure,
             log_message="Workspace archive import task failed",
             persist_failure_message="Failed to persist archive import failure state",
+            is_admin=is_admin,
         )
 
     async def enqueue_workspace_archive_export_task(
@@ -4095,6 +4111,7 @@ class UserSpaceService:
                     workspace_id,
                     request.model_copy(deep=True),
                     user_id,
+                    is_admin=is_admin,
                 ),
                 name=f"userspace-workspace-archive-export:{workspace_id}",
             )
@@ -4283,6 +4300,7 @@ class UserSpaceService:
                     include_snapshots,
                     include_chat_history,
                     final_archive_path,
+                    is_admin=is_admin,
                 ),
                 name=f"userspace-workspace-archive-import:{workspace_id}",
             )
@@ -10647,9 +10665,11 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         request: UserSpaceWorkspaceScmSettingsRequest,
+        *,
+        is_admin: bool = False,
     ) -> UserSpaceWorkspaceScmStatus:
         """Update SCM relationship / policy settings without touching connection fields."""
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner", is_admin=is_admin)
         db = await get_db()
         update_data: dict[str, Any] = {}
         if request.remote_role is not None:
@@ -11408,8 +11428,10 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         request: UserSpaceWorkspaceScmConnectionRequest,
+        *,
+        is_admin: bool = False,
     ) -> UserSpaceWorkspaceScmConnectionResponse:
-        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor")
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="editor", is_admin=is_admin)
         db = await get_db()
         workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
         if not workspace_record:
@@ -17039,8 +17061,10 @@ class UserSpaceService:
         self,
         workspace_id: str,
         user_id: str,
+        *,
+        is_admin: bool = False,
     ) -> list[WorkspaceMount]:
-        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
         db = await get_db()
         rows = await db.workspacemount.find_many(
             where={"workspaceId": workspace_id},

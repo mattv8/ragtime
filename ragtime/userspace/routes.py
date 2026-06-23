@@ -707,10 +707,12 @@ async def update_workspace_scm_connection(
     request: UserSpaceWorkspaceScmConnectionRequest,
     user: Any = Depends(get_current_user),
 ):
+    is_admin = user.role == "admin"
     return await userspace_service.update_workspace_scm_connection(
         workspace_id,
         user.id,
         request,
+        is_admin=is_admin,
     )
 
 
@@ -737,10 +739,12 @@ async def update_workspace_scm_settings(
     request: UserSpaceWorkspaceScmSettingsRequest,
     user: Any = Depends(get_current_user),
 ):
+    is_admin = user.role == "admin"
     scm = await userspace_service.update_workspace_scm_settings(
         workspace_id,
         user.id,
         request,
+        is_admin=is_admin,
     )
     return UserSpaceWorkspaceScmConnectionResponse(
         workspace_id=workspace_id,
@@ -1503,7 +1507,7 @@ async def list_workspace_mounts(
     user: Any = Depends(get_current_user),
 ):
     response.headers[_USERSPACE_SURFACE_HEADER] = "mount-config"
-    return await userspace_service.list_workspace_mounts(workspace_id, user.id)
+    return await userspace_service.list_workspace_mounts(workspace_id, user.id, is_admin=user.role == "admin")
 
 
 @router.get(
