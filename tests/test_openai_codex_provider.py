@@ -154,6 +154,41 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             model_limits.invalidate_cache()
 
+    async def test_codex_embedding_catalog_probes_supported_models(self) -> None:
+        captured_models: list[str] = []
+
+        class _FakeResponse:
+            status_code = 200
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args) -> None:
+                return None
+
+            async def post(self, url, headers=None, json=None):
+                captured_models.append((json or {}).get("model", ""))
+                return _FakeResponse()
+
+        settings = SimpleNamespace(openai_codex_account_id="acct_123")
+        with (
+            mock.patch(
+                "ragtime.indexer.routes.ensure_openai_codex_token_fresh",
+                new=mock.AsyncMock(return_value="codex-token"),
+            ),
+            mock.patch("ragtime.indexer.routes.httpx.AsyncClient", _FakeClient),
+        ):
+            result = await indexer_routes._fetch_openai_codex_embedding_models(settings)
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured_models, ["text-embedding-3-small", "text-embedding-3-large"])
+        self.assertEqual(result.default_model, "text-embedding-3-small")
+        self.assertEqual([(model.id, model.dimensions) for model in result.models], [("text-embedding-3-small", 1536), ("text-embedding-3-large", 3072)])
+
     async def test_claude_code_live_fetch_uses_oauth_models_endpoint(self) -> None:
         # Same mechanism as OpenAI/OpenRouter: query the provider's live
         # /v1/models endpoint with the configured credential.

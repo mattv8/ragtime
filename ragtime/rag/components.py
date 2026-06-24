@@ -3383,6 +3383,23 @@ class RAGComponents:
                 return None
             logger.info(f"Using OpenAI embeddings: {model}")
             return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
+        elif provider == "openai_codex":
+            token = await ensure_openai_codex_token_fresh()
+            if not token:
+                logger.warning("OpenAI Codex embeddings selected but Codex is not authenticated")
+                return None
+            headers: dict[str, str] = {}
+            account_id = str(self._app_settings.get("openai_codex_account_id") or "").strip()
+            if account_id:
+                headers["ChatGPT-Account-Id"] = account_id
+            logger.info(f"Using OpenAI Codex embeddings: {model}")
+            return OpenAIEmbeddings(
+                model=model,
+                api_key=SecretStr(token),
+                base_url="https://api.openai.com/v1",
+                default_headers=headers or None,
+                check_embedding_ctx_length=False,
+            )
         elif provider == "openrouter":
             api_key = resolve_provider_api_key(self._app_settings, provider, "embedding")
             if not api_key:

@@ -6789,7 +6789,7 @@ class EmbeddingModelsRequest(BaseModel):
 
     provider: str = Field(
         ...,
-        description="Embedding provider: 'openai', 'openrouter', 'llama_cpp', 'lmstudio', or 'omlx'",
+        description="Embedding provider: 'openai', 'openai_codex', 'openrouter', 'llama_cpp', 'lmstudio', or 'omlx'",
     )
     api_key: str = Field(default="", description="API key for the provider")
     base_url: str = Field(default="", description="Base URL for local providers")
@@ -6836,6 +6836,10 @@ async def fetch_embedding_models(request: EmbeddingModelsRequest, _user: User = 
     normalized_provider = normalize_provider_name(request.provider)
     if normalized_provider == "openai":
         return await _fetch_openai_embedding_models(request.api_key)
+
+    if normalized_provider == "openai_codex":
+        settings = await repository.get_settings()
+        return await _fetch_openai_codex_embedding_models(settings)
 
     if normalized_provider == "openrouter":
         settings = await repository.get_settings()
@@ -7042,6 +7046,45 @@ async def _fetch_openai_embedding_models(api_key: str) -> EmbeddingModelsRespons
         return EmbeddingModelsResponse(success=False, message="Request to OpenAI timed out.")
     except Exception as e:
         return EmbeddingModelsResponse(success=False, message=f"Failed to fetch OpenAI embedding models: {str(e)}")
+
+
+async def _fetch_openai_codex_embedding_models(settings: Any) -> EmbeddingModelsResponse:
+    """Fetch Codex-backed embedding models by probing the verified OpenAI embeddings endpoint."""
+    token = await ensure_openai_codex_token_fresh(settings=settings, repository=repository)
+    if not token:
+        return EmbeddingModelsResponse(success=False, message="OpenAI Codex is not authenticated.")
+
+    account_id = str(getattr(settings, "openai_codex_account_id", "") or "").strip()
+    headers = {"Authorization": f"Bearer {token}"}
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+
+    candidates = [
+        EmbeddingModel(id="text-embedding-3-small", name="text-embedding-3-small", dimensions=1536),
+        EmbeddingModel(id="text-embedding-3-large", name="text-embedding-3-large", dimensions=3072),
+    ]
+    models: list[EmbeddingModel] = []
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for candidate in candidates:
+                response = await client.post(
+                    "https://api.openai.com/v1/embeddings",
+                    headers=headers,
+                    json={"model": candidate.id, "input": "test"},
+                )
+                if response.status_code == 200:
+                    models.append(candidate)
+
+        return EmbeddingModelsResponse(
+            success=True,
+            message=f"Found {len(models)} OpenAI Codex embedding model(s).",
+            models=models,
+            default_model=OPENAI_DEFAULT_EMBEDDING_MODEL if any(m.id == OPENAI_DEFAULT_EMBEDDING_MODEL for m in models) else None,
+        )
+    except httpx.TimeoutException:
+        return EmbeddingModelsResponse(success=False, message="Request to OpenAI Codex embeddings timed out.")
+    except Exception as e:
+        return EmbeddingModelsResponse(success=False, message=f"Failed to fetch OpenAI Codex embedding models: {str(e)}")
 
 
 async def _fetch_openrouter_embedding_models(api_key: str) -> EmbeddingModelsResponse:

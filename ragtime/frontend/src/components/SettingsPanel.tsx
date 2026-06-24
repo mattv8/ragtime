@@ -1175,7 +1175,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
   // Fetch embedding models from hosted provider APIs
   const fetchEmbeddingModels = useCallback(async (provider: 'openai' | 'openai_codex' | 'openrouter', apiKey: string) => {
     const providerLabel = provider === 'openrouter' ? 'OpenRouter' : provider === 'openai_codex' ? 'OpenAI Codex' : 'OpenAI';
-    if (!apiKey || apiKey.length < 10) {
+    if (provider !== 'openai_codex' && (!apiKey || apiKey.length < 10)) {
       setEmbeddingModelsError(`Please enter a valid ${providerLabel} API key first`);
       return;
     }
@@ -1188,7 +1188,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
     try {
       const response = await api.fetchEmbeddingModels({
         provider,
-        api_key: apiKey,
+        api_key: provider === 'openai_codex' ? '' : apiKey,
       });
 
       if (response.success) {
@@ -2996,6 +2996,26 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
             ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
             : '';
           return `Select an embedding model from OpenAI.${dimInfo}`;
+        },
+      };
+    }
+    if (formData.embedding_provider === 'openai_codex') {
+      const connected = !!(openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth);
+      return {
+        provider: 'openai_codex' as const,
+        label: 'OpenAI Codex',
+        apiKey: connected ? 'stored-openai-codex-auth' : '',
+        apiKeyField: null,
+        modelPlaceholder: 'text-embedding-3-small',
+        unloadedHelp: connected
+          ? 'Uses your connected OpenAI Codex subscription auth. Click "Fetch Models" to verify embedding-capable models.'
+          : 'Connect OpenAI Codex in LLM Configuration first, then fetch embedding models.',
+        loadedHelp: () => {
+          const selectedModel = embeddingModels.find(m => m.id === formData.embedding_model);
+          const dimInfo = selectedModel?.dimensions
+            ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
+            : '';
+          return `Select an embedding model available through OpenAI Codex auth.${dimInfo}`;
         },
       };
     }
@@ -5087,7 +5107,7 @@ export function SettingsPanel({ currentUser, onServerNameChange, onAuthenticated
               </div>
 
               {/* Embedding Dimensions (only for text-embedding-3-* models) */}
-              {hostedEmbeddingProviderConfig.provider === 'openai' && formData.embedding_model?.startsWith('text-embedding-3') && (
+              {(hostedEmbeddingProviderConfig.provider === 'openai' || hostedEmbeddingProviderConfig.provider === 'openai_codex') && formData.embedding_model?.startsWith('text-embedding-3') && (
                 <div className="form-group">
                   <label>Embedding Dimensions</label>
                   <input

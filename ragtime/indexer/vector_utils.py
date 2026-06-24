@@ -9,6 +9,7 @@ This module centralizes:
 """
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from langchain_core.embeddings import Embeddings
@@ -19,6 +20,7 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 from ragtime.core.model_providers import resolve_provider_api_key
+from ragtime.core.openai_codex_auth import ensure_openai_codex_token_fresh
 
 logger = get_logger(__name__)
 
@@ -426,6 +428,32 @@ async def get_embeddings_model(
         if dimensions and str(model).startswith("text-embedding-3"):
             kwargs["dimensions"] = dimensions
             log.info(f"Using OpenAI embeddings with {dimensions} dimensions")
+        return OpenAIEmbeddings(**kwargs)
+
+    if provider == "openai_codex":
+        from langchain_openai import OpenAIEmbeddings
+
+        settings_obj = SimpleNamespace(**settings) if isinstance(settings, dict) else settings
+        token = await ensure_openai_codex_token_fresh(settings=settings_obj)
+        if not token:
+            message = "OpenAI Codex embeddings selected but Codex is not authenticated"
+            if allow_missing_api_key or return_none_on_error:
+                log.warning(message)
+                return None
+            raise ValueError(message)
+
+        kwargs = {
+            "model": model,
+            "api_key": SecretStr(token),
+            "base_url": "https://api.openai.com/v1",
+            "check_embedding_ctx_length": False,
+        }
+        account_id = str(_get_setting(settings, "openai_codex_account_id", "") or "").strip()
+        if account_id:
+            kwargs["default_headers"] = {"ChatGPT-Account-Id": account_id}
+        if dimensions and str(model).startswith("text-embedding-3"):
+            kwargs["dimensions"] = dimensions
+            log.info(f"Using OpenAI Codex embeddings with {dimensions} dimensions")
         return OpenAIEmbeddings(**kwargs)
 
     if provider == "openrouter":
