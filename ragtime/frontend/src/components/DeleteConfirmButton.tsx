@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 
 interface DeleteConfirmButtonProps {
   onDelete: () => void;
   disabled?: boolean;
   className?: string;
+  style?: CSSProperties;
   title?: string;
   buttonText?: string;
   deleting?: boolean;
@@ -13,6 +14,7 @@ export function DeleteConfirmButton({
   onDelete,
   disabled = false,
   className = "btn btn-sm btn-danger",
+  style,
   title = "Delete",
   buttonText = "Delete",
   deleting = false
@@ -58,7 +60,8 @@ export function DeleteConfirmButton({
       title={confirming ? "Click to confirm deletion" : title}
       style={{
         minWidth: confirming ? '100px' : undefined,
-        ...(confirming && countdown > 0 ? { opacity: 0.65, cursor: 'not-allowed' } : {})
+        ...(confirming && countdown > 0 ? { opacity: 0.65, cursor: 'not-allowed' } : {}),
+        ...style,
       }}
       onBlur={() => {
         setConfirming(false);

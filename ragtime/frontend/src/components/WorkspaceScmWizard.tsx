@@ -22,6 +22,7 @@ import type {
   UserSpaceWorkspaceScmSyncResponse,
 } from '@/types';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { Popover } from './Popover';
 import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToastContainer, useToast } from './shared/Toast';
@@ -313,7 +314,7 @@ function formatScmImportTaskPhase(phase: UserSpaceWorkspaceScmImportTaskPhase): 
     preview_ready: 'Ready to review',
     cloning: 'Cloning repository',
     importing: 'Importing files',
-    backfilling: 'Backfilling history',
+    backfilling: 'Backfilling snapshot history',
     completed: 'Completed',
     failed: 'Failed',
   };
@@ -451,7 +452,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const [deletingExportTaskId, setDeletingExportTaskId] = useState<string | null>(null);
   const [downloadedExportTaskIds, setDownloadedExportTaskIds] = useState<Set<string>>(new Set());
   const [loadingAction, setLoadingAction] = useState<'pull' | 'push' | 'overwrite' | 'sync' | 'preview' | 'execute' | 'save-settings' | 'disconnect' | 'clear-fields' | null>(null);
-  const [showOverwriteMenu, setShowOverwriteMenu] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [scmState, setScmState] = useState<UserSpaceWorkspaceScmStatus | null>(null);
   const [autoPushEnabled, setAutoPushEnabled] = useState(initialScm?.auto_sync_policy === 'auto_push');
   const [autoPullEnabled, setAutoPullEnabled] = useState(Boolean(initialScm?.auto_pull_enabled));
@@ -482,7 +483,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setStoredTokenValid(Boolean(nextScm?.has_stored_token));
     setBranches([]);
     setBranchError(null);
-    setShowOverwriteMenu(false);
+    setShowMoreMenu(false);
     setLoadingAction(null);
     setStep('input');
     setMode(nextScm?.connected || nextScm?.git_url ? 'import' : 'import');
@@ -551,7 +552,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setStoredTokenValid(Boolean(workspace.scm?.has_stored_token));
     setBranches([]);
     setBranchError(null);
-    setShowOverwriteMenu(false);
+    setShowMoreMenu(false);
   }, [workspace.id]);
 
   useEffect(() => {
@@ -783,7 +784,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
     setStoredTokenValid(false);
     setBranches([]);
     setBranchError(null);
-    setShowOverwriteMenu(false);
+    setShowMoreMenu(false);
     setCreateRepoIfMissing(true);
     setCreateRepoPrivate(true);
     setCreateRepoDescription(workspace.description || '');
@@ -994,7 +995,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
     setIsLoading(true);
     setLoadingAction('disconnect');
-    setShowOverwriteMenu(false);
+    setShowMoreMenu(false);
     clearStatus();
     try {
       const resp = await api.disconnectUserSpaceWorkspaceScm(workspace.id);
@@ -1944,15 +1945,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
                     {(setupPrompt || activeScm.sync_paused) && (
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        {setupPrompt && (
-                          <button
-                            className="btn btn-sm btn-secondary"
-                            title="Copy the setup prompt from the last import to the clipboard"
-                            onClick={() => navigator.clipboard.writeText(setupPrompt)}
-                          >
-                            Copy Prompt
-                          </button>
-                        )}
                         {activeScm.sync_paused && (
                           <button
                             className="btn btn-sm btn-secondary"
@@ -1970,6 +1962,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                             <RefreshCcw size={12} /> Resume sync
                           </button>
                         )}
+
                       </div>
                     )}
 
@@ -2458,9 +2451,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                       <RefreshCw size={14} />
                       Ask Agent to Prepare
                     </button>
-                    <button className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard.writeText(scmImportTask.suggested_setup_prompt || '')}>
-                      Copy Prompt
-                    </button>
                   </div>
                 </div>
               )}
@@ -2477,16 +2467,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                     Remote commit: {result.remote_commit_hash || 'unknown'}
                   </div>
                 </div>
-                {result.direction === 'import' && result.suggested_setup_prompt && (
-                  <button
-                    className="btn btn-sm btn-secondary"
-                    style={{ flexShrink: 0 }}
-                    title="Copy setup prompt to clipboard"
-                    onClick={() => navigator.clipboard.writeText(result.suggested_setup_prompt || '')}
-                  >
-                    Copy Prompt
-                  </button>
-                )}
               </div>
 
               {result.direction === 'import' && result.suggested_setup_prompt && (
@@ -2499,9 +2479,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                     <button className="btn btn-primary btn-sm" onClick={() => void handleAskAgent()} disabled={!onAskAgent}>
                       <RefreshCw size={14} />
                       Ask Agent to Prepare
-                    </button>
-                    <button className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard.writeText(result.suggested_setup_prompt || '')}>
-                      Copy Prompt
                     </button>
                   </div>
                 </div>
@@ -2554,16 +2531,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                 Save
               </button>
             )}
-            {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && (
-              <DeleteConfirmButton
-                onDelete={() => void handleDisconnectScm()}
-                disabled={isLoading}
-                deleting={loadingAction === 'disconnect'}
-                className="btn btn-danger"
-                title="Disconnect the configured remote and clear the stored token"
-                buttonText="Disconnect Remote"
-              />
-            )}
+
             {activeTab === 'sql-import' && step === 'input' && mode === 'sql-import' && (
               <button className="btn btn-primary" onClick={() => void handleSqlImport()} disabled={isLoading || !sqlFile || isSqliteImportTaskActive(sqlImportResult)}>
                 {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <Database size={14} />}
@@ -2607,37 +2575,111 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                   Push
                 </button>
                 <div style={{ position: 'relative', alignSelf: 'stretch' }}>
-                  <button className="btn btn-secondary" onClick={() => setShowOverwriteMenu(prev => !prev)} disabled={isLoading}
+                  <button className="btn btn-secondary" onClick={() => setShowMoreMenu(prev => !prev)} disabled={isLoading}
                     title="More options" style={{ padding: '6px 8px', minWidth: 0, height: '100%' }}>
                     &#8230;
                   </button>
-                  {showOverwriteMenu && (
+                  {showMoreMenu && (
                     <div style={{
                       position: 'absolute', bottom: 'calc(100% + 6px)', right: 0, minWidth: 200,
                       padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)',
                       background: 'var(--color-bg-secondary)', boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
                       display: 'grid', gap: 8, zIndex: 10,
                     }}>
-                      <div style={{ fontSize: 11 }} className="userspace-muted">
-                        Replaces all local files with the remote state. Local-only changes will be lost.
-                      </div>
-                      <DeleteConfirmButton
-                        onDelete={() => { setShowOverwriteMenu(false); void handlePreview('import', { forceOverwrite: true }); }}
-                        disabled={isLoading}
-                        className="btn btn-sm btn-danger"
-                        title="Overwrite local files with remote state"
-                        buttonText="Overwrite local"
-                      />
+                      {setupPrompt && (
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          style={{ width: '100%' }}
+                          title="Copy the setup prompt from the last import to the clipboard"
+                          onClick={() => { void navigator.clipboard.writeText(setupPrompt); setShowMoreMenu(false); }}
+                        >
+                          Copy Prompt
+                        </button>
+                      )}
+                      <Popover
+                        position="left"
+                        trigger="hover"
+                        style={{ width: '100%' }}
+                        content={<span style={{ fontSize: 11 }}>Replaces all local files with the remote state. Local-only changes will be lost.</span>}
+                      >
+                        <DeleteConfirmButton
+                          onDelete={() => { setShowMoreMenu(false); void handlePreview('import', { forceOverwrite: true }); }}
+                          disabled={isLoading}
+                          className="btn btn-sm btn-danger"
+                          style={{ width: '100%' }}
+                          title="Overwrite local files with remote state"
+                          buttonText="Overwrite local"
+                        />
+                      </Popover>
+                      <Popover
+                        position="left"
+                        trigger="hover"
+                        style={{ width: '100%' }}
+                        content={<span style={{ fontSize: 11 }}>Removes the configured Git remote and clears the stored token.</span>}
+                      >
+                        <DeleteConfirmButton
+                          onDelete={() => { setShowMoreMenu(false); void handleDisconnectScm(); }}
+                          disabled={isLoading}
+                          deleting={loadingAction === 'disconnect'}
+                          className="btn btn-sm btn-danger"
+                          style={{ width: '100%' }}
+                          title="Disconnect the configured remote and clear the stored token"
+                          buttonText="Disconnect Remote"
+                        />
+                      </Popover>
                     </div>
                   )}
                 </div>
               </>
             )}
             {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && activeScm?.remote_role !== 'upstream' && (
-              <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
-                {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <RefreshCcw size={14} />}
-                Sync
-              </button>
+              <>
+                <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
+                  {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <RefreshCcw size={14} />}
+                  Sync
+                </button>
+                <div style={{ position: 'relative', alignSelf: 'stretch' }}>
+                  <button className="btn btn-secondary" onClick={() => setShowMoreMenu(prev => !prev)} disabled={isLoading}
+                    title="More options" style={{ padding: '6px 8px', minWidth: 0, height: '100%' }}>
+                    &#8230;
+                  </button>
+                  {showMoreMenu && (
+                    <div style={{
+                      position: 'absolute', bottom: 'calc(100% + 6px)', right: 0, minWidth: 200,
+                      padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)',
+                      background: 'var(--color-bg-secondary)', boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+                      display: 'grid', gap: 8, zIndex: 10,
+                    }}>
+                      {setupPrompt && (
+                        <button
+                          className="btn btn-sm btn-secondary"
+                          style={{ width: '100%' }}
+                          title="Copy the setup prompt from the last import to the clipboard"
+                          onClick={() => { void navigator.clipboard.writeText(setupPrompt); setShowMoreMenu(false); }}
+                        >
+                          Copy Prompt
+                        </button>
+                      )}
+                      <Popover
+                        position="left"
+                        trigger="hover"
+                        style={{ width: '100%' }}
+                        content={<span style={{ fontSize: 11 }}>Removes the configured Git remote and clears the stored token.</span>}
+                      >
+                        <DeleteConfirmButton
+                          onDelete={() => { setShowMoreMenu(false); void handleDisconnectScm(); }}
+                          disabled={isLoading}
+                          deleting={loadingAction === 'disconnect'}
+                          className="btn btn-sm btn-danger"
+                          style={{ width: '100%' }}
+                          title="Disconnect the configured remote and clear the stored token"
+                          buttonText="Disconnect Remote"
+                        />
+                      </Popover>
+                    </div>
+                  )}
+                </div>
+              </>
             )}
             {activeTab === 'git-source' && step === 'review' && preview && (
               <button

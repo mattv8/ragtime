@@ -21,6 +21,8 @@ interface PopoverProps {
   trigger?: 'hover' | 'click';
   /** Additional class name for the popover container */
   className?: string;
+  /** Additional inline styles for the popover container */
+  style?: CSSProperties;
   /** Whether the popover is disabled (won't show) */
   disabled?: boolean;
 }
@@ -181,6 +183,7 @@ export function Popover({
   show: controlledShow,
   trigger = 'hover',
   className = '',
+  style,
   disabled = false,
 }: PopoverProps) {
   const [internalShow, setInternalShow] = useState(false);
@@ -369,6 +372,7 @@ export function Popover({
       <div
         ref={triggerRef}
         className={`popover-container ${className}`.trim()}
+        style={style}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
         onClick={handleClick}

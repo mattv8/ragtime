@@ -282,9 +282,10 @@ textarea:focus {
   position: fixed;
   z-index: var(--z-tooltip);
   max-width: 320px;
-  background: var(--color-surface);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-lg);
+  padding: 0;
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   font-size: var(--text-xs);
@@ -299,7 +300,7 @@ textarea:focus {
 }
 
 .popover-content {
-  padding: var(--space-sm) 10px;
+  padding: 5px 8px;
 }
 
 /* --- Arrow (rotated square caret) --- */
@@ -308,7 +309,7 @@ textarea:focus {
   position: absolute;
   width: 10px;
   height: 10px;
-  background: var(--color-surface);
+  background: var(--color-surface-hover);
   border: 1px solid var(--color-border);
 }
 
