@@ -469,15 +469,19 @@
     position: relative;
   }
 
-  /* Adjust padding so text isn't hidden by file button or send button */
-  .chat-input-wrapper .chat-input {
-    flex: 1 1 100%;
-    width: 100%;
-    min-height: 44px; /* Touch friendly minimum */
-    max-height: 150px;
+  /* Adjust padding so content isn't hidden by file button or send button */
+  .chat-input-field {
     /* Reduce left padding (file btn) and right padding (send btn) */
     padding: 10px 92px 10px 40px;
+  }
+
+  .chat-rich-input {
+    min-height: 44px; /* Touch friendly minimum */
     font-size: 16px; /* 16px prevents iOS zoom on focus */
+  }
+
+  .chat-context-chip-label {
+    font-size: 10px;
   }
 
   /* File attachment button position adjustment for mobile */
@@ -923,10 +927,12 @@
     gap: var(--space-xs);
   }
 
-  .chat-input-wrapper .chat-input {
-    min-height: 56px;
-    max-height: 180px;
+  .chat-input-field {
     padding: 10px 88px 10px 40px;
+  }
+
+  .chat-rich-input {
+    min-height: 40px;
     font-size: 16px;
   }
 

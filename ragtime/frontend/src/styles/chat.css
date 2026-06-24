@@ -253,9 +253,13 @@
   color: var(--color-text-secondary);
   border-radius: var(--radius-sm);
 }
-.chat-action-btn:hover {
+.chat-action-btn:hover:not(:disabled) {
   opacity: 1;
   background: var(--color-surface-active);
+}
+.chat-action-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 .chat-action-btn.confirm-delete {
   color: var(--color-success);
@@ -1819,6 +1823,74 @@ textarea.chat-header-title-input {
   background: var(--color-surface);
   padding: 6px 10px;
 }
+/* Inline context chips: atomic, non-editable tokens embedded directly in the
+   contentEditable composer so the user can weave references between words,
+   e.g. "see <fileA:1-3> then look at <fileB:10>". */
+.chat-context-chip-inline {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 2px;
+  position: relative;
+  top: -2px;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface));
+  color: var(--color-text-primary);
+  overflow: hidden;
+  line-height: 1.5;
+  user-select: none;
+  white-space: nowrap;
+}
+.chat-context-chip-open,
+.chat-context-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.chat-context-chip-open {
+  gap: 4px;
+  min-width: 0;
+  padding: 1px 3px;
+}
+.chat-context-chip-open:hover,
+.chat-context-chip-remove:hover {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+.chat-context-chip-icon,
+.chat-context-chip-remove-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.chat-context-chip-label {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.chat-context-chip-meta {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.chat-context-chip-remove {
+  align-self: stretch;
+  padding: 0 2px 0 2px;
+  color: var(--color-text-muted);
+  border-left: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
+}
 .chat-input-wrapper {
   flex: 1;
   min-height: 44px;
@@ -1837,26 +1909,64 @@ textarea.chat-header-title-input {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px var(--color-primary-light);
 }
-.chat-input-wrapper .chat-input {
+/* The field is the scroll container; the rich composer fills it and carries the
+   padding that clears the attach (left) and tool/send (right) controls. */
+.chat-input-field {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  padding: 12px 108px 12px 52px; /* Right padding leaves room for tool + send controls */
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-  color: var(--color-text-primary);
-  font-size: var(--text-base);
-  font-family: inherit;
-  resize: none;
-  height: 100%; /* Fill wrapper height — container height controls sizing */
-  max-height: 100%;
+  height: 100%;
   box-sizing: border-box;
-  line-height: 1.5;
+  padding: 12px 108px 12px 52px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+.chat-rich-input {
+  position: relative;
+  width: 100%;
+  min-height: 24px;
+  color: var(--color-text-primary);
+  font-size: var(--text-base);
+  font-family: inherit;
+  line-height: 1.6;
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.chat-rich-input:focus {
+  outline: none;
+}
+.chat-rich-input[contenteditable="false"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* Placeholder via data attribute, shown only when the composer is empty. */
+.chat-rich-input-empty::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 0;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-input-field::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-input-field::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 8px 0;
+}
+.chat-input-field::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+[data-theme="dark"] .chat-input-field::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
 }
 .chat-input-area.auto-resizing .chat-input {
   transition: height 150ms ease-in-out;

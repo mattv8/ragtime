@@ -10,7 +10,7 @@ import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
 import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch, Download } from 'lucide-react';
 import { api } from '@/api';
-import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
+import type { Conversation, ChatContextReference, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
@@ -45,6 +45,15 @@ import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorD
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
 import { useToast, ToastContainer } from './shared/Toast';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
+import {
+  EMPTY_RICH_SEGMENTS,
+  RichChatInput,
+  plainTextToSegments,
+  segmentsAreEmpty,
+  serializeRichChatSegments,
+  type RichChatInputHandle,
+  type RichChatSegment,
+} from './RichChatInput';
 
 const CHAT_DIAGNOSTIC_COMMAND_TOOL_ID = 'run_chat_diagnostic_command';
 
@@ -92,6 +101,7 @@ interface QueuedCompactionMessage {
   serializedMessage: string;
   displayContent: string | ContentPart[];
   inputText: string;
+  inputSegments?: RichChatSegment[];
   attachments: AttachmentFile[];
   timestamp: string;
 }
@@ -1647,39 +1657,39 @@ const VisualizationExportControls = memo(function VisualizationExportControls({
           onMouseEnter={scheduleMenuOpen}
           onMouseLeave={scheduleMenuClose}
         >
-      {onCsv && (
-        <button
-          type="button"
-          className="visualization-export-menu-item"
-          onClick={() => handleOptionClick(onCsv)}
-          disabled={disabled}
-          role="menuitem"
-        >
-          <span>CSV</span>
-        </button>
-      )}
-      {onXlsx && (
-        <button
-          type="button"
-          className="visualization-export-menu-item"
-          onClick={() => handleOptionClick(onXlsx)}
-          disabled={disabled || isExportingXlsx}
-          role="menuitem"
-        >
-          <span>XLSX</span>
-        </button>
-      )}
-      {onPng && (
-        <button
-          type="button"
-          className="visualization-export-menu-item"
-          onClick={() => handleOptionClick(onPng)}
-          disabled={disabled}
-          role="menuitem"
-        >
-          <span>PNG</span>
-        </button>
-      )}
+          {onCsv && (
+            <button
+              type="button"
+              className="visualization-export-menu-item"
+              onClick={() => handleOptionClick(onCsv)}
+              disabled={disabled}
+              role="menuitem"
+            >
+              <span>CSV</span>
+            </button>
+          )}
+          {onXlsx && (
+            <button
+              type="button"
+              className="visualization-export-menu-item"
+              onClick={() => handleOptionClick(onXlsx)}
+              disabled={disabled || isExportingXlsx}
+              role="menuitem"
+            >
+              <span>XLSX</span>
+            </button>
+          )}
+          {onPng && (
+            <button
+              type="button"
+              className="visualization-export-menu-item"
+              onClick={() => handleOptionClick(onPng)}
+              disabled={disabled}
+              role="menuitem"
+            >
+              <span>PNG</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -3047,8 +3057,8 @@ function parseUserspaceReadBatch(toolName: string, output?: string | null): Pars
     const fileObj = e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
     const entryPath =
       (typeof e.path === 'string' && (e.path as string).trim()) ? (e.path as string).trim()
-      : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
-      : '';
+        : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
+          : '';
     if (!entryPath) continue;
     const status = typeof e.status === 'string' ? e.status : '';
     const fileContent = fileObj && typeof fileObj.content === 'string' ? (fileObj.content as string) : null;
@@ -3131,19 +3141,19 @@ function parseUserspaceWriteToolResult(toolName: string, output?: string | null)
   const status = parsed.status;
   const file = parsed.fileContent != null
     ? {
-        path: parsed.filePath || parsed.path,
-        content: parsed.fileContent,
-        updated_at: parsed.writeSignature || '',
-      } as UserSpaceFile
+      path: parsed.filePath || parsed.path,
+      content: parsed.fileContent,
+      updated_at: parsed.writeSignature || '',
+    } as UserSpaceFile
     : null;
   const path = parsed.path;
   if (!path) return null;
 
   const op: 'upsert' | 'patch' | 'move' | 'delete' =
     toolName === 'upsert_userspace_file' ? 'upsert'
-    : toolName === 'patch_userspace_file' ? 'patch'
-    : toolName === 'move_userspace_file' ? 'move'
-    : 'delete';
+      : toolName === 'patch_userspace_file' ? 'patch'
+        : toolName === 'move_userspace_file' ? 'move'
+          : 'delete';
 
   return {
     toolName: toolName as ParsedUserSpaceWriteResult['toolName'],
@@ -3174,9 +3184,9 @@ function parseUserspaceWriteBatch(toolName: string, output?: string | null): Par
 
   const opForTool: 'upsert' | 'patch' | 'move' | 'delete' =
     toolName === 'upsert_userspace_file' ? 'upsert'
-    : toolName === 'patch_userspace_file' ? 'patch'
-    : toolName === 'move_userspace_file' ? 'move'
-    : 'delete';
+      : toolName === 'patch_userspace_file' ? 'patch'
+        : toolName === 'move_userspace_file' ? 'move'
+          : 'delete';
 
   // Try tolerant JSON parse first to detect a batched `files` collection.
   const parsedJson = parseNestedJsonRecordValue(output);
@@ -3217,23 +3227,23 @@ function parseUserspaceWriteBatch(toolName: string, output?: string | null): Par
     const fileObj = e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
     const entryPath =
       (typeof e.new_path === 'string' && e.new_path.trim()) ? (e.new_path as string).trim()
-      : (typeof e.path === 'string' && e.path.trim()) ? (e.path as string).trim()
-      : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
-      : '';
+        : (typeof e.path === 'string' && e.path.trim()) ? (e.path as string).trim()
+          : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
+            : '';
     if (!entryPath) continue;
     const writeSig = typeof e.write_signature === 'string' && e.write_signature.trim() ? e.write_signature.trim() : null;
     const fileForEntry: UserSpaceFile | null = fileObj && typeof fileObj.content === 'string'
       ? {
-          path: typeof fileObj.path === 'string' && fileObj.path.trim() ? (fileObj.path as string).trim() : entryPath,
-          content: fileObj.content as string,
-          updated_at: writeSig || '',
-        } as UserSpaceFile
+        path: typeof fileObj.path === 'string' && fileObj.path.trim() ? (fileObj.path as string).trim() : entryPath,
+        content: fileObj.content as string,
+        updated_at: writeSig || '',
+      } as UserSpaceFile
       : null;
     const entryToolName: ParsedUserSpaceWriteResult['toolName'] =
       entryOp === 'upsert' ? 'upsert_userspace_file'
-      : entryOp === 'patch' ? 'patch_userspace_file'
-      : entryOp === 'move' ? 'move_userspace_file'
-      : 'delete_userspace_file';
+        : entryOp === 'patch' ? 'patch_userspace_file'
+          : entryOp === 'move' ? 'move_userspace_file'
+            : 'delete_userspace_file';
     entries.push({
       toolName: entryToolName,
       op: entryOp,
@@ -4290,7 +4300,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       ? Boolean(conversationId && toolCall.connection?.tool_config_id)
       : rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND
         ? Boolean(conversationId)
-      : false;
+        : false;
   const activeTerminalOutput = activeOutput;
 
   // Parse terminal output for terminal-style rendering
@@ -5303,18 +5313,18 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         .map((idx) => {
           const displayCount = hasTruncatedResultSet ? `${idx.resultCount}+` : String(idx.resultCount);
           return (
-          <span
-            className={`tool-call-knowledge-index-chip ${idx.ok ? 'tool-call-knowledge-index-chip-ok' : 'tool-call-knowledge-index-chip-error'}`}
-            key={idx.name}
-            title={idx.ok
-              ? (hasTruncatedResultSet
-                ? `At least ${idx.resultCount} visible result${idx.resultCount === 1 ? '' : 's'} for ${idx.name}; full output was truncated`
-                : `${idx.resultCount} result${idx.resultCount === 1 ? '' : 's'}`)
-              : 'Search failed'}
-          >
-            <span className="tool-call-knowledge-index-chip-name">{idx.name}</span>
-            <span className="tool-call-knowledge-index-chip-count">{idx.ok ? displayCount : 'error'}</span>
-          </span>
+            <span
+              className={`tool-call-knowledge-index-chip ${idx.ok ? 'tool-call-knowledge-index-chip-ok' : 'tool-call-knowledge-index-chip-error'}`}
+              key={idx.name}
+              title={idx.ok
+                ? (hasTruncatedResultSet
+                  ? `At least ${idx.resultCount} visible result${idx.resultCount === 1 ? '' : 's'} for ${idx.name}; full output was truncated`
+                  : `${idx.resultCount} result${idx.resultCount === 1 ? '' : 's'}`)
+                : 'Search failed'}
+            >
+              <span className="tool-call-knowledge-index-chip-name">{idx.name}</span>
+              <span className="tool-call-knowledge-index-chip-count">{idx.ok ? displayCount : 'error'}</span>
+            </span>
           );
         });
 
@@ -5613,25 +5623,25 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           const lineCount = normalizedContent ? normalizedContent.split('\n').length : 0;
           const entryDiff: UserSpaceSnapshotFileDiff | null = (!entry.isRejected && normalizedContent != null)
             ? {
-                workspace_id: '',
-                snapshot_id: '',
-                path: entry.path,
-                status: 'R',
-                before_content: '',
-                after_content: normalizedContent,
-                additions: lineCount,
-                deletions: 0,
-                is_binary: false,
-                is_deleted_in_current: false,
-                is_untracked_in_current: false,
-                starting_before_line: undefined,
-                starting_after_line: entry.startLine ?? undefined,
-              }
+              workspace_id: '',
+              snapshot_id: '',
+              path: entry.path,
+              status: 'R',
+              before_content: '',
+              after_content: normalizedContent,
+              additions: lineCount,
+              deletions: 0,
+              is_binary: false,
+              is_deleted_in_current: false,
+              is_untracked_in_current: false,
+              starting_before_line: undefined,
+              starting_after_line: entry.startLine ?? undefined,
+            }
             : null;
           const range = (entry.startLine != null && entry.endLine != null)
             ? (entry.totalLines != null
-                ? `Lines ${entry.startLine}-${entry.endLine} of ${entry.totalLines}`
-                : `Lines ${entry.startLine}-${entry.endLine}`)
+              ? `Lines ${entry.startLine}-${entry.endLine} of ${entry.totalLines}`
+              : `Lines ${entry.startLine}-${entry.endLine}`)
             : null;
           const statusGlyph = entry.isRejected ? 'X' : 'R';
           const sectionClass = batched
@@ -5885,8 +5895,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           : [];
         const capabilityFlags = capabilities
           ? Object.entries(capabilities)
-              .filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
-              .map(([key, value]) => ({ label: key.replace(/^can_/, '').split('_').join(' '), enabled: value === true }))
+            .filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
+            .map(([key, value]) => ({ label: key.replace(/^can_/, '').split('_').join(' '), enabled: value === true }))
           : [];
         const workspacePayload = asJsonRecord(payload.workspace);
         const assaySummary = asJsonRecord(workspacePayload?.summary);
@@ -6479,281 +6489,281 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   };
 
   return (
-  <>
-    <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
-      <div className="tool-call-header-row">
-        <button
-          className="tool-call-header"
-          onClick={() => setManuallyExpanded((current) => (inChatSearchForcesExpanded ? false : !current))}
-        >
-          <span className="tool-call-icon">{statusIcon || toolIcon}</span>
-          {isTerminalCommand ? (
-            <span className="tool-call-name tool-call-name-terminal">
-              {inputDisplay || toolCall.tool}
-            </span>
-          ) : (
-            <span className="tool-call-name">{visualToolName}</span>
-          )}
-          {toolCall.status === 'running' && toolCall.generating_lines ? (
-            <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
-          ) : null}
-          <span className="tool-call-toggle" aria-hidden="true">
-            {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </span>
-        </button>
-        {allowRerun && isFailed && isVisualizationTool && !isRetrying && (
+    <>
+      <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
+        <div className="tool-call-header-row">
           <button
-            type="button"
-            className="tool-call-retry-btn"
-            onClick={handleRetry}
-            title="Retry creating visualization from source data"
+            className="tool-call-header"
+            onClick={() => setManuallyExpanded((current) => (inChatSearchForcesExpanded ? false : !current))}
           >
-            <RefreshCw size={12} />
-            <span>Retry</span>
+            <span className="tool-call-icon">{statusIcon || toolIcon}</span>
+            {isTerminalCommand ? (
+              <span className="tool-call-name tool-call-name-terminal">
+                {inputDisplay || toolCall.tool}
+              </span>
+            ) : (
+              <span className="tool-call-name">{visualToolName}</span>
+            )}
+            {toolCall.status === 'running' && toolCall.generating_lines ? (
+              <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
+            ) : null}
+            <span className="tool-call-toggle" aria-hidden="true">
+              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </span>
           </button>
-        )}
-        {isRetrying && (
-          <span
-            className="tool-call-retrying"
-            title="Retry checks existing source data first, then may rerun the source query and use AI to repair malformed visualization data."
-          >
-            <MiniLoadingSpinner variant="icon" size={12} />
-            <span>{retryProgressText || 'Retrying...'}</span>
-          </span>
-        )}
-      </div>
-      {expanded && (
-        <div className="tool-call-details">
-          {retryError && (
-            <div className="tool-call-section tool-call-error">
-              <div className="tool-call-section-header">
-                <span className="tool-call-section-label">Retry Error:</span>
-              </div>
-              <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
-            </div>
+          {allowRerun && isFailed && isVisualizationTool && !isRetrying && (
+            <button
+              type="button"
+              className="tool-call-retry-btn"
+              onClick={handleRetry}
+              title="Retry creating visualization from source data"
+            >
+              <RefreshCw size={12} />
+              <span>Retry</span>
+            </button>
           )}
-          {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isUserspaceStructuredJsonTool && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && !isKnowledgeSearchToolName(toolCall.tool) && (
-            <div className="tool-call-section">
-              <div className="tool-call-section-header">
-                <span className="tool-call-section-label">Query:</span>
-                <div className="tool-call-terminal-header-actions">
-                  <button
-                    className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(inputDisplay, 'query', 'generic-query')}
-                    title="Copy query"
-                  >
-                    {isCopiedButton('query', 'generic-query') ? <Check size={12} /> : <Copy size={12} />}
-                  </button>
-                  {isSqlTool && canRerun && hasRerunContext && (
+          {isRetrying && (
+            <span
+              className="tool-call-retrying"
+              title="Retry checks existing source data first, then may rerun the source query and use AI to repair malformed visualization data."
+            >
+              <MiniLoadingSpinner variant="icon" size={12} />
+              <span>{retryProgressText || 'Retrying...'}</span>
+            </span>
+          )}
+        </div>
+        {expanded && (
+          <div className="tool-call-details">
+            {retryError && (
+              <div className="tool-call-section tool-call-error">
+                <div className="tool-call-section-header">
+                  <span className="tool-call-section-label">Retry Error:</span>
+                </div>
+                <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
+              </div>
+            )}
+            {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isUserspaceStructuredJsonTool && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && !isKnowledgeSearchToolName(toolCall.tool) && (
+              <div className="tool-call-section">
+                <div className="tool-call-section-header">
+                  <span className="tool-call-section-label">Query:</span>
+                  <div className="tool-call-terminal-header-actions">
                     <button
-                      className="tool-call-copy-btn tool-call-terminal-rerun-btn"
-                      onClick={handleRerunCommand}
-                      title="Replay query"
-                      disabled={isRerunning}
+                      className="tool-call-copy-btn"
+                      onClick={() => copyToClipboard(inputDisplay, 'query', 'generic-query')}
+                      title="Copy query"
                     >
-                      {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                      {isCopiedButton('query', 'generic-query') ? <Check size={12} /> : <Copy size={12} />}
                     </button>
+                    {isSqlTool && canRerun && hasRerunContext && (
+                      <button
+                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                        onClick={handleRerunCommand}
+                        title="Replay query"
+                        disabled={isRerunning}
+                      >
+                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <pre className="tool-call-code">{inputDisplay}</pre>
+              </div>
+            )}
+            {isTerminalCommand && terminalOutput ? (
+              <div className="tool-call-section tool-call-terminal-section">
+                <div className="tool-call-terminal-block">
+                  <div className="tool-call-terminal-header-bar">
+                    <span className="tool-call-terminal-cwd">{terminalOutput.cwd === '.' ? '~' : `~/${terminalOutput.cwd}`}</span>
+                    <div className="tool-call-terminal-header-actions">
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-complete')}
+                        title="Copy command"
+                      >
+                        {isCopiedButton('query', 'terminal-copy-command-complete') ? <Check size={12} /> : <Terminal size={12} />}
+                      </button>
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(
+                          [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
+                          'result',
+                          'terminal-copy-output-complete'
+                        )}
+                        title="Copy output"
+                      >
+                        {isCopiedButton('result', 'terminal-copy-output-complete') ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                      {canRerun && hasRerunContext && (
+                        <button
+                          className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                          onClick={handleRerunCommand}
+                          title="Re-run command"
+                          disabled={isRerunning}
+                        >
+                          {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <pre className="tool-call-terminal-output">
+                    <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
+                    {'\n'}
+                    {terminalOutput.stdout}
+                    {terminalOutput.stderr ? (
+                      <span className="tool-call-terminal-stderr">{terminalOutput.stderr}</span>
+                    ) : null}
+                  </pre>
+                  {terminalOutput.truncated && (
+                    <div className="tool-call-terminal-notice">Output truncated</div>
+                  )}
+                  {terminalOutput.error && terminalOutput.status !== 'completed' && (
+                    <div className="tool-call-terminal-error-banner">
+                      <AlertCircle size={12} />
+                      <span>{terminalOutput.error}</span>
+                    </div>
                   )}
                 </div>
               </div>
-              <pre className="tool-call-code">{inputDisplay}</pre>
-            </div>
-          )}
-          {isTerminalCommand && terminalOutput ? (
-            <div className="tool-call-section tool-call-terminal-section">
-              <div className="tool-call-terminal-block">
-                <div className="tool-call-terminal-header-bar">
-                  <span className="tool-call-terminal-cwd">{terminalOutput.cwd === '.' ? '~' : `~/${terminalOutput.cwd}`}</span>
-                  <div className="tool-call-terminal-header-actions">
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-complete')}
-                      title="Copy command"
-                    >
-                      {isCopiedButton('query', 'terminal-copy-command-complete') ? <Check size={12} /> : <Terminal size={12} />}
-                    </button>
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(
-                        [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
-                        'result',
-                        'terminal-copy-output-complete'
+            ) : isTerminalCommand && (toolCall.status === 'running' || isRerunning) ? (
+              <div className="tool-call-section tool-call-terminal-section">
+                <div className="tool-call-terminal-block">
+                  <div className="tool-call-terminal-header-bar">
+                    <span className="tool-call-terminal-cwd">~</span>
+                    <div className="tool-call-terminal-header-actions">
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-running')}
+                        title="Copy command"
+                      >
+                        {isCopiedButton('query', 'terminal-copy-command-running') ? <Check size={12} /> : <Terminal size={12} />}
+                      </button>
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-running')}
+                        title="Copy output"
+                      >
+                        {isCopiedButton('result', 'terminal-copy-output-running') ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                      {canRerun && hasRerunContext && (
+                        <button
+                          className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                          onClick={handleRerunCommand}
+                          title="Re-run command"
+                          disabled={isRerunning}
+                        >
+                          {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                        </button>
                       )}
-                      title="Copy output"
-                    >
-                      {isCopiedButton('result', 'terminal-copy-output-complete') ? <Check size={12} /> : <Copy size={12} />}
-                    </button>
-                    {canRerun && hasRerunContext && (
+                    </div>
+                  </div>
+                  <pre className="tool-call-terminal-output">
+                    <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
+                    {'\n'}
+                    <MiniLoadingSpinner variant="icon" size={12} />
+                  </pre>
+                </div>
+              </div>
+            ) : isTerminalCommand ? (
+              <div className="tool-call-section tool-call-terminal-section">
+                <div className="tool-call-terminal-block">
+                  <div className="tool-call-terminal-header-bar">
+                    <span className="tool-call-terminal-cwd">~</span>
+                    <div className="tool-call-terminal-header-actions">
                       <button
-                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
-                        onClick={handleRerunCommand}
-                        title="Re-run command"
-                        disabled={isRerunning}
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-empty')}
+                        title="Copy command"
                       >
-                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                        {isCopiedButton('query', 'terminal-copy-command-empty') ? <Check size={12} /> : <Terminal size={12} />}
                       </button>
-                    )}
-                  </div>
-                </div>
-                <pre className="tool-call-terminal-output">
-                  <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
-                  {'\n'}
-                  {terminalOutput.stdout}
-                  {terminalOutput.stderr ? (
-                    <span className="tool-call-terminal-stderr">{terminalOutput.stderr}</span>
-                  ) : null}
-                </pre>
-                {terminalOutput.truncated && (
-                  <div className="tool-call-terminal-notice">Output truncated</div>
-                )}
-                {terminalOutput.error && terminalOutput.status !== 'completed' && (
-                  <div className="tool-call-terminal-error-banner">
-                    <AlertCircle size={12} />
-                    <span>{terminalOutput.error}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : isTerminalCommand && (toolCall.status === 'running' || isRerunning) ? (
-            <div className="tool-call-section tool-call-terminal-section">
-              <div className="tool-call-terminal-block">
-                <div className="tool-call-terminal-header-bar">
-                  <span className="tool-call-terminal-cwd">~</span>
-                  <div className="tool-call-terminal-header-actions">
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-running')}
-                      title="Copy command"
-                    >
-                      {isCopiedButton('query', 'terminal-copy-command-running') ? <Check size={12} /> : <Terminal size={12} />}
-                    </button>
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-running')}
-                      title="Copy output"
-                    >
-                      {isCopiedButton('result', 'terminal-copy-output-running') ? <Check size={12} /> : <Copy size={12} />}
-                    </button>
-                    {canRerun && hasRerunContext && (
                       <button
-                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
-                        onClick={handleRerunCommand}
-                        title="Re-run command"
-                        disabled={isRerunning}
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-empty')}
+                        title="Copy output"
                       >
-                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                        {isCopiedButton('result', 'terminal-copy-output-empty') ? <Check size={12} /> : <Copy size={12} />}
                       </button>
-                    )}
+                      {canRerun && hasRerunContext && (
+                        <button
+                          className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                          onClick={handleRerunCommand}
+                          title="Re-run command"
+                          disabled={isRerunning}
+                        >
+                          {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  <pre className="tool-call-terminal-output">
+                    <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
+                    {'\n'}
+                    <span className="tool-call-terminal-empty">No output</span>
+                  </pre>
                 </div>
-                <pre className="tool-call-terminal-output">
-                  <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
-                  {'\n'}
-                  <MiniLoadingSpinner variant="icon" size={12} />
-                </pre>
               </div>
-            </div>
-          ) : isTerminalCommand ? (
-            <div className="tool-call-section tool-call-terminal-section">
-              <div className="tool-call-terminal-block">
-                <div className="tool-call-terminal-header-bar">
-                  <span className="tool-call-terminal-cwd">~</span>
-                  <div className="tool-call-terminal-header-actions">
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-empty')}
-                      title="Copy command"
-                    >
-                      {isCopiedButton('query', 'terminal-copy-command-empty') ? <Check size={12} /> : <Terminal size={12} />}
-                    </button>
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-empty')}
-                      title="Copy output"
-                    >
-                      {isCopiedButton('result', 'terminal-copy-output-empty') ? <Check size={12} /> : <Copy size={12} />}
-                    </button>
-                    {canRerun && hasRerunContext && (
-                      <button
-                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
-                        onClick={handleRerunCommand}
-                        title="Re-run command"
-                        disabled={isRerunning}
-                      >
-                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
-                      </button>
-                    )}
+            ) : null}
+            {(effectiveOutput || isUserspaceStructuredJsonTool || isKnowledgeSearchToolName(toolCall.tool)) && !isTerminalCommand && (
+              screenshotPreview && !hasErrorInOutput ? (
+                <div className="tool-call-section">
+                  <div className="tool-call-screenshot-meta">
+                    {screenshotPreview.width && screenshotPreview.height
+                      ? `${screenshotPreview.width}\u00d7${screenshotPreview.height}`
+                      : 'Screenshot'}
+                    {screenshotPreview.effectiveWait
+                      ? ` | settled ${screenshotPreview.effectiveWait}ms`
+                      : ''}
                   </div>
+                  <img
+                    src={screenshotPreview.imageUrl}
+                    alt="Captured User Space screenshot"
+                    className="tool-call-screenshot-image"
+                    loading="lazy"
+                    onClick={() => setZoomedImage(screenshotPreview.imageUrl)}
+                    style={{ cursor: 'zoom-in' }}
+                  />
                 </div>
-                <pre className="tool-call-terminal-output">
-                  <span className="tool-call-terminal-prompt-line">$ {inputDisplay}</span>
-                  {'\n'}
-                  <span className="tool-call-terminal-empty">No output</span>
-                </pre>
-              </div>
-            </div>
-          ) : null}
-          {(effectiveOutput || isUserspaceStructuredJsonTool || isKnowledgeSearchToolName(toolCall.tool)) && !isTerminalCommand && (
-            screenshotPreview && !hasErrorInOutput ? (
-              <div className="tool-call-section">
-                <div className="tool-call-screenshot-meta">
-                  {screenshotPreview.width && screenshotPreview.height
-                    ? `${screenshotPreview.width}\u00d7${screenshotPreview.height}`
-                    : 'Screenshot'}
-                  {screenshotPreview.effectiveWait
-                    ? ` | settled ${screenshotPreview.effectiveWait}ms`
-                    : ''}
-                </div>
-                <img
-                  src={screenshotPreview.imageUrl}
-                  alt="Captured User Space screenshot"
-                  className="tool-call-screenshot-image"
-                  loading="lazy"
-                  onClick={() => setZoomedImage(screenshotPreview.imageUrl)}
-                  style={{ cursor: 'zoom-in' }}
-                />
-              </div>
-            ) : renderUserspaceResultBody()
-          )}
+              ) : renderUserspaceResultBody()
+            )}
+          </div>
+        )}
+      </div>
+      {zoomedImage && (
+        <div
+          className="image-modal-overlay"
+          onClick={() => setZoomedImage(null)}
+          onKeyDown={(e) => e.key === 'Escape' && setZoomedImage(null)}
+          role="dialog"
+          aria-modal="true"
+          tabIndex={-1}
+        >
+          <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="image-modal-close"
+              onClick={() => setZoomedImage(null)}
+              title="Close"
+            >
+              <X size={24} />
+            </button>
+            <img src={zoomedImage!} alt="Screenshot full view" />
+          </div>
         </div>
       )}
-    </div>
-    {zoomedImage && (
-      <div
-        className="image-modal-overlay"
-        onClick={() => setZoomedImage(null)}
-        onKeyDown={(e) => e.key === 'Escape' && setZoomedImage(null)}
-        role="dialog"
-        aria-modal="true"
-        tabIndex={-1}
-      >
-        <div className="image-modal-content" onClick={(e) => e.stopPropagation()}>
-          <button
-            className="image-modal-close"
-            onClick={() => setZoomedImage(null)}
-            title="Close"
-          >
-            <X size={24} />
-          </button>
-          <img src={zoomedImage!} alt="Screenshot full view" />
-        </div>
-      </div>
-    )}
-    {showUserspaceDiffOverlay && userspaceWriteBatch && (
-      <FileDiffOverlay
-        key="userspace-file-diff-overlay"
-        entries={userspaceOverlayEntries}
-        activeIndex={userspaceOverlayActiveIndex}
-        title={userspaceWriteBatch.isBatch ? 'Userspace Batch Diff' : 'Userspace File Diff'}
-        beforeLabel="Last Snapshot"
-        afterLabel="Tool Result"
-        onDismiss={() => setShowUserspaceDiffOverlay(false)}
-        onOverlayClick={() => {}}
-        onOverlayMouseEnter={() => {}}
-        onOverlayMouseLeave={() => {}}
-      />
-    )}
-  </>
+      {showUserspaceDiffOverlay && userspaceWriteBatch && (
+        <FileDiffOverlay
+          key="userspace-file-diff-overlay"
+          entries={userspaceOverlayEntries}
+          activeIndex={userspaceOverlayActiveIndex}
+          title={userspaceWriteBatch.isBatch ? 'Userspace Batch Diff' : 'Userspace File Diff'}
+          beforeLabel="Last Snapshot"
+          afterLabel="Tool Result"
+          onDismiss={() => setShowUserspaceDiffOverlay(false)}
+          onOverlayClick={() => { }}
+          onOverlayMouseEnter={() => { }}
+          onOverlayMouseLeave={() => { }}
+        />
+      )}
+    </>
   );
 })
 
@@ -7621,6 +7631,15 @@ interface ChatPanelProps {
   onBranchSwitch?: (branchId: string | null, associatedSnapshotId: string | null) => void | Promise<void>;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onOpenWorkspaceFile?: (path: string) => void;
+  /**
+   * Lets a parent insert a context reference chip at the message composer's
+   * current caret position. The chat panel registers its inserter (or null on
+   * unmount) so the workspace editor can weave references into the message as
+   * the user selects code or clicks file actions.
+   */
+  onRegisterContextReferenceInserter?: (insert: ((reference: ChatContextReference) => void) | null) => void;
+  onContextReferencesChange?: (references: ChatContextReference[]) => void;
+  onOpenContextReference?: (reference: ChatContextReference) => void | Promise<void>;
   onMessageSnapshotRestored?: (details?: {
     rolledBackSnapshot?: boolean;
     requiresRuntimeRestart?: boolean;
@@ -7668,6 +7687,9 @@ export function ChatPanel({
   onBranchSwitch,
   onFullscreenChange,
   onOpenWorkspaceFile,
+  onRegisterContextReferenceInserter,
+  onContextReferencesChange,
+  onOpenContextReference,
   onMessageSnapshotRestored,
   onSnapshotsMaybeChanged,
   inputBanner,
@@ -7692,7 +7714,10 @@ export function ChatPanel({
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isConversationSwitchLoading, setIsConversationSwitchLoading] = useState(false);
   const [isCreatingFreshConversation, setIsCreatingFreshConversation] = useState(false);
-  const [inputValue, setInputValue] = useState('');
+  const [messageSegments, setMessageSegments] = useState<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
+  // Mirror of the composer document for synchronous read access in imperative
+  // handlers (e.g. deciding insert-vs-merge before React commits state).
+  const messageSegmentsRef = useRef<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isCompacting, setIsCompacting] = useState(false);
@@ -7727,7 +7752,12 @@ export function ChatPanel({
   const [editingHeaderTitle, setEditingHeaderTitle] = useState<string | null>(null);
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
-  const [editMessageContent, setEditMessageContent] = useState('');
+  const [editMessageSegments, setEditMessageSegments] = useState<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
+  const editMessageSegmentsRef = useRef<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
+  const editRichInputRef = useRef<RichChatInputHandle>(null);
+  // Which composer most recently held focus, so editor selections and file
+  // actions insert reference chips into the box the user is actually using.
+  const activeComposerRef = useRef<'main' | 'edit'>('main');
   const [editMessageAttachments, setEditMessageAttachments] = useState<AttachmentFile[]>([]);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [hitMaxIterations, setHitMaxIterations] = useState(false);
@@ -7868,7 +7898,7 @@ export function ChatPanel({
     const timeoutId = window.setTimeout(() => {
       setBranchSearchAnchorHint((current) => (
         current?.conversationId === branchSearchAnchorHint.conversationId
-        && current.branchId === branchSearchAnchorHint.branchId
+          && current.branchId === branchSearchAnchorHint.branchId
           ? null
           : current
       ));
@@ -8542,10 +8572,10 @@ export function ChatPanel({
     : conversationBaseToolSelection;
   const effectiveToolSelection = useWorkspaceToolSource
     ? {
-        mode: workspaceToolSelectionMode ?? ((workspaceSelectedToolIds ?? []).length === 0 && (workspaceSelectedToolGroupIds ?? []).length === 0 ? 'default_all' : 'custom'),
-        toolIds: workspaceSelectedToolIds ?? [],
-        toolGroupIds: workspaceSelectedToolGroupIds ?? [],
-      } satisfies UserSpaceToolSelection
+      mode: workspaceToolSelectionMode ?? ((workspaceSelectedToolIds ?? []).length === 0 && (workspaceSelectedToolGroupIds ?? []).length === 0 ? 'default_all' : 'custom'),
+      toolIds: workspaceSelectedToolIds ?? [],
+      toolGroupIds: workspaceSelectedToolGroupIds ?? [],
+    } satisfies UserSpaceToolSelection
     : effectiveConversationToolSelection;
   const resolvedConversationToolIds = useMemo(
     () => resolveDefaultSelectedToolIds(
@@ -8790,7 +8820,8 @@ export function ChatPanel({
   const shouldAutoScrollRef = useRef(true);
   const autoScrollFrameRef = useRef<number | null>(null);
   const programmaticScrollRef = useRef(false);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLDivElement>(null);
+  const richInputRef = useRef<RichChatInputHandle>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const compactionAbortControllerRef = useRef<AbortController | null>(null);
   const compactionTaskRef = useRef<string | null>(null);
@@ -8812,8 +8843,28 @@ export function ChatPanel({
   const selectConversationRequestIdRef = useRef(0);
   const prevSidebarWidth = useRef(280);
   const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
+  const inputAreaHeightLiveRef = useRef(MIN_INPUT_AREA_HEIGHT);
+  const inputAreaCollapsedLiveRef = useRef(false);
+  const messagesCollapsedLiveRef = useRef(false);
+  const manualResizeLiveRef = useRef(false);
   const prevInputLengthRef = useRef(0);
   const skipNextLayoutPersistRef = useRef(true);
+
+  useEffect(() => {
+    inputAreaHeightLiveRef.current = inputAreaHeight;
+  }, [inputAreaHeight]);
+
+  useEffect(() => {
+    inputAreaCollapsedLiveRef.current = isInputAreaCollapsed;
+  }, [isInputAreaCollapsed]);
+
+  useEffect(() => {
+    messagesCollapsedLiveRef.current = isMessagesCollapsed;
+  }, [isMessagesCollapsed]);
+
+  useEffect(() => {
+    manualResizeLiveRef.current = isManualResize;
+  }, [isManualResize]);
 
   useEffect(() => {
     skipNextLayoutPersistRef.current = true;
@@ -8827,6 +8878,10 @@ export function ChatPanel({
       setIsMessagesCollapsed(false);
       prevSidebarWidth.current = 280;
       prevInputAreaHeight.current = MIN_INPUT_AREA_HEIGHT;
+      inputAreaHeightLiveRef.current = MIN_INPUT_AREA_HEIGHT;
+      inputAreaCollapsedLiveRef.current = false;
+      messagesCollapsedLiveRef.current = false;
+      manualResizeLiveRef.current = false;
       return;
     }
 
@@ -8848,6 +8903,10 @@ export function ChatPanel({
       prevSidebarWidth.current = nextSidebarWidth;
     }
     prevInputAreaHeight.current = nextInputAreaHeight;
+    inputAreaHeightLiveRef.current = nextInputAreaHeight;
+    inputAreaCollapsedLiveRef.current = nextIsInputAreaCollapsed;
+    messagesCollapsedLiveRef.current = nextIsMessagesCollapsed;
+    manualResizeLiveRef.current = nextInputAreaHeight > MIN_INPUT_AREA_HEIGHT;
   }, [MIN_INPUT_AREA_HEIGHT, chatLayoutCookieName, embedded]);
 
   useEffect(() => {
@@ -8942,64 +9001,75 @@ export function ChatPanel({
   }, [MIN_INPUT_AREA_HEIGHT]);
 
   const handleResizeInputArea = useCallback((delta: number) => {
-    // Switch to manual-resize mode — textarea fills via CSS, container height
-    // is drag-controlled.
-    setIsManualResize(true);
     const inputArea = chatMainRef.current?.querySelector('.chat-input-area') as HTMLElement | null;
-    if (inputArea) {
-      const ta = inputArea.querySelector('.chat-input') as HTMLElement | null;
-      if (ta) {
-        ta.style.height = '';
-        ta.style.maxHeight = '';
+    const messages = chatMainRef.current?.querySelector('.chat-messages') as HTMLElement | null;
+    const prev = inputAreaHeightLiveRef.current;
+    const proposed = prev - delta;
+    const draggingDown = delta > 0;
+    const draggingUp = delta < 0;
+    const atMinHeight = prev <= MIN_INPUT_AREA_HEIGHT;
+    const crossedCollapseThreshold = proposed < INPUT_AREA_COLLAPSE_THRESHOLD;
+
+    if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
+      if (!inputAreaCollapsedLiveRef.current && prev > MIN_INPUT_AREA_HEIGHT) {
+        prevInputAreaHeight.current = prev;
       }
+      inputAreaCollapsedLiveRef.current = true;
+      messagesCollapsedLiveRef.current = false;
+      manualResizeLiveRef.current = false;
+      if (inputArea) inputArea.style.display = 'none';
+      if (messages) messages.style.display = '';
+      return;
     }
 
-    setInputAreaHeight((prev) => {
-      const proposed = prev - delta;
-      const draggingDown = delta > 0;
-      const draggingUp = delta < 0;
-      const atMinHeight = prev <= MIN_INPUT_AREA_HEIGHT;
-      const crossedCollapseThreshold = proposed < INPUT_AREA_COLLAPSE_THRESHOLD;
+    const maxInputHeight = getMaxInputAreaHeight();
 
-      // --- Collapse input area (dragging down) ---
-      if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
-        if (!isInputAreaCollapsed && prev > MIN_INPUT_AREA_HEIGHT) {
-          prevInputAreaHeight.current = prev;
-        }
-        setIsInputAreaCollapsed(true);
-        if (isMessagesCollapsed) setIsMessagesCollapsed(false);
-        setIsManualResize(false);
-        return prev;
+    if (draggingUp && proposed >= maxInputHeight) {
+      if (!messagesCollapsedLiveRef.current) {
+        prevInputAreaHeight.current = prev;
       }
+      inputAreaHeightLiveRef.current = maxInputHeight;
+      inputAreaCollapsedLiveRef.current = false;
+      messagesCollapsedLiveRef.current = true;
+      manualResizeLiveRef.current = false;
+      if (inputArea) {
+        inputArea.style.display = '';
+        inputArea.style.height = '';
+        inputArea.style.minHeight = 'auto';
+        inputArea.style.flex = '1';
+      }
+      if (messages) messages.style.display = 'none';
+      return;
+    }
 
-      // --- Compute max input height from container ---
-      const maxInputHeight = getMaxInputAreaHeight();
+    const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, proposed));
+    inputAreaHeightLiveRef.current = next;
+    inputAreaCollapsedLiveRef.current = false;
+    messagesCollapsedLiveRef.current = false;
+    manualResizeLiveRef.current = true;
+    prevInputAreaHeight.current = next;
+    if (inputArea) {
+      inputArea.style.display = '';
+      inputArea.style.flex = '';
+      inputArea.style.height = `${next}px`;
+      inputArea.style.minHeight = `${next}px`;
+    }
+    if (messages) messages.style.display = '';
+  }, [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight]);
 
-      // --- Collapse messages area (dragging up past max) ---
-      if (draggingUp && proposed >= maxInputHeight) {
-        if (!isMessagesCollapsed) {
-          prevInputAreaHeight.current = prev;
-          setIsMessagesCollapsed(true);
-        }
-        setIsManualResize(false);
-        return maxInputHeight;
-      }
-
-      const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, proposed));
-      prevInputAreaHeight.current = next;
-      if (isInputAreaCollapsed) {
-        setIsInputAreaCollapsed(false);
-      }
-      if (isMessagesCollapsed) {
-        setIsMessagesCollapsed(false);
-      }
-      return next;
-    });
-  }, [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight, isInputAreaCollapsed, isMessagesCollapsed]);
+  const commitResizeInputArea = useCallback(() => {
+    setInputAreaHeight(inputAreaHeightLiveRef.current);
+    setIsInputAreaCollapsed(inputAreaCollapsedLiveRef.current);
+    setIsMessagesCollapsed(inputAreaCollapsedLiveRef.current ? false : messagesCollapsedLiveRef.current);
+    setIsManualResize(manualResizeLiveRef.current);
+  }, []);
 
   const expandInputArea = useCallback(() => {
-    setIsInputAreaCollapsed(false);
     const nextHeight = Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+    inputAreaHeightLiveRef.current = nextHeight;
+    inputAreaCollapsedLiveRef.current = false;
+    manualResizeLiveRef.current = nextHeight > MIN_INPUT_AREA_HEIGHT;
+    setIsInputAreaCollapsed(false);
     setInputAreaHeight(nextHeight);
     if (nextHeight > MIN_INPUT_AREA_HEIGHT) {
       setIsManualResize(true);
@@ -9010,8 +9080,11 @@ export function ChatPanel({
   }, [MIN_INPUT_AREA_HEIGHT]);
 
   const expandMessages = useCallback(() => {
-    setIsMessagesCollapsed(false);
     const nextHeight = Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+    inputAreaHeightLiveRef.current = nextHeight;
+    messagesCollapsedLiveRef.current = false;
+    manualResizeLiveRef.current = nextHeight > MIN_INPUT_AREA_HEIGHT;
+    setIsMessagesCollapsed(false);
     setInputAreaHeight(nextHeight);
     if (nextHeight > MIN_INPUT_AREA_HEIGHT) {
       setIsManualResize(true);
@@ -9020,25 +9093,27 @@ export function ChatPanel({
     }
   }, [MIN_INPUT_AREA_HEIGHT]);
 
-  // Adjust the input area container height to fit the textarea content.
-  // The textarea itself always fills its container via CSS (height: 100%);
-  // this function only manages the container height.
-  const autoResizeInput = useCallback((el?: HTMLTextAreaElement | null) => {
-    const textarea = el ?? inputRef.current;
-    if (!textarea) return;
+  // Adjust the input area container height to fit the composer content.
+  // The composer (a contentEditable div) grows with its inline content,
+  // including any inline reference chips; this function manages the container.
+  const autoResizeInput = useCallback((el?: HTMLDivElement | null) => {
+    const editor = el ?? inputRef.current;
+    if (!editor) return;
+
+    const currentLength = editor.textContent?.length ?? 0;
 
     if (isManualResize) {
-      if (textarea.value === '' && prevInputLengthRef.current > 0) {
+      if (currentLength === 0 && prevInputLengthRef.current > 0) {
         setIsManualResize(false);
         setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
       }
-      prevInputLengthRef.current = textarea.value.length;
+      prevInputLengthRef.current = currentLength;
       return;
     }
 
-    prevInputLengthRef.current = textarea.value.length;
+    prevInputLengthRef.current = currentLength;
 
-    const wrapper = textarea.closest('.chat-input-area') as HTMLElement | null;
+    const wrapper = editor.closest('.chat-input-area') as HTMLElement | null;
 
     let wrapperOverhead = 0;
     if (wrapper) {
@@ -9048,12 +9123,16 @@ export function ChatPanel({
       wrapperOverhead = verticalPadding + borderWidth;
     }
 
-    // Measure intrinsic content height by collapsing textarea to 0.
-    // The inline style overrides the CSS height:100% during measurement.
-    textarea.style.height = '0px';
-    const contentHeight = textarea.scrollHeight;
-    // Clear inline height — let CSS height:100% fill the container.
-    textarea.style.height = '';
+    // A contentEditable element is content-sized; its scrollHeight already
+    // reflects wrapped text and inline chips. Read the field padding so the
+    // measured content maps cleanly onto the container height.
+    const field = editor.closest('.chat-input-field') as HTMLElement | null;
+    let fieldPadding = 0;
+    if (field) {
+      const fieldStyle = getComputedStyle(field);
+      fieldPadding = parseFloat(fieldStyle.paddingTop) + parseFloat(fieldStyle.paddingBottom);
+    }
+    const contentHeight = editor.scrollHeight + fieldPadding;
 
     // Content-driven auto-resize: grow or shrink container to fit.
     const rawMax = getMaxInputAreaHeight();
@@ -9082,17 +9161,101 @@ export function ChatPanel({
     });
   }, [MIN_INPUT_AREA_HEIGHT, embedded, getMaxInputAreaHeight, isManualResize]);
 
-  // Cover programmatic value changes: clearing after send, loading a conversation, etc.
+  // Cover composer changes (typing, programmatic clears, conversation switch,
+  // and inline chip add/remove — all of which change the segment model).
   useEffect(() => {
+    messageSegmentsRef.current = messageSegments;
     autoResizeInput();
-  }, [autoResizeInput, inputValue]);
+  }, [autoResizeInput, messageSegments]);
 
-  // onChange handler: resize synchronously — e.target.scrollHeight is already
-  // correct for the new value (including pasted text) by the time onChange fires.
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInputValue(e.target.value);
-    autoResizeInput(e.target);
+  // onChange from the rich composer: update the segment model and resize.
+  const handleSegmentsChange = useCallback((next: RichChatSegment[]) => {
+    messageSegmentsRef.current = next;
+    setMessageSegments(next);
+    autoResizeInput();
   }, [autoResizeInput]);
+
+  const handleRemoveComposerReference = useCallback((referenceId: string) => {
+    setMessageSegments((current) => current.filter(
+      (segment) => segment.type !== 'ref' || segment.reference.id !== referenceId,
+    ));
+  }, []);
+
+  // Insert a context reference chip into the active composer's caret. Performs
+  // dedup so a file reference for a path already present is ignored, and the
+  // same active selection gesture updates the existing chip in place. The
+  // decision is made against the live segment ref so the insert-vs-update
+  // branch is taken synchronously. Routes to whichever composer (main message
+  // box or the edit-a-previous-message box) the user last focused.
+  const insertComposerReference = useCallback((candidate: ChatContextReference) => {
+    const editing = activeComposerRef.current === 'edit' && editingMessageIdx !== null;
+    const current = editing ? editMessageSegmentsRef.current : messageSegmentsRef.current;
+    const applySegments = (next: RichChatSegment[]) => {
+      if (editing) {
+        editMessageSegmentsRef.current = next;
+        setEditMessageSegments(next);
+      } else {
+        messageSegmentsRef.current = next;
+        setMessageSegments(next);
+      }
+    };
+    const targetInput = editing ? editRichInputRef.current : richInputRef.current;
+
+    const findMatchIndex = (): number => {
+      if (candidate.source === 'file') {
+        return current.findIndex(
+          (segment) => segment.type === 'ref'
+            && segment.reference.source === 'file'
+            && segment.reference.path === candidate.path,
+        );
+      }
+      const candidateStart = candidate.startLine ?? 0;
+      const candidateEnd = candidate.endLine ?? candidateStart;
+      return current.findIndex((segment) => {
+        if (segment.type !== 'ref') return false;
+        const ref = segment.reference;
+        if (ref.source !== 'selection' || ref.path !== candidate.path) return false;
+        const refStart = ref.startLine ?? 0;
+        const refEnd = ref.endLine ?? refStart;
+        return ref.id === candidate.id
+          || (candidateStart === refStart && candidateEnd === refEnd);
+      });
+    };
+
+    const matchIndex = findMatchIndex();
+
+    if (matchIndex >= 0) {
+      // Update the existing chip in place (file refs keep their existing chip;
+      // selection refs keep one chip per exact range or active drag gesture).
+      if (candidate.source === 'file') {
+        return;
+      }
+      const next = [...current];
+      next[matchIndex] = { type: 'ref', reference: candidate };
+      applySegments(next);
+      return;
+    }
+
+    // Brand-new reference: insert a chip at the active composer's caret. The
+    // rich input calls back through onChange to update the segment model + ref.
+    targetInput?.insertReferenceAtCaret(candidate);
+  }, [editingMessageIdx]);
+
+  useEffect(() => {
+    if (!onRegisterContextReferenceInserter) return;
+    onRegisterContextReferenceInserter(insertComposerReference);
+    return () => onRegisterContextReferenceInserter(null);
+  }, [insertComposerReference, onRegisterContextReferenceInserter]);
+
+  // Report the currently-referenced files so the workspace can disable the
+  // "add to context" button for files already present.
+  useEffect(() => {
+    if (!onContextReferencesChange) return;
+    const refs = (editingMessageIdx !== null ? editMessageSegments : messageSegments)
+      .filter((s): s is { type: 'ref'; reference: ChatContextReference } => s.type === 'ref')
+      .map((s) => s.reference);
+    onContextReferencesChange(refs);
+  }, [messageSegments, editMessageSegments, editingMessageIdx, onContextReferencesChange]);
 
   useEffect(() => {
     if (!isWorkspaceConversationMenuOpen) return;
@@ -9571,9 +9734,9 @@ export function ChatPanel({
           : api.listConversations(workspaceId, sinceIso ? { since: sinceIso } : undefined),
         !workspaceId
           ? api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
-              console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
-              return null;
-            })
+            console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
+            return null;
+          })
           : Promise.resolve(null),
       ]);
       let userspaceConversationIds = new Set<string>();
@@ -9677,11 +9840,11 @@ export function ChatPanel({
       const cutoff = archiveCutoffIso(archiveAgeDays);
       const data = cutoff
         ? await api.listConversations(undefined, {
-            until: cutoff,
-            limit: ARCHIVE_PAGE_SIZE,
-            cursorUpdatedAt: isResetLoad ? null : archiveCursor?.updatedAt ?? null,
-            cursorId: isResetLoad ? null : archiveCursor?.id ?? null,
-          })
+          until: cutoff,
+          limit: ARCHIVE_PAGE_SIZE,
+          cursorUpdatedAt: isResetLoad ? null : archiveCursor?.updatedAt ?? null,
+          cursorId: isResetLoad ? null : archiveCursor?.id ?? null,
+        })
         : [];
       const filtered = filterStandaloneConversations(data);
       const nextArchivedConversations = isResetLoad
@@ -10184,10 +10347,10 @@ export function ChatPanel({
           // Auto-generated title arrived
           if (data.type === 'title_update' && data.title) {
             setConversations(prev => prev.map(c => {
-               if (c.id === conversationId) {
-                 return { ...c, title: data.title };
-               }
-               return c;
+              if (c.id === conversationId) {
+                return { ...c, title: data.title };
+              }
+              return c;
             }));
             setActiveConversation(prev => {
               if (prev && prev.id === conversationId) {
@@ -10226,7 +10389,7 @@ export function ChatPanel({
                   c.id === conversationId ? { ...c, ...fresh } : c
                 )));
               })
-              .catch(() => {});
+              .catch(() => { });
             return;
           }
         } catch (e) {
@@ -10321,11 +10484,11 @@ export function ChatPanel({
       for await (const data of stream) {
         // Handle explicit completion event
         if (data.type === 'completion' || data.completed) {
-            const status = data.status || (data.completed ? 'completed' : 'unknown');
-            if (status === 'failed' && data.error) {
-                setError(data.error);
-            }
-            break; // Exit loop, cleanup below
+          const status = data.status || (data.completed ? 'completed' : 'unknown');
+          if (status === 'failed' && data.error) {
+            setError(data.error);
+          }
+          break; // Exit loop, cleanup below
         }
 
         // Handle streaming state update
@@ -10334,85 +10497,85 @@ export function ChatPanel({
 
         // Validation: ensure it looks like a streaming state
         if (state && typeof state === 'object') {
-           const { content, events, version, hit_max_iterations } = state;
+          const { content, events, version, hit_max_iterations } = state;
 
-           if (version !== undefined) {
-             lastSeenVersionRef.current = version;
-             taskStreamVersionRef.current.set(taskId, version);
-           }
+          if (version !== undefined) {
+            lastSeenVersionRef.current = version;
+            taskStreamVersionRef.current.set(taskId, version);
+          }
 
-           if (content !== undefined) {
-             setStreamingContent(prev => prev === content ? prev : content);
-           }
+          if (content !== undefined) {
+            setStreamingContent(prev => prev === content ? prev : content);
+          }
 
-           if (events && Array.isArray(events)) {
-             setStreamingEvents(prev => {
-                // Skip update if events haven't changed (simple length + last event check)
-                if (prev.length === events.length) {
-                    if (events.length === 0) return prev;
-                    const lastP = prev[prev.length - 1];
-                    const lastN = events[events.length - 1];
-                    // Simple check on last item to avoid unnecessary re-renders
-                    if (JSON.stringify(lastP) === JSON.stringify(lastN)) return prev;
+          if (events && Array.isArray(events)) {
+            setStreamingEvents(prev => {
+              // Skip update if events haven't changed (simple length + last event check)
+              if (prev.length === events.length) {
+                if (events.length === 0) return prev;
+                const lastP = prev[prev.length - 1];
+                const lastN = events[events.length - 1];
+                // Simple check on last item to avoid unnecessary re-renders
+                if (JSON.stringify(lastP) === JSON.stringify(lastN)) return prev;
+              }
+
+              // Convert to StreamingRenderEvent format
+              return events.map((ev: any) => {
+                const channel = getChatEventChannel(ev);
+                if (channel === 'final' && ev.type === 'content') return { type: 'content' as const, channel: 'final' as const, content: ev.content || '' };
+                const reasoningContent = getReasoningEventContent(ev);
+                if (channel === 'analysis' && reasoningContent) {
+                  return {
+                    type: 'reasoning' as const,
+                    channel: 'analysis' as const,
+                    content: reasoningContent,
+                    durationSeconds: getReasoningEventDurationSeconds(ev),
+                  };
                 }
+                return normalizeStreamingToolEvent(ev);
+              });
+            });
+          }
 
-                // Convert to StreamingRenderEvent format
-                return events.map((ev: any) => {
-                    const channel = getChatEventChannel(ev);
-                    if (channel === 'final' && ev.type === 'content') return { type: 'content' as const, channel: 'final' as const, content: ev.content || '' };
-                    const reasoningContent = getReasoningEventContent(ev);
-                    if (channel === 'analysis' && reasoningContent) {
-                      return {
-                        type: 'reasoning' as const,
-                        channel: 'analysis' as const,
-                        content: reasoningContent,
-                        durationSeconds: getReasoningEventDurationSeconds(ev),
-                      };
-                    }
-                    return normalizeStreamingToolEvent(ev);
-                });
-             });
-           }
-
-           if (hit_max_iterations) setHitMaxIterations(true);
+          if (hit_max_iterations) setHitMaxIterations(true);
         }
       }
     } catch (err: any) {
-        if (err.name !== 'AbortError') {
-            console.error('Task stream error:', err);
-        }
+      if (err.name !== 'AbortError') {
+        console.error('Task stream error:', err);
+      }
     } finally {
-        if (processingTaskRef.current === taskId) {
-            processingTaskRef.current = null;
-            setIsPollingTask(false);
-            setActiveTask(null);
+      if (processingTaskRef.current === taskId) {
+        processingTaskRef.current = null;
+        setIsPollingTask(false);
+        setActiveTask(null);
 
-            // Refresh conversation on completion before clearing streaming state.
-            // This avoids a UI gap where the in-progress output disappears before
-            // the persisted assistant message is rendered.
-            const currentConversation = activeConversationRef.current;
-            if (currentConversation) {
-              syncConversationActiveTaskId(currentConversation.id, null);
-              try {
-                const updated = await api.getConversation(currentConversation.id, workspaceId);
-                const resolved = applyFallbackAssistantIfNeeded(updated);
-                setActiveConversation(resolved);
-                setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
-              } catch (e) {
-                console.error(e);
-              }
-            }
-
-            setIsStreaming(false);
-            setStreamingContent('');
-            setStreamingEvents([]);
-            taskStreamVersionRef.current.delete(taskId);
-
-            // Notify parent that the task finished (e.g. refresh workspace preview)
-            if (onTaskComplete) {
-                try { onTaskComplete(); } catch (e) { console.error(e); }
-            }
+        // Refresh conversation on completion before clearing streaming state.
+        // This avoids a UI gap where the in-progress output disappears before
+        // the persisted assistant message is rendered.
+        const currentConversation = activeConversationRef.current;
+        if (currentConversation) {
+          syncConversationActiveTaskId(currentConversation.id, null);
+          try {
+            const updated = await api.getConversation(currentConversation.id, workspaceId);
+            const resolved = applyFallbackAssistantIfNeeded(updated);
+            setActiveConversation(resolved);
+            setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
+          } catch (e) {
+            console.error(e);
+          }
         }
+
+        setIsStreaming(false);
+        setStreamingContent('');
+        setStreamingEvents([]);
+        taskStreamVersionRef.current.delete(taskId);
+
+        // Notify parent that the task finished (e.g. refresh workspace preview)
+        if (onTaskComplete) {
+          try { onTaskComplete(); } catch (e) { console.error(e); }
+        }
+      }
     }
   }, [applyFallbackAssistantIfNeeded, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
 
@@ -10490,7 +10653,7 @@ export function ChatPanel({
         if (queued?.conversationId === conversationId) {
           setQueuedCompactionMessage(null);
           if (activeConversationRef.current?.id === conversationId) {
-            setInputValue(queued.inputText);
+            setMessageSegments(queued.inputSegments ?? plainTextToSegments(queued.inputText));
             setAttachments(queued.attachments);
           }
         }
@@ -10560,40 +10723,40 @@ export function ChatPanel({
 
     let startedTaskId: string | null = null;
     try {
-        // 2. Start background task
-        const task = await api.sendMessageBackground(conversationId, message, workspaceId);
-        startedTaskId = task.id;
-        setActiveTask(task);
-        setInterruptedTask(null);
+      // 2. Start background task
+      const task = await api.sendMessageBackground(conversationId, message, workspaceId);
+      startedTaskId = task.id;
+      setActiveTask(task);
+      setInterruptedTask(null);
       syncConversationActiveTaskId(conversationId, task.id);
 
-        // 3. Connect to stream
-        await connectTaskStream(task.id);
+      // 3. Connect to stream
+      await connectTaskStream(task.id);
     } catch (err: any) {
-       console.error(err);
-       let messagePersisted = false;
-       if (!startedTaskId) {
-         try {
-           const refreshed = await api.getConversation(conversationId, workspaceId);
-           const previousMessageCount = previousConversation?.messages.length ?? 0;
-           messagePersisted = refreshed.messages.length > previousMessageCount;
-           setActiveConversation(refreshed);
-           setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
-           syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
-         } catch (refreshErr) {
-           console.error('Failed to refresh conversation after task start error:', refreshErr);
-         }
-       }
-       if (!startedTaskId && !messagePersisted && previousConversation) {
-         setActiveConversation(previousConversation);
-         setConversations(prev => prev.map(c => c.id === conversationId ? previousConversation : c));
-         syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
-       }
-       clearActiveStreamingUi();
-       if (messagePersisted && err && typeof err === 'object') {
-         (err as { messagePersisted?: boolean }).messagePersisted = true;
-       }
-       throw err;
+      console.error(err);
+      let messagePersisted = false;
+      if (!startedTaskId) {
+        try {
+          const refreshed = await api.getConversation(conversationId, workspaceId);
+          const previousMessageCount = previousConversation?.messages.length ?? 0;
+          messagePersisted = refreshed.messages.length > previousMessageCount;
+          setActiveConversation(refreshed);
+          setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+          syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+        } catch (refreshErr) {
+          console.error('Failed to refresh conversation after task start error:', refreshErr);
+        }
+      }
+      if (!startedTaskId && !messagePersisted && previousConversation) {
+        setActiveConversation(previousConversation);
+        setConversations(prev => prev.map(c => c.id === conversationId ? previousConversation : c));
+        syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
+      }
+      clearActiveStreamingUi();
+      if (messagePersisted && err && typeof err === 'object') {
+        (err as { messagePersisted?: boolean }).messagePersisted = true;
+      }
+      throw err;
     }
   }, [activeConversation, clearActiveStreamingUi, connectTaskStream, syncConversationActiveTaskId, workspaceId]);
 
@@ -10654,38 +10817,38 @@ export function ChatPanel({
 
         // Use functional state update to avoid dependency issues if needed, but here simple set is fine
         if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
-            setActiveTask(activeT);
-            setInterruptedTask(null);
-            syncConversationActiveTaskId(activeConversation.id, activeT.id);
+          setActiveTask(activeT);
+          setInterruptedTask(null);
+          syncConversationActiveTaskId(activeConversation.id, activeT.id);
 
-            if (isCompactionTask(activeT)) {
-              setIsCompacting(true);
-              setCompactingConversationId(activeConversation.id);
-              watchCompactionTaskRef.current?.(activeT.id, activeConversation.id);
-              return;
-            }
+          if (isCompactionTask(activeT)) {
+            setIsCompacting(true);
+            setCompactingConversationId(activeConversation.id);
+            watchCompactionTaskRef.current?.(activeT.id, activeConversation.id);
+            return;
+          }
 
-            // Connect to stream if not already processing this task
-            connectTaskStreamRef.current?.(activeT.id);
+          // Connect to stream if not already processing this task
+          connectTaskStreamRef.current?.(activeT.id);
         } else {
-            // No active task for this conversation.
-            // If we are streaming something that is NOT this task, we should stop?
-            // "stopTaskStreaming" was called in cleanup of previous effect run (when ID changed).
-            // So we are clean here usually.
+          // No active task for this conversation.
+          // If we are streaming something that is NOT this task, we should stop?
+          // "stopTaskStreaming" was called in cleanup of previous effect run (when ID changed).
+          // So we are clean here usually.
 
-            // If we were processing a task that just finished, connectTaskStream finally block clears it.
-            if (!activeT) {
-                 setActiveTask(null);
-                if (compactingConversationIdRef.current === activeConversation.id) {
-                  setIsCompacting(false);
-                  setCompactingConversationId(null);
-                }
-                setInterruptedTask(interruptedT ?? null);
-                syncConversationActiveTaskId(activeConversation.id, null);
+          // If we were processing a task that just finished, connectTaskStream finally block clears it.
+          if (!activeT) {
+            setActiveTask(null);
+            if (compactingConversationIdRef.current === activeConversation.id) {
+              setIsCompacting(false);
+              setCompactingConversationId(null);
             }
+            setInterruptedTask(interruptedT ?? null);
+            syncConversationActiveTaskId(activeConversation.id, null);
+          }
         }
       } catch (err) {
-         console.error('Failed to check tasks:', err);
+        console.error('Failed to check tasks:', err);
       } finally {
         checkInProgress = false;
       }
@@ -10700,9 +10863,9 @@ export function ChatPanel({
     }, 30000);
 
     return () => {
-        clearInterval(interval);
-        // Stop streaming when conversation ID changes (unmounting this effect instance)
-        stopTaskStreaming();
+      clearInterval(interval);
+      // Stop streaming when conversation ID changes (unmounting this effect instance)
+      stopTaskStreaming();
     };
   }, [activeConversation?.id, stopTaskStreaming, syncConversationActiveTaskId, workspaceChatState, workspaceId]);
 
@@ -11012,10 +11175,10 @@ export function ChatPanel({
 
       // Check for connection errors
       const isConnError = errorMessage.toLowerCase().includes('502') ||
-                          errorMessage.toLowerCase().includes('503') ||
-                          errorMessage.toLowerCase().includes('connection') ||
-                          errorMessage.toLowerCase().includes('network') ||
-                          errorMessage.toLowerCase().includes('fetch');
+        errorMessage.toLowerCase().includes('503') ||
+        errorMessage.toLowerCase().includes('connection') ||
+        errorMessage.toLowerCase().includes('network') ||
+        errorMessage.toLowerCase().includes('fetch');
       const messagePersisted = Boolean(
         err
         && typeof err === 'object'
@@ -11044,7 +11207,7 @@ export function ChatPanel({
         conversationOverride: conversation,
       }).then((sent) => {
         if (!sent) {
-          setInputValue(queued.inputText);
+          setMessageSegments(queued.inputSegments ?? plainTextToSegments(queued.inputText));
           setAttachments(queued.attachments);
         }
       });
@@ -11055,21 +11218,23 @@ export function ChatPanel({
   });
 
   const sendMessage = async () => {
-    if ((!inputValue.trim() && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
+    const hasComposerContent = !segmentsAreEmpty(messageSegments);
+    if ((!hasComposerContent && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
     if (hasQueuedCompactionMessageForActiveConversation) return;
 
-    const userMessage = inputValue.trim();
+    const serializedUserMessage = serializeRichChatSegments(messageSegments);
+    const restoreSegments = messageSegments;
     const messageAttachments = [...attachments];
 
     if (isActiveConversationCompacting) {
       const serializedMessage = messageAttachments.length > 0
-        ? JSON.stringify(attachmentsToContentParts(userMessage, messageAttachments))
-        : userMessage;
+        ? JSON.stringify(attachmentsToContentParts(serializedUserMessage, messageAttachments))
+        : serializedUserMessage;
       const displayContent = messageAttachments.length > 0
-        ? attachmentsToContentParts(userMessage, messageAttachments)
-        : userMessage;
+        ? attachmentsToContentParts(serializedUserMessage, messageAttachments)
+        : serializedUserMessage;
 
-      setInputValue('');
+      setMessageSegments(EMPTY_RICH_SEGMENTS);
       setAttachments([]);
       setShowSidebar(false);
       setQueuedCompactionMessage({
@@ -11078,7 +11243,8 @@ export function ChatPanel({
         compactionStatus: 'compacting',
         serializedMessage,
         displayContent,
-        inputText: userMessage,
+        inputText: serializedUserMessage,
+        inputSegments: restoreSegments,
         attachments: messageAttachments,
         timestamp: new Date().toISOString(),
       });
@@ -11086,7 +11252,7 @@ export function ChatPanel({
       return;
     }
 
-    setInputValue('');
+    setMessageSegments(EMPTY_RICH_SEGMENTS);
     setAttachments([]);
 
     // Auto-collapse sidebar when user starts chatting
@@ -11094,27 +11260,17 @@ export function ChatPanel({
 
     // Convert attachments to content parts if present
     if (messageAttachments.length > 0) {
-      const contentParts = attachmentsToContentParts(userMessage, messageAttachments);
+      const contentParts = attachmentsToContentParts(serializedUserMessage, messageAttachments);
       const sent = await sendMessageDirect(JSON.stringify(contentParts));
       if (!sent) {
-        setInputValue(userMessage);
+        setMessageSegments(restoreSegments);
         setAttachments(messageAttachments);
       }
     } else {
-      const sent = await sendMessageDirect(userMessage);
+      const sent = await sendMessageDirect(serializedUserMessage);
       if (!sent) {
-        setInputValue(userMessage);
+        setMessageSegments(restoreSegments);
       }
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (isReadOnly) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
-      if (isStreaming) return;
-
-      e.preventDefault();
-      sendMessage();
     }
   };
 
@@ -11161,7 +11317,10 @@ export function ChatPanel({
 
   const startEditMessage = (idx: number, content: string, attachments: ContentPart[] = []) => {
     setEditingMessageIdx(idx);
-    setEditMessageContent(content);
+    const segments = plainTextToSegments(content);
+    editMessageSegmentsRef.current = segments;
+    setEditMessageSegments(segments);
+    activeComposerRef.current = 'edit';
 
     (async () => {
       const files = await contentPartsToAttachments(attachments);
@@ -11171,9 +11330,34 @@ export function ChatPanel({
 
   const cancelEditMessage = () => {
     setEditingMessageIdx(null);
-    setEditMessageContent('');
+    editMessageSegmentsRef.current = EMPTY_RICH_SEGMENTS;
+    setEditMessageSegments(EMPTY_RICH_SEGMENTS);
     setEditMessageAttachments([]);
+    activeComposerRef.current = 'main';
   };
+
+  const handleEditSegmentsChange = useCallback((next: RichChatSegment[]) => {
+    editMessageSegmentsRef.current = next;
+    setEditMessageSegments(next);
+  }, []);
+
+  // Focus the edit composer when an edit session begins so the caret lands in
+  // the box the user is editing (and chip insertion targets it).
+  useEffect(() => {
+    if (editingMessageIdx === null) return;
+    const handle = requestAnimationFrame(() => editRichInputRef.current?.focus());
+    return () => cancelAnimationFrame(handle);
+  }, [editingMessageIdx]);
+
+  const handleRemoveEditReference = useCallback((referenceId: string) => {
+    setEditMessageSegments((current) => {
+      const next = current.filter(
+        (segment) => segment.type !== 'ref' || segment.reference.id !== referenceId,
+      );
+      editMessageSegmentsRef.current = next;
+      return next;
+    });
+  }, []);
 
   const createBranchForMessageMutation = useCallback(async (
     conversationId: string,
@@ -11453,10 +11637,10 @@ export function ChatPanel({
         AUTO_COMPACTION_KEEP_RECENT_PAIRS,
         replaceMarker
           ? {
-              replaceMessageId: replaceMarker.messageId,
-              replaceMessageIndex: replaceMarker.messageIndex,
-              createRevisionBranch: true,
-            }
+            replaceMessageId: replaceMarker.messageId,
+            replaceMessageIndex: replaceMarker.messageIndex,
+            createRevisionBranch: true,
+          }
           : undefined,
       );
       if (replaceMarker) {
@@ -11474,8 +11658,8 @@ export function ChatPanel({
       if (replaceMarker) {
         setRetryingCompactionMarker((current) => (
           current?.conversationId === activeConversation.id
-          && current.messageIndex === replaceMarker.messageIndex
-          && (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
+            && current.messageIndex === replaceMarker.messageIndex
+            && (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
             ? null
             : current
         ));
@@ -11943,12 +12127,13 @@ export function ChatPanel({
   }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, onSnapshotsMaybeChanged, refreshBranchPoints, workspaceId]);
 
   const submitEditMessage = async () => {
-    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editMessageContent.trim() && editMessageAttachments.length === 0) || isSubmittingEdit) return;
+    const editHasContent = !segmentsAreEmpty(editMessageSegments);
+    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editHasContent && editMessageAttachments.length === 0) || isSubmittingEdit) return;
     setIsSubmittingEdit(true);
     shouldAutoScrollRef.current = true;
     const conversationId = activeConversation.id;
 
-    let messageToSend: string = editMessageContent.trim();
+    let messageToSend: string = serializeRichChatSegments(editMessageSegments);
     if (editMessageAttachments.length > 0) {
       const normalizedEditAttachments = await Promise.all(editMessageAttachments.map(async (attachment) => {
         if (attachment.type !== 'image' || !attachment.dataUrl) {
@@ -11981,8 +12166,10 @@ export function ChatPanel({
 
       // Clear the edit state after branch creation succeeds.
       setEditingMessageIdx(null);
-      setEditMessageContent('');
+      editMessageSegmentsRef.current = EMPTY_RICH_SEGMENTS;
+      setEditMessageSegments(EMPTY_RICH_SEGMENTS);
       setEditMessageAttachments([]);
+      activeComposerRef.current = 'main';
       setError(null);
 
       // 2. Local Optimistic Update
@@ -12056,6 +12243,13 @@ export function ChatPanel({
     }
   };
 
+  // Project the fully-serialized message (inline reference tokens + appended
+  // context blocks) into the context-usage estimate so chips count toward it.
+  const inputValueWithContext = useMemo(
+    () => serializeRichChatSegments(messageSegments),
+    [messageSegments],
+  );
+
   // Memoize context usage calculation to avoid recalculating on every render
   const contextUsage = useMemo(() => {
     if (!activeConversation) {
@@ -12074,12 +12268,12 @@ export function ChatPanel({
       messages: activeConversation.messages,
       persistedConversationTokens: activeConversation.total_tokens,
       contextLimit,
-      inputText: inputValue,
+      inputText: inputValueWithContext,
       isStreaming,
       streamingEvents: streamingEvents as StreamingRenderEvent[],
       streamingContent,
     });
-  }, [activeConversation, defaultContextLimit, getContextLimit, inputValue, isStreaming, streamingContent, streamingEvents]);
+  }, [activeConversation, defaultContextLimit, getContextLimit, inputValueWithContext, isStreaming, streamingContent, streamingEvents]);
 
   useEffect(() => {
     if (!activeConversation) {
@@ -12254,46 +12448,46 @@ export function ChatPanel({
           </>
         )}
         {editingTitle !== conv.id && (
-        <div className="chat-conversation-actions">
-          {deleteConfirmId === conv.id ? (
-            <>
-              <button
-                className="chat-action-btn confirm-delete"
-                onClick={(e) => confirmDeleteConversation(conv.id, e)}
-                title="Confirm delete"
-              >
-                <Check size={14} />
-              </button>
-              <button
-                className="chat-action-btn cancel-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeleteConfirmId(null);
-                }}
-                title="Cancel"
-              >
-                <X size={14} />
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="chat-action-btn"
-                onClick={(e) => startEditingTitle(conv, e)}
-                title="Rename"
-              >
-                <Pencil size={14} />
-              </button>
-              <button
-                className="chat-action-btn"
-                onClick={(e) => deleteConversation(conv.id, e)}
-                title="Delete"
-              >
-                <Trash2 size={14} />
-              </button>
-            </>
-          )}
-        </div>
+          <div className="chat-conversation-actions">
+            {deleteConfirmId === conv.id ? (
+              <>
+                <button
+                  className="chat-action-btn confirm-delete"
+                  onClick={(e) => confirmDeleteConversation(conv.id, e)}
+                  title="Confirm delete"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  className="chat-action-btn cancel-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteConfirmId(null);
+                  }}
+                  title="Cancel"
+                >
+                  <X size={14} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="chat-action-btn"
+                  onClick={(e) => startEditingTitle(conv, e)}
+                  title="Rename"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className="chat-action-btn"
+                  onClick={(e) => deleteConversation(conv.id, e)}
+                  title="Delete"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </>
+            )}
+          </div>
         )}
       </div>
     );
@@ -12368,17 +12562,17 @@ export function ChatPanel({
         ? `${inChatSearchTotal}...`
         : '...'
       : inChatSearchTotal > 0
-      ? inChatSearchActiveSource === 'branch' && branchCount > 0
-        ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
-        : `${inChatSearchActiveIndex + 1}/${inChatSearchTotal}${branchSuffix}`
-      : branchCount > 0
-        ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
-        : '0/0';
+        ? inChatSearchActiveSource === 'branch' && branchCount > 0
+          ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
+          : `${inChatSearchActiveIndex + 1}/${inChatSearchTotal}${branchSuffix}`
+        : branchCount > 0
+          ? `B${inChatSearchBranchIndex + 1}/${branchCount}`
+          : '0/0';
     const counterTitle = inChatSearchRunning
       ? 'Searching visible chat text'
       : branchCount > 0
-      ? `${inChatSearchTotal} visible match${inChatSearchTotal === 1 ? '' : 'es'}, ${branchCount} branch match${branchCount === 1 ? '' : 'es'}`
-      : undefined;
+        ? `${inChatSearchTotal} visible match${inChatSearchTotal === 1 ? '' : 'es'}, ${branchCount} branch match${branchCount === 1 ? '' : 'es'}`
+        : undefined;
     return (
       <div
         className={`chat-in-chat-search chat-in-chat-search-${variant}`}
@@ -12545,15 +12739,15 @@ export function ChatPanel({
             // matches across older chats surface inline.
             const baseConversations = trimmedQuery && !workspaceId
               ? [
-                  ...conversations,
-                  ...archivedConversations.filter((archived) => !conversations.some((c) => c.id === archived.id)),
-                ]
+                ...conversations,
+                ...archivedConversations.filter((archived) => !conversations.some((c) => c.id === archived.id)),
+              ]
               : conversations;
             const filteredConversations = trimmedQuery
               ? baseConversations.filter((c) => (
-                  conversationMatchesCachedQuery(c, trimmedQuery)
-                  || Boolean(sidebarBranchSearchMatches[c.id])
-                ))
+                conversationMatchesCachedQuery(c, trimmedQuery)
+                || Boolean(sidebarBranchSearchMatches[c.id])
+              ))
               : baseConversations;
 
             if (filteredConversations.length === 0) {
@@ -12728,45 +12922,45 @@ export function ChatPanel({
                     {isWorkspaceConversationMenuOpen && (
                       <div className="model-selector-dropdown chat-workspace-conversation-dropdown">
                         {workspaceConversationOptions.length > 1 && (
-                        <div className="model-selector-search chat-search-with-branches">
-                          <input
-                            ref={workspaceConversationSearchInputRef}
-                            type="text"
-                            className="model-selector-search-input"
-                            placeholder="Search chats..."
-                            value={workspaceConversationSearchQuery}
-                            onChange={(e) => setWorkspaceConversationSearchQuery(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Escape') {
-                                e.preventDefault();
-                                if (workspaceConversationSearchQuery) {
-                                  setWorkspaceConversationSearchQuery('');
-                                } else {
-                                  setIsWorkspaceConversationMenuOpen(false);
+                          <div className="model-selector-search chat-search-with-branches">
+                            <input
+                              ref={workspaceConversationSearchInputRef}
+                              type="text"
+                              className="model-selector-search-input"
+                              placeholder="Search chats..."
+                              value={workspaceConversationSearchQuery}
+                              onChange={(e) => setWorkspaceConversationSearchQuery(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') {
+                                  e.preventDefault();
+                                  if (workspaceConversationSearchQuery) {
+                                    setWorkspaceConversationSearchQuery('');
+                                  } else {
+                                    setIsWorkspaceConversationMenuOpen(false);
+                                  }
                                 }
-                              }
-                            }}
-                            aria-label="Filter workspace chats"
-                          />
-                          {workspaceConversationSearchQuery && (
-                            <button
-                              type="button"
-                              className="model-selector-search-clear"
-                              onClick={() => {
-                                setWorkspaceConversationSearchQuery('');
-                                workspaceConversationSearchInputRef.current?.focus();
                               }}
-                              title="Clear search"
-                              aria-label="Clear search"
-                            >
-                              <X size={12} />
-                            </button>
-                          )}
-                          <BranchSearchToggle
-                            enabled={workspaceBranchSearchEnabled}
-                            onToggle={() => setWorkspaceBranchSearchEnabled((enabled) => !enabled)}
-                          />
-                        </div>
+                              aria-label="Filter workspace chats"
+                            />
+                            {workspaceConversationSearchQuery && (
+                              <button
+                                type="button"
+                                className="model-selector-search-clear"
+                                onClick={() => {
+                                  setWorkspaceConversationSearchQuery('');
+                                  workspaceConversationSearchInputRef.current?.focus();
+                                }}
+                                title="Clear search"
+                                aria-label="Clear search"
+                              >
+                                <X size={12} />
+                              </button>
+                            )}
+                            <BranchSearchToggle
+                              enabled={workspaceBranchSearchEnabled}
+                              onToggle={() => setWorkspaceBranchSearchEnabled((enabled) => !enabled)}
+                            />
+                          </div>
                         )}
                         <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
                           {(() => {
@@ -12782,17 +12976,17 @@ export function ChatPanel({
                             });
                             const searchBase = needle
                               ? [
-                                  ...searchableWorkspaceConversationOptions,
-                                  ...workspaceArchivedConversationOptions.filter(
-                                    (archived) => !workspaceConversationOptions.some((c) => c.id === archived.id),
-                                  ),
-                                ]
+                                ...searchableWorkspaceConversationOptions,
+                                ...workspaceArchivedConversationOptions.filter(
+                                  (archived) => !workspaceConversationOptions.some((c) => c.id === archived.id),
+                                ),
+                              ]
                               : workspaceConversationOptions;
                             const filtered = needle
                               ? searchBase.filter((c) => (
-                                  conversationMatchesCachedQuery(c, needle)
-                                  || Boolean(workspaceBranchSearchMatches[c.id])
-                                ))
+                                conversationMatchesCachedQuery(c, needle)
+                                || Boolean(workspaceBranchSearchMatches[c.id])
+                              ))
                               : searchBase;
                             if (filtered.length === 0) {
                               return (
@@ -12802,220 +12996,220 @@ export function ChatPanel({
                               );
                             }
                             return filtered.map((conversation) => {
-                            const isSelected = conversation.id === activeConversation.id;
-                            const isEditing = editingTitle === conversation.id;
-                            const isLive = Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask));
-                            const isInterruptedTask = !isLive && (isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id));
-                            const isRawInterrupted = isInterruptedTask;
-                            const isInterrupted = isRawInterrupted && !interruptDismissed;
-                            const branchSearchMatch = deferredWorkspaceConversationSearchQuery.trim()
-                              ? workspaceBranchSearchMatches[conversation.id]
-                              : undefined;
-                            const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
-                            const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
-                            const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
+                              const isSelected = conversation.id === activeConversation.id;
+                              const isEditing = editingTitle === conversation.id;
+                              const isLive = Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask));
+                              const isInterruptedTask = !isLive && (isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id));
+                              const isRawInterrupted = isInterruptedTask;
+                              const isInterrupted = isRawInterrupted && !interruptDismissed;
+                              const branchSearchMatch = deferredWorkspaceConversationSearchQuery.trim()
+                                ? workspaceBranchSearchMatches[conversation.id]
+                                : undefined;
+                              const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
+                              const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
+                              const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
 
-                            return (
-                              <div
-                                key={conversation.id}
-                                role="option"
-                                tabIndex={0}
-                                aria-selected={isSelected}
-                                className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
-                                onClick={() => {
-                                  setIsWorkspaceConversationMenuOpen(false);
-                                  void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
-                                }}
-                                onKeyDown={(event) => {
-                                  if (isEditing) {
-                                    return;
-                                  }
-                                  if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault();
+                              return (
+                                <div
+                                  key={conversation.id}
+                                  role="option"
+                                  tabIndex={0}
+                                  aria-selected={isSelected}
+                                  className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
+                                  onClick={() => {
                                     setIsWorkspaceConversationMenuOpen(false);
                                     void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
-                                  }
-                                }}
-                              >
-                                <div className="chat-workspace-conversation-content">
-                                  {isEditing ? (
-                                    <textarea
-                                      ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
-                                      value={titleInput}
-                                      onChange={(e) => {
-                                        setTitleInput(e.target.value);
-                                        e.target.style.height = 'auto';
-                                        e.target.style.height = `${e.target.scrollHeight}px`;
-                                      }}
-                                      onBlur={() => void saveTitle(conversation.id)}
-                                      onKeyDown={(e) => {
-                                        e.stopPropagation();
-                                        if (e.key === 'Enter' && !e.shiftKey) {
-                                          e.preventDefault();
-                                          void saveTitle(conversation.id);
-                                        }
-                                        if (e.key === 'Escape') {
-                                          e.preventDefault();
-                                          setEditingTitle(null);
-                                        }
-                                      }}
-                                      onClick={(e) => e.stopPropagation()}
-                                      autoFocus
-                                      rows={1}
-                                      className="chat-title-input chat-workspace-conversation-title-input"
-                                    />
-                                  ) : (
-                                    <>
-                                      <span className="model-selector-item-name chat-workspace-conversation-item-name">
-                                        {deferredWorkspaceConversationSearchQuery.trim()
-                                          ? <HighlightedText text={conversation.title || 'Untitled Chat'} query={workspaceConversationSearchQuery} />
-                                          : (conversation.title || 'Untitled Chat')}
-                                      </span>
-                                      {branchSearchLabel && (
-                                        <span
-                                          className="chat-branch-search-chip chat-workspace-branch-search-chip chat-branch-search-jump-target"
-                                          title={branchSearchTooltip ?? undefined}
-                                          role="button"
-                                          tabIndex={0}
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            setIsWorkspaceConversationMenuOpen(false);
-                                            void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
-                                          }}
-                                          onKeyDown={(event) => {
-                                            if (event.key === 'Enter' || event.key === ' ') {
-                                              event.preventDefault();
+                                  }}
+                                  onKeyDown={(event) => {
+                                    if (isEditing) {
+                                      return;
+                                    }
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      setIsWorkspaceConversationMenuOpen(false);
+                                      void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                    }
+                                  }}
+                                >
+                                  <div className="chat-workspace-conversation-content">
+                                    {isEditing ? (
+                                      <textarea
+                                        ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+                                        value={titleInput}
+                                        onChange={(e) => {
+                                          setTitleInput(e.target.value);
+                                          e.target.style.height = 'auto';
+                                          e.target.style.height = `${e.target.scrollHeight}px`;
+                                        }}
+                                        onBlur={() => void saveTitle(conversation.id)}
+                                        onKeyDown={(e) => {
+                                          e.stopPropagation();
+                                          if (e.key === 'Enter' && !e.shiftKey) {
+                                            e.preventDefault();
+                                            void saveTitle(conversation.id);
+                                          }
+                                          if (e.key === 'Escape') {
+                                            e.preventDefault();
+                                            setEditingTitle(null);
+                                          }
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                        autoFocus
+                                        rows={1}
+                                        className="chat-title-input chat-workspace-conversation-title-input"
+                                      />
+                                    ) : (
+                                      <>
+                                        <span className="model-selector-item-name chat-workspace-conversation-item-name">
+                                          {deferredWorkspaceConversationSearchQuery.trim()
+                                            ? <HighlightedText text={conversation.title || 'Untitled Chat'} query={workspaceConversationSearchQuery} />
+                                            : (conversation.title || 'Untitled Chat')}
+                                        </span>
+                                        {branchSearchLabel && (
+                                          <span
+                                            className="chat-branch-search-chip chat-workspace-branch-search-chip chat-branch-search-jump-target"
+                                            title={branchSearchTooltip ?? undefined}
+                                            role="button"
+                                            tabIndex={0}
+                                            onClick={(event) => {
                                               event.stopPropagation();
                                               setIsWorkspaceConversationMenuOpen(false);
                                               void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
-                                            }
-                                          }}
-                                        >
-                                          <GitBranch size={11} />
-                                          {branchSearchLabel}
-                                        </span>
-                                      )}
-                                      {(() => {
-                                        const snippet = deferredWorkspaceConversationSearchQuery.trim()
-                                          ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
-                                          : null;
-                                        if (!snippet && !branchSearchMatch) return null;
-                                        return (
-                                          <>
-                                            {snippet && (
-                                              <div className="chat-conversation-snippet chat-workspace-conversation-snippet" title={snippet}>
-                                                <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
-                                              </div>
-                                            )}
-                                            {branchSearchMatch && (
-                                              <div
-                                                className="chat-conversation-snippet chat-conversation-branch-snippet chat-workspace-conversation-snippet chat-branch-search-jump-target"
-                                                title={branchSnippet || branchSearchTooltip || undefined}
-                                                role="button"
-                                                tabIndex={0}
-                                                onClick={(event) => {
-                                                  event.stopPropagation();
-                                                  setIsWorkspaceConversationMenuOpen(false);
-                                                  void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
-                                                }}
-                                                onKeyDown={(event) => {
-                                                  if (event.key === 'Enter' || event.key === ' ') {
-                                                    event.preventDefault();
+                                            }}
+                                            onKeyDown={(event) => {
+                                              if (event.key === 'Enter' || event.key === ' ') {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                setIsWorkspaceConversationMenuOpen(false);
+                                                void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                              }
+                                            }}
+                                          >
+                                            <GitBranch size={11} />
+                                            {branchSearchLabel}
+                                          </span>
+                                        )}
+                                        {(() => {
+                                          const snippet = deferredWorkspaceConversationSearchQuery.trim()
+                                            ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
+                                            : null;
+                                          if (!snippet && !branchSearchMatch) return null;
+                                          return (
+                                            <>
+                                              {snippet && (
+                                                <div className="chat-conversation-snippet chat-workspace-conversation-snippet" title={snippet}>
+                                                  <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
+                                                </div>
+                                              )}
+                                              {branchSearchMatch && (
+                                                <div
+                                                  className="chat-conversation-snippet chat-conversation-branch-snippet chat-workspace-conversation-snippet chat-branch-search-jump-target"
+                                                  title={branchSnippet || branchSearchTooltip || undefined}
+                                                  role="button"
+                                                  tabIndex={0}
+                                                  onClick={(event) => {
                                                     event.stopPropagation();
                                                     setIsWorkspaceConversationMenuOpen(false);
                                                     void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
-                                                  }
-                                                }}
-                                              >
-                                                <span className="chat-branch-search-snippet-label">
-                                                  <GitBranch size={11} />
-                                                  Branch match
-                                                </span>
-                                                {branchSnippet ? (
-                                                  <HighlightedText text={branchSnippet} query={workspaceConversationSearchQuery} />
-                                                ) : (
-                                                  <span>{branchSearchTooltip}</span>
-                                                )}
-                                              </div>
-                                            )}
-                                          </>
-                                        );
-                                      })()}
-                                    </>
-                                  )}
-                                </div>
-
-                                {!isEditing && (
-                                  <div
-                                    className="chat-workspace-conversation-actions"
-                                    onClick={(event) => event.stopPropagation()}
-                                  >
-                                    {deleteConfirmId === conversation.id ? (
-                                      <>
-                                        <button
-                                          type="button"
-                                          className="chat-action-btn confirm-delete"
-                                          onClick={(e) => void confirmDeleteConversation(conversation.id, e)}
-                                          title="Confirm delete"
-                                        >
-                                          <Check size={14} />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="chat-action-btn cancel-delete"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setDeleteConfirmId(null);
-                                          }}
-                                          title="Cancel"
-                                        >
-                                          <X size={14} />
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <button
-                                          type="button"
-                                          className="chat-action-btn"
-                                          onClick={(e) => startEditingTitle(conversation, e)}
-                                          title="Rename"
-                                        >
-                                          <Pencil size={14} />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="chat-action-btn"
-                                          onClick={(e) => void deleteConversation(conversation.id, e)}
-                                          title="Delete"
-                                        >
-                                          <Trash2 size={14} />
-                                        </button>
+                                                  }}
+                                                  onKeyDown={(event) => {
+                                                    if (event.key === 'Enter' || event.key === ' ') {
+                                                      event.preventDefault();
+                                                      event.stopPropagation();
+                                                      setIsWorkspaceConversationMenuOpen(false);
+                                                      void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                                    }
+                                                  }}
+                                                >
+                                                  <span className="chat-branch-search-snippet-label">
+                                                    <GitBranch size={11} />
+                                                    Branch match
+                                                  </span>
+                                                  {branchSnippet ? (
+                                                    <HighlightedText text={branchSnippet} query={workspaceConversationSearchQuery} />
+                                                  ) : (
+                                                    <span>{branchSearchTooltip}</span>
+                                                  )}
+                                                </div>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
                                       </>
                                     )}
                                   </div>
-                                )}
 
-                                {isInterrupted && (
-                                  <button
-                                    type="button"
-                                    className="chat-workspace-interrupt-dismiss is-inline"
-                                    title="Conversation interrupted — click to dismiss"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
-                                      setInterruptDismissed(true);
-                                    }}
-                                  >
-                                    <AlertCircle size={12} className="alert-icon chat-workspace-conversation-interrupted" />
-                                    <Slash size={12} className="dismiss-icon" aria-hidden />
-                                  </button>
-                                )}
-                                {isLive && (
-                                  <MiniLoadingSpinner variant="icon" size={14} title="Processing in background" ariaHidden />
-                                )}
-                              </div>
-                            );
-                          });
+                                  {!isEditing && (
+                                    <div
+                                      className="chat-workspace-conversation-actions"
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      {deleteConfirmId === conversation.id ? (
+                                        <>
+                                          <button
+                                            type="button"
+                                            className="chat-action-btn confirm-delete"
+                                            onClick={(e) => void confirmDeleteConversation(conversation.id, e)}
+                                            title="Confirm delete"
+                                          >
+                                            <Check size={14} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="chat-action-btn cancel-delete"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setDeleteConfirmId(null);
+                                            }}
+                                            title="Cancel"
+                                          >
+                                            <X size={14} />
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <button
+                                            type="button"
+                                            className="chat-action-btn"
+                                            onClick={(e) => startEditingTitle(conversation, e)}
+                                            title="Rename"
+                                          >
+                                            <Pencil size={14} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="chat-action-btn"
+                                            onClick={(e) => void deleteConversation(conversation.id, e)}
+                                            title="Delete"
+                                          >
+                                            <Trash2 size={14} />
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {isInterrupted && (
+                                    <button
+                                      type="button"
+                                      className="chat-workspace-interrupt-dismiss is-inline"
+                                      title="Conversation interrupted — click to dismiss"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
+                                        setInterruptDismissed(true);
+                                      }}
+                                    >
+                                      <AlertCircle size={12} className="alert-icon chat-workspace-conversation-interrupted" />
+                                      <Slash size={12} className="dismiss-icon" aria-hidden />
+                                    </button>
+                                  )}
+                                  {isLive && (
+                                    <MiniLoadingSpinner variant="icon" size={14} title="Processing in background" ariaHidden />
+                                  )}
+                                </div>
+                              );
+                            });
                           })()}
                         </div>
                       </div>
@@ -13174,626 +13368,598 @@ export function ChatPanel({
 
             {/* Messages */}
             {!isMessagesCollapsed && (
-            <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
-              {(isConversationSwitchLoading || isCreatingFreshConversation) ? (
-                renderMessageBubbleSkeletons()
-              ) : activeConversation.messages.length === 0 && !isStreaming ? (
-                <div className="chat-welcome">
-                  <h3>Start a conversation</h3>
-                  <p>Ask questions about your indexed code, query databases, or get help with your systems.</p>
-                </div>
-              ) : (
-                <>
-                  {activeConversation.messages.map((msg, idx) => {
-                    if (msg.role === 'compaction') {
-                      const summary = extractCompactionSummary(msg.content);
-                      const marker: CompactionReviewMarker = {
-                        messageIndex: idx,
-                        messageId: msg.message_id,
-                        summary,
-                        timestamp: msg.timestamp,
-                      };
-                      const isRetryingThisCompaction = Boolean(
-                        retryingCompactionMarker
-                        && retryingCompactionMarker.conversationId === activeConversation.id
-                        && retryingCompactionMarker.messageIndex === idx
-                        && (!retryingCompactionMarker.messageId || retryingCompactionMarker.messageId === msg.message_id)
-                        && isActiveConversationCompacting,
-                      );
+              <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
+                {(isConversationSwitchLoading || isCreatingFreshConversation) ? (
+                  renderMessageBubbleSkeletons()
+                ) : activeConversation.messages.length === 0 && !isStreaming ? (
+                  <div className="chat-welcome">
+                    <h3>Start a conversation</h3>
+                    <p>Ask questions about your indexed code, query databases, or get help with your systems.</p>
+                  </div>
+                ) : (
+                  <>
+                    {activeConversation.messages.map((msg, idx) => {
+                      if (msg.role === 'compaction') {
+                        const summary = extractCompactionSummary(msg.content);
+                        const marker: CompactionReviewMarker = {
+                          messageIndex: idx,
+                          messageId: msg.message_id,
+                          summary,
+                          timestamp: msg.timestamp,
+                        };
+                        const isRetryingThisCompaction = Boolean(
+                          retryingCompactionMarker
+                          && retryingCompactionMarker.conversationId === activeConversation.id
+                          && retryingCompactionMarker.messageIndex === idx
+                          && (!retryingCompactionMarker.messageId || retryingCompactionMarker.messageId === msg.message_id)
+                          && isActiveConversationCompacting,
+                        );
+                        return (
+                          <div key={`msg-${idx}`} className="chat-compaction-divider" title={summary || undefined}>
+                            {isRetryingThisCompaction ? (
+                              <span className="chat-compaction-divider-label">Chat compacting</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="chat-compaction-divider-label chat-compaction-divider-button"
+                                onClick={() => openCompactionReview(marker)}
+                                aria-label="Review chat compaction"
+                              >
+                                Chat compacted
+                              </button>
+                            )}
+                          </div>
+                        );
+                      }
+                      const branchGroups = branchGroupsByIndex.get(idx) ?? [];
+                      const hasBranches = branchGroups.length > 0;
+                      const msgKey = `msg-${idx}`;
                       return (
-                        <div key={`msg-${idx}`} className="chat-compaction-divider" title={summary || undefined}>
-                          {isRetryingThisCompaction ? (
-                            <span className="chat-compaction-divider-label">Chat compacting</span>
-                          ) : (
-                            <button
-                              type="button"
-                              className="chat-compaction-divider-label chat-compaction-divider-button"
-                              onClick={() => openCompactionReview(marker)}
-                              aria-label="Review chat compaction"
-                            >
-                              Chat compacted
-                            </button>
-                          )}
-                        </div>
-                      );
-                    }
-                    const branchGroups = branchGroupsByIndex.get(idx) ?? [];
-                    const hasBranches = branchGroups.length > 0;
-                    const msgKey = `msg-${idx}`;
-                    return (
-                    <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
-                    <div className={`chat-message chat-message-${msg.role}`}>
-                      <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
-                        {editingMessageIdx === idx ? (
-                          <>
-                            <div
-                              contentEditable
-                              suppressContentEditableWarning
-                              className="chat-message-text chat-message-user-text chat-edit-input"
-                              onInput={(e) => {
-                                // Convert innerHTML back to plain text with newlines
-                                const el = e.currentTarget;
-                                // Get text content but preserve line breaks
-                                const text = el.innerText || '';
-                                setEditMessageContent(text);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                  e.preventDefault();
-                                  if (!isSubmittingEdit) {
-                                    submitEditMessage();
-                                  }
-                                } else if (e.key === 'Escape') {
-                                  cancelEditMessage();
-                                }
-                              }}
-                              ref={(el) => {
-                                if (el && el.innerHTML === '') {
-                                  // Convert newlines to <br> for display
-                                  el.innerHTML = editMessageContent
-                                    .replace(/&/g, '&amp;')
-                                    .replace(/</g, '&lt;')
-                                    .replace(/>/g, '&gt;')
-                                    .replace(/\n/g, '<br>');
-                                  // Move cursor to end
-                                  const range = document.createRange();
-                                  range.selectNodeContents(el);
-                                  range.collapse(false);
-                                  const sel = window.getSelection();
-                                  sel?.removeAllRanges();
-                                  sel?.addRange(range);
-                                  el.focus();
-                                }
-                              }}
-                            />
-                            <div className="chat-message-footer">
-                              <span className="chat-message-time">
-                                {formatChatTimestamp(msg.timestamp)}
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            {/* Render chronological events if available */}
-                            {msg.role === 'assistant' && msg.events && msg.events.length > 0 ? (
-                              <>
-                                {(() => {
-                                  // Render events chronologically, merging only ADJACENT reasoning events
-                                  const result: React.ReactNode[] = [];
-                                  let pendingReasoning = '';
-                                  let pendingReasoningParts: ReasoningPart[] = [];
-                                  let pendingReasoningDurationSeconds: number | undefined;
-                                  let reasoningBlockCount = 0;
+                        <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
+                          <div className={`chat-message chat-message-${msg.role}`}>
+                            <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
+                              {editingMessageIdx === idx ? (
+                                <>
+                                  <RichChatInput
+                                    ref={editRichInputRef}
+                                    segments={editMessageSegments}
+                                    onChange={handleEditSegmentsChange}
+                                    onSubmit={submitEditMessage}
+                                    onCancel={cancelEditMessage}
+                                    onFocus={() => { activeComposerRef.current = 'edit'; }}
+                                    onRemoveReference={handleRemoveEditReference}
+                                    onOpenReference={onOpenContextReference}
+                                    className="chat-message-text chat-message-user-text chat-edit-input"
+                                    ariaLabel="Edit message"
+                                  />
+                                  <div className="chat-message-footer">
+                                    <span className="chat-message-time">
+                                      {formatChatTimestamp(msg.timestamp)}
+                                    </span>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  {/* Render chronological events if available */}
+                                  {msg.role === 'assistant' && msg.events && msg.events.length > 0 ? (
+                                    <>
+                                      {(() => {
+                                        // Render events chronologically, merging only ADJACENT reasoning events
+                                        const result: React.ReactNode[] = [];
+                                        let pendingReasoning = '';
+                                        let pendingReasoningParts: ReasoningPart[] = [];
+                                        let pendingReasoningDurationSeconds: number | undefined;
+                                        let reasoningBlockCount = 0;
 
-                                  const flushReasoning = () => {
-                                    if (!pendingReasoning) return;
-                                    reasoningBlockCount++;
-                                    result.push(
-                                      <ReasoningDisplay
-                                        key={`reasoning-${reasoningBlockCount}`}
-                                        content={pendingReasoning}
-                                        isComplete={true}
-                                        parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
-                                        durationSeconds={pendingReasoningDurationSeconds}
-                                        showToolCalls={showToolCalls}
-                                        workspaceId={workspaceId}
-                                        conversationId={activeConversation.id}
-                                        onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                        inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
-                                        inChatSearchOptions={activeInChatSearchOptions}
-                                      />
-                                    );
-                                    pendingReasoning = '';
-                                    pendingReasoningParts = [];
-                                    pendingReasoningDurationSeconds = undefined;
-                                  };
+                                        const flushReasoning = () => {
+                                          if (!pendingReasoning) return;
+                                          reasoningBlockCount++;
+                                          result.push(
+                                            <ReasoningDisplay
+                                              key={`reasoning-${reasoningBlockCount}`}
+                                              content={pendingReasoning}
+                                              isComplete={true}
+                                              parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
+                                              durationSeconds={pendingReasoningDurationSeconds}
+                                              showToolCalls={showToolCalls}
+                                              workspaceId={workspaceId}
+                                              conversationId={activeConversation.id}
+                                              onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                              inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                              inChatSearchOptions={activeInChatSearchOptions}
+                                            />
+                                          );
+                                          pendingReasoning = '';
+                                          pendingReasoningParts = [];
+                                          pendingReasoningDurationSeconds = undefined;
+                                        };
 
-                                  for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
-                                    const ev = msg.events[evIdx];
-                                    const channel = getChatEventChannel(ev);
-                                    const reasoningContent = getReasoningEventContent(ev);
-                                    if (channel === 'analysis' && reasoningContent) {
-                                      // Accumulate adjacent reasoning
-                                      pendingReasoning += (pendingReasoning ? '\n\n' : '') + reasoningContent;
-                                      const durationSeconds = getReasoningEventDurationSeconds(ev);
-                                      if (typeof durationSeconds === 'number') {
-                                        pendingReasoningDurationSeconds = durationSeconds;
-                                      }
-                                      const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
-                                      if (lastPart && lastPart.type === 'text') {
-                                        lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + reasoningContent;
-                                      } else {
-                                        pendingReasoningParts.push({ type: 'text', text: reasoningContent });
-                                      }
-                                    } else if (channel === 'commentary' && ev.type === 'tool' && pendingReasoning && !isVisualizationToolName(ev.tool)) {
-                                      pendingReasoningParts.push({
-                                        type: 'tool',
-                                        toolCall: {
-                                          tool: ev.tool,
-                                          input: ev.input,
-                                          output: ev.output,
-                                          presentation: ev.presentation,
-                                          connection: ev.connection,
-                                          status: 'complete' as const,
-                                        },
-                                      });
-                                    } else {
-                                      // Final content and visualization artifacts break reasoning adjacency.
-                                      flushReasoning();
-                                      if (channel === 'commentary' && ev.type === 'tool' && showToolCalls) {
-                                        result.push(
-                                          <div key={`event-${evIdx}`} className="chat-tool-calls">
-                                            <ToolCallDisplay
-                                              toolCall={{
+                                        for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
+                                          const ev = msg.events[evIdx];
+                                          const channel = getChatEventChannel(ev);
+                                          const reasoningContent = getReasoningEventContent(ev);
+                                          if (channel === 'analysis' && reasoningContent) {
+                                            // Accumulate adjacent reasoning
+                                            pendingReasoning += (pendingReasoning ? '\n\n' : '') + reasoningContent;
+                                            const durationSeconds = getReasoningEventDurationSeconds(ev);
+                                            if (typeof durationSeconds === 'number') {
+                                              pendingReasoningDurationSeconds = durationSeconds;
+                                            }
+                                            const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
+                                            if (lastPart && lastPart.type === 'text') {
+                                              lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + reasoningContent;
+                                            } else {
+                                              pendingReasoningParts.push({ type: 'text', text: reasoningContent });
+                                            }
+                                          } else if (channel === 'commentary' && ev.type === 'tool' && pendingReasoning && !isVisualizationToolName(ev.tool)) {
+                                            pendingReasoningParts.push({
+                                              type: 'tool',
+                                              toolCall: {
                                                 tool: ev.tool,
                                                 input: ev.input,
                                                 output: ev.output,
                                                 presentation: ev.presentation,
                                                 connection: ev.connection,
-                                                status: 'complete'
-                                              }}
-                                              defaultExpanded={false}
-                                              conversationId={activeConversation.id}
-                                              workspaceId={workspaceId}
-                                              siblingEvents={msg.events}
-                                              messageId={msg.message_id}
-                                              messageIndex={idx}
-                                              eventIndex={evIdx}
-                                              onLiveVisualizationRefreshSuccess={handleLiveVisualizationRefreshSuccess}
-                                              onVisualizationDisplayError={toastActions.error}
-                                              onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                              inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
-                                              inChatSearchOptions={activeInChatSearchOptions}
-                                            />
-                                          </div>
-                                        );
-                                      } else if (channel === 'final' && ev.type === 'content') {
-                                        result.push(
-                                          <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
-                                            <MemoizedMarkdown
-                                              content={ev.content}
-                                              conversationId={activeConversation.id}
-                                              workspaceId={workspaceId}
-                                              enableTableExports
-                                            />
-                                          </div>
-                                        );
-                                      } else if (ev.type === 'error') {
-                                        result.push(
-                                          <div key={`event-${evIdx}`} className="chat-message-generation-error" role="status">
-                                            <AlertCircle size={14} aria-hidden="true" />
-                                            <span>Generation failed: {ev.content}</span>
-                                          </div>
-                                        );
+                                                status: 'complete' as const,
+                                              },
+                                            });
+                                          } else {
+                                            // Final content and visualization artifacts break reasoning adjacency.
+                                            flushReasoning();
+                                            if (channel === 'commentary' && ev.type === 'tool' && showToolCalls) {
+                                              result.push(
+                                                <div key={`event-${evIdx}`} className="chat-tool-calls">
+                                                  <ToolCallDisplay
+                                                    toolCall={{
+                                                      tool: ev.tool,
+                                                      input: ev.input,
+                                                      output: ev.output,
+                                                      presentation: ev.presentation,
+                                                      connection: ev.connection,
+                                                      status: 'complete'
+                                                    }}
+                                                    defaultExpanded={false}
+                                                    conversationId={activeConversation.id}
+                                                    workspaceId={workspaceId}
+                                                    siblingEvents={msg.events}
+                                                    messageId={msg.message_id}
+                                                    messageIndex={idx}
+                                                    eventIndex={evIdx}
+                                                    onLiveVisualizationRefreshSuccess={handleLiveVisualizationRefreshSuccess}
+                                                    onVisualizationDisplayError={toastActions.error}
+                                                    onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                    inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                                    inChatSearchOptions={activeInChatSearchOptions}
+                                                  />
+                                                </div>
+                                              );
+                                            } else if (channel === 'final' && ev.type === 'content') {
+                                              result.push(
+                                                <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
+                                                  <MemoizedMarkdown
+                                                    content={ev.content}
+                                                    conversationId={activeConversation.id}
+                                                    workspaceId={workspaceId}
+                                                    enableTableExports
+                                                  />
+                                                </div>
+                                              );
+                                            } else if (ev.type === 'error') {
+                                              result.push(
+                                                <div key={`event-${evIdx}`} className="chat-message-generation-error" role="status">
+                                                  <AlertCircle size={14} aria-hidden="true" />
+                                                  <span>Generation failed: {ev.content}</span>
+                                                </div>
+                                              );
+                                            }
+                                          }
+                                        }
+                                        // Flush any trailing reasoning
+                                        flushReasoning();
+
+                                        return result;
+                                      })()}
+                                    </>
+                                  ) : (
+                                    <>
+                                      {msg.role === 'user' ? (
+                                        <>
+                                          {(() => {
+                                            const { text, attachments } = parseMessageContent(msg.content);
+                                            return (
+                                              <>
+                                                {attachments.length > 0 && <MessageAttachments attachments={attachments} onImageClick={setModalImageUrl} />}
+                                                {text && (
+                                                  <div className="chat-message-text chat-message-user-text">
+                                                    <LinkifiedText text={text} />
+                                                  </div>
+                                                )}
+                                              </>
+                                            );
+                                          })()}
+                                        </>
+                                      ) : (
+                                        <div className="chat-message-text markdown-content">
+                                          <MemoizedMarkdown
+                                            content={parseMessageContent(msg.content).text}
+                                            conversationId={activeConversation.id}
+                                            workspaceId={workspaceId}
+                                            enableTableExports
+                                          />
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                  <div className="chat-message-footer">
+                                    <span className="chat-message-time">
+                                      {formatChatTimestamp(msg.timestamp)}
+                                    </span>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          {/* Action bar — flat on pane background, outside the bubble */}
+                          {(() => {
+                            const isEditing = editingMessageIdx === idx;
+                            const activeBranchId = activeConversation.active_branch_id;
+                            const branchNav = hasBranches ? (
+                              <span className="chat-branch-nav-stack">
+                                {branchGroups.map((group) => {
+                                  const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
+                                  const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
+                                  const hasLivePathOption = !storedLivePathBranch;
+                                  const allOptions = [
+                                    ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
+                                    ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+                                  ];
+                                  const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
+                                  const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
+                                  const branchIdsInGroup = new Set(group.branches.map(b => b.id));
+                                  let lineageBranchId: string | null = null;
+                                  if (activeBranchId) {
+                                    const visited = new Set<string>();
+                                    let curr: string | null = activeBranchId;
+                                    while (curr && !visited.has(curr)) {
+                                      visited.add(curr);
+                                      if (branchIdsInGroup.has(curr)) {
+                                        lineageBranchId = curr;
+                                        break;
                                       }
+                                      const parent = branchesById.get(curr);
+                                      curr = parent?.parent_branch_id ?? null;
                                     }
                                   }
-                                  // Flush any trailing reasoning
-                                  flushReasoning();
 
-                                  return result;
-                                })()}
-                              </>
-                            ) : (
-                              <>
-                                {msg.role === 'user' ? (
-                                  <>
-                                    {(() => {
-                                      const { text, attachments } = parseMessageContent(msg.content);
-                                      return (
-                                        <>
-                                          {attachments.length > 0 && <MessageAttachments attachments={attachments} onImageClick={setModalImageUrl} />}
-                                          {text && (
-                                            <div className="chat-message-text chat-message-user-text">
-                                              <LinkifiedText text={text} />
+                                  let matchIdx = lineageBranchId
+                                    ? allOptions.findIndex(o => o.id === lineageBranchId)
+                                    : -1;
+                                  if (matchIdx < 0 && !activeBranchId) {
+                                    if (hasLivePathOption) {
+                                      matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+                                    } else if (storedLivePathBranch) {
+                                      // active_branch_id=null is the authoritative live path.
+                                      // A saved branch_kind=null row can be an older stashed
+                                      // Current path, so after edit/replay branch creation the
+                                      // live UI should snap to the newest option instead of
+                                      // reselecting that older stored row.
+                                      matchIdx = allOptions.length - 1;
+                                    }
+                                  }
+                                  if (matchIdx < 0 && branchSelections[group.selectionKey]) {
+                                    matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
+                                  }
+                                  if (matchIdx < 0 && inferredCurrentBranchId) {
+                                    matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
+                                  }
+                                  const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+                                  const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === activeConversation.id
+                                    && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
+
+                                  return (
+                                    <span
+                                      key={group.selectionKey}
+                                      className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
+                                      title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
+                                    >
+                                      <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
+                                        <ChevronLeft size={12} />
+                                      </button>
+                                      <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
+                                      <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
+                                        <ChevronRight size={12} />
+                                      </button>
+                                    </span>
+                                  );
+                                })}
+                              </span>
+                            ) : null;
+
+                            const isCopied = copiedMessageIdx === idx;
+                            // Only show the restore banner on the branch-point message for the active branch
+                            const showBanner = inputBanner && activeBranchId && branchGroups.some(group => group.branches.some(b => b.id === activeBranchId));
+
+                            if (msg.role === 'user') {
+                              return (
+                                <>
+                                  {isEditing && editMessageAttachments.length > 0 && (
+                                    <div className="chat-edit-preview-list">
+                                      {editMessageAttachments.map(att => (
+                                        <div key={att.id} className="attachment-item">
+                                          {att.type === 'image' && att.preview ? (
+                                            <div className="attachment-image-preview">
+                                              <img src={att.preview} alt={att.name} />
+                                            </div>
+                                          ) : (
+                                            <div className="attachment-file-preview">
+                                              {att.filePath ? <Link size={20} /> : <FileText size={20} />}
                                             </div>
                                           )}
-                                        </>
-                                      );
-                                    })()}
-                                  </>
-                                ) : (
-                                  <div className="chat-message-text markdown-content">
-                                    <MemoizedMarkdown
-                                      content={parseMessageContent(msg.content).text}
-                                      conversationId={activeConversation.id}
-                                      workspaceId={workspaceId}
-                                      enableTableExports
-                                    />
-                                  </div>
-                                )}
-                              </>
-                            )}
-                            <div className="chat-message-footer">
-                              <span className="chat-message-time">
-                                {formatChatTimestamp(msg.timestamp)}
-                              </span>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    {/* Action bar — flat on pane background, outside the bubble */}
-                    {(() => {
-                      const isEditing = editingMessageIdx === idx;
-                      const activeBranchId = activeConversation.active_branch_id;
-                      const branchNav = hasBranches ? (
-                        <span className="chat-branch-nav-stack">
-                          {branchGroups.map((group) => {
-                            const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
-                            const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
-                            const hasLivePathOption = !storedLivePathBranch;
-                            const allOptions = [
-                              ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
-                              ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
-                            ];
-                            const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
-                            const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
-                            const branchIdsInGroup = new Set(group.branches.map(b => b.id));
-                            let lineageBranchId: string | null = null;
-                            if (activeBranchId) {
-                              const visited = new Set<string>();
-                              let curr: string | null = activeBranchId;
-                              while (curr && !visited.has(curr)) {
-                                visited.add(curr);
-                                if (branchIdsInGroup.has(curr)) {
-                                  lineageBranchId = curr;
-                                  break;
-                                }
-                                const parent = branchesById.get(curr);
-                                curr = parent?.parent_branch_id ?? null;
-                              }
-                            }
-
-                            let matchIdx = lineageBranchId
-                              ? allOptions.findIndex(o => o.id === lineageBranchId)
-                              : -1;
-                            if (matchIdx < 0 && !activeBranchId) {
-                              if (hasLivePathOption) {
-                                matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
-                              } else if (storedLivePathBranch) {
-                                // active_branch_id=null is the authoritative live path.
-                                // A saved branch_kind=null row can be an older stashed
-                                // Current path, so after edit/replay branch creation the
-                                // live UI should snap to the newest option instead of
-                                // reselecting that older stored row.
-                                matchIdx = allOptions.length - 1;
-                              }
-                            }
-                            if (matchIdx < 0 && branchSelections[group.selectionKey]) {
-                              matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
-                            }
-                            if (matchIdx < 0 && inferredCurrentBranchId) {
-                              matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
-                            }
-                            const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
-                            const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === activeConversation.id
-                              && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
-
-                            return (
-                              <span
-                                key={group.selectionKey}
-                                className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
-                                title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
-                              >
-                                <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
-                                  <ChevronLeft size={12} />
-                                </button>
-                                <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
-                                <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
-                                  <ChevronRight size={12} />
-                                </button>
-                              </span>
-                            );
-                          })}
-                        </span>
-                      ) : null;
-
-                      const isCopied = copiedMessageIdx === idx;
-                      // Only show the restore banner on the branch-point message for the active branch
-                      const showBanner = inputBanner && activeBranchId && branchGroups.some(group => group.branches.some(b => b.id === activeBranchId));
-
-                      if (msg.role === 'user') {
-                        return (
-                          <>
-                            {isEditing && editMessageAttachments.length > 0 && (
-                              <div className="chat-edit-preview-list">
-                                {editMessageAttachments.map(att => (
-                                  <div key={att.id} className="attachment-item">
-                                    {att.type === 'image' && att.preview ? (
-                                      <div className="attachment-image-preview">
-                                        <img src={att.preview} alt={att.name} />
-                                      </div>
-                                    ) : (
-                                      <div className="attachment-file-preview">
-                                        {att.filePath ? <Link size={20} /> : <FileText size={20} />}
-                                      </div>
-                                    )}
-                                    <div className="attachment-info">
-                                      <span className="attachment-name" title={att.name}>{att.name}</span>
-                                      <span className="attachment-size">{formatAttachmentSize(att.size)}</span>
+                                          <div className="attachment-info">
+                                            <span className="attachment-name" title={att.name}>{att.name}</span>
+                                            <span className="attachment-size">{formatAttachmentSize(att.size)}</span>
+                                          </div>
+                                          <button type="button" className="attachment-remove" onClick={() => setEditMessageAttachments(editMessageAttachments.filter(a => a.id !== att.id))}>
+                                            <X size={16} />
+                                          </button>
+                                        </div>
+                                      ))}
                                     </div>
-                                    <button type="button" className="attachment-remove" onClick={() => setEditMessageAttachments(editMessageAttachments.filter(a => a.id !== att.id))}>
-                                      <X size={16} />
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            <div className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}>
-                            {isEditing ? (
-                              <>
-                                <span className="chat-message-actions-spacer" />
-                                <button className="chat-action-text-btn primary" onClick={submitEditMessage} disabled={isSubmittingEdit}>Send</button>
-                                <button className="chat-action-text-btn" onClick={cancelEditMessage}>Cancel</button>
-                                <div className="chat-edit-attachments-wrapper">
-                                  <FileAttachment
-                                    attachments={editMessageAttachments}
-                                    onAttachmentsChange={setEditMessageAttachments}
-                                    conversationId={activeConversation?.id}
-                                    workspaceId={workspaceId}
-                                  />
-                                </div>
-                              </>
-                            ) : (
-                              <span className="chat-message-hover-actions">
-                                <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
-                                  {isCopied ? <Check size={12} /> : <Copy size={12} />}
-                                </button>
-                                {!isStreaming && !isReadOnly && (
-                                  <button className="chat-action-icon-btn" onClick={() => { const parsed = parseMessageContent(msg.content); startEditMessage(idx, parsed.text, parsed.attachments); }} title="Edit and resend">
-                                    <Pencil size={12} />
-                                  </button>
-                                )}
-                                {!isStreaming && !isReadOnly && (
-                                  <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
-                                    <RefreshCw size={12} />
-                                  </button>
-                                )}
-                                {!isStreaming && !isReadOnly && (
-                                  <button
-                                    className="chat-action-icon-btn"
-                                    onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
-                                    title={msg.snapshot_restore ? 'Delete message and restore workspace snapshot' : 'Delete message'}
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                )}
-                                {canShareConversation && !embedded && onShareConversationAtMessage && (
-                                  <button
-                                    className="chat-action-icon-btn"
-                                    onClick={() => onShareConversationAtMessage(idx)}
-                                    title="Share chat from this message"
-                                    aria-label="Share chat from this message"
-                                  >
-                                    <Share2 size={12} />
-                                  </button>
-                                )}
-                              </span>
-                            )}
-                            {branchNav}
-                          </div>
-                            {pendingDeleteIdx === idx && (
-                              <div className="chat-message-banner-row chat-message-banner-row-right">
-                                <div className="chat-branch-restore-banner">
-                                  <span>{msg.snapshot_restore ? 'Delete message and restore workspace snapshot?' : 'Delete this message and all messages after it?'}</span>
-                                  <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
-                                  <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
-                                </div>
-                              </div>
-                            )}
-                            {showBanner && (
-                              <div className="chat-message-banner-row chat-message-banner-row-right">
-                                {inputBanner}
-                              </div>
-                            )}
-                          </>
-                        );
-                      } else {
-                        return (
-                          <>
-                            <div className="chat-message-actions chat-message-actions-left">
-                              {branchNav}
-                              {branchNav && <span className="chat-message-actions-spacer" />}
-                              <span className="chat-message-hover-actions">
-                                <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
-                                  {isCopied ? <Check size={12} /> : <Copy size={12} />}
-                                </button>
-                                {!isStreaming && !isReadOnly && (
-                                  <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
-                                    <RefreshCw size={12} />
-                                  </button>
-                                )}
-                                {!isStreaming && !isReadOnly && (
-                                  <button
-                                    className="chat-action-icon-btn"
-                                    onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
-                                    title={msg.snapshot_restore ? 'Delete reply and restore workspace snapshot' : 'Delete reply'}
-                                  >
-                                    <Trash2 size={12} />
-                                  </button>
-                                )}
-                                {showPromptDebugButton && (
-                                  <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
-                                    <Bug size={12} />
-                                  </button>
-                                )}
-                                {canShareConversation && !embedded && onShareConversationAtMessage && (
-                                  <button
-                                    className="chat-action-icon-btn"
-                                    onClick={() => onShareConversationAtMessage(idx)}
-                                    title="Share chat from this message"
-                                    aria-label="Share chat from this message"
-                                  >
-                                    <Share2 size={12} />
-                                  </button>
-                                )}
-                              </span>
-                            </div>
-                            {pendingDeleteIdx === idx && (
-                              <div className="chat-message-banner-row chat-message-banner-row-left">
-                                <div className="chat-branch-restore-banner">
-                                  <span>{msg.snapshot_restore ? 'Delete reply and restore workspace snapshot?' : 'Delete this reply and all messages after it?'}</span>
-                                  <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
-                                  <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
-                                </div>
-                              </div>
-                            )}
-                            {showBanner && (
-                              <div className="chat-message-banner-row chat-message-banner-row-left">
-                                {inputBanner}
-                              </div>
-                            )}
-                          </>
-                        );
-                      }
-                    })()}
-                    </div>
-                  );
-                  })}
-
-                  {queuedCompactionMessage?.conversationId === activeConversation.id && (
-                    <>
-                      <div className="chat-compaction-divider chat-compaction-divider-pending">
-                        {queuedCompactionMessage.compactionStatus === 'compacted' ? (
-                          <button
-                            type="button"
-                            className="chat-compaction-divider-label chat-compaction-divider-button"
-                            onClick={() => openCompactionReview(latestCompactionReviewMarker)}
-                            disabled={!latestCompactionReviewMarker}
-                            aria-label="Review chat compaction"
-                          >
-                            Chat compacted
-                          </button>
-                        ) : (
-                          <span className="chat-compaction-divider-label">Chat compacting</span>
-                        )}
-                      </div>
-                      {(queuedCompactionMessage.displayContent || queuedCompactionMessage.attachments.length > 0) && (
-                        <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
-                          <div className="chat-message chat-message-user chat-message-queued">
-                            <div className="chat-message-content">
-                              {(() => {
-                                const { text, attachments: queuedAttachments } = parseMessageContent(queuedCompactionMessage.displayContent);
-                                return (
-                                  <>
-                                    {queuedAttachments.length > 0 && <MessageAttachments attachments={queuedAttachments} onImageClick={setModalImageUrl} />}
-                                    {text && (
-                                      <div className="chat-message-text chat-message-user-text">
-                                        <LinkifiedText text={text} />
-                                      </div>
+                                  )}
+                                  <div className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}>
+                                    {isEditing ? (
+                                      <>
+                                        <span className="chat-message-actions-spacer" />
+                                        <button className="chat-action-text-btn primary" onClick={submitEditMessage} disabled={isSubmittingEdit}>Send</button>
+                                        <button className="chat-action-text-btn" onClick={cancelEditMessage}>Cancel</button>
+                                        <div className="chat-edit-attachments-wrapper">
+                                          <FileAttachment
+                                            attachments={editMessageAttachments}
+                                            onAttachmentsChange={setEditMessageAttachments}
+                                            conversationId={activeConversation?.id}
+                                            workspaceId={workspaceId}
+                                          />
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <span className="chat-message-hover-actions">
+                                        <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                          {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                                        </button>
+                                        {!isStreaming && !isReadOnly && (
+                                          <button className="chat-action-icon-btn" onClick={() => { const parsed = parseMessageContent(msg.content); startEditMessage(idx, parsed.text, parsed.attachments); }} title="Edit and resend">
+                                            <Pencil size={12} />
+                                          </button>
+                                        )}
+                                        {!isStreaming && !isReadOnly && (
+                                          <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
+                                            <RefreshCw size={12} />
+                                          </button>
+                                        )}
+                                        {!isStreaming && !isReadOnly && (
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
+                                            title={msg.snapshot_restore ? 'Delete message and restore workspace snapshot' : 'Delete message'}
+                                          >
+                                            <Trash2 size={12} />
+                                          </button>
+                                        )}
+                                        {canShareConversation && !embedded && onShareConversationAtMessage && (
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => onShareConversationAtMessage(idx)}
+                                            title="Share chat from this message"
+                                            aria-label="Share chat from this message"
+                                          >
+                                            <Share2 size={12} />
+                                          </button>
+                                        )}
+                                      </span>
                                     )}
-                                  </>
-                                );
-                              })()}
-                              <div className="chat-message-footer">
-                                <span className="chat-message-time">
-                                  {formatChatTimestamp(queuedCompactionMessage.timestamp)}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {/* Streaming assistant message - uses consolidated segments for performance */}
-                  {isStreaming && consolidatedSegments.length > 0 && (
-                    <div className="chat-message chat-message-assistant chat-message-streaming-active">
-                      <div className="chat-message-content">
-                        {consolidatedSegments.map((segment, idx) => (
-                          <StreamingSegmentDisplay
-                            key={`segment-${idx}-${segment.type}`}
-                            segment={segment}
-                            showToolCalls={showToolCalls}
-                            workspaceId={workspaceId}
-                            conversationId={activeConversation.id}
-                            onOpenWorkspaceFile={onOpenWorkspaceFile}
-                            inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
-                            inChatSearchOptions={activeInChatSearchOptions}
-                          />
-                        ))}
-                        <div className="chat-message-streaming">
-                          {(() => {
-                            const runningTool = consolidatedSegments.find(
-                              seg => seg.type === 'tool' && seg.toolCall?.status === 'running'
-                            );
-                            if (runningTool && runningTool.type === 'tool') {
-                              const lines = runningTool.toolCall?.generating_lines;
-                              return lines
-                                ? `Running tool... (${lines} lines)`
-                                : 'Running tool...';
+                                    {branchNav}
+                                  </div>
+                                  {pendingDeleteIdx === idx && (
+                                    <div className="chat-message-banner-row chat-message-banner-row-right">
+                                      <div className="chat-branch-restore-banner">
+                                        <span>{msg.snapshot_restore ? 'Delete message and restore workspace snapshot?' : 'Delete this message and all messages after it?'}</span>
+                                        <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
+                                        <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {showBanner && (
+                                    <div className="chat-message-banner-row chat-message-banner-row-right">
+                                      {inputBanner}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            } else {
+                              return (
+                                <>
+                                  <div className="chat-message-actions chat-message-actions-left">
+                                    {branchNav}
+                                    {branchNav && <span className="chat-message-actions-spacer" />}
+                                    <span className="chat-message-hover-actions">
+                                      <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                        {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                                      </button>
+                                      {!isStreaming && !isReadOnly && (
+                                        <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
+                                          <RefreshCw size={12} />
+                                        </button>
+                                      )}
+                                      {!isStreaming && !isReadOnly && (
+                                        <button
+                                          className="chat-action-icon-btn"
+                                          onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
+                                          title={msg.snapshot_restore ? 'Delete reply and restore workspace snapshot' : 'Delete reply'}
+                                        >
+                                          <Trash2 size={12} />
+                                        </button>
+                                      )}
+                                      {showPromptDebugButton && (
+                                        <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
+                                          <Bug size={12} />
+                                        </button>
+                                      )}
+                                      {canShareConversation && !embedded && onShareConversationAtMessage && (
+                                        <button
+                                          className="chat-action-icon-btn"
+                                          onClick={() => onShareConversationAtMessage(idx)}
+                                          title="Share chat from this message"
+                                          aria-label="Share chat from this message"
+                                        >
+                                          <Share2 size={12} />
+                                        </button>
+                                      )}
+                                    </span>
+                                  </div>
+                                  {pendingDeleteIdx === idx && (
+                                    <div className="chat-message-banner-row chat-message-banner-row-left">
+                                      <div className="chat-branch-restore-banner">
+                                        <span>{msg.snapshot_restore ? 'Delete reply and restore workspace snapshot?' : 'Delete this reply and all messages after it?'}</span>
+                                        <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
+                                        <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {showBanner && (
+                                    <div className="chat-message-banner-row chat-message-banner-row-left">
+                                      {inputBanner}
+                                    </div>
+                                  )}
+                                </>
+                              );
                             }
-                            // Check for a tool that's being generated (has generating_lines but
-                            // hasn't started executing yet - no input means still generating args)
-                            const generatingTool = consolidatedSegments.find(
-                              seg => seg.type === 'tool' && !seg.toolCall?.input && seg.toolCall?.generating_lines
-                            );
-                            if (generatingTool && generatingTool.type === 'tool') {
-                              return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
-                            }
-                            if (consolidatedSegments.some(seg => seg.type === 'reasoning' && !seg.isComplete)) {
-                              return 'Reasoning...';
-                            }
-                            return 'Generating...';
                           })()}
                         </div>
-                      </div>
-                    </div>
-                  )}
+                      );
+                    })}
 
-                  {/* Loading indicator - only when nothing is streaming yet */}
-                  {isStreaming && consolidatedSegments.length === 0 && (
-                    <div className="chat-message chat-message-assistant">
-                      <div className="chat-message-content">
-                        <div className="chat-typing-indicator">
-                          <span></span><span></span><span></span>
+                    {queuedCompactionMessage?.conversationId === activeConversation.id && (
+                      <>
+                        <div className="chat-compaction-divider chat-compaction-divider-pending">
+                          {queuedCompactionMessage.compactionStatus === 'compacted' ? (
+                            <button
+                              type="button"
+                              className="chat-compaction-divider-label chat-compaction-divider-button"
+                              onClick={() => openCompactionReview(latestCompactionReviewMarker)}
+                              disabled={!latestCompactionReviewMarker}
+                              aria-label="Review chat compaction"
+                            >
+                              Chat compacted
+                            </button>
+                          ) : (
+                            <span className="chat-compaction-divider-label">Chat compacting</span>
+                          )}
+                        </div>
+                        {(queuedCompactionMessage.displayContent || queuedCompactionMessage.attachments.length > 0) && (
+                          <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
+                            <div className="chat-message chat-message-user chat-message-queued">
+                              <div className="chat-message-content">
+                                {(() => {
+                                  const { text, attachments: queuedAttachments } = parseMessageContent(queuedCompactionMessage.displayContent);
+                                  return (
+                                    <>
+                                      {queuedAttachments.length > 0 && <MessageAttachments attachments={queuedAttachments} onImageClick={setModalImageUrl} />}
+                                      {text && (
+                                        <div className="chat-message-text chat-message-user-text">
+                                          <LinkifiedText text={text} />
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+                                <div className="chat-message-footer">
+                                  <span className="chat-message-time">
+                                    {formatChatTimestamp(queuedCompactionMessage.timestamp)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {/* Streaming assistant message - uses consolidated segments for performance */}
+                    {isStreaming && consolidatedSegments.length > 0 && (
+                      <div className="chat-message chat-message-assistant chat-message-streaming-active">
+                        <div className="chat-message-content">
+                          {consolidatedSegments.map((segment, idx) => (
+                            <StreamingSegmentDisplay
+                              key={`segment-${idx}-${segment.type}`}
+                              segment={segment}
+                              showToolCalls={showToolCalls}
+                              workspaceId={workspaceId}
+                              conversationId={activeConversation.id}
+                              onOpenWorkspaceFile={onOpenWorkspaceFile}
+                              inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                              inChatSearchOptions={activeInChatSearchOptions}
+                            />
+                          ))}
+                          <div className="chat-message-streaming">
+                            {(() => {
+                              const runningTool = consolidatedSegments.find(
+                                seg => seg.type === 'tool' && seg.toolCall?.status === 'running'
+                              );
+                              if (runningTool && runningTool.type === 'tool') {
+                                const lines = runningTool.toolCall?.generating_lines;
+                                return lines
+                                  ? `Running tool... (${lines} lines)`
+                                  : 'Running tool...';
+                              }
+                              // Check for a tool that's being generated (has generating_lines but
+                              // hasn't started executing yet - no input means still generating args)
+                              const generatingTool = consolidatedSegments.find(
+                                seg => seg.type === 'tool' && !seg.toolCall?.input && seg.toolCall?.generating_lines
+                              );
+                              if (generatingTool && generatingTool.type === 'tool') {
+                                return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
+                              }
+                              if (consolidatedSegments.some(seg => seg.type === 'reasoning' && !seg.isComplete)) {
+                                return 'Reasoning...';
+                              }
+                              return 'Generating...';
+                            })()}
+                          </div>
                         </div>
                       </div>
+                    )}
+
+                    {/* Loading indicator - only when nothing is streaming yet */}
+                    {isStreaming && consolidatedSegments.length === 0 && (
+                      <div className="chat-message chat-message-assistant">
+                        <div className="chat-message-content">
+                          <div className="chat-typing-indicator">
+                            <span></span><span></span><span></span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
+                {!isStreaming && activeConversation && (
+                  // Show continue when:
+                  // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
+                  // 2. OR there's an interrupted task (from server restart)
+                  ((activeConversation.messages.length > 0 &&
+                    activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
+                    (hitMaxIterations || isConnectionError)) ||
+                    interruptedTask) && !isReadOnly && (
+                    <div className="chat-continue-inline">
+                      <span className="chat-continue-text">
+                        Conversation interrupted, <button className="chat-continue-link" onClick={continueConversation}>continue?</button>
+                      </span>
                     </div>
-                  )}
-                </>
-              )}
+                  ))}
 
-              {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
-              {!isStreaming && activeConversation && (
-                // Show continue when:
-                // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
-                // 2. OR there's an interrupted task (from server restart)
-                ((activeConversation.messages.length > 0 &&
-                  activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
-                  (hitMaxIterations || isConnectionError)) ||
-                 interruptedTask) && !isReadOnly && (
-                <div className="chat-continue-inline">
-                  <span className="chat-continue-text">
-                    Conversation interrupted, <button className="chat-continue-link" onClick={continueConversation}>continue?</button>
-                  </span>
-                </div>
-              ))}
-
-              <div ref={messagesEndRef} />
-            </div>
+                <div ref={messagesEndRef} />
+              </div>
             )}
 
             {/* Error Display */}
@@ -13819,73 +13985,46 @@ export function ChatPanel({
               direction="vertical"
               className="resize-handle resize-handle-vertical chat-resize-handle"
               onResize={handleResizeInputArea}
+              onResizeEnd={commitResizeInputArea}
               collapsed={isInputAreaCollapsed ? 'after' : isMessagesCollapsed ? 'before' : undefined}
               onExpand={isInputAreaCollapsed ? expandInputArea : isMessagesCollapsed ? expandMessages : undefined}
             />
 
             {/* Input Area */}
             {!isInputAreaCollapsed && (
-            <div
-              className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`.trim().replace(/\s+/g, ' ')}
-              style={isMessagesCollapsed ? { flex: 1, minHeight: 'auto' } : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}
-            >
-              {isReadOnly && (
-                <div className="chat-readonly-note" role="status">
-                  {effectiveReadOnlyMessage}
-                </div>
-              )}
-              <div className="chat-input-wrapper">
-                <FileAttachment
-                  attachments={attachments}
-                  onAttachmentsChange={setAttachments}
-                  conversationId={activeConversation?.id}
-                  workspaceId={workspaceId}
-                  disabled={isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation}
-                />
-                <textarea
-                  ref={inputRef}
-                  value={inputValue}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  placeholder={isReadOnly ? effectiveReadOnlyMessage : 'Ask a question or paste files/images (Ctrl+V)...'}
-                  rows={1}
-                  className="chat-input"
-                  disabled={isReadOnly}
-                />
-                {isStreaming ? (
-                  <div className="chat-input-inline-actions">
-                    {showInlineToolSelector && (
-                      <ToolSelectorDropdown
-                        availableTools={effectiveAvailableTools}
-                        selectedToolIds={resolvedEffectiveToolIdSet}
-                        toolSelectionMode={effectiveToolSelection.mode}
-                        onSelectionChange={handleToolSelectionChange}
-                        builtInTools={conversationBuiltInTools}
-                        selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
-                        onToggleBuiltInTool={handleToggleConversationBuiltInTool}
-                    onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
-                        selectedToolGroupIds={effectiveToolGroupIdSet}
-                        toolGroups={effectiveToolGroups}
-                        openDirection="up"
-                        disabled={false}
-                        readOnly={false}
-                        saving={effectiveSavingTools}
-                        title="Workspace Tools"
-                      />
-                    )}
-                    <button
-                      type="button"
-                      className="btn chat-stop-btn-inline"
-                      onClick={stopStreaming}
-                      title="Stop generating"
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                        <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-                      </svg>
-                    </button>
+              <div
+                className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`.trim().replace(/\s+/g, ' ')}
+                style={isMessagesCollapsed ? { flex: 1, minHeight: 'auto' } : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}
+              >
+                {isReadOnly && (
+                  <div className="chat-readonly-note" role="status">
+                    {effectiveReadOnlyMessage}
                   </div>
-                ) : (
-                  !isReadOnly && (
+                )}
+                <div className="chat-input-wrapper">
+                  <FileAttachment
+                    attachments={attachments}
+                    onAttachmentsChange={setAttachments}
+                    conversationId={activeConversation?.id}
+                    workspaceId={workspaceId}
+                    disabled={isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation}
+                  />
+                  <div className="chat-input-field">
+                    <RichChatInput
+                      ref={richInputRef}
+                      elementRef={inputRef}
+                      segments={messageSegments}
+                      onChange={handleSegmentsChange}
+                      onSubmit={sendMessage}
+                      onFocus={() => { activeComposerRef.current = 'main'; }}
+                      onRemoveReference={handleRemoveComposerReference}
+                      onOpenReference={onOpenContextReference}
+                      placeholder={isReadOnly ? effectiveReadOnlyMessage : 'Ask a question or paste files/images (Ctrl+V)...'}
+                      disabled={isReadOnly}
+                      ariaLabel="Message"
+                    />
+                  </div>
+                  {isStreaming ? (
                     <div className="chat-input-inline-actions">
                       {showInlineToolSelector && (
                         <ToolSelectorDropdown
@@ -13896,7 +14035,7 @@ export function ChatPanel({
                           builtInTools={conversationBuiltInTools}
                           selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                           onToggleBuiltInTool={handleToggleConversationBuiltInTool}
-                    onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
+                          onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           toolGroups={effectiveToolGroups}
                           openDirection="up"
@@ -13906,27 +14045,60 @@ export function ChatPanel({
                           title="Workspace Tools"
                         />
                       )}
-                      {(inputValue.trim() || attachments.length > 0) && (
-                        <button
-                          type="button"
-                          className="btn chat-send-btn-inline"
-                          onClick={sendMessage}
-                          disabled={!activeConversation || !contextUsage.hasHeadroom || hasQueuedCompactionMessageForActiveConversation}
-                          title={contextUsage.hasHeadroom
+                      <button
+                        type="button"
+                        className="btn chat-stop-btn-inline"
+                        onClick={stopStreaming}
+                        title="Stop generating"
+                      >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                          <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                        </svg>
+                      </button>
+                    </div>
+                  ) : (
+                    !isReadOnly && (
+                      <div className="chat-input-inline-actions">
+                        {showInlineToolSelector && (
+                          <ToolSelectorDropdown
+                            availableTools={effectiveAvailableTools}
+                            selectedToolIds={resolvedEffectiveToolIdSet}
+                            toolSelectionMode={effectiveToolSelection.mode}
+                            onSelectionChange={handleToolSelectionChange}
+                            builtInTools={conversationBuiltInTools}
+                            selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
+                            onToggleBuiltInTool={handleToggleConversationBuiltInTool}
+                            onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
+                            selectedToolGroupIds={effectiveToolGroupIdSet}
+                            toolGroups={effectiveToolGroups}
+                            openDirection="up"
+                            disabled={false}
+                            readOnly={false}
+                            saving={effectiveSavingTools}
+                            title="Workspace Tools"
+                          />
+                        )}
+                        {(!segmentsAreEmpty(messageSegments) || attachments.length > 0) && (
+                          <button
+                            type="button"
+                            className="btn chat-send-btn-inline"
+                            onClick={sendMessage}
+                            disabled={!activeConversation || !contextUsage.hasHeadroom || hasQueuedCompactionMessageForActiveConversation}
+                            title={contextUsage.hasHeadroom
                               ? 'Send message'
                               : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
-                        >
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <line x1="12" y1="19" x2="12" y2="5"></line>
-                            <polyline points="5 12 12 5 19 12"></polyline>
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  )
-                )}
+                          >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="12" y1="19" x2="12" y2="5"></line>
+                              <polyline points="5 12 12 5 19 12"></polyline>
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
               </div>
-            </div>
             )}
           </>
         ) : isCreatingFreshConversation ? (
@@ -14370,9 +14542,9 @@ export function ChatPanel({
                 const trimmed = deferredArchiveSearchQuery.trim();
                 const list = trimmed
                   ? archivedConversations.filter((c) => (
-                      conversationMatchesCachedQuery(c, trimmed)
-                      || Boolean(archiveBranchSearchMatches[c.id])
-                    ))
+                    conversationMatchesCachedQuery(c, trimmed)
+                    || Boolean(archiveBranchSearchMatches[c.id])
+                  ))
                   : archivedConversations;
                 if (list.length === 0) {
                   return (

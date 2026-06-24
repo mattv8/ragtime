@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 
-const DEFAULT_HOVER_DELAY_MS = 500;
+const DEFAULT_HOVER_DELAY_MS = 1500;
 const DEFAULT_DISMISS_DELAY_MS = 500;
 
 interface UseDiffHoverTimersOptions {

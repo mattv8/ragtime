@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, AtSign, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Square, Terminal, Trash2, Users, X } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
-import { keymap } from '@codemirror/view';
+import { Decoration, EditorView, keymap, type DecorationSet, type ViewUpdate } from '@codemirror/view';
+import { StateEffect, StateField, type Extension } from '@codemirror/state';
 import { openSearchPanel } from '@codemirror/search';
 
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -29,7 +30,7 @@ import { MemberManagementModal, type Member } from './shared/MemberManagementMod
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
 import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
-import type { BrowseResponse, CloudOAuthProviderStatus, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserCloudOAuthAccount, UserCloudOAuthProvider, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, UserspaceMountSource, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
+import type { BrowseResponse, ChatContextReference, CloudOAuthProviderStatus, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserCloudOAuthAccount, UserCloudOAuthProvider, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, UserspaceMountSource, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
 import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
 import {
   createBrowserPathDisplayMap,
@@ -57,7 +58,7 @@ import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
 import { ShareLinkModal } from './shared/ShareLinkModal';
-import { Popover } from './Popover';
+import { Popover, DisabledPopover } from './Popover';
 import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
 import { useWorkspaceScmWizardActivity, WorkspaceScmWizard } from './WorkspaceScmWizard';
 
@@ -79,6 +80,7 @@ interface CachedUserSpaceFile {
   content: string;
   updatedAt: string;
   artifactType: UserSpaceArtifactType | null;
+  unsupportedMessage?: string;
 }
 
 type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
@@ -409,6 +411,7 @@ const USERSPACE_CODEMIRROR_BASIC_SETUP = {
   indentOnInput: true,
   tabSize: 2,
 };
+const CHAT_CONTEXT_FILE_CONTENT_MAX_CHARS = 60_000;
 const USERSPACE_CHANGED_FILE_STATE_MIN_INTERVAL_MS = 1000;
 const USERSPACE_FILE_TREE_POLL_INTERVAL_MS = 5000;
 const USERSPACE_FILE_TREE_IDLE_POLL_INTERVAL_MS = 10000;
@@ -423,6 +426,40 @@ const USERSPACE_RUNTIME_BACKGROUND_POLL_INTERVAL_MS = 30000;
 const USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS = 60_000;
 const USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS = 60_000;
 const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
+
+const setContextLineHighlightEffect = StateEffect.define<Array<{ from: number }>>();
+const clearContextLineHighlightEffect = StateEffect.define<null>();
+const contextLineHighlightDecoration = Decoration.line({ class: 'userspace-context-highlight-line' });
+
+const contextLineHighlightField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none;
+  },
+  update(value, transaction) {
+    let decorations = value.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(setContextLineHighlightEffect)) {
+        decorations = Decoration.set(effect.value.map(({ from }) => contextLineHighlightDecoration.range(from)));
+      } else if (effect.is(clearContextLineHighlightEffect)) {
+        decorations = Decoration.none;
+      }
+    }
+    return decorations;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
+function buildChatContextReferenceId(reference: Pick<ChatContextReference, 'path' | 'startLine' | 'endLine' | 'source'>): string {
+  const range = reference.startLine ? `${reference.startLine}-${reference.endLine ?? reference.startLine}` : 'file';
+  return `${reference.source}:${reference.path}:${range}`;
+}
+
+function trimContextContent(content: string): { content: string; truncated: boolean } {
+  if (content.length <= CHAT_CONTEXT_FILE_CONTENT_MAX_CHARS) {
+    return { content, truncated: false };
+  }
+  return { content: content.slice(0, CHAT_CONTEXT_FILE_CONTENT_MAX_CHARS), truncated: true };
+}
 
 function getLastWorkspaceCookieName(userId: string): string {
   return `${LAST_WORKSPACE_COOKIE_PREFIX}${encodeURIComponent(userId)}`;
@@ -702,6 +739,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const lastPreviewSessionExpiredRefreshRef = useRef<number>(0);
   const lastLiveDataTimeoutToastRef = useRef<string>('');
   const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null);
+  const [chatContextReferencePaths, setChatContextReferencePaths] = useState<Set<string>>(new Set());
   const [previewOrigin, setPreviewOrigin] = useState<string | null>(null);
   const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
   const [previewNotice, setPreviewNotice] = useState<{
@@ -720,6 +758,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [collabPresenceError, setCollabPresenceError] = useState<string | null>(null);
   const collabPresenceWorkspaceRef = useRef<string | null>(null);
   const collabPresenceRequestRef = useRef(0);
+  const codeMirrorViewRef = useRef<EditorView | null>(null);
+  const activeSelectionContextIdRef = useRef<string | null>(null);
+  const activeSelectionResetTimerRef = useRef<number | null>(null);
+  // The chat composer registers its caret-inserter here so editor selections
+  // and file actions can weave reference chips into the message in place.
+  const insertContextReferenceRef = useRef<((reference: ChatContextReference) => void) | null>(null);
   const [collabReconnectNonce, setCollabReconnectNonce] = useState(0);
   const [workspaceEventsReconnectNonce, setWorkspaceEventsReconnectNonce] = useState(0);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
@@ -879,6 +923,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
+  const treeFileHoverSuppressRef = useRef<string | null>(null);
   const fileContentCacheRef = useRef(fileContentCache);
   const activeWorkspaceIdRef = useRef<string | null>(activeWorkspaceId);
   const activeWorkspaceConversationIdRef = useRef<string | null>(activeWorkspaceConversationId);
@@ -1725,9 +1770,61 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
   const codeMirrorLanguageExtension = useCodeMirrorLanguageExtension(selectedFilePath);
 
+  const handleCodeMirrorSelectionUpdate = useCallback((update: ViewUpdate) => {
+    if (!update.selectionSet) return;
+
+    const selectedPath = selectedFilePathRef.current;
+    if (!selectedPath || selectedFileUnsupportedMessage) return;
+
+    const selection = update.state.selection.main;
+    if (selection.empty) return;
+
+    const selectionStart = Math.min(selection.from, selection.to);
+    const selectionEnd = Math.max(selection.from, selection.to);
+    const selectedText = update.state.sliceDoc(selectionStart, selectionEnd).trim();
+    if (!selectedText) return;
+
+    const startLine = update.state.doc.lineAt(selectionStart);
+    const rawEndLine = update.state.doc.lineAt(selectionEnd);
+    const endLineNumber = selectionEnd === rawEndLine.from && rawEndLine.number > startLine.number
+      ? rawEndLine.number - 1
+      : rawEndLine.number;
+    const endLine = update.state.doc.line(Math.max(startLine.number, endLineNumber));
+    const doc = update.state.doc;
+
+    const trimmed = trimContextContent(doc.sliceString(startLine.from, endLine.to));
+    const baseReference = {
+      path: selectedPath,
+      startLine: startLine.number,
+      endLine: endLine.number,
+      source: 'selection' as const,
+    };
+    // Coalesce a single drag gesture onto one chip id so the chip updates in
+    // place while the user is still selecting, instead of spawning duplicates.
+    const referenceId = activeSelectionContextIdRef.current ?? buildChatContextReferenceId(baseReference);
+    activeSelectionContextIdRef.current = referenceId;
+
+    insertContextReferenceRef.current?.({
+      ...baseReference,
+      id: referenceId,
+      content: trimmed.content,
+      contentTruncated: trimmed.truncated,
+    });
+
+    if (activeSelectionResetTimerRef.current !== null) {
+      window.clearTimeout(activeSelectionResetTimerRef.current);
+    }
+    activeSelectionResetTimerRef.current = window.setTimeout(() => {
+      activeSelectionContextIdRef.current = null;
+      activeSelectionResetTimerRef.current = null;
+    }, 700);
+  }, [selectedFileUnsupportedMessage]);
+
   const codeMirrorExtensions = useMemo(
     () => {
-      const extensions = [
+      const extensions: Extension[] = [
+        contextLineHighlightField,
+        EditorView.updateListener.of(handleCodeMirrorSelectionUpdate),
         keymap.of([
           {
             key: 'Mod-f',
@@ -1741,8 +1838,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       }
       return extensions;
     },
-    [codeMirrorLanguageExtension]
+    [codeMirrorLanguageExtension, handleCodeMirrorSelectionUpdate]
   );
+
+  useEffect(() => () => {
+    if (activeSelectionResetTimerRef.current !== null) {
+      window.clearTimeout(activeSelectionResetTimerRef.current);
+    }
+  }, []);
 
   const selectedFileDisplayName = useMemo(() => {
     const parts = selectedFilePath.split('/').filter(Boolean);
@@ -2242,8 +2345,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             artifactType: loaded.artifact_type ?? null,
           };
         } catch (err) {
-          if (getUnsupportedEditorFileMessage(err)) {
-            return null;
+          const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+          if (unsupportedMessage) {
+            return {
+              path: file.path,
+              content: '',
+              updatedAt: file.updated_at ?? '',
+              artifactType: null,
+              unsupportedMessage,
+            };
           }
           throw err;
         }
@@ -2253,13 +2363,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setFileContentCache((current) => {
       const next: Record<string, CachedUserSpaceFile> = { ...current };
       for (const file of fetched) {
-        if (!file) {
-          continue;
-        }
         next[file.path] = {
           content: file.content,
           updatedAt: file.updatedAt,
           artifactType: file.artifactType,
+          unsupportedMessage: file.unsupportedMessage,
         };
       }
       return next;
@@ -2332,7 +2440,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           }
           setFileContent(cached.content);
           setSelectedFileArtifactType(cached.artifactType ?? null);
-          setSelectedFileUnsupportedMessage(null);
+          setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
         } else {
           try {
             const file = await api.getUserSpaceFile(workspaceId, preferredPath);
@@ -2365,6 +2473,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             setFileContent('');
             setSelectedFileArtifactType(null);
             setSelectedFileUnsupportedMessage(unsupportedMessage);
+            setFileContentCache((current) => ({
+              ...current,
+              [preferredPath]: {
+                content: '',
+                updatedAt: preferredUpdatedAt,
+                artifactType: null,
+                unsupportedMessage,
+              },
+            }));
           }
         }
       } else {
@@ -2582,6 +2699,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const handleTreeFileHoverStart = useCallback((filePath: string) => {
     if (!activeWorkspaceId) return;
+    if (treeFileHoverSuppressRef.current === filePath) return;
     diffHover.startHover(() => {
       void (async () => {
         let snapshotId = currentSnapshotId;
@@ -2603,6 +2721,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [activeWorkspaceId, currentSnapshotId, diffHover, loadSnapshotFileDiff, loadSnapshots]);
 
   const handleTreeFileHoverEnd = useCallback(() => {
+    treeFileHoverSuppressRef.current = null;
     diffHover.endHover();
   }, [diffHover]);
 
@@ -3036,6 +3155,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [selectedFilePath]);
 
   useEffect(() => {
+    // The chat composer (and thus its inline reference chips) is keyed by
+    // workspace and remounts on switch; just clear any editor highlight here.
+    codeMirrorViewRef.current?.dispatch({ effects: clearContextLineHighlightEffect.of(null) });
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
     if (!showToolPicker) return;
     function handleClickOutside(event: MouseEvent) {
       if (toolPickerRef.current && !toolPickerRef.current.contains(event.target as Node)) {
@@ -3430,7 +3555,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         setFileContent(cached.content);
         setFileDirty(false);
         setSelectedFileArtifactType(cached.artifactType ?? null);
-        setSelectedFileUnsupportedMessage(null);
+        setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
         setError(null);
         return;
       }
@@ -3452,10 +3577,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } catch (err) {
       const unsupportedMessage = getUnsupportedEditorFileMessage(err);
       if (unsupportedMessage) {
+        const selectedMeta = files.find((file) => file.path === path);
         setFileContent('');
         setFileDirty(false);
         setSelectedFileArtifactType(null);
         setSelectedFileUnsupportedMessage(unsupportedMessage);
+        setFileContentCache((current) => ({
+          ...current,
+          [path]: {
+            content: '',
+            updatedAt: selectedMeta?.updated_at ?? '',
+            artifactType: null,
+            unsupportedMessage,
+          },
+        }));
         setError(null);
         return;
       }
@@ -3465,6 +3600,111 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setError(err instanceof Error ? err.message : 'Failed to open file');
     }
   }, [activeWorkspaceId, files]);
+
+  const handleTreeFileSelect = useCallback((filePath: string) => {
+    treeFileHoverSuppressRef.current = filePath;
+    diffHover.dismiss();
+    void handleSelectFile(filePath);
+  }, [diffHover, handleSelectFile]);
+
+  const handleAddFileContextReference = useCallback(async (path: string) => {
+    if (!activeWorkspaceId) return;
+
+    try {
+      const selectedMeta = files.find((file) => file.path === path);
+      const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
+      const cached = fileContentCacheRef.current[path];
+      if (cached?.unsupportedMessage && cached.updatedAt === selectedUpdatedAt) {
+        setError(cached.unsupportedMessage);
+        return;
+      }
+      const content = path === selectedFilePath
+        ? fileContent
+        : cached && cached.updatedAt === selectedUpdatedAt
+          ? cached.content
+          : (await api.getUserSpaceFile(activeWorkspaceId, path)).content;
+      const trimmed = trimContextContent(content);
+      const referenceBase = {
+        path,
+        source: 'file' as const,
+      };
+      const fileReference: ChatContextReference = {
+        ...referenceBase,
+        id: buildChatContextReferenceId(referenceBase),
+        content: trimmed.content,
+        contentTruncated: trimmed.truncated,
+      };
+
+      // Focus the composer so the chip inserts at the caret, then insert. The
+      // composer itself dedupes a file reference for a path already present.
+      insertContextReferenceRef.current?.(fileReference);
+      setError(null);
+    } catch (err) {
+      const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+      if (unsupportedMessage) {
+        const selectedMeta = files.find((file) => file.path === path);
+        setFileContentCache((current) => ({
+          ...current,
+          [path]: {
+            content: '',
+            updatedAt: selectedMeta?.updated_at ?? '',
+            artifactType: null,
+            unsupportedMessage,
+          },
+        }));
+      }
+      setError(unsupportedMessage ?? (err instanceof Error ? err.message : 'Failed to add file context'));
+    }
+  }, [activeWorkspaceId, fileContent, files, selectedFilePath]);
+
+  const handleRegisterContextReferenceInserter = useCallback(
+    (insert: ((reference: ChatContextReference) => void) | null) => {
+      insertContextReferenceRef.current = insert;
+    },
+    [],
+  );
+
+  const handleContextReferencesChange = useCallback((refs: ChatContextReference[]) => {
+    const nextPaths = new Set(refs.map((ref) => ref.path));
+    setChatContextReferencePaths((current) => {
+      if (current.size === nextPaths.size && [...current].every((path) => nextPaths.has(path))) {
+        return current;
+      }
+      return nextPaths;
+    });
+  }, []);
+
+  const handleOpenChatContextReference = useCallback(async (reference: ChatContextReference) => {
+    await handleSelectFile(reference.path);
+
+    window.requestAnimationFrame(() => {
+      const view = codeMirrorViewRef.current;
+      if (!view || selectedFilePathRef.current !== reference.path) return;
+      if (!reference.startLine) {
+        view.dispatch({ effects: clearContextLineHighlightEffect.of(null) });
+        view.focus();
+        return;
+      }
+
+      const startLineNumber = Math.min(reference.startLine, view.state.doc.lines);
+      const endLineNumber = Math.min(reference.endLine ?? reference.startLine, view.state.doc.lines);
+      const startLine = view.state.doc.line(startLineNumber);
+      const endLine = view.state.doc.line(Math.max(startLineNumber, endLineNumber));
+      const lineRanges = [];
+      for (let lineNumber = startLine.number; lineNumber <= endLine.number; lineNumber += 1) {
+        lineRanges.push({ from: view.state.doc.line(lineNumber).from });
+      }
+
+      view.dispatch({
+        selection: { anchor: startLine.from, head: endLine.to },
+        effects: [
+          setContextLineHighlightEffect.of(lineRanges),
+          EditorView.scrollIntoView(startLine.from, { y: 'center' }),
+        ],
+      });
+      view.focus();
+    });
+  }, [handleSelectFile]);
 
   const handleCreateSnapshot = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -6555,7 +6795,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         >
           <button
             className="userspace-item-content userspace-tree-content"
-            onClick={() => handleSelectFile(node.path)}
+            onClick={() => handleTreeFileSelect(node.path)}
             onMouseEnter={isFileChanged ? () => handleTreeFileHoverStart(node.path) : undefined}
             onMouseLeave={isFileChanged ? handleTreeFileHoverEnd : undefined}
             style={indentStyle}
@@ -6576,9 +6816,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               </span>
             )}
           </button>
-          {canEditWorkspace && (
-            <div className="userspace-item-actions">
-              {isConfirmingDelete ? (
+          <div className="userspace-item-actions">
+            {!isConfirmingDelete && (
+              <DisabledPopover
+                message="Already in chat context"
+                disabled={chatContextReferencePaths.has(node.path)}
+                position="right"
+              >
+                <button
+                  className="chat-action-btn"
+                  onClick={(e) => { e.stopPropagation(); void handleAddFileContextReference(node.path); }}
+                  disabled={chatContextReferencePaths.has(node.path)}
+                  title={chatContextReferencePaths.has(node.path) ? 'Already in chat context' : 'Add file to chat context'}
+                >
+                  <AtSign size={12} />
+                </button>
+              </DisabledPopover>
+            )}
+            {canEditWorkspace && (
+              isConfirmingDelete ? (
                 <>
                   <button className="chat-action-btn confirm-delete" onClick={() => handleDeleteFile(node.path)} title="Confirm">
                     <Check size={12} />
@@ -6606,13 +6862,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     <Trash2 size={12} />
                   </button>
                 </>
-              )}
-            </div>
-          )}
+              )
+            )}
+          </div>
         </div>,
       ];
     });
-  }, [canEditWorkspace, changedFilePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, isPathInMountTarget, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
+  }, [canEditWorkspace, changedFilePaths, chatContextReferencePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleAddFileContextReference, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, handleTreeFileSelect, isPathInMountTarget, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
 
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'
@@ -7140,12 +7396,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             {runtimeStatus && (
               <span
                 className={`userspace-status-pill ${runtimeDisplayState === 'running'
-                    ? 'userspace-status-pill-success'
-                    : runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping'
-                      ? 'userspace-status-pill-warning'
-                      : runtimeDisplayState === 'error' || runtimeDisplayState === 'stopped'
-                        ? 'userspace-status-pill-danger'
-                        : 'userspace-status-pill-muted'
+                  ? 'userspace-status-pill-success'
+                  : runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping'
+                    ? 'userspace-status-pill-warning'
+                    : runtimeDisplayState === 'error' || runtimeDisplayState === 'stopped'
+                      ? 'userspace-status-pill-danger'
+                      : 'userspace-status-pill-muted'
                   }`}
                 title={runtimeStatus.last_error || 'Workspace runtime session state'}
               >
@@ -7378,6 +7634,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               ) : (
                 <CodeMirror
                   value={fileContent}
+                  onCreateEditor={(view) => {
+                    codeMirrorViewRef.current = view;
+                  }}
                   onChange={(value) => {
                     setFileContent(value);
                     setFileDirty(true);
@@ -7448,6 +7707,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 onActiveConversationChange={updateActiveWorkspaceConversationId}
                 onBranchSwitch={handleBranchSwitch}
                 onOpenWorkspaceFile={handleSelectFile}
+                onRegisterContextReferenceInserter={handleRegisterContextReferenceInserter}
+                onContextReferencesChange={handleContextReferencesChange}
+                onOpenContextReference={handleOpenChatContextReference}
                 onMessageSnapshotRestored={handleMessageSnapshotRestored}
                 onSnapshotsMaybeChanged={handleSnapshotsMaybeChanged}
                 embedded

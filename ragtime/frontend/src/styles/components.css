@@ -2436,6 +2436,11 @@ textarea:focus {
   background-color: var(--color-primary-light) !important;
 }
 
+.userspace-code-editor .cm-editor .userspace-context-highlight-line {
+  background-color: color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
 .userspace-code-editor .cm-editor .cm-tooltip {
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);

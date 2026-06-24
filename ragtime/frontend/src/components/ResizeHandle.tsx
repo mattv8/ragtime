@@ -22,26 +22,47 @@ interface ResizeHandleProps {
 export function ResizeHandle({ direction, onResize, className, collapsed, onExpand, onResizeEnd }: ResizeHandleProps) {
   const startPos = useRef(0);
   const isDragging = useRef(false);
+  const pendingDelta = useRef(0);
+  const resizeFrame = useRef<number | null>(null);
   const onResizeRef = useRef(onResize);
   onResizeRef.current = onResize;
 
+  const flushPendingResize = useCallback(() => {
+    resizeFrame.current = null;
+    const delta = pendingDelta.current;
+    pendingDelta.current = 0;
+    if (delta !== 0) {
+      onResizeRef.current(delta);
+    }
+  }, []);
+
+  const cancelPendingResize = useCallback(() => {
+    if (resizeFrame.current !== null) {
+      window.cancelAnimationFrame(resizeFrame.current);
+      resizeFrame.current = null;
+    }
+    pendingDelta.current = 0;
+  }, []);
+
   useEffect(() => {
     return () => {
+      cancelPendingResize();
       if (isDragging.current) {
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         isDragging.current = false;
       }
     };
-  }, []);
+  }, [cancelPendingResize]);
 
   useEffect(() => {
     if (collapsed && isDragging.current) {
+      cancelPendingResize();
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       isDragging.current = false;
     }
-  }, [collapsed]);
+  }, [cancelPendingResize, collapsed]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -65,9 +86,12 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       const pos = direction === 'horizontal' ? e.clientX : e.clientY;
       const delta = pos - startPos.current;
       startPos.current = pos;
-      onResizeRef.current(delta);
+      pendingDelta.current += delta;
+      if (resizeFrame.current === null) {
+        resizeFrame.current = window.requestAnimationFrame(flushPendingResize);
+      }
     },
-    [direction],
+    [direction, flushPendingResize],
   );
 
   const finishPointerDrag = useCallback(
@@ -81,13 +105,16 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
       }
 
       if (isDragging.current) {
+        if (resizeFrame.current !== null || pendingDelta.current !== 0) {
+          flushPendingResize();
+        }
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         isDragging.current = false;
         onResizeEnd?.();
       }
     },
-    [onResizeEnd],
+    [flushPendingResize, onResizeEnd],
   );
 
   const cls = className ?? `resize-handle resize-handle-${direction}`;

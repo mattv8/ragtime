@@ -2202,6 +2202,16 @@ export interface SendMessageRequest {
   client_clock?: ClientClockContext;
 }
 
+export interface ChatContextReference {
+  id: string;
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  content?: string;
+  contentTruncated?: boolean;
+  source: 'selection' | 'file';
+}
+
 export interface ClientClockContext {
   epoch_ms: number;
   timezone?: string | null;
