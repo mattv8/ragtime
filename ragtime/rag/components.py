@@ -6,6 +6,7 @@ import asyncio
 import base64
 import fnmatch
 import hashlib
+from html.parser import HTMLParser
 import io
 import json
 import math
@@ -872,6 +873,72 @@ _IMPORT_SPECIFIER_PATTERN = re.compile(
     r"^\s*import(?:\s+type)?(?:[\s\w{},*]+from\s*)?[\"']([^\"']+)[\"']",
     re.MULTILINE,
 )
+_USERSPACE_PYTHON_EXTENSIONS: tuple[str, ...] = (".py",)
+
+
+class _UserspaceHTMLReferenceParser(HTMLParser):
+    """Collect static local asset references from HTML tags."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.asset_paths: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._collect_asset_path(tag, attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._collect_asset_path(tag, attrs)
+
+    def _collect_asset_path(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_name = (tag or "").strip().lower()
+        if tag_name not in {"script", "link"}:
+            return
+
+        attr_map = {
+            str(name).strip().lower(): str(value).strip()
+            for name, value in attrs
+            if name and value
+        }
+
+        raw_reference = ""
+        if tag_name == "script":
+            raw_reference = attr_map.get("src", "")
+        elif "stylesheet" in attr_map.get("rel", "").lower().split():
+            raw_reference = attr_map.get("href", "")
+
+        normalized = normalize_userspace_html_asset_reference(raw_reference)
+        if normalized and normalized not in self.asset_paths:
+            self.asset_paths.append(normalized)
+
+
+def normalize_userspace_html_asset_reference(reference: str) -> str | None:
+    """Return a local HTML asset reference suitable for workspace resolution."""
+    cleaned = str(reference or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith(("http://", "https://", "data:", "mailto:", "tel:", "javascript:", "#")):
+        return None
+    if "{{" in cleaned or "{%" in cleaned:
+        return None
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0].strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith(("./", "../", "/")):
+        return cleaned
+    return None
+
+
+def extract_userspace_html_asset_references(content: str) -> list[str]:
+    """Extract local static asset paths from HTML content."""
+    if not content:
+        return []
+    parser = _UserspaceHTMLReferenceParser()
+    try:
+        parser.feed(content)
+        parser.close()
+    except Exception:
+        return []
+    return parser.asset_paths
 
 # Patterns that indicate hardcoded mock/sample data in module source.
 # Each tuple: (compiled regex, human-readable description)
@@ -932,6 +999,16 @@ def is_userspace_module_source_path(path: str) -> bool:
 def is_userspace_typescript_path(path: str) -> bool:
     """Return True when the path is a TypeScript userspace file."""
     return (path or "").lower().endswith(USERSPACE_TYPESCRIPT_EXTENSIONS)
+
+
+def is_userspace_python_path(path: str) -> bool:
+    """Return True when the path is a Python userspace file."""
+    return (path or "").lower().endswith(_USERSPACE_PYTHON_EXTENSIONS)
+
+
+def is_userspace_html_path(path: str) -> bool:
+    """Return True when the path is an HTML userspace file."""
+    return (path or "").lower().endswith(".html")
 
 
 def is_userspace_theme_audit_path(path: str) -> bool:
@@ -1241,6 +1318,86 @@ async def validate_userspace_typescript_content(
         parsed["ok"] = False
 
     return parsed
+
+
+async def validate_userspace_python_content(
+    content: str,
+    file_path: str,
+) -> dict[str, Any]:
+    """Validate Python content using the built-in compiler."""
+    try:
+        compile(content, file_path, "exec")
+    except SyntaxError as exc:
+        line = int(exc.lineno or 1)
+        column = int(exc.offset or 1)
+        message = (exc.msg or "invalid syntax").strip()
+        formatted = f"{file_path}:{line}:{column} {message}"
+        return {
+            "ok": False,
+            "validator_available": True,
+            "message": "Python validation failed",
+            "error_count": 1,
+            "errors": [formatted],
+            "runtime_errors": [],
+            "runtime_error_count": 0,
+            "contract_errors": [],
+            "contract_error_count": 0,
+        }
+
+    return {
+        "ok": True,
+        "validator_available": True,
+        "message": "Python validation passed",
+        "error_count": 0,
+        "errors": [],
+        "runtime_errors": [],
+        "runtime_error_count": 0,
+        "contract_errors": [],
+        "contract_error_count": 0,
+    }
+
+
+async def validate_userspace_html_content(
+    content: str,
+    file_path: str,
+) -> dict[str, Any]:
+    """Validate HTML content without misclassifying templates as TypeScript."""
+    del content, file_path
+    return {
+        "ok": True,
+        "validator_available": True,
+        "message": "HTML validation passed",
+        "error_count": 0,
+        "errors": [],
+        "runtime_errors": [],
+        "runtime_error_count": 0,
+        "contract_errors": [],
+        "contract_error_count": 0,
+    }
+
+
+async def validate_userspace_source_content(
+    content: str,
+    file_path: str,
+) -> dict[str, Any]:
+    """Dispatch static validation based on the file path's source language."""
+    if is_userspace_module_source_path(file_path):
+        return await validate_userspace_typescript_content(content, file_path)
+    if is_userspace_python_path(file_path):
+        return await validate_userspace_python_content(content, file_path)
+    if is_userspace_html_path(file_path):
+        return await validate_userspace_html_content(content, file_path)
+    return {
+        "ok": True,
+        "validator_available": True,
+        "message": "No file-type specific validator required",
+        "error_count": 0,
+        "errors": [],
+        "runtime_errors": [],
+        "runtime_error_count": 0,
+        "contract_errors": [],
+        "contract_error_count": 0,
+    }
 
 
 class _CopilotChatOpenAI(ChatOpenAI):
@@ -10767,6 +10924,26 @@ class RAGComponents:
                         return normalized_candidate
                 return None
 
+            async def resolve_local_asset_reference(
+                current_path: str,
+                reference: str,
+            ) -> str | None:
+                spec = (reference or "").strip()
+                if not spec or not spec.startswith(("./", "../", "/")):
+                    return None
+
+                if spec.startswith("/"):
+                    candidate = PurePosixPath(spec.lstrip("/"))
+                else:
+                    candidate = PurePosixPath(current_path).parent / PurePosixPath(spec)
+
+                normalized_candidate = candidate.as_posix().lstrip("/")
+                if not normalized_candidate:
+                    return None
+                if await get_file(normalized_candidate):
+                    return normalized_candidate
+                return None
+
             visited: set[str] = set()
             to_visit: list[str] = [normalized_start_path]
             file_results: dict[str, dict[str, Any]] = {}
@@ -10808,7 +10985,7 @@ class RAGComponents:
                         aggregate_errors.append(missing_message)
                     continue
 
-                result = await validate_userspace_typescript_content(
+                result = await validate_userspace_source_content(
                     file_data.content,
                     current,
                 )
@@ -10832,18 +11009,39 @@ class RAGComponents:
                         if err not in aggregate_runtime_errors:
                             aggregate_runtime_errors.append(err)
 
-                imports = _IMPORT_SPECIFIER_PATTERN.findall(file_data.content or "")
-                for specifier in imports:
-                    if not specifier.startswith(("./", "../", "/")):
-                        continue
-                    resolved = await resolve_local_import(current, specifier)
-                    if resolved:
-                        if resolved not in visited and resolved not in to_visit:
+                if is_userspace_module_source_path(current):
+                    imports = _IMPORT_SPECIFIER_PATTERN.findall(file_data.content or "")
+                    for specifier in imports:
+                        if not specifier.startswith(("./", "../", "/")):
+                            continue
+                        resolved = await resolve_local_import(current, specifier)
+                        if resolved:
+                            if resolved not in visited and resolved not in to_visit:
+                                to_visit.append(resolved)
+                        else:
+                            unresolved_message = f"{current}: Unable to resolve local import '{specifier}'."
+                            if unresolved_message not in aggregate_errors:
+                                aggregate_errors.append(unresolved_message)
+                elif is_userspace_html_path(current):
+                    html_module_imports = _IMPORT_SPECIFIER_PATTERN.findall(file_data.content or "")
+                    for specifier in html_module_imports:
+                        if not specifier.startswith(("./", "../", "/")):
+                            continue
+                        resolved = await resolve_local_import(current, specifier)
+                        if resolved and resolved not in visited and resolved not in to_visit:
                             to_visit.append(resolved)
-                    else:
-                        unresolved_message = f"{current}: Unable to resolve local import '{specifier}'."
-                        if unresolved_message not in aggregate_errors:
-                            aggregate_errors.append(unresolved_message)
+                        elif not resolved:
+                            unresolved_message = f"{current}: Unable to resolve local module import '{specifier}'."
+                            if unresolved_message not in aggregate_errors:
+                                aggregate_errors.append(unresolved_message)
+
+                    html_asset_refs = extract_userspace_html_asset_references(file_data.content or "")
+                    for reference in html_asset_refs:
+                        resolved = await resolve_local_asset_reference(current, reference)
+                        if not resolved:
+                            unresolved_message = f"{current}: Unable to resolve local asset '{reference}'."
+                            if unresolved_message not in aggregate_errors:
+                                aggregate_errors.append(unresolved_message)
 
             should_check_runnable_entrypoint = normalized_start_path.startswith("dashboard/")
             if should_check_runnable_entrypoint:

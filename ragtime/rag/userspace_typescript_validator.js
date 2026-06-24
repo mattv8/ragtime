@@ -5,10 +5,20 @@ const input = fs.readFileSync(0, 'utf8');
 const filePath = process.argv[2] || 'dashboard/main.ts';
 
 let ts;
-try {
-  const tsModulePath = path.join('/ragtime/ragtime/frontend/node_modules/typescript');
-  ts = require(tsModulePath);
-} catch (err) {
+for (const candidate of [
+  path.join('/ragtime/ragtime/frontend/node_modules/typescript'),
+  path.join(__dirname, '..', 'frontend', 'node_modules', 'typescript'),
+  'typescript',
+]) {
+  try {
+    ts = require(candidate);
+    break;
+  } catch (err) {
+    // Try the next location.
+  }
+}
+
+if (!ts) {
   console.log(
     JSON.stringify({
       ok: false,
@@ -20,7 +30,21 @@ try {
   process.exit(0);
 }
 
-const scriptKind = filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+function getScriptKind(targetPath) {
+  const lower = String(targetPath || '').toLowerCase();
+  if (lower.endsWith('.tsx')) {
+    return ts.ScriptKind.TSX;
+  }
+  if (lower.endsWith('.jsx')) {
+    return ts.ScriptKind.JSX;
+  }
+  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
+}
+
+const scriptKind = getScriptKind(filePath);
 const sourceFile = ts.createSourceFile(
   filePath,
   input,
@@ -36,6 +60,8 @@ const result = ts.transpileModule(input, {
     module: ts.ModuleKind.ES2020,
     target: ts.ScriptTarget.ES2020,
     isolatedModules: true,
+    allowJs: true,
+    checkJs: true,
     jsx: ts.JsxEmit.ReactJSX,
   },
 });
