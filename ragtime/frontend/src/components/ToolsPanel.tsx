@@ -175,6 +175,10 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
   const workingDirectory = getToolWorkingDirectory(tool);
+  const hasActiveIndexingJob = Boolean(
+    activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status)
+  );
+  const showConstraintsRow = Boolean(onToggleWrite) || hasActiveIndexingJob || Boolean(workingDirectory);
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -415,31 +419,36 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
       )}
 
       <div className="tool-card-footer">
-        <div className="tool-card-constraints">
-          {onToggleWrite && (
-            <div className={`write-mode-toggle ${tool.allow_write ? 'active' : ''}`} title="Quick toggle write access">
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={tool.allow_write}
-                  onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
-                />
-                <span className="toggle-slider"></span>
+        {showConstraintsRow && (
+          <div className="tool-card-constraints">
+            {onToggleWrite && (
+              <label
+                className={`write-mode-toggle ${tool.allow_write ? 'active' : ''}`}
+                title={tool.allow_write ? 'Write access enabled. Click to make read only.' : 'Read only. Click to allow write access.'}
+              >
+                <span className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    checked={tool.allow_write}
+                    onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
+                  />
+                  <span className="toggle-slider"></span>
+                </span>
+                <span className="write-mode-label">{tool.allow_write ? 'Write Enabled' : 'Read Only'}</span>
               </label>
-              <span>{tool.allow_write ? 'Allow Write' : 'Read Only'}</span>
-            </div>
-          )}
-          <IndexingPill
-            activeJob={activeSchemaJob}
-            progressLabelPrefix="Indexing"
-          />
-          {workingDirectory && (
-            <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
-              <Icon name="folder" size={14} />
-              <span className="path-text">{workingDirectory}</span>
-            </span>
-          )}
-        </div>
+            )}
+            <IndexingPill
+              activeJob={activeSchemaJob}
+              progressLabelPrefix="Indexing"
+            />
+            {workingDirectory && (
+              <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
+                <Icon name="folder" size={14} />
+                <span className="path-text">{workingDirectory}</span>
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="tool-card-actions">
           <button
