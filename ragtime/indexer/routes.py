@@ -11584,10 +11584,12 @@ async def _resolve_selected_tool_ids_for_request(
 
     workspace_context = None
     if effective_workspace_id:
+        is_admin = user.role == "admin"
         workspace = await userspace_service.enforce_workspace_role(
             effective_workspace_id,
             user.id,
             required_role,
+            is_admin=is_admin,
         )
         # Workspace scope enforces strict selected-tool bounds.
         selected_tool_ids = set()
@@ -11615,7 +11617,7 @@ async def _resolve_selected_tool_ids_for_request(
                     target_workspace_id,
                     user.id,
                     required_target_role,
-                    is_admin=user.role == "admin",
+                    is_admin=is_admin,
                 )
             except HTTPException as exc:
                 if exc.status_code not in {403, 404}:
@@ -11632,6 +11634,7 @@ async def _resolve_selected_tool_ids_for_request(
         workspace_context = {
             "workspace_id": effective_workspace_id,
             "user_id": user.id,
+            "is_admin": is_admin,
             "accessible_workspace_modes": accessible_modes_for_user,
         }
 
@@ -11656,6 +11659,7 @@ def _build_current_user_prompt_context(
         "user_id": str(user.id or "").strip(),
         "username": normalized_username,
         "display_name": normalized_display_name or "",
+        "is_admin": user.role == "admin",
     }
 
 

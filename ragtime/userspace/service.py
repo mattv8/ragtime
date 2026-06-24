@@ -11797,17 +11797,22 @@ class UserSpaceService:
                 user_role = role_value if isinstance(role_value, str) else str(getattr(role_value, "value", role_value))
                 break
 
-        if user_role is None:
-            # Check if user is an admin — admins get owner-level access to all workspaces
+        role_grants_access = user_role is not None and (
+            required_role is None or self._workspace_role_allows(cast(WorkspaceRole | None, user_role), required_role)
+        )
+
+        if not role_grants_access:
+            # Check global admin — admins always get owner-level access regardless of
+            # any workspace_members record (e.g. after a workspace transfer that
+            # downgrades a former admin-owner's member row to "editor").
             user_record = await db.user.find_unique(where={"id": user_id})
             if user_record and getattr(user_record, "role", None) == "admin":
                 self._sync_runtime_bootstrap_config(workspace_id)
                 return self._workspace_from_record(workspace)
-            raise HTTPException(status_code=404, detail="Workspace not found")
-
-        if required_role == "editor" and user_role not in {"owner", "editor"}:
-            raise HTTPException(status_code=403, detail="Editor access required")
-        if required_role == "owner" and user_role != "owner":
+            if user_role is None:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            if required_role == "editor":
+                raise HTTPException(status_code=403, detail="Editor access required")
             raise HTTPException(status_code=403, detail="Owner access required")
 
         self._sync_runtime_bootstrap_config(workspace_id)
@@ -13709,6 +13714,7 @@ class UserSpaceService:
         user_id: str,
         accessible_modes: dict[str, str] | dict[str, WorkspaceAgentGrantMode],
         action: Literal["read", "write"],
+        is_admin: bool = False,
     ) -> tuple[str, str]:
         """Validate that an agent in `source_workspace_id` may perform `action`
         on `target_workspace_id` and return the (workspace_id, user_id) tuple
@@ -13722,18 +13728,20 @@ class UserSpaceService:
             return source_workspace_id, user_id
 
         mode = accessible_modes.get(normalized_target)
-        if mode is None:
+        if mode is None and not is_admin:
             raise ValueError(
                 "Cross-workspace access denied: no active agent grant for "
                 f"workspace_id={normalized_target}. Ask the user to grant access "
                 "from the workspace settings."
             )
-        if action == "write" and mode != "read_write":
+        if action == "write" and mode != "read_write" and not is_admin:
             raise ValueError(
                 "Cross-workspace write denied: workspace_id="
                 f"{normalized_target} is granted with read-only access. "
                 "Ask the user to upgrade the grant to read/write."
             )
+
+        effective_mode: WorkspaceAgentGrantMode = self._normalize_agent_grant_mode(mode or ("read_write" if is_admin else "read"))
 
         # Confirm the user still has access to the target workspace; this is a
         # defense-in-depth check against grants outliving membership changes.
@@ -13742,6 +13750,7 @@ class UserSpaceService:
                 normalized_target,
                 user_id,
                 required_role="viewer" if action == "read" else "editor",
+                is_admin=is_admin,
             )
         except HTTPException as exc:
             if exc.status_code not in {403, 404}:
@@ -13764,7 +13773,8 @@ class UserSpaceService:
                     "source_workspace_id": source_workspace_id,
                     "target_workspace_id": normalized_target,
                     "action": action,
-                    "mode": mode,
+                    "mode": effective_mode,
+                    "admin_bypass": is_admin and mode is None,
                 },
             )
         except Exception:  # noqa: BLE001

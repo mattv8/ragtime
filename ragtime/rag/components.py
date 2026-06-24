@@ -8030,6 +8030,7 @@ class RAGComponents:
         workspace_id: str,
         user_id: str,
         accessible_workspace_modes: Optional[dict[str, str]] = None,
+        is_admin: bool = False,
     ) -> list[StructuredTool]:
         """Create request-scoped User Space file tools for agentic artifact editing."""
 
@@ -8056,6 +8057,7 @@ class RAGComponents:
                 user_id=user_id,
                 accessible_modes=cast(Any, accessible_modes_local),
                 action=action,
+                is_admin=is_admin,
             )
 
         def _create_userspace_tool(
@@ -12649,6 +12651,7 @@ class RAGComponents:
         )
         current_time_turn_line = self._build_current_time_turn_reminder_line(current_time_context)
         raw_accessible_modes = (workspace_context or {}).get("accessible_workspace_modes", {})
+        request_is_admin = bool((current_user_context or {}).get("is_admin") or (workspace_context or {}).get("is_admin"))
         accessible_workspace_modes: dict[str, str] = {}
         if isinstance(raw_accessible_modes, dict):
             for key, value in raw_accessible_modes.items():
@@ -12741,6 +12744,7 @@ class RAGComponents:
                 workspace_id,
                 request_user_id,
                 accessible_workspace_modes=accessible_workspace_modes,
+                is_admin=request_is_admin,
             )
             workspace_builtin_tools: list[StructuredTool] = []
             if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:

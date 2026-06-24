@@ -247,6 +247,29 @@ class CrossWorkspaceResolutionTests(unittest.IsolatedAsyncioTestCase):
                 action="read",
             )
 
+    async def test_admin_bypasses_missing_cross_workspace_grant(self) -> None:
+        service = UserSpaceService()
+        calls: list[dict[str, Any]] = []
+
+        async def allow_workspace_access(*args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+
+        service._enforce_workspace_access = allow_workspace_access  # type: ignore[method-assign]
+        service._record_runtime_audit_event = mock.AsyncMock()  # type: ignore[method-assign]
+
+        resolved = await service.resolve_cross_workspace_target(
+            source_workspace_id="source-workspace",
+            target_workspace_id="target-workspace",
+            user_id="admin-user-id",
+            accessible_modes={},
+            action="write",
+            is_admin=True,
+        )
+
+        self.assertEqual(resolved, ("target-workspace", "admin-user-id"))
+        self.assertEqual(calls[0]["kwargs"].get("required_role"), "editor")
+        self.assertTrue(calls[0]["kwargs"].get("is_admin"))
+
 
 if __name__ == "__main__":
     unittest.main()
