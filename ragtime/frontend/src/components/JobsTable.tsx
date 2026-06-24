@@ -487,6 +487,12 @@ export function JobsTable({ jobs, filesystemJobs = [], schemaJobs = [], pdmJobs 
       );
     })
     .sort((a, b) => {
+      // Active jobs (pending/processing/indexing) always at top
+      const aActive = a.status === 'pending' || a.status === 'processing' || a.status === 'indexing';
+      const bActive = b.status === 'pending' || b.status === 'processing' || b.status === 'indexing';
+      if (aActive && !bActive) return -1;
+      if (!aActive && bActive) return 1;
+
       if (sortConfig) {
         const { key, direction } = sortConfig;
 
