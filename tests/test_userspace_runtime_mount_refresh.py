@@ -260,6 +260,93 @@ class _FakeResolveWorkspaceMountDb:
 
 
 class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_status_needs_start_after_failed_devserver(self) -> None:
+        self.assertTrue(
+            UserSpaceRuntimeService._provider_status_needs_start(
+                {
+                    "state": "running",
+                    "devserver_running": False,
+                    "runtime_operation_phase": "failed",
+                    "last_error": "Dev server exited with code 1",
+                }
+            )
+        )
+
+    async def test_provider_status_does_not_restart_transitional_devserver(self) -> None:
+        self.assertFalse(
+            UserSpaceRuntimeService._provider_status_needs_start(
+                {
+                    "state": "running",
+                    "devserver_running": False,
+                    "runtime_operation_phase": "launching",
+                }
+            )
+        )
+
+    async def test_start_relaunches_failed_active_provider_session(self) -> None:
+        active_row = SimpleNamespace(
+            id="session-1",
+            workspaceId="workspace-1",
+            leasedByUserId="user-1",
+            state="running",
+            runtimeProvider="microvm_pool_v1",
+            providerSessionId="mgr-1",
+            previewInternalUrl="http://runtime/preview",
+            launchFramework="python",
+            launchCommand="python3 app.py",
+            launchCwd=".",
+            launchPort=52055,
+            createdAt=_NOW,
+            updatedAt=_NOW,
+            lastHeartbeatAt=_NOW,
+            idleExpiresAt=None,
+            ttlExpiresAt=None,
+            lastError="Dev server exited with code 1: SyntaxError",
+        )
+
+        class FakeRuntimeSessionTable:
+            async def update(self, *, where: dict[str, str], data: dict[str, Any]) -> SimpleNamespace:
+                if where["id"] != "session-1":
+                    raise AssertionError(where)
+                for key, value in data.items():
+                    setattr(active_row, key, value)
+                return active_row
+
+        service = UserSpaceRuntimeService()
+        service._get_active_session_row = AsyncMock(return_value=active_row)  # type: ignore[method-assign]
+        service._runtime_provider_get_status = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "state": "running",
+                "provider_session_id": "mgr-1",
+                "preview_internal_url": "http://runtime/preview",
+                "devserver_running": False,
+                "runtime_operation_phase": "failed",
+                "last_error": "Dev server exited with code 1: SyntaxError",
+            }
+        )
+        service._runtime_provider_start_session = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "state": "starting",
+                "provider_session_id": "mgr-1",
+                "preview_internal_url": "http://runtime/preview",
+                "devserver_running": False,
+                "runtime_operation_phase": "queued",
+                "last_error": None,
+            }
+        )
+
+        fake_db = SimpleNamespace(userspaceruntimesession=FakeRuntimeSessionTable())
+        with patch("ragtime.userspace.runtime_service.get_db", AsyncMock(return_value=fake_db)):
+            session = await service._ensure_session_row("workspace-1", "user-1", auto_start=True)
+
+        service._runtime_provider_start_session.assert_awaited_once_with(
+            "workspace-1",
+            "user-1",
+            existing_provider_session_id="mgr-1",
+        )
+        self.assertEqual(session.state, "starting")
+        self.assertIsNone(session.last_error)
+
     async def test_clean_workspace_untracked_files_excludes_mount_targets(self) -> None:
         service = _GitCleanMountExclusionService(
             [

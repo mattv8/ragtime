@@ -532,6 +532,28 @@ class UserSpaceRuntimeService:
     def _is_runtime_manager_not_found(exc: HTTPException) -> bool:
         return "(404)" in str(exc.detail)
 
+    @staticmethod
+    def _provider_status_needs_start(provider_status: dict[str, Any]) -> bool:
+        phase = str(provider_status.get("runtime_operation_phase") or "").strip()
+        if phase in {"failed", "stopped"}:
+            return True
+
+        state = str(provider_status.get("state") or "").strip()
+        if state in {"stopped", "error"}:
+            return True
+
+        if provider_status.get("devserver_running") is False and phase not in {
+            "queued",
+            "provisioning",
+            "bootstrapping",
+            "deps_install",
+            "launching",
+            "probing",
+        }:
+            return True
+
+        return False
+
     def _runtime_session_model(self, db: Any) -> Any:
         return getattr(db, "userspaceruntimesession")
 
@@ -1450,24 +1472,31 @@ class UserSpaceRuntimeService:
                     allow_stale_on_error=True,
                 )
                 if provider_status is not None:
-                    delta = self._merge_provider_status(session, provider_status)
-                    if delta:
-                        delta["lastHeartbeatAt"] = utc_now()
-                        current = await self._runtime_session_update_row(
-                            model,
-                            session.id,
-                            delta,
+                    if auto_start and self._provider_status_needs_start(provider_status):
+                        logger.info(
+                            "Runtime provider session for workspace %s is active but devserver is not running; relaunching on start",
+                            workspace_id,
                         )
-                        refreshed = self._to_runtime_session(current)
-                        await self._cache_preview_upstream_session(refreshed)
-                        return refreshed
-                    await self._cache_preview_upstream_session(session)
-                    return session
+                    else:
+                        delta = self._merge_provider_status(session, provider_status)
+                        if delta:
+                            delta["lastHeartbeatAt"] = utc_now()
+                            current = await self._runtime_session_update_row(
+                                model,
+                                session.id,
+                                delta,
+                            )
+                            refreshed = self._to_runtime_session(current)
+                            await self._cache_preview_upstream_session(refreshed)
+                            return refreshed
+                        await self._cache_preview_upstream_session(session)
+                        return session
 
-                logger.warning(
-                    "Runtime provider session missing for workspace %s; recreating transparently",
-                    workspace_id,
-                )
+                if provider_status is None:
+                    logger.warning(
+                        "Runtime provider session missing for workspace %s; recreating transparently",
+                        workspace_id,
+                    )
 
             provider_data = await self._runtime_provider_start_session(
                 workspace_id,
