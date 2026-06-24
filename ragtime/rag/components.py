@@ -3268,12 +3268,14 @@ class RAGComponents:
             api_key = self._app_settings.get("openai_api_key", "")
             if not api_key:
                 logger.warning("OpenAI embeddings selected but no API key configured")
+                return None
             logger.info(f"Using OpenAI embeddings: {model}")
             return OpenAIEmbeddings(model=model, openai_api_key=api_key)  # type: ignore[call-arg]
         elif provider == "openrouter":
             api_key = resolve_provider_api_key(self._app_settings, provider, "embedding")
             if not api_key:
                 logger.warning("OpenRouter embeddings selected but no API key configured")
+                return None
             logger.info(f"Using OpenRouter embeddings: {model}")
             return OpenAIEmbeddings(
                 model=model,

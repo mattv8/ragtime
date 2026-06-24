@@ -122,6 +122,18 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(normalize_provider_name("github"), "github_copilot")
         self.assertEqual(get_provider_label("github"), "GitHub Copilot")
 
+    def test_openai_embedding_model_returns_none_without_api_key(self) -> None:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "embedding_provider": "openai",
+            "embedding_model": "text-embedding-3-small",
+            "openai_api_key": "",
+        }
+
+        result = asyncio.run(rag._get_embedding_model())
+
+        self.assertIsNone(result)
+
     def test_provider_reasoning_metadata_can_disable_effort_parameter(self) -> None:
         model_limits.invalidate_cache()
         try:
