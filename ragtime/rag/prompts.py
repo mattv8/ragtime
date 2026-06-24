@@ -459,6 +459,15 @@ def build_workspace_scm_setup_prompt(
         "devserver instead."
     )
     parts.append(
+        "For imported server-rendered apps that manage their own login/session "
+        "cookies (for example Flask, Django, or Express), preserve the app-owned "
+        "session flow instead of relying on Replit auth. Use a cookie name distinct "
+        "from Ragtime platform cookies, keep session secrets in environment variables, "
+        "and set iframe-compatible cookie attributes when preview requires them "
+        "(Secure plus SameSite=None). Only use Ragtime browser auth when the app needs "
+        "Ragtime user identity rather than its own domain login."
+    )
+    parts.append(
         "If shell or tool output shows `*****`, treat it as a redacted secret placeholder "
         "and re-read the real file before editing. Never copy `*****` into source code, "
         "JSON, or environment config."

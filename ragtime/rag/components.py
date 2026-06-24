@@ -6,7 +6,6 @@ import asyncio
 import base64
 import fnmatch
 import hashlib
-from html.parser import HTMLParser
 import io
 import json
 import math
@@ -20,6 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, List, Literal, Optional, Union, cast
 from urllib.parse import quote
@@ -894,11 +894,7 @@ class _UserspaceHTMLReferenceParser(HTMLParser):
         if tag_name not in {"script", "link"}:
             return
 
-        attr_map = {
-            str(name).strip().lower(): str(value).strip()
-            for name, value in attrs
-            if name and value
-        }
+        attr_map = {str(name).strip().lower(): str(value).strip() for name, value in attrs if name and value}
 
         raw_reference = ""
         if tag_name == "script":
@@ -939,6 +935,7 @@ def extract_userspace_html_asset_references(content: str) -> list[str]:
     except Exception:
         return []
     return parser.asset_paths
+
 
 # Patterns that indicate hardcoded mock/sample data in module source.
 # Each tuple: (compiled regex, human-readable description)

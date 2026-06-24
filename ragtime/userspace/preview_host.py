@@ -1432,6 +1432,7 @@ async def preview_proxy(request: Request, path: str = ""):
         bridge_workspace_id=str(claims.get("workspace_id") or "").strip(),
         bridge_context=_bridge_context_from_claims(claims),
         primitive_session_factory=primitive_session_factory,
+        allow_user_cookies=True,
     )
 
 

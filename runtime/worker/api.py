@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import fcntl
 import json
@@ -57,6 +58,45 @@ _SANDBOX_BASHRC_TEMPLATE_PATH = Path(__file__).parent / "templates" / "sandbox_b
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 logger = logging.getLogger(__name__)
 
+# Namespace prefix applied to user-app cookies as they cross the preview proxy
+# boundary. Every upstream devserver ``Set-Cookie`` name is rewritten to
+# ``{_USER_APP_COOKIE_PREFIX}{base64url(original_name)}`` before reaching the
+# browser; the ragtime control plane decodes only prefixed cookies back to the
+# app on the way upstream. This keeps platform cookies (preview session,
+# capability, share-auth) unforwardable to untrusted app code and stops an app
+# from shadowing a platform cookie by name, without a platform-cookie blocklist.
+#
+# This is a COPY of the same constant in
+# ``ragtime/userspace/runtime_routes.py``. The runtime worker and ragtime app
+# containers cannot cross-import, so the two definitions must be kept
+# byte-for-byte in sync; changing only one side silently breaks user-app
+# session persistence in previews.
+_USER_APP_COOKIE_PREFIX = "__ragtime_app_cookie_"
+
+
+def _encode_user_app_cookie_name(cookie_name: str) -> str | None:
+    normalized = cookie_name.strip()
+    if not normalized or "=" in normalized or ";" in normalized:
+        return None
+    encoded = base64.urlsafe_b64encode(normalized.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"{_USER_APP_COOKIE_PREFIX}{encoded}"
+
+
+def _rewrite_user_app_set_cookie(raw_set_cookie: str | None) -> str | None:
+    if not raw_set_cookie or "=" not in raw_set_cookie:
+        return None
+    name_value, separator, raw_attributes = raw_set_cookie.partition(";")
+    name, value = name_value.split("=", 1)
+    encoded_name = _encode_user_app_cookie_name(name)
+    if not encoded_name:
+        return None
+    attributes = [item.strip() for item in raw_attributes.split(";") if item.strip()]
+    attributes = [item for item in attributes if not item.lower().startswith("domain=")]
+    rewritten = f"{encoded_name}={value}"
+    if separator and attributes:
+        rewritten += "; " + "; ".join(attributes)
+    return rewritten
+
 
 def _is_html_document_request(request: Request) -> bool:
     if request.method.upper() not in {"GET", "HEAD"}:
@@ -86,6 +126,15 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
         "cookie",
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in blocked}
+    # The inbound ``Cookie`` header is forwarded verbatim to the devserver. It
+    # is trusted because the ragtime control-plane proxy already stripped its
+    # own platform/session cookies and decoded only the user-app cookies from
+    # the ``__ragtime_app_cookie_`` namespace before sending the request here
+    # (see _sanitize_user_app_cookie_header in ragtime/userspace/runtime_routes).
+    # The worker must not be reached directly by browsers; only via that proxy.
+    cookie_header = request.headers.get("cookie")
+    if cookie_header:
+        forwarded_headers["cookie"] = cookie_header
     forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
     forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
     client_host = request.client.host if request.client else ""
@@ -99,7 +148,7 @@ def _preview_request_headers(request: Request) -> dict[str, str]:
     return forwarded_headers
 
 
-def _preview_response_headers(headers: httpx.Headers) -> dict[str, str]:
+def _preview_response_headers(headers: httpx.Headers) -> tuple[dict[str, str], list[str]]:
     blocked = {
         "connection",
         "keep-alive",
@@ -111,7 +160,18 @@ def _preview_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "upgrade",
         "set-cookie",
     }
-    return {key: value for key, value in headers.items() if key.lower() not in blocked}
+    out = {key: value for key, value in headers.items() if key.lower() not in blocked}
+    set_cookies = [rewritten for value in headers.get_list("set-cookie") if (rewritten := _rewrite_user_app_set_cookie(value))]
+    return out, set_cookies
+
+
+def _append_set_cookie_headers(response: Response, set_cookie_headers: list[str]) -> Response:
+    # Each value is appended as its own ``Set-Cookie`` header line via the
+    # public MutableHeaders API; cookies must never be comma-joined into a
+    # single header because cookie attribute values can contain commas.
+    for value in set_cookie_headers:
+        response.headers.append("set-cookie", value)
+    return response
 
 
 def _is_html_media_type(media_type: str) -> bool:
@@ -139,7 +199,7 @@ async def _proxy_preview_request(request: Request, upstream_url: str) -> Respons
         ) from exc
 
     media_type = upstream_response.headers.get("content-type") or "application/octet-stream"
-    response_headers = _preview_response_headers(upstream_response.headers)
+    response_headers, set_cookie_headers = _preview_response_headers(upstream_response.headers)
 
     if _is_html_media_type(media_type):
         try:
@@ -151,11 +211,14 @@ async def _proxy_preview_request(request: Request, upstream_url: str) -> Respons
         # encoding and byte length metadata no longer applies.
         response_headers.pop("content-encoding", None)
         response_headers.pop("content-length", None)
-        return Response(
-            content=content,
-            status_code=upstream_response.status_code,
-            headers=response_headers,
-            media_type=media_type or None,
+        return _append_set_cookie_headers(
+            Response(
+                content=content,
+                status_code=upstream_response.status_code,
+                headers=response_headers,
+                media_type=media_type or None,
+            ),
+            set_cookie_headers,
         )
 
     async def _iter_stream() -> AsyncIterator[bytes]:
@@ -166,11 +229,14 @@ async def _proxy_preview_request(request: Request, upstream_url: str) -> Respons
             await upstream_response.aclose()
             await client.aclose()
 
-    return StreamingResponse(
-        _iter_stream(),
-        status_code=upstream_response.status_code,
-        headers=response_headers,
-        media_type=media_type or None,
+    return _append_set_cookie_headers(
+        StreamingResponse(
+            _iter_stream(),
+            status_code=upstream_response.status_code,
+            headers=response_headers,
+            media_type=media_type or None,
+        ),
+        set_cookie_headers,
     )
 
 

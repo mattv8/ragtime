@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import csv
 import html as _html
@@ -84,6 +85,59 @@ _PRIMITIVE_PROGRESS_STATES_MAX = 1000
 _PRIMITIVE_PROGRESS_STATES: dict[tuple[str, str], dict[str, Any]] = {}
 _PRIMITIVE_JOBS_MAX = 1000
 _PRIMITIVE_JOBS: dict[tuple[str, str], dict[str, Any]] = {}
+
+# Namespace prefix applied to user-app cookies as they cross the preview proxy
+# boundary. The runtime worker rewrites every upstream ``Set-Cookie`` name to
+# ``{_USER_APP_COOKIE_PREFIX}{base64url(original_name)}`` before it reaches the
+# browser, and only cookies carrying this prefix are decoded back to the app on
+# the way upstream. This makes platform cookies (preview session, capability,
+# share-auth) structurally unforwardable to untrusted app code AND prevents a
+# malicious app from shadowing a platform cookie by name — without maintaining a
+# blocklist of platform cookie names (which cannot be enumerated because
+# share-auth cookie names are derived from the share token at runtime).
+#
+# This is a COPY of the same constant in ``runtime/worker/api.py``. The ragtime
+# app and runtime worker containers cannot cross-import, so the two definitions
+# must be kept byte-for-byte in sync. Changing the prefix on only one side
+# silently breaks user-app session persistence in previews.
+_USER_APP_COOKIE_PREFIX = "__ragtime_app_cookie_"
+
+
+def _decode_user_app_cookie_name(cookie_name: str) -> str | None:
+    normalized = cookie_name.strip()
+    if not normalized.startswith(_USER_APP_COOKIE_PREFIX):
+        return None
+    encoded = normalized[len(_USER_APP_COOKIE_PREFIX) :]
+    if not encoded:
+        return None
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        decoded = base64.urlsafe_b64decode((encoded + padding).encode("ascii")).decode("utf-8")
+    except Exception:
+        return None
+    return decoded if decoded and "=" not in decoded and ";" not in decoded else None
+
+
+def _sanitize_user_app_cookie_header(raw_cookie: str | None) -> str | None:
+    if not raw_cookie:
+        return None
+    parts: list[str] = []
+    for item in raw_cookie.split(";"):
+        part = item.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        decoded_name = _decode_user_app_cookie_name(name)
+        if decoded_name:
+            parts.append(f"{decoded_name}={value}")
+    return "; ".join(parts) if parts else None
+
+
+def _is_user_app_set_cookie(raw_set_cookie: str | None) -> bool:
+    if not raw_set_cookie or "=" not in raw_set_cookie:
+        return False
+    name, _ = raw_set_cookie.split("=", 1)
+    return _decode_user_app_cookie_name(name) is not None
 
 
 class _CancellationSafeStreamingResponse(StreamingResponse):
@@ -1293,11 +1347,25 @@ async def _broadcast_collab_message(
     await asyncio.gather(*(_send(client) for client in clients))
 
 
-def _proxy_request_headers(request: Request) -> dict[str, str]:
+def _is_preview_host_request(request: Request) -> bool:
+    # Lazy import avoids the import cycle: preview_host imports runtime_routes.
+    from ragtime.userspace.preview_host import is_preview_host
+
+    return is_preview_host(request.headers.get("host"))
+
+
+def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False) -> dict[str, str]:
     """Build headers to forward to the workspace devserver.
 
     Sensitive credentials from the *Ragtime* session must not leak to
     the untrusted user-controlled devserver process.
+
+    ``allow_user_cookies`` opts into forwarding the workspace app's own
+    (namespaced) cookies. The caller is responsible for ensuring this is only
+    ``True`` for requests that arrived on a dedicated per-workspace preview
+    host, where app cookies live on an origin isolated from the Ragtime app;
+    the sole production caller (``_proxy_http_request``) enforces this via
+    ``_is_preview_host_request``.
     """
     _blocked = {
         # Hop-by-hop
@@ -1318,6 +1386,10 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
         "x-userspace-share-password",
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in _blocked}
+    if allow_user_cookies:
+        cookie_header = _sanitize_user_app_cookie_header(request.headers.get("cookie"))
+        if cookie_header:
+            forwarded_headers["cookie"] = cookie_header
     # Preserve request context for framework URL generation and redirects.
     forwarded_headers.setdefault("x-forwarded-proto", request.url.scheme)
     forwarded_headers.setdefault("x-forwarded-host", request.headers.get("host", ""))
@@ -1329,7 +1401,18 @@ def _proxy_request_headers(request: Request) -> dict[str, str]:
 
 def _proxy_response_headers(
     headers: httpx.Headers,
-) -> dict[str, str]:
+    *,
+    allow_user_cookies: bool = False,
+) -> tuple[dict[str, str], list[str]]:
+    """Filter devserver response headers.
+
+    ``set-cookie`` is always stripped from the returned header map; when
+    ``allow_user_cookies`` is set, the workspace app's namespaced cookies are
+    returned separately so the caller can append them as discrete repeated
+    ``Set-Cookie`` headers (comma-joining cookies is unsafe). Callers must only
+    pass ``allow_user_cookies=True`` for preview-host responses; see
+    ``_proxy_http_request`` which gates this on ``_is_preview_host_request``.
+    """
     blocked = {
         "connection",
         "keep-alive",
@@ -1350,7 +1433,19 @@ def _proxy_response_headers(
         "content-security-policy-report-only",
     }
     out = {key: value for key, value in headers.items() if key.lower() not in blocked}
-    return out
+    set_cookies: list[str] = []
+    if allow_user_cookies:
+        set_cookies = [value for value in headers.get_list("set-cookie") if _is_user_app_set_cookie(value)]
+    return out, set_cookies
+
+
+def _append_set_cookie_headers(response: Response, set_cookie_headers: Sequence[str]) -> Response:
+    # Each value is appended as its own ``Set-Cookie`` header line via the
+    # public MutableHeaders API; cookies must never be comma-joined into a
+    # single header because cookie attribute values can contain commas.
+    for value in set_cookie_headers:
+        response.headers.append("set-cookie", value)
+    return response
 
 
 def _make_proxy_response_uncacheable(
@@ -1607,6 +1702,7 @@ async def _proxy_http_request(
     bridge_context: dict[str, Any] | None = None,
     bridge_script_src: str | None = None,
     primitive_session_factory: Callable[[], Awaitable[dict[str, Any]]] | None = None,
+    allow_user_cookies: bool = False,
 ) -> Response:
     if request.headers.get("upgrade", "").lower() == "websocket":
         raise HTTPException(
@@ -1614,8 +1710,16 @@ async def _proxy_http_request(
             detail="WebSocket proxy upgrades are not available on this route",
         )
 
+    # Single authoritative gate for app-cookie forwarding: only honored on
+    # dedicated preview hosts, where the workspace app lives on an origin
+    # isolated from the Ragtime app. Resolved once here and reused for both the
+    # request and response cookie handling so the two can never diverge, and so
+    # the legacy same-origin proxy (which never passes allow_user_cookies=True)
+    # can never replay untrusted app cookies on the Ragtime origin.
+    effective_allow_user_cookies = allow_user_cookies and _is_preview_host_request(request)
+
     body = await request.body()
-    headers = _proxy_request_headers(request)
+    headers = _proxy_request_headers(request, allow_user_cookies=effective_allow_user_cookies)
 
     # Inject runtime worker auth token for upstream worker requests
     worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
@@ -1644,7 +1748,7 @@ async def _proxy_http_request(
         ) from exc
 
     media_type = upstream_response.headers.get("content-type", "")
-    resp_headers = _proxy_response_headers(upstream_response.headers)
+    resp_headers, set_cookie_headers = _proxy_response_headers(upstream_response.headers, allow_user_cookies=effective_allow_user_cookies)
     resp_headers[_USERSPACE_SURFACE_HEADER] = "preview-proxy"
     resp_headers[_USERSPACE_PREVIEW_PROXY_HEADER] = "true"
     _make_proxy_response_uncacheable(
@@ -1695,11 +1799,14 @@ async def _proxy_http_request(
         resp_headers.pop("content-encoding", None)
         resp_headers.pop("content-length", None)
 
-        return Response(
-            content=content,
-            status_code=upstream_response.status_code,
-            headers=resp_headers,
-            media_type=media_type or None,
+        return _append_set_cookie_headers(
+            Response(
+                content=content,
+                status_code=upstream_response.status_code,
+                headers=resp_headers,
+                media_type=media_type or None,
+            ),
+            set_cookie_headers,
         )
 
     async def _iter_stream() -> AsyncIterator[bytes]:
@@ -1712,11 +1819,14 @@ async def _proxy_http_request(
             await upstream_response.aclose()
             await client.aclose()
 
-    return _CancellationSafeStreamingResponse(
-        _iter_stream(),
-        status_code=upstream_response.status_code,
-        headers=resp_headers,
-        media_type=media_type or None,
+    return _append_set_cookie_headers(
+        _CancellationSafeStreamingResponse(
+            _iter_stream(),
+            status_code=upstream_response.status_code,
+            headers=resp_headers,
+            media_type=media_type or None,
+        ),
+        set_cookie_headers,
     )
 
 

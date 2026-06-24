@@ -5,8 +5,8 @@ from unittest import mock
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from ragtime.indexer.models import ChatMessage, ConversationBranchKind
 from ragtime.indexer.background_tasks import _find_compaction_split_index_with_fallback
+from ragtime.indexer.models import ChatMessage, ConversationBranchKind
 from ragtime.indexer.repository import (
     IndexerRepository,
     _estimate_conversation_tokens,
