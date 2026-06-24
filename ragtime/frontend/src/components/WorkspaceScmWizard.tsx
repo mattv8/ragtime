@@ -628,6 +628,12 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
   const hasPendingPatToken = useMemo(() => hasConfiguredRemote && gitToken.trim().length > 0, [gitToken, hasConfiguredRemote]);
 
+  const connectedBranch = (activeScm?.git_branch || '').trim();
+  const selectedBranchDiffers = hasConfiguredRemote
+    && connectedBranch.length > 0
+    && gitBranch.trim().length > 0
+    && gitBranch.trim() !== connectedBranch;
+
   const hasRunningGitSourceTask = useMemo(() => {
     if (scmWizardActivity?.kind === 'preview' && scmWizardActivity.status === 'running') return true;
     if (scmWizardActivity?.kind === 'import-task') return true;
@@ -818,7 +824,34 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   }
 
   useEffect(() => {
-    if (hasConfiguredRemote) return;
+    if (hasConfiguredRemote) {
+      const connectedUrl = (activeScm?.git_url || '').trim();
+      if (!connectedUrl) {
+        return;
+      }
+
+      let cancelled = false;
+      const timer = window.setTimeout(async () => {
+        try {
+          const branchResult = await api.fetchUserSpaceWorkspaceScmBranches(workspace.id, {
+            git_url: connectedUrl,
+            git_token: gitToken.trim() || undefined,
+          });
+          if (cancelled) return;
+          setBranches(branchResult.branches || []);
+          setBranchError(branchResult.error || null);
+        } catch (error) {
+          if (cancelled) return;
+          setBranchError(error instanceof Error ? error.message : 'Failed to load branches');
+        }
+      }, 400);
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }
+
     if (!gitUrl.trim()) {
       setRepoVisibility(null);
       setBranches([]);
@@ -862,7 +895,7 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [gitToken, gitUrl, mode, workspace.id]);
+  }, [activeScm?.git_url, gitToken, gitUrl, hasConfiguredRemote, mode, workspace.id]);
 
   async function handlePreview(explicitDirection?: 'import' | 'export', options?: { forceOverwrite?: boolean }): Promise<void> {
     if (!hasConfiguredRemote && !gitUrl.trim()) {
@@ -1449,11 +1482,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
   const scmSummaryItems = activeScm
     ? [
       {
-        label: 'Branch',
-        value: activeScm.git_branch || gitBranch || 'main',
-        mono: true,
-      },
-      {
         label: 'Remote',
         value: activeScm.remote_role === 'upstream' ? 'Upstream' : 'Connected',
       },
@@ -1913,6 +1941,48 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
 
                   <div style={{ display: 'grid', gap: 12 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gap: 4,
+                          padding: '10px 12px',
+                          border: selectedBranchDiffers ? '1px solid var(--color-accent)' : '1px solid var(--color-border-subtle)',
+                          borderRadius: 8,
+                          background: 'color-mix(in srgb, var(--color-bg-secondary) 84%, transparent)',
+                          minWidth: 0,
+                        }}
+                      >
+                        <span className="userspace-muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Branch</span>
+                        {branches.length > 0 ? (
+                          <select
+                            value={gitBranch}
+                            onChange={(event) => setGitBranch(event.target.value)}
+                            disabled={isLoading}
+                            style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-mono)', width: '100%', minWidth: 0 }}
+                            title="Switch the branch targeted by Pull, Push, and Sync"
+                          >
+                            {branches.map((branch) => (
+                              <option key={branch} value={branch}>{branch}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span
+                            style={{ fontSize: 13, fontWeight: 600, fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                            title={gitBranch || connectedBranch || 'main'}
+                          >
+                            {gitBranch || connectedBranch || 'main'}
+                          </span>
+                        )}
+                        {selectedBranchDiffers && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--color-accent)' }}>
+                            <GitBranch size={11} />
+                            Will pull {gitBranch.trim()}
+                          </span>
+                        )}
+                        {branchError && (
+                          <span className="userspace-muted" style={{ fontSize: 11 }}>{branchError}</span>
+                        )}
+                      </div>
                       {scmSummaryItems.map((item) => (
                         <div
                           key={item.label}
@@ -1931,7 +2001,6 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
                             style={{
                               fontSize: 13,
                               fontWeight: 600,
-                              fontFamily: item.mono ? 'var(--font-mono)' : undefined,
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
                             }}
@@ -2566,9 +2635,14 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             )}
             {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && activeScm?.remote_role === 'upstream' && (
               <>
-                <button className="btn btn-primary" onClick={() => void handlePreview('import')} disabled={isLoading}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void handlePreview('import')}
+                  disabled={isLoading}
+                  title={selectedBranchDiffers ? `Pull branch ${gitBranch.trim()}` : 'Pull from the connected branch'}
+                >
                   {loadingAction === 'pull' ? <MiniLoadingSpinner variant="icon" size={14} /> : <ArrowDownToLine size={14} />}
-                  Pull
+                  {selectedBranchDiffers ? `Pull ${gitBranch.trim()}` : 'Pull'}
                 </button>
                 <button className="btn btn-secondary" onClick={() => void handlePreview('export')} disabled={isLoading}>
                   {loadingAction === 'push' ? <MiniLoadingSpinner variant="icon" size={14} /> : <ArrowUpToLine size={14} />}
@@ -2634,9 +2708,14 @@ export function WorkspaceScmWizard({ workspace, onClose, onSyncComplete, onAskAg
             )}
             {activeTab === 'git-source' && step === 'input' && mode !== 'sql-import' && hasConfiguredRemote && activeScm?.remote_role !== 'upstream' && (
               <>
-                <button className="btn btn-primary" onClick={() => void handlePreview()} disabled={isLoading}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void handlePreview()}
+                  disabled={isLoading}
+                  title={selectedBranchDiffers ? `Sync branch ${gitBranch.trim()}` : 'Sync with the connected branch'}
+                >
                   {isLoading ? <MiniLoadingSpinner variant="icon" size={14} /> : <RefreshCcw size={14} />}
-                  Sync
+                  {selectedBranchDiffers ? `Sync ${gitBranch.trim()}` : 'Sync'}
                 </button>
                 <div style={{ position: 'relative', alignSelf: 'stretch' }}>
                   <button className="btn btn-secondary" onClick={() => setShowMoreMenu(prev => !prev)} disabled={isLoading}
