@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, patch
 
+from ragtime.userspace.models import UserSpaceWorkspaceArchiveExportRequest
 from ragtime.userspace.service import UserSpaceService
 
 if "ragtime.rag.prompts" not in sys.modules:
@@ -94,14 +95,6 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
             workspace_files = tmp / "workspace-files"
             workspace_files.mkdir()
             (workspace_files / "notes.txt").write_text("hello\n", encoding="utf-8")
-            service._workspace_archive_export_task_statuses[task_id] = SimpleNamespace(
-                total_files=0,
-                processed_files=0,
-                total_bytes=0,
-                processed_bytes=0,
-                current_file_path=None,
-                updated_at=None,
-            )
 
             async def _fake_run_guarded(
                 workspace_id: str,
@@ -146,7 +139,7 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
                 await service._run_workspace_archive_export_task(
                     task_id,
                     "workspace-1",
-                    SimpleNamespace(
+                    UserSpaceWorkspaceArchiveExportRequest(
                         archive_format="zip",
                         include_snapshots=False,
                         include_chat_history=False,
@@ -155,7 +148,10 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
                     is_admin=True,
                 )
 
-        self.assertTrue(list_mounts.await_args.kwargs["is_admin"])
+        await_args = list_mounts.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertTrue(await_args.kwargs["is_admin"])
 
     async def test_apply_workspace_archive_manifest_passes_admin_to_workspace_updates(
         self,
@@ -191,7 +187,10 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(warnings, [])
         self.assertEqual(imported_snapshot_count, 0)
         self.assertEqual(imported_chat_count, 0)
-        self.assertTrue(update_workspace.await_args.kwargs["is_admin"])
+        await_args = update_workspace.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertTrue(await_args.kwargs["is_admin"])
 
     async def test_resolve_workspace_archive_selection_id_sets_keeps_exact_ids_only(
         self,
