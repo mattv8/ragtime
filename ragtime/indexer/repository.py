@@ -88,6 +88,7 @@ from ragtime.core.encryption import (
     encrypt_secret,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_limits import (
     clamp_archive_max_file_count,
@@ -415,12 +416,33 @@ def _estimate_text_tokens(text: str) -> int:
     return count_tokens(text)
 
 
+def _provider_compaction_system_content(summary: str) -> str:
+    return (
+        "Earlier conversation history has been compacted. Use this continuity summary as the authoritative context "
+        "for messages before this point, then continue with the uncompressed messages that follow.\n\n"
+        f"{summary}"
+    )
+
+
+def _truncate_tool_output_for_history(output: str, max_chars: int = DEFAULT_MAX_TOOL_OUTPUT_CHARS) -> str:
+    if not output:
+        return "(no output)"
+    output = strip_table_metadata(output)
+    if max_chars > 0 and len(output) > max_chars:
+        return output[:max_chars] + "... (truncated)"
+    return output
+
+
 def _estimate_message_tokens(message: dict[str, Any]) -> int:
     """Estimate tokens for a message.
 
     If events exist, they contain the full picture (content + tool calls).
     Otherwise fall back to content + legacy tool_calls to avoid double-counting.
     """
+    role = str(message.get("role") or "")
+    if role == "compaction":
+        return _estimate_text_tokens(_provider_compaction_system_content(str(message.get("content", ""))))
+
     events = message.get("events")
     if isinstance(events, list) and events:
         tokens = 0
@@ -431,7 +453,7 @@ def _estimate_message_tokens(message: dict[str, Any]) -> int:
                 tokens += _estimate_text_tokens(str(event.get("content", "")))
             elif event.get("type") == "tool":
                 tokens += _estimate_text_tokens(_safe_serialize(event.get("input")))
-                tokens += _estimate_text_tokens(str(event.get("output", "")))
+                tokens += _estimate_text_tokens(_truncate_tool_output_for_history(str(event.get("output", ""))))
         return tokens
 
     # Fallback: use content + legacy tool_calls
@@ -443,7 +465,7 @@ def _estimate_message_tokens(message: dict[str, Any]) -> int:
             if not isinstance(call, dict):
                 continue
             tokens += _estimate_text_tokens(_safe_serialize(call.get("input")))
-            tokens += _estimate_text_tokens(str(call.get("output", "")))
+            tokens += _estimate_text_tokens(_truncate_tool_output_for_history(str(call.get("output", ""))))
 
     return tokens
 

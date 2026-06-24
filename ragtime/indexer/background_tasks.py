@@ -69,6 +69,8 @@ def _find_compaction_split_index(messages: list[ChatMessage], keep_recent_pairs:
     last_compaction_index = max((idx for idx, msg in enumerate(messages) if msg.role == "compaction"), default=-1)
     summary_start = last_compaction_index if last_compaction_index >= 0 else 0
     uncompacted_start = last_compaction_index + 1
+    if keep_recent_pairs <= 0:
+        return len(messages), messages[summary_start:]
     recent_user_turns = 0
 
     for idx in range(len(messages) - 1, uncompacted_start - 1, -1):
@@ -79,6 +81,20 @@ def _find_compaction_split_index(messages: list[ChatMessage], keep_recent_pairs:
             split_index = idx
             return split_index, messages[summary_start:split_index]
 
+    return len(messages), []
+
+
+def _find_compaction_split_index_with_fallback(
+    messages: list[ChatMessage],
+    preferred_keep_recent_pairs: int,
+    *,
+    min_summary_messages: int = 2,
+) -> tuple[int, list[ChatMessage]]:
+    max_keep_recent_pairs = max(0, int(preferred_keep_recent_pairs))
+    for keep_recent_pairs in range(max_keep_recent_pairs, -1, -1):
+        split_index, messages_to_summarize = _find_compaction_split_index(messages, keep_recent_pairs)
+        if len(messages_to_summarize) >= min_summary_messages:
+            return split_index, messages_to_summarize
     return len(messages), []
 
 

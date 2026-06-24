@@ -297,7 +297,7 @@ from ragtime.indexer.models import (
     WorkspaceChatStateResponse,
 )
 from ragtime.indexer.pdm_service import pdm_indexer
-from ragtime.indexer.repository import _resolve_default_conversation_model, repository
+from ragtime.indexer.repository import _estimate_conversation_tokens, _resolve_default_conversation_model, repository
 from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_indexer
 from ragtime.indexer.service import UPLOAD_TMP_DIR, indexer
 from ragtime.indexer.title_generation import schedule_title_generation
@@ -10860,6 +10860,61 @@ def _compaction_system_content(summary: str) -> str:
     )
 
 
+COMPACTION_POST_COMPACT_TARGET_PERCENT = 90
+
+
+def _chat_message_token_payload(message: ChatMessage) -> dict[str, Any]:
+    try:
+        return message.model_dump(mode="json")
+    except AttributeError:
+        return dict(message)  # type: ignore[arg-type]
+
+
+def _estimate_post_compaction_tokens(
+    messages: list[ChatMessage],
+    split_index: int,
+    *,
+    summary_token_reserve: int,
+) -> int:
+    summary_placeholder = "summary " * max(1, summary_token_reserve)
+    token_messages = [
+        {"role": "compaction", "content": summary_placeholder},
+        *[_chat_message_token_payload(message) for message in messages[split_index:]],
+    ]
+    return _estimate_conversation_tokens(token_messages)
+
+
+async def _find_compaction_split_index_for_context(
+    messages: list[ChatMessage],
+    preferred_keep_recent_pairs: int,
+    *,
+    model: str,
+) -> tuple[int, list[ChatMessage]]:
+    provider, model_id = _parse_model_identifier(model)
+    context_limit = await rag._resolve_chat_context_limit(provider, model_id or model)
+    target_tokens = max(1, int(context_limit * (COMPACTION_POST_COMPACT_TARGET_PERCENT / 100)))
+    summary_token_reserve = min(4096, max(1200, int(context_limit * 0.02)))
+    max_keep_recent_pairs = max(0, int(preferred_keep_recent_pairs))
+    best_viable: tuple[int, list[ChatMessage]] | None = None
+
+    for keep_recent_pairs in range(max_keep_recent_pairs, -1, -1):
+        split_index, messages_to_summarize = _find_compaction_split_index(messages, keep_recent_pairs)
+        if len(messages_to_summarize) < 2:
+            continue
+        best_viable = (split_index, messages_to_summarize)
+        if (
+            _estimate_post_compaction_tokens(
+                messages,
+                split_index,
+                summary_token_reserve=summary_token_reserve,
+            )
+            <= target_tokens
+        ):
+            return split_index, messages_to_summarize
+
+    return best_viable if best_viable is not None else (len(messages), [])
+
+
 async def _build_chat_history_for_conversation(
     messages: list[ChatMessage],
     *,
@@ -12785,10 +12840,17 @@ async def compact_conversation(
             summarize_start = previous_marker_index if previous_marker_index >= 0 else 0
             messages_to_summarize = conv.messages[summarize_start:replace_marker_index]
     else:
-        split_index, messages_to_summarize = _find_compaction_split_index(conv.messages, request.keep_recent_pairs)
+        split_index, messages_to_summarize = await _find_compaction_split_index_for_context(
+            conv.messages,
+            request.keep_recent_pairs,
+            model=conv.model,
+        )
 
     if len(messages_to_summarize) < 2:
-        raise HTTPException(status_code=400, detail="Conversation does not have enough uncompacted history to compact")
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation does not have enough older uncompressed history to compact yet.",
+        )
 
     task_id = await background_task_service.start_compaction_async(
         conversation_id,

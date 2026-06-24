@@ -6,12 +6,16 @@ from unittest import mock
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ragtime.indexer.models import ChatMessage, ConversationBranchKind
+from ragtime.indexer.background_tasks import _find_compaction_split_index_with_fallback
 from ragtime.indexer.repository import (
     IndexerRepository,
     _estimate_conversation_tokens,
     _estimate_effective_conversation_tokens,
 )
-from ragtime.indexer.routes import _build_chat_history_for_conversation, _find_compaction_split_index
+from ragtime.indexer.routes import (
+    _build_chat_history_for_conversation,
+    _find_compaction_split_index,
+)
 from ragtime.rag.components import RAGComponents
 
 
@@ -172,6 +176,52 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(split_index, len(messages))
         self.assertEqual(summarized, [])
+
+    def test_find_compaction_split_fallback_reduces_recent_tail(self) -> None:
+        messages = [_message("compaction", "previous summary")]
+        for idx in range(4):
+            messages.append(_message("user", f"user {idx}"))
+            messages.append(_message("assistant", f"assistant {idx}"))
+
+        split_index, summarized = _find_compaction_split_index_with_fallback(messages, preferred_keep_recent_pairs=4)
+
+        self.assertEqual(split_index, 3)
+        self.assertEqual(
+            [message.content for message in summarized],
+            ["previous summary", "user 0", "assistant 0"],
+        )
+
+    def test_find_compaction_split_fallback_can_preserve_no_recent_tail(self) -> None:
+        messages = [
+            _message("compaction", "previous summary"),
+            _message("user", "only new user"),
+            _message("assistant", "only new assistant"),
+        ]
+
+        split_index, summarized = _find_compaction_split_index_with_fallback(messages, preferred_keep_recent_pairs=4)
+
+        self.assertEqual(split_index, len(messages))
+        self.assertEqual(
+            [message.content for message in summarized],
+            ["previous summary", "only new user", "only new assistant"],
+        )
+
+    def test_effective_token_count_matches_truncated_tool_history(self) -> None:
+        full_output = "tool output " * 1000
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "events": [
+                    {"type": "tool", "tool": "example", "input": {"query": "status"}, "output": full_output},
+                ],
+            }
+        ]
+
+        provider_history_tokens = _estimate_conversation_tokens(messages)
+        raw_output_tokens = _estimate_conversation_tokens([{"role": "assistant", "content": full_output}])
+
+        self.assertLess(provider_history_tokens, raw_output_tokens)
 
     async def test_build_chat_history_resets_at_compaction_marker(self) -> None:
         messages = [

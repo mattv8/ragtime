@@ -14,7 +14,7 @@ import type { Conversation, ChatMessage, ChatTask, User, UserDirectoryEntry, Con
 import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
-import { calculateConversationContextUsage, canCompactConversation } from '@/utils/contextUsage';
+import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import { fetchUserSpaceToolCatalog, resolveDefaultSelectedToolIds, type UserSpaceToolSelection } from '@/utils/userSpaceTools';
 import { useUserSpaceToolHealthEvents } from '@/utils/useUserSpaceToolHealthEvents';
 import {
@@ -12100,10 +12100,6 @@ export function ChatPanel({
 
     const lastMessage = activeConversation.messages[activeConversation.messages.length - 1];
     if (lastMessage?.role === 'compaction') {
-      return;
-    }
-
-    if (!canCompactConversation(activeConversation.messages, AUTO_COMPACTION_KEEP_RECENT_PAIRS)) {
       return;
     }
 
