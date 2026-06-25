@@ -1222,10 +1222,11 @@ export const api = {
   },
 
   /**
-   * Get heartbeat status for all enabled tools
+   * Get cached heartbeat status for all enabled tools.
+   * Pass refresh=true only for explicit admin-triggered checks.
    */
-  async getToolHeartbeats(): Promise<HeartbeatResponse> {
-    const response = await apiFetch(`${API_BASE}/tools/heartbeat`);
+  async getToolHeartbeats(refresh = false): Promise<HeartbeatResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/heartbeat${refresh ? '?refresh=true' : ''}`);
     return handleResponse<HeartbeatResponse>(response);
   },
 

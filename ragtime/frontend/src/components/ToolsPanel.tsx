@@ -17,10 +17,12 @@ import { Popover } from './Popover';
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
 
-// Heartbeat polling interval (15 seconds)
-const HEARTBEAT_INTERVAL = 15000;
 const DRAG_REORDER_PREVIEW_DELAY_MS = 80;
 type DragPreviewTarget = { toolId: string; insertBefore: boolean };
+
+interface ToolHealthEventPayload {
+  statuses?: Record<string, HeartbeatStatus>;
+}
 
 function hasSchemaIndexingEnabled(tool: ToolConfig): boolean {
   return (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
@@ -532,7 +534,6 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState('');
-  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Mount source state
   const [mountSources, setMountSources] = useState<UserspaceMountSource[]>([]);
@@ -713,7 +714,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     setSchemaStats(statsMap);
   }, []);
 
-  // Fetch heartbeat status for all enabled tools
+  // Fetch cached heartbeat status for all enabled tools
   const fetchHeartbeats = useCallback(async () => {
     try {
       const response = await api.getToolHeartbeats();
@@ -752,26 +753,39 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   }, [tools, loadSchemaStats]);
 
-  // Heartbeat polling
+  // Cached heartbeat snapshot + passive updates. Fresh checks happen in the
+  // backend monitor; this panel should not add remote SSH/Docker probe load.
   useEffect(() => {
-    // Initial heartbeat check after tools load
-    if (!loading && tools.length > 0) {
-      fetchHeartbeats();
-    }
+    if (loading || tools.length === 0) return;
 
-    // Set up interval for periodic heartbeat checks
-    heartbeatTimerRef.current = setInterval(() => {
-      if (!showWizard) {
-        fetchHeartbeats();
+    void fetchHeartbeats();
+    const source = api.subscribeToolHealthEvents();
+
+    const handleMessage = (event: MessageEvent) => {
+      if (!event.data) return;
+      let payload: ToolHealthEventPayload;
+      try {
+        payload = JSON.parse(event.data) as ToolHealthEventPayload;
+      } catch {
+        return;
       }
-    }, HEARTBEAT_INTERVAL);
+
+      const statuses = payload.statuses ?? {};
+      if (Object.keys(statuses).length === 0) return;
+      setHeartbeats((current) => ({
+        ...current,
+        ...statuses,
+      }));
+    };
+
+    source.addEventListener('snapshot', handleMessage as EventListener);
+    source.addEventListener('delta', handleMessage as EventListener);
+    source.onmessage = handleMessage;
 
     return () => {
-      if (heartbeatTimerRef.current) {
-        clearInterval(heartbeatTimerRef.current);
-      }
+      source.close();
     };
-  }, [loading, tools.length, showWizard, fetchHeartbeats]);
+  }, [loading, tools.length, fetchHeartbeats]);
 
   const handleAddTool = () => {
     setEditingTool(null);

@@ -2279,13 +2279,15 @@ def _heartbeat_status_payload(status) -> dict[str, Any]:
 
 
 @router.get("/tools/heartbeat", response_model=HeartbeatResponse, tags=["Tools"])
-async def check_tool_heartbeats(_user: User = Depends(require_admin)):
+async def check_tool_heartbeats(refresh: bool = Query(default=False), _user: User = Depends(require_admin)):
     """
-    Check connection heartbeat for all enabled tools. Admin only.
-    Returns quick connectivity status without updating database test results.
-    Designed for frequent polling (every 10-30 seconds).
+    Return heartbeat status for all enabled tools. Admin only.
+
+    By default this returns the shared cached background status so old polling
+    clients do not pile up remote SSH/Docker probes. Pass refresh=true for an
+    explicit admin-triggered check.
     """
-    result = await tool_health_monitor.check_once()
+    statuses_source = (await tool_health_monitor.check_once()).statuses if refresh else tool_health_monitor.get_statuses()
     statuses = {
         tool_id: HeartbeatStatus(
             tool_id=status.tool_id,
@@ -2294,7 +2296,7 @@ async def check_tool_heartbeats(_user: User = Depends(require_admin)):
             error=status.error,
             checked_at=status.checked_at_iso(),
         )
-        for tool_id, status in result.statuses.items()
+        for tool_id, status in statuses_source.items()
     }
 
     return HeartbeatResponse(statuses=statuses)
