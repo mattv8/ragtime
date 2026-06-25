@@ -96,5 +96,7 @@ ragtime/frontend/.vite/
 ragtime/frontend/tsconfig.tsbuildinfo
 ragtime/indexer/static/dist/
 
-# Playwright MCP
+# Devtools
 .playwright-mcp/
+.swarm/
+.opencode/
