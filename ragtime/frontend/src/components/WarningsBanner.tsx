@@ -7,8 +7,10 @@ interface WarningsBannerProps {
   title?: string;
   /** Hide banner even when warnings exist */
   hidden?: boolean;
-  /** Optional session storage key for dismissible warnings */
+  /** Optional storage key for dismissible warnings */
   dismissKey?: string;
+  /** Persist dismissal across sessions (localStorage) instead of per-session (sessionStorage) */
+  persistDismiss?: boolean;
   /** Render warnings as a compact summary instead of a bullet list */
   compact?: boolean;
 }
@@ -22,6 +24,7 @@ export function WarningsBanner({
   title = 'Warnings:',
   hidden = false,
   dismissKey,
+  persistDismiss = false,
   compact = false,
 }: WarningsBannerProps) {
   const [dismissed, setDismissed] = useState(false);
@@ -31,8 +34,9 @@ export function WarningsBanner({
       setDismissed(false);
       return;
     }
-    setDismissed(sessionStorage.getItem(dismissKey) === 'true');
-  }, [dismissKey]);
+    const storage = persistDismiss ? window.localStorage : window.sessionStorage;
+    setDismissed(storage.getItem(dismissKey) === 'true');
+  }, [dismissKey, persistDismiss]);
 
   if (warnings.length === 0) return null;
   if (hidden || dismissed) return null;
@@ -42,7 +46,8 @@ export function WarningsBanner({
 
   const handleDismiss = () => {
     if (dismissKey) {
-      sessionStorage.setItem(dismissKey, 'true');
+      const storage = persistDismiss ? window.localStorage : window.sessionStorage;
+      storage.setItem(dismissKey, 'true');
     }
     setDismissed(true);
   };

@@ -1996,6 +1996,16 @@ class SchemaIndexerService:
             logger.info(f"Testing {tool_type} connection...")
             success, error_msg = await self.test_connection(tool_type, connection_config)
             if not success:
+                from ragtime.core.encryption import (
+                    encryption_key_mismatch_detected,
+                    encryption_recovery_hint,
+                )
+
+                if encryption_key_mismatch_detected():
+                    raise RuntimeError(
+                        "Database connection failed because the stored credentials could not be "
+                        "decrypted (encryption key mismatch). " + encryption_recovery_hint() + f" Original error: {error_msg}"
+                    )
                 raise RuntimeError(f"Database connection failed: {error_msg}")
 
             # Ensure pgvector is available

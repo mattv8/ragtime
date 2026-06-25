@@ -587,7 +587,7 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 
 #### Authentication Security
-- **Encryption key is auto-generated** on first startup and stored at `data/.encryption_key`. Because API keys and connection passwords are encrypted in the database using this key, ensure you include the `.encryption_key` file in any backups you make of the system.
+- **Encryption key is auto-generated** on first startup; you do not need to set `ENCRYPTION_KEY` for normal setup. Ragtime persists the effective key in its data volume so it survives restarts. Because API keys and connection passwords are encrypted in the database using this key, use `backup --include-secret` for restorable backups. Set `ENCRYPTION_KEY` only when you intentionally need to supply or restore a known key.
 - **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks. In `DEBUG_MODE=true`, rate limiting is disabled for local testing.
 
 #### Debug Mode Warning

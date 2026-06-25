@@ -1129,6 +1129,43 @@ class AppSettings(BaseModel):
         """
         warnings: List["ConfigurationWarning"] = []
 
+        # Encryption key mismatch is the most severe, actionable condition: if the
+        # key changed or its file was lost (e.g. .data/.encryption_key deleted),
+        # every stored secret silently decrypts to "". Surface it first so admins
+        # can recover instead of chasing downstream "invalid API key" failures.
+        from ragtime.core.encryption import (
+            encryption_key_mismatch_detected,
+            encryption_recovery_hint,
+        )
+
+        if encryption_key_mismatch_detected():
+            warnings.append(
+                ConfigurationWarning(
+                    level="error",
+                    category="encryption",
+                    message=(
+                        "Encrypted secrets are unavailable because the encryption key changed or is missing; model calls and data-source connections may fail."
+                    ),
+                    recommendation=encryption_recovery_hint(),
+                )
+            )
+        else:
+            # Proactive reminder: the key is healthy now, but if it is ever lost or
+            # the environment is reset, every stored secret becomes unrecoverable.
+            # Nudge admins to back the key up before that happens. Dismissible.
+            warnings.append(
+                ConfigurationWarning(
+                    level="warning",
+                    category="encryption_backup",
+                    message=(
+                        "Back up your encryption key. API keys and passwords are encrypted with "
+                        "the instance encryption key; if that key is lost, these secrets cannot "
+                        "be recovered."
+                    ),
+                    recommendation=("Run 'backup --include-secret' and store the backup safely. Dismiss this once the key is safely backed up."),
+                )
+            )
+
         # Fetch LiteLLM model data for intelligent checks
         embedding_models = await get_embedding_models()
 

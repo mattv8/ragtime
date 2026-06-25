@@ -1,14 +1,15 @@
 """
 Reversible encryption utilities for storing secrets.
 
-Uses Fernet symmetric encryption with a key derived from ENCRYPTION_KEY.
+Uses Fernet symmetric encryption with a key derived from the effective
+application encryption key. ENCRYPTION_KEY can explicitly provide that key;
+otherwise settings auto-generates one and persists it in the data volume.
 This allows secrets to be decrypted for display in the frontend or for
 backup/restore operations.
 
-IMPORTANT: The encryption key is auto-generated on first startup and persisted
-to data/.encryption_key. If this file is lost, all encrypted secrets become
-unrecoverable. Always include the encryption key in backups using the
---include-secret flag.
+IMPORTANT: backups that must preserve encrypted secrets should use
+backup --include-secret. Without the original key, users must re-enter stored
+API keys and connection passwords.
 """
 
 import base64
@@ -24,6 +25,56 @@ logger = get_logger(__name__)
 
 # Prefix to identify encrypted values (helps distinguish from legacy plaintext)
 ENCRYPTED_PREFIX = "enc::"
+
+# Sticky flag set the first time an encrypted secret fails to decrypt with the
+# active key. This is the recoverable "key changed / key file lost" condition
+# (e.g. .data/.encryption_key was deleted). We record it so the platform can
+# surface a single, actionable warning instead of silently running with empty
+# secrets, and we use it to log the failure only once instead of flooding the
+# logs as every encrypted field is loaded in turn.
+_key_mismatch_detected = False
+
+
+def encryption_key_mismatch_detected() -> bool:
+    """Return True if an encrypted secret failed to decrypt with the active key.
+
+    Indicates the encryption key changed or its key file was lost. Existing
+    encrypted secrets cannot be recovered until the original key is restored.
+    """
+    return _key_mismatch_detected
+
+
+def reset_key_mismatch_state() -> None:
+    """Reset the key-mismatch flag. Primarily for tests."""
+    global _key_mismatch_detected
+    _key_mismatch_detected = False
+
+
+def encryption_recovery_hint() -> str:
+    """Return standard, actionable recovery guidance for a key mismatch.
+
+    ENCRYPTION_KEY takes precedence over the persisted key file. The file is a
+    fallback and backup artifact so backup --include-secret can carry the
+    effective key between deployments.
+    """
+    return (
+        "Set ENCRYPTION_KEY to the original key and restart, or restore from a backup "
+        "created with --include-secret. If the key is lost, re-enter API keys and "
+        "connection passwords in Settings."
+    )
+
+
+def _mark_key_mismatch() -> None:
+    """Record an undecryptable secret and log the cause exactly once."""
+    global _key_mismatch_detected
+    if not _key_mismatch_detected:
+        _key_mismatch_detected = True
+        logger.error(
+            "Failed to decrypt secret: invalid token (key may have changed). "
+            "Encrypted settings are unavailable until the original encryption key "
+            "is restored (e.g. .data/.encryption_key). Further decryption failures "
+            "will be suppressed until restart."
+        )
 
 
 @lru_cache(maxsize=1)
@@ -94,7 +145,7 @@ def decrypt_secret(encrypted: str) -> str:
         decrypted_bytes = fernet.decrypt(encrypted_data.encode())
         return decrypted_bytes.decode()
     except InvalidToken:
-        logger.error("Failed to decrypt secret: invalid token (key may have changed)")
+        _mark_key_mismatch()
         return ""
     except Exception as e:
         logger.error(f"Failed to decrypt secret: {e}")

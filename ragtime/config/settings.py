@@ -177,8 +177,12 @@ class Settings(BaseSettings):
         container restarts. This ensures encrypted secrets remain recoverable
         and user sessions stay valid.
         """
-        # Try to load from persisted file first (even if env var is set, file takes precedence)
-        if ENCRYPTION_KEY_FILE.exists():
+        # Explicit environment/config wins. The persisted file is a fallback and
+        # backup artifact, not an override; keep it in sync with the effective
+        # key so backup --include-secret captures the key currently in use.
+        key = v.strip() if v else ""
+
+        if not key and ENCRYPTION_KEY_FILE.exists():
             try:
                 saved_key = ENCRYPTION_KEY_FILE.read_text().strip()
                 if saved_key:
@@ -186,8 +190,8 @@ class Settings(BaseSettings):
             except OSError:
                 pass
 
-        # Use provided value or generate new key
-        key = v if v else secrets.token_urlsafe(32)
+        if not key:
+            key = secrets.token_urlsafe(32)
 
         # Persist to file for future restarts
         try:
