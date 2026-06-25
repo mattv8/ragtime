@@ -4165,6 +4165,13 @@ class IndexerRepository:
         if tool_selection_mode not in {"default_all", "custom"}:
             tool_selection_mode = "custom"
 
+        created_at = getattr(prisma_conv, "createdAt", None)
+        updated_at = getattr(prisma_conv, "updatedAt", None)
+        if created_at is None:
+            created_at = updated_at or utc_now()
+        if updated_at is None:
+            updated_at = created_at
+
         return Conversation(
             id=prisma_conv.id,
             title=prisma_conv.title,
@@ -4177,8 +4184,8 @@ class IndexerRepository:
             total_tokens=total_tokens,
             disabled_builtin_tool_ids=_normalize_string_list(getattr(prisma_conv, "disabledBuiltinToolIds", [])),
             tool_selection_mode=tool_selection_mode,
-            created_at=prisma_conv.createdAt,
-            updated_at=prisma_conv.updatedAt,
+            created_at=created_at,
+            updated_at=updated_at,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),
             active_branch_id=getattr(prisma_conv, "activeBranchId", None),
             tool_output_mode=tool_output_mode,
