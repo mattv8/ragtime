@@ -7682,6 +7682,7 @@ export function ChatPanel({
   const MIN_INPUT_AREA_HEIGHT = 96;
   const INPUT_AREA_COLLAPSE_THRESHOLD = 80;
   const AUTO_COMPACTION_KEEP_RECENT_PAIRS = 4;
+  const AUTO_COMPACTION_COMPLETION_WINDOW_MS = 60_000;
   const chatLayoutCookieName = getChatLayoutCookieName(currentUser.id);
   const compactThresholdPercent = clampNumber(chatCompactionThresholdPercent, 1, 100);
   const autoCompactThresholdPercent = clampNumber(chatAutoCompactionThresholdPercent, 1, 100);
@@ -8807,6 +8808,7 @@ export function ChatPanel({
   // periodic task-state poll.
   const connectTaskStreamRef = useRef<((taskId: string) => void) | null>(null);
   const watchCompactionTaskRef = useRef<((taskId: string, conversationId: string) => void) | null>(null);
+  const autoCompactionCompletionRef = useRef<{ conversationId: string; messageKey: string; completedAt: number } | null>(null);
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
   const selectConversationRequestIdRef = useRef(0);
@@ -8814,6 +8816,25 @@ export function ChatPanel({
   const prevInputAreaHeight = useRef(MIN_INPUT_AREA_HEIGHT);
   const prevInputLengthRef = useRef(0);
   const skipNextLayoutPersistRef = useRef(true);
+
+  const getConversationTailKey = useCallback((conversation: Conversation): string | null => {
+    const lastMessage = conversation.messages[conversation.messages.length - 1];
+    if (!lastMessage) return null;
+    return `${lastMessage.message_id ?? lastMessage.timestamp ?? 'none'}:${conversation.messages.length}`;
+  }, []);
+
+  const markAutoCompactionCandidate = useCallback((conversation: Conversation) => {
+    const tailKey = getConversationTailKey(conversation);
+    if (!tailKey || conversation.messages[conversation.messages.length - 1]?.role === 'compaction') {
+      return;
+    }
+
+    autoCompactionCompletionRef.current = {
+      conversationId: conversation.id,
+      messageKey: tailKey,
+      completedAt: Date.now(),
+    };
+  }, [getConversationTailKey]);
 
   useEffect(() => {
     skipNextLayoutPersistRef.current = true;
@@ -10213,12 +10234,17 @@ export function ChatPanel({
           }
 
           if (data.event === 'task_completed') {
+            const completedSuccessfully = (data.status || 'unknown') === 'completed';
+            const isCompactionCompletion = data.task_kind === 'compaction';
             // The per-task SSE stream already drives streaming UI cleanup;
             // refresh the conversation here so persisted assistant messages
             // and any post-completion state (e.g. interrupted_task) are
             // reflected even if the task SSE was not active.
             void api.getConversation(conversationId, workspaceId)
               .then(fresh => {
+                if (completedSuccessfully && !isCompactionCompletion) {
+                  markAutoCompactionCandidate(fresh);
+                }
                 setActiveConversation(prev => (
                   prev && prev.id === conversationId ? fresh : prev
                 ));
@@ -10243,7 +10269,7 @@ export function ChatPanel({
     } catch (e) {
       console.error("Failed to start conversation event stream", e);
     }
-  }, [syncConversationActiveTaskId, workspaceId]);
+  }, [markAutoCompactionCandidate, syncConversationActiveTaskId, workspaceId]);
 
   // Only subscribe to title events for the ACTIVE conversation to avoid
   // saturating the browser's 6-connection-per-origin limit with idle SSE streams.
@@ -10314,6 +10340,7 @@ export function ChatPanel({
     abortControllerRef.current = abortController;
     const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
     lastSeenVersionRef.current = sinceVersion;
+    let terminalStatus: string | null = null;
 
     try {
       const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
@@ -10321,11 +10348,12 @@ export function ChatPanel({
       for await (const data of stream) {
         // Handle explicit completion event
         if (data.type === 'completion' || data.completed) {
-            const status = data.status || (data.completed ? 'completed' : 'unknown');
-            if (status === 'failed' && data.error) {
-                setError(data.error);
-            }
-            break; // Exit loop, cleanup below
+          const status = data.status || (data.completed ? 'completed' : 'unknown');
+          terminalStatus = status;
+          if (status === 'failed' && data.error) {
+            setError(data.error);
+          }
+          break; // Exit loop, cleanup below
         }
 
         // Handle streaming state update
@@ -10396,6 +10424,9 @@ export function ChatPanel({
               try {
                 const updated = await api.getConversation(currentConversation.id, workspaceId);
                 const resolved = applyFallbackAssistantIfNeeded(updated);
+                if (terminalStatus === 'completed') {
+                  markAutoCompactionCandidate(resolved);
+                }
                 setActiveConversation(resolved);
                 setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
               } catch (e) {
@@ -10414,7 +10445,7 @@ export function ChatPanel({
             }
         }
     }
-  }, [applyFallbackAssistantIfNeeded, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
+  }, [applyFallbackAssistantIfNeeded, markAutoCompactionCandidate, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
 
   const watchCompactionTask = useCallback(async (taskId: string, conversationId: string) => {
     if (settledCompactionTaskIdsRef.current.has(taskId)) return;
@@ -12103,7 +12134,19 @@ export function ChatPanel({
       return;
     }
 
-    const triggerKey = `${activeConversation.id}:${lastMessage?.message_id ?? lastMessage?.timestamp ?? 'none'}:${activeConversation.messages.length}`;
+    const tailKey = getConversationTailKey(activeConversation);
+    const completionCandidate = autoCompactionCompletionRef.current;
+    if (
+      !tailKey
+      || !completionCandidate
+      || completionCandidate.conversationId !== activeConversation.id
+      || completionCandidate.messageKey !== tailKey
+      || Date.now() - completionCandidate.completedAt > AUTO_COMPACTION_COMPLETION_WINDOW_MS
+    ) {
+      return;
+    }
+
+    const triggerKey = `${activeConversation.id}:${tailKey}`;
     if (autoCompactionTriggerKeyRef.current === triggerKey) {
       return;
     }
@@ -12115,6 +12158,7 @@ export function ChatPanel({
     autoCompactThresholdPercent,
     compactActiveConversation,
     contextUsage.contextUsagePercent,
+    getConversationTailKey,
     hasQueuedCompactionMessageForActiveConversation,
     isActiveConversationCompacting,
     isReadOnly,

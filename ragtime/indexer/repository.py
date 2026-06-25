@@ -4113,6 +4113,7 @@ class IndexerRepository:
         """Convert Prisma Conversation to Pydantic model."""
         # Parse messages from JSON
         messages_data = _normalize_message_payloads(prisma_conv.messages)
+        total_tokens = _estimate_effective_conversation_tokens(messages_data)
         messages: List[ChatMessage] = []
         for m in messages_data:
             # Parse events if present; synthesize them for legacy tool_calls-only messages.
@@ -4173,7 +4174,7 @@ class IndexerRepository:
             username=getattr(user, "username", None) if user else None,
             display_name=getattr(user, "displayName", None) if user else None,
             messages=messages,
-            total_tokens=prisma_conv.totalTokens,
+            total_tokens=total_tokens,
             disabled_builtin_tool_ids=_normalize_string_list(getattr(prisma_conv, "disabledBuiltinToolIds", [])),
             tool_selection_mode=tool_selection_mode,
             created_at=prisma_conv.createdAt,
