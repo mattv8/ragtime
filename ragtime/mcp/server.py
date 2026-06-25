@@ -25,7 +25,7 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.session import ServerSession
 from mcp.types import TextContent, Tool
 
-from ragtime.core.app_settings import get_app_settings
+from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger
 from ragtime.indexer.utils import safe_tool_name
@@ -152,6 +152,10 @@ def notify_tools_changed() -> None:
     returns the updated list. In stateless mode, clients poll for changes
     when they see listChanged: true in server capabilities.
     """
+    # Drop the shared tool-config cache so the next rebuild reads fresh
+    # ToolConfig rows (e.g. an updated allow_write flag). This keeps the
+    # signal self-contained for callers that do not separately invalidate it.
+    invalidate_settings_cache()
     mcp_tool_adapter.invalidate_cache()
     # Also invalidate all custom route adapters
     for adapter in _custom_route_adapters.values():

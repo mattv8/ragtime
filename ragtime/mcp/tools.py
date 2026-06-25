@@ -462,7 +462,9 @@ class MCPToolAdapter:
         Returns:
             Tool execution result as string
         """
-        # Check if we have a cached executor
+        # Check if we have a cached executor. Cache entries are dropped by
+        # invalidate_cache() whenever tools change (e.g. an admin toggles
+        # read/write), so a surviving entry is safe to reuse here.
         if tool_name in self._tool_definitions:
             return await self._execute_tool_definition(self._tool_definitions[tool_name], arguments)
         if tool_name in self._tool_executors:
@@ -1580,7 +1582,13 @@ class MCPToolAdapter:
         return tools
 
     def invalidate_cache(self) -> None:
-        """Invalidate the heartbeat cache, forcing a fresh check on next call."""
+        """Invalidate cached tool state, forcing a fresh rebuild on next call.
+
+        Clears both the heartbeat cache and the built tool executors/definitions.
+        The tool definitions cache captures per-tool config (such as allow_write)
+        in a closure, so it must be dropped here; otherwise execute_tool() would
+        keep serving a stale definition after an admin changes the tool config.
+        """
         self._heartbeat_cache = {}
         self._last_heartbeat_check = None
         refresh_task = self._heartbeat_refresh_task
@@ -1588,6 +1596,7 @@ class MCPToolAdapter:
             refresh_task.cancel()
         self._heartbeat_refresh_task = None
         self._tool_executors = {}
+        self._tool_definitions = {}
 
 
 # Global adapter instance

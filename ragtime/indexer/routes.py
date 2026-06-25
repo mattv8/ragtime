@@ -2416,12 +2416,12 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
         if config is None:
             raise HTTPException(status_code=404, detail="Tool configuration not found")
 
-    # Reinitialize RAG agent to pick up the tool changes
+    # Make MCP observe persisted tool changes before the slower RAG rebuild.
     invalidate_settings_cache()
-    await rag.initialize()
-
-    # Notify MCP clients that tools have changed (e.g., renamed)
     notify_tools_changed()
+
+    # Reinitialize RAG agent to pick up the tool changes
+    await rag.initialize()
 
     # Auto-trigger schema indexing when it is newly enabled on supported tools
     try:
