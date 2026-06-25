@@ -97,6 +97,42 @@ def workspace_path_matches_mount_prefix(path: str, prefix: str) -> bool:
     return normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")
 
 
+def _is_path_contained_under(child: Path, parent: Path) -> bool:
+    """Return True if ``child`` is contained within ``parent`` after resolving symlinks.
+
+    For paths that exist on disk, both sides are fully resolved so that symlinks
+    cannot escape the parent boundary.  For paths that do not yet exist (e.g. a
+    file about to be written), the nearest existing ancestor is resolved instead
+    so that the containment check is still meaningful without requiring the full
+    path to be present.
+    """
+    try:
+        resolved_parent = parent.resolve()
+        # Walk up from child until we find an existing ancestor, then resolve it.
+        candidate = child
+        suffix_parts: list[str] = []
+        while True:
+            try:
+                resolved_candidate = candidate.resolve()
+                # Re-attach the non-existing suffix parts (no symlinks possible there).
+                if suffix_parts:
+                    resolved_child = resolved_candidate.joinpath(*reversed(suffix_parts))
+                else:
+                    resolved_child = resolved_candidate
+                break
+            except OSError:
+                suffix_parts.append(candidate.name)
+                parent_candidate = candidate.parent
+                if parent_candidate == candidate:
+                    # Reached filesystem root without resolving — treat as unsafe.
+                    return False
+                candidate = parent_candidate
+        # The resolved child must be equal to or a descendant of the resolved parent.
+        return resolved_child == resolved_parent or resolved_parent in resolved_child.parents
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def resolve_workspace_mount_source_path(
     mounts: list[dict[str, Any]],
     rel_path: str,
@@ -106,11 +142,15 @@ def resolve_workspace_mount_source_path(
     Iterates ``mounts`` looking for the deepest target prefix that contains
     ``rel_path`` and returns the corresponding source-side absolute path plus
     the mount's read-only flag. Returns None if no mount matches.
+
+    Symlink containment is enforced: if the resolved target path escapes the
+    mount source root (e.g. via a symlink planted inside the mount), this
+    function returns None rather than exposing the out-of-bounds path.
     """
     normalized = rel_path.strip().replace("\\", "/").lstrip("/")
     if not normalized:
         return None
-    candidates: list[tuple[str, Path, bool]] = []
+    candidates: list[tuple[str, Path, Path, bool]] = []
     for mount in mounts:
         repo_rel = workspace_mount_target_repo_relative_path(str(mount.get("target_path", "") or ""))
         source_local_path = str(mount.get("source_local_path", "") or "").strip()
@@ -121,10 +161,12 @@ def resolve_workspace_mount_source_path(
         source_root = Path(source_local_path)
         suffix = normalized[len(repo_rel) :].lstrip("/")
         source_file = source_root if not suffix else source_root.joinpath(*suffix.split("/"))
-        candidates.append((repo_rel, source_file, bool(mount.get("read_only", True))))
+        candidates.append((repo_rel, source_file, source_root, bool(mount.get("read_only", True))))
     if not candidates:
         return None
-    _, source_file, read_only = max(candidates, key=lambda item: len(item[0]))
+    _, source_file, source_root, read_only = max(candidates, key=lambda item: len(item[0]))
+    if not _is_path_contained_under(source_file, source_root):
+        return None
     return source_file, read_only
 
 

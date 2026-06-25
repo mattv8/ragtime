@@ -1736,10 +1736,19 @@ async def import_faiss_index(
         # Extract the archive, stripping any top-level directory so files
         # land directly under target_path. The download zip always uses
         # ``{name}/`` as a prefix, so we strip that prefix when present.
+        #
+        # Security: every extracted member is validated to prevent zip-slip
+        # attacks. Members that are directories, metadata envelopes, or that
+        # resolve outside target_path are silently skipped. Only the two
+        # expected FAISS data files (index.faiss, index.pkl) are accepted.
+        _ALLOWED_BASENAMES: frozenset[str] = frozenset({"index.faiss", "index.pkl"})
+
         def _extract_zip() -> None:
+            resolved_target = target_path.resolve()
             target_path.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(zip_path, "r") as zf:
                 for member in zf.namelist():
+                    # Skip directory entries
                     if member.endswith("/"):
                         continue
                     # metadata.json is the transport envelope - skip it. The
@@ -1747,16 +1756,47 @@ async def import_faiss_index(
                     # by extracting the file into the index directory.
                     if member.endswith("metadata.json"):
                         continue
-                    # Normalise path: strip optional top-level directory
+                    # Normalise path using posixpath to avoid platform-specific
+                    # separator issues; zip members always use forward slashes.
                     parts = member.split("/")
                     if len(parts) > 1 and parts[0]:
                         # Drop the first segment (the index name prefix from the zip)
                         relative = "/".join(parts[1:])
                     else:
                         relative = member
+
+                    # --- Zip-slip containment checks ---
+                    # 1. Reject empty, absolute, or drive-rooted paths.
                     if not relative:
+                        logger.warning(f"FAISS import: skipping empty member path in '{member}'")
                         continue
+                    if posixpath.isabs(relative):
+                        logger.warning(f"FAISS import: skipping absolute member path '{member}'")
+                        continue
+                    # Drive-rooted paths on Windows (e.g. "C:/...")
+                    if len(relative) >= 2 and relative[1] == ":":
+                        logger.warning(f"FAISS import: skipping drive-rooted member path '{member}'")
+                        continue
+                    # 2. Reject dot or dotdot components anywhere in the path.
+                    path_parts = relative.replace("\\", "/").split("/")
+                    if any(p in (".", "..") for p in path_parts):
+                        logger.warning(f"FAISS import: skipping traversal member path '{member}'")
+                        continue
+                    # 3. Restrict to the two known FAISS data file basenames.
+                    basename = path_parts[-1]
+                    if basename not in _ALLOWED_BASENAMES:
+                        logger.warning(f"FAISS import: skipping unexpected member '{member}' (basename '{basename}' not in allowed set)")
+                        continue
+                    # 4. Resolve destination and confirm it stays under target_path.
                     dest_file = target_path / relative
+                    try:
+                        resolved_dest = dest_file.resolve()
+                    except Exception as resolve_err:
+                        logger.warning(f"FAISS import: could not resolve destination for '{member}': {resolve_err}")
+                        continue
+                    if not str(resolved_dest).startswith(str(resolved_target) + os.sep) and resolved_dest != resolved_target:
+                        logger.warning(f"FAISS import: skipping member '{member}' — resolved path '{resolved_dest}' escapes target '{resolved_target}'")
+                        continue
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member) as src, open(dest_file, "wb") as dst:
                         shutil.copyfileobj(src, dst)
@@ -14499,7 +14539,12 @@ async def get_workspace_interrupted_conversation_ids(
 
 
 @router.get("/tasks/{task_id}", response_model=ChatTaskResponse)
-async def get_chat_task(task_id: str, since_version: int = 0):
+async def get_chat_task(
+    task_id: str,
+    since_version: int = 0,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
     """
     Get a chat task by ID.
     Use this to poll for task status and streaming state.
@@ -14507,10 +14552,21 @@ async def get_chat_task(task_id: str, since_version: int = 0):
     Query params:
         since_version: If provided, returns null streaming_state when version hasn't changed.
                       This reduces data transfer for polling clients.
+        workspace_id: Optional workspace context for authorization.
     """
     task = await repository.get_chat_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        task.conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # If client has current version and task is still running, omit streaming_state
     # to reduce data transfer. Client should use its cached version.
@@ -14661,13 +14717,30 @@ async def conversation_events(
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=ChatTaskResponse)
-async def cancel_chat_task(task_id: str):
+async def cancel_chat_task(
+    task_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
     """
     Cancel a running chat task.
+
+    Query params:
+        workspace_id: Optional workspace context for authorization.
     """
     task = await repository.get_chat_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        task.conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     if task.status not in (ChatTaskStatus.pending, ChatTaskStatus.running):
         raise HTTPException(status_code=400, detail="Task is not running")

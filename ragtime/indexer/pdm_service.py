@@ -20,6 +20,7 @@ PDM Database Structure:
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, cast
@@ -48,6 +49,21 @@ from ragtime.indexer.vector_utils import (
 # pylint: disable=not-callable
 
 logger = get_logger(__name__)
+
+
+_SAFE_PDM_EXTENSION_RE = re.compile(r"^\.?[A-Za-z0-9_-]{1,32}$")
+_ALLOWED_PDM_DOCUMENT_TYPES = frozenset({"SLDPRT", "SLDASM", "SLDDRW"})
+
+
+def _build_pdm_extension_filter(file_extensions: list[str] | None, column_name: str) -> str:
+    """Build a safe SQL LIKE filter for configured PDM filename extensions."""
+    extensions = [str(ext or "").strip() for ext in (file_extensions or [])]
+    if not extensions:
+        return "1=1"
+    unsafe = [ext for ext in extensions if not _SAFE_PDM_EXTENSION_RE.fullmatch(ext)]
+    if unsafe:
+        raise ValueError(f"Invalid PDM file extension filter: {unsafe[0]!r}")
+    return " OR ".join(f"{column_name} LIKE '%{ext}'" for ext in extensions)
 
 
 class PdmIndexerService:
@@ -418,12 +434,18 @@ class PdmIndexerService:
 
             for index_name in index_names:
                 # Delete embeddings
-                result = await db.execute_raw(f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'")
+                result = await db.execute_raw(
+                    "DELETE FROM pdm_embeddings WHERE index_name = $1",
+                    index_name,
+                )
                 if isinstance(result, int):
                     deleted_embeddings += result
 
                 # Delete document metadata
-                result = await db.execute_raw(f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'")
+                result = await db.execute_raw(
+                    "DELETE FROM pdm_document_metadata WHERE index_name = $1",
+                    index_name,
+                )
                 if isinstance(result, int):
                     deleted_metadata += result
 
@@ -447,7 +469,10 @@ class PdmIndexerService:
         try:
             db: Any = await get_db()
             for index_name in names_to_check:
-                result = await db.query_raw(f"SELECT COUNT(*) as count FROM pdm_embeddings WHERE index_name = '{index_name}'")
+                result = await db.query_raw(
+                    "SELECT COUNT(*) as count FROM pdm_embeddings WHERE index_name = $1",
+                    index_name,
+                )
                 if result and int(result[0].get("count", 0)) > 0:
                     return int(result[0].get("count", 0))
         except Exception as e:
@@ -464,7 +489,10 @@ class PdmIndexerService:
         try:
             db: Any = await get_db()
             for index_name in names_to_check:
-                result = await db.query_raw(f"SELECT COUNT(*) as count FROM pdm_document_metadata WHERE index_name = '{index_name}'")
+                result = await db.query_raw(
+                    "SELECT COUNT(*) as count FROM pdm_document_metadata WHERE index_name = $1",
+                    index_name,
+                )
                 if result and int(result[0].get("count", 0)) > 0:
                     return int(result[0].get("count", 0))
         except Exception as e:
@@ -513,9 +541,7 @@ class PdmIndexerService:
             raise RuntimeError("pymssql not installed for PDM database access") from exc
 
         # Build file extension filter
-        ext_filter = " OR ".join([f"d.Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])])
-        if not ext_filter:
-            ext_filter = "1=1"
+        ext_filter = _build_pdm_extension_filter(config.file_extensions, "d.Filename")
 
         deleted_filter = "AND d.Deleted = 0" if config.exclude_deleted else ""
         dip_deleted_filter = "AND (dip.Deleted IS NULL OR dip.Deleted = 0)" if config.exclude_deleted else ""
@@ -1028,18 +1054,15 @@ class PdmIndexerService:
 
             # Upsert embedding - use parameters for all user-provided values
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-            # Escape single quotes in strings for SQL
-            safe_filename = doc.filename.replace("'", "''")
-            safe_doc_type = doc.document_type.replace("'", "''")
             await db.execute_raw(
-                f"""
+                """
                 INSERT INTO pdm_embeddings
                     (id, index_name, document_id, document_type, content, part_number,
                      filename, folder_path, metadata, embedding, created_at)
                 VALUES
-                    (gen_random_uuid(), '{job.index_name}', {doc.document_id},
-                     '{safe_doc_type}', $1, $2, '{safe_filename}',
-                     $3, $4::jsonb, '{embedding_str}'::vector, NOW())
+                    (gen_random_uuid(), $1, $2,
+                     $3, $4, $5, $6,
+                     $7, $8::jsonb, $9::vector, NOW())
                 ON CONFLICT (index_name, document_id)
                 DO UPDATE SET
                     content = EXCLUDED.content,
@@ -1049,27 +1072,37 @@ class PdmIndexerService:
                     embedding = EXCLUDED.embedding,
                     created_at = NOW()
             """,
+                job.index_name,
+                doc.document_id,
+                doc.document_type,
                 text,
                 doc.part_number or "",
+                doc.filename,
                 doc.folder_path or "",
                 json.dumps(doc.variables),
+                embedding_str,
             )
 
             # Upsert document metadata
             await db.execute_raw(
-                f"""
+                """
                 INSERT INTO pdm_document_metadata
                     (id, index_name, document_id, filename, revision_no, metadata_hash, last_indexed)
                 VALUES
-                    (gen_random_uuid(), '{job.index_name}', {doc.document_id},
-                     '{safe_filename}', {doc.revision_no}, '{metadata_hash}', NOW())
+                    (gen_random_uuid(), $1, $2,
+                     $3, $4, $5, NOW())
                 ON CONFLICT (index_name, document_id)
                 DO UPDATE SET
                     filename = EXCLUDED.filename,
                     revision_no = EXCLUDED.revision_no,
                     metadata_hash = EXCLUDED.metadata_hash,
                     last_indexed = NOW()
-            """
+            """,
+                job.index_name,
+                doc.document_id,
+                doc.filename,
+                doc.revision_no,
+                metadata_hash,
             )
 
         job.total_chunks += len(documents)
@@ -1103,9 +1136,7 @@ class PdmIndexerService:
             cursor: Any = conn.cursor()
 
             # Extensions may already include the dot (e.g., '.SLDPRT'), so use them as-is
-            ext_filter = " OR ".join([f"Filename LIKE '%{ext}'" for ext in (config.file_extensions or [])])
-            if not ext_filter:
-                ext_filter = "1=1"
+            ext_filter = _build_pdm_extension_filter(config.file_extensions, "Filename")
 
             deleted_filter = "AND Deleted = 0" if config.exclude_deleted else ""
 
@@ -1126,10 +1157,9 @@ class PdmIndexerService:
         try:
             db: Any = await get_db()
             result = await db.query_raw(
-                f"""
-                SELECT metadata_hash FROM pdm_document_metadata
-                WHERE index_name = '{index_name}' AND document_id = {document_id}
-            """
+                "SELECT metadata_hash FROM pdm_document_metadata WHERE index_name = $1 AND document_id = $2",
+                index_name,
+                document_id,
             )
             if result and result[0].get("metadata_hash"):
                 return result[0]["metadata_hash"]
@@ -1140,8 +1170,8 @@ class PdmIndexerService:
     async def _clear_embeddings(self, index_name: str):
         """Clear all embeddings for an index."""
         db: Any = await get_db()
-        await db.execute_raw(f"DELETE FROM pdm_embeddings WHERE index_name = '{index_name}'")
-        await db.execute_raw(f"DELETE FROM pdm_document_metadata WHERE index_name = '{index_name}'")
+        await db.execute_raw("DELETE FROM pdm_embeddings WHERE index_name = $1", index_name)
+        await db.execute_raw("DELETE FROM pdm_document_metadata WHERE index_name = $1", index_name)
         logger.info(f"Cleared PDM embeddings for index {index_name}")
 
     # =========================================================================
@@ -1297,6 +1327,16 @@ async def search_pdm_index(
         Formatted string with matching PDM documents
     """
     try:
+        # Build document type filter before doing embedding work so invalid
+        # caller input never reaches SQL construction or expensive providers.
+        extra_where = None
+        if document_type:
+            normalized_document_type = document_type.strip().upper()
+            if normalized_document_type not in _ALLOWED_PDM_DOCUMENT_TYPES:
+                allowed = ", ".join(sorted(_ALLOWED_PDM_DOCUMENT_TYPES))
+                return f"Error: Invalid document_type filter. Allowed values: {allowed}"
+            extra_where = f"document_type = '{normalized_document_type}'"
+
         # Get embedding model
         from ragtime.core.app_settings import get_app_settings
 
@@ -1313,11 +1353,6 @@ async def search_pdm_index(
         # Generate query embedding
         query_embedding = await asyncio.to_thread(embeddings.embed_documents, [query])
         embedding = query_embedding[0]
-
-        # Build document type filter
-        extra_where = None
-        if document_type:
-            extra_where = f"document_type = '{document_type.upper()}'"
 
         # Search using centralized pgvector search
         results = await search_pgvector_embeddings(

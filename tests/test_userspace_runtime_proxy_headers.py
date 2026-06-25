@@ -24,6 +24,9 @@ _proxy_request_headers = getattr(_RUNTIME_ROUTES, "_proxy_request_headers")
 _proxy_response_headers = getattr(_RUNTIME_ROUTES, "_proxy_response_headers")
 _worker_preview_request_headers = getattr(_WORKER_API, "_preview_request_headers")
 _worker_preview_response_headers = getattr(_WORKER_API, "_preview_response_headers")
+_build_bridge_config_tag = getattr(_RUNTIME_ROUTES, "_build_bridge_config_tag")
+_build_bridge_context_tag = getattr(_RUNTIME_ROUTES, "_build_bridge_context_tag")
+_json_for_inline_script = getattr(_RUNTIME_ROUTES, "_json_for_inline_script")
 
 
 def _browser_app_cookie_name(name: str) -> str:
@@ -318,6 +321,90 @@ class ProxyHttpRequestPreviewHostGateTests(unittest.IsolatedAsyncioTestCase):
         # No Set-Cookie is returned to the browser.
         set_cookies = [value for key, value in response.raw_headers if key == b"set-cookie"]
         self.assertEqual(set_cookies, [])
+
+
+class ProxyRequestHeadersShareAuthBlockTests(unittest.TestCase):
+    """x-userspace-share-auth must be stripped before reaching the devserver."""
+
+    def _build_request_with_header(self, header_name: str, header_value: str) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "raw_path": b"/",
+                "query_string": b"",
+                "headers": [
+                    (b"host", b"workspace.example.test"),
+                    (header_name.encode("ascii"), header_value.encode("ascii")),
+                ],
+                "scheme": "https",
+                "server": ("workspace.example.test", 443),
+                "client": ("127.0.0.1", 12345),
+            }
+        )
+
+    def test_blocks_x_userspace_share_auth_header(self) -> None:
+        request = self._build_request_with_header("x-userspace-share-auth", "share-token-value")
+
+        headers = _proxy_request_headers(request)
+
+        self.assertNotIn("x-userspace-share-auth", {key.lower() for key in headers})
+
+    def test_blocks_x_userspace_share_password_header(self) -> None:
+        request = self._build_request_with_header("x-userspace-share-password", "secret")
+
+        headers = _proxy_request_headers(request)
+
+        self.assertNotIn("x-userspace-share-password", {key.lower() for key in headers})
+
+    def test_does_not_block_unrelated_custom_headers(self) -> None:
+        request = self._build_request_with_header("x-custom-app-header", "value")
+
+        headers = _proxy_request_headers(request)
+
+        self.assertIn("x-custom-app-header", {key.lower() for key in headers})
+
+
+class BridgeTagXssEscapingTests(unittest.TestCase):
+    """_build_bridge_config_tag and _build_bridge_context_tag must escape HTML-unsafe chars."""
+
+    def test_bridge_config_tag_escapes_angle_brackets(self) -> None:
+        flags = ["allow-scripts", "<script>alert(1)</script>"]
+        tag = _build_bridge_config_tag(flags)
+        self.assertNotIn(b"<script>alert", tag)
+        self.assertIn(b"\\u003cscript\\u003e", tag)
+
+    def test_bridge_config_tag_escapes_ampersand(self) -> None:
+        flags = ["flag&value"]
+        tag = _build_bridge_config_tag(flags)
+        self.assertNotIn(b"flag&value", tag)
+        self.assertIn(b"\\u0026", tag)
+
+    def test_bridge_context_tag_escapes_angle_brackets(self) -> None:
+        context = {"key": "</script><script>alert(1)"}
+        tag = _build_bridge_context_tag(context)
+        json_data = tag.split(b"=", 1)[1].rsplit(b";", 1)[0]
+        self.assertNotIn(b"</script>", json_data)
+        self.assertIn(b"\\u003c/script\\u003e", tag)
+
+    def test_bridge_context_tag_escapes_ampersand(self) -> None:
+        context = {"url": "https://example.com?a=1&b=2"}
+        tag = _build_bridge_context_tag(context)
+        self.assertNotIn(b"a=1&b=2", tag)
+        self.assertIn(b"\\u0026", tag)
+
+    def test_bridge_config_tag_valid_flags_are_preserved(self) -> None:
+        flags = ["allow-scripts", "allow-forms"]
+        tag = _build_bridge_config_tag(flags)
+        self.assertIn(b"allow-scripts", tag)
+        self.assertIn(b"allow-forms", tag)
+
+    def test_bridge_context_tag_valid_values_are_preserved(self) -> None:
+        context = {"workspace_id": "ws-abc123", "mode": "workspace"}
+        tag = _build_bridge_context_tag(context)
+        self.assertIn(b"ws-abc123", tag)
+        self.assertIn(b"workspace", tag)
 
 
 if __name__ == "__main__":
