@@ -100,37 +100,16 @@ def workspace_path_matches_mount_prefix(path: str, prefix: str) -> bool:
 def _is_path_contained_under(child: Path, parent: Path) -> bool:
     """Return True if ``child`` is contained within ``parent`` after resolving symlinks.
 
-    For paths that exist on disk, both sides are fully resolved so that symlinks
-    cannot escape the parent boundary.  For paths that do not yet exist (e.g. a
-    file about to be written), the nearest existing ancestor is resolved instead
-    so that the containment check is still meaningful without requiring the full
-    path to be present.
+    ``Path.resolve(strict=False)`` follows any existing symlinks but still keeps
+    non-existent suffixes, so the same check works for existing files and paths
+    that are about to be written.
     """
     try:
-        resolved_parent = parent.resolve()
-        # Walk up from child until we find an existing ancestor, then resolve it.
-        candidate = child
-        suffix_parts: list[str] = []
-        while True:
-            try:
-                resolved_candidate = candidate.resolve()
-                # Re-attach the non-existing suffix parts (no symlinks possible there).
-                if suffix_parts:
-                    resolved_child = resolved_candidate.joinpath(*reversed(suffix_parts))
-                else:
-                    resolved_child = resolved_candidate
-                break
-            except OSError:
-                suffix_parts.append(candidate.name)
-                parent_candidate = candidate.parent
-                if parent_candidate == candidate:
-                    # Reached filesystem root without resolving — treat as unsafe.
-                    return False
-                candidate = parent_candidate
-        # The resolved child must be equal to or a descendant of the resolved parent.
-        return resolved_child == resolved_parent or resolved_parent in resolved_child.parents
+        resolved_parent = parent.resolve(strict=False)
+        resolved_child = child.resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         return False
+    return resolved_child.is_relative_to(resolved_parent)
 
 
 def resolve_workspace_mount_source_path(
