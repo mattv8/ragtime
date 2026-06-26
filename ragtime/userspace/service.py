@@ -8264,6 +8264,8 @@ class UserSpaceService:
         normalized = relative_path.strip("/")
         if normalized.endswith(".artifact.json"):
             return True
+        if _is_sqlite_file_path(normalized) and _is_managed_sqlite_file_path(normalized):
+            return False
         parts = Path(normalized).parts
         # Allow agent access to specific .ragtime/ files (e.g. runtime-entrypoint.json)
         if len(parts) == 2 and parts[0] == ".ragtime" and parts[1] in _AGENT_WRITABLE_RAGTIME_FILES:

@@ -92,7 +92,11 @@ def _build_zip_bytes(entries: dict[str, bytes]) -> bytes:
 class _FakeRuntimeService:
     @staticmethod
     def _normalize_file_path(file_path: str) -> str:
-        return file_path.strip("/")
+        from ragtime.core.workspace_ops import normalize_runtime_file_path
+        from ragtime.userspace.service import UserSpaceService
+
+        svc = UserSpaceService.__new__(UserSpaceService)
+        return normalize_runtime_file_path(file_path, is_reserved_path=svc.is_reserved_internal_path)
 
     @staticmethod
     def get_preview_origin(workspace_id: str) -> str:
@@ -107,6 +111,11 @@ class _FakeUserSpaceService:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.touched: list[str] = []
+
+    def is_reserved_internal_path(self, relative_path: str) -> bool:
+        from ragtime.userspace.service import UserSpaceService
+
+        return UserSpaceService.is_reserved_internal_path(self, relative_path)
 
     async def enforce_workspace_role(self, workspace_id: str, user_id: str, required_role: str):
         return None
@@ -138,6 +147,20 @@ class _FakeUserSpaceService:
 
 
 class UserSpaceDocumentParseTests(unittest.IsolatedAsyncioTestCase):
+    def test_primitive_file_path_allows_managed_sqlite_database(self) -> None:
+        from ragtime.userspace.service import UserSpaceService
+
+        svc = UserSpaceService.__new__(UserSpaceService)
+        self.assertFalse(svc.is_reserved_internal_path(".ragtime/db/app.sqlite3"))
+        self.assertFalse(svc.is_reserved_internal_path(".ragtime/db/something.sqlite"))
+
+    def test_primitive_file_path_keeps_other_internal_paths_reserved(self) -> None:
+        from ragtime.userspace.service import UserSpaceService
+
+        svc = UserSpaceService.__new__(UserSpaceService)
+        self.assertTrue(svc.is_reserved_internal_path(".ragtime/audit-identity.json"))
+        self.assertTrue(svc.is_reserved_internal_path(".ragtime/db/something.txt"))
+
     async def test_extracts_text_from_xlsx_upload(self) -> None:
         upload = _make_upload_file(
             "support.xlsx",
@@ -227,6 +250,31 @@ class UserSpaceDocumentParseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(write_result["path"], "uploads/payload.bin")
         self.assertEqual(response.body, b"\x00hello")
+
+    async def test_workspace_file_primitive_round_trips_managed_sqlite_database_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = _FakeUserSpaceService(Path(temp_dir))
+            request = _build_body_request(b"sqlite-bytes")
+
+            with (
+                mock.patch.object(runtime_routes, "_userspace_service", return_value=service),
+                mock.patch.object(runtime_routes, "_runtime_service", return_value=_FakeRuntimeService()),
+                mock.patch.object(runtime_routes, "_get_primitive_upload_max_bytes", mock.AsyncMock(return_value=1024 * 1024)),
+            ):
+                write_result = await runtime_routes._primitive_workspace_file_write_request(
+                    "workspace-1",
+                    ".ragtime/db/app.sqlite3",
+                    request,
+                    "user-1",
+                )
+                response = await runtime_routes._primitive_workspace_file_response(
+                    "workspace-1",
+                    ".ragtime/db/app.sqlite3",
+                    "user-1",
+                )
+
+        self.assertEqual(write_result["path"], ".ragtime/db/app.sqlite3")
+        self.assertEqual(response.body, b"sqlite-bytes")
 
     async def test_workspace_file_primitive_limit_error_names_configured_limit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
