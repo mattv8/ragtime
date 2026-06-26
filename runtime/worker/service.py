@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import hashlib
 import html
 import io
@@ -15,7 +14,8 @@ import signal
 import socket
 import sys
 import time
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -34,6 +34,8 @@ from runtime.manager.models import (
     RuntimeFileReadResponse,
     RuntimeMcpToolCallRequest,
     RuntimeMcpToolCallResponse,
+    RuntimeMcpToolInfo,
+    RuntimeMcpToolListResponse,
     RuntimePdfReadMatch,
     RuntimePdfReadRequest,
     RuntimePdfReadResponse,
@@ -178,13 +180,14 @@ _RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _PLAYWRIGHT_BROKER_JS_PATH = _TEMPLATES_DIR / "playwright_broker.js"
 _PLAYWRIGHT_MCP_SERVER_PATH = Path(__file__).parent / "mcp_playwright_server.py"
-_PLAYWRIGHT_MCP_TOOL_NAMES = {
-    "playwright_content_probe",
-    "playwright_console_messages",
-    "playwright_capture_screenshot",
-    "playwright_external_browse",
-    "playwright_debug_steps",
-}
+_PLAYWRIGHT_MCP_TOOL_NAMES = frozenset(
+    {
+        "playwright_content_probe",
+        "playwright_capture_screenshot",
+        "playwright_external_browse",
+        "playwright_debug_steps",
+    }
+)
 _S3RVER_RUNNER_JS_PATH = _TEMPLATES_DIR / "s3rver_runner.js"
 _REDACTED_ENV_VIEW_TEMPLATE_PATH = _TEMPLATES_DIR / "redacted_env_view.py"
 
@@ -201,10 +204,106 @@ class DevserverResolution:
 
 
 @dataclass
-class McpPlaywrightSlot:
+class McpServerSpec:
+    """Static definition of a runtime MCP server the worker can launch.
+
+    Built-in servers are declared in ``_BUILTIN_MCP_SERVERS``. Adding a new
+    internal server (Pylance, MyPy, TypeScript, ...) is just adding a spec;
+    no per-server worker plumbing is required.
+    """
+
+    name: str
+    server_id: str
+    display_name: str
+    command: str
+    args: list[str]
+    env: dict[str, str] = field(default_factory=dict)
+    # When None, any tool name is accepted (e.g. dynamically discovered servers).
+    tool_names: frozenset[str] | None = None
+    # Tools callable without an active workspace session.
+    sessionless_tools: frozenset[str] = frozenset()
+    # Tools allowed to return ok=False without the worker raising (partial runs).
+    partial_failure_tools: frozenset[str] = frozenset()
+    # Tools reserved for UI/backend use and hidden from the conversational agent.
+    agent_excluded_tools: frozenset[str] = frozenset()
+    # Whether tool calls require a running devserver + preview-context injection.
+    requires_devserver: bool = False
+    inject_preview_context: bool = False
+    pool_size: int = 0  # 0 -> use the worker default pool size
+
+
+def _build_builtin_mcp_servers() -> dict[str, McpServerSpec]:
+    playwright = McpServerSpec(
+        name="playwright",
+        server_id="runtime-playwright",
+        display_name="Runtime Playwright",
+        command=sys.executable,
+        args=[str(_PLAYWRIGHT_MCP_SERVER_PATH)],
+        env={"RAGTIME_PLAYWRIGHT_BROKER_JS_PATH": str(_PLAYWRIGHT_BROKER_JS_PATH)},
+        tool_names=_PLAYWRIGHT_MCP_TOOL_NAMES,
+        sessionless_tools=frozenset({"playwright_external_browse"}),
+        partial_failure_tools=frozenset({"playwright_debug_steps"}),
+        # UI/Backend specific tools are excluded from the conversational agent.
+        # playwright_debug_steps is intentionally allowed so the dynamic MCP
+        # binder can bind it natively!
+        agent_excluded_tools=frozenset(
+            {
+                "playwright_content_probe",
+                "playwright_capture_screenshot",
+                "playwright_external_browse",
+            }
+        ),
+        requires_devserver=True,
+        inject_preview_context=True,
+    )
+    return {playwright.name: playwright}
+
+
+_BUILTIN_MCP_SERVERS: dict[str, McpServerSpec] = _build_builtin_mcp_servers()
+
+
+@dataclass
+class _McpJob:
+    """A single MCP operation queued for a slot's owner task.
+
+    ``run`` receives the live MCP ``ClientSession`` and performs exactly one
+    request (tool call or list-tools) so the SDK's anyio scopes stay on the
+    owner task.
+    """
+
+    run: Callable[[Any], Awaitable[Any]]
+    timeout_ms: int
+    future: asyncio.Future[Any]
+
+
+@dataclass
+class McpServerSlot:
+    """A warm, long-lived runtime MCP connection for one server.
+
+    The MCP Python SDK's ``stdio_client``/``ClientSession`` build anyio task
+    groups whose cancel scopes are bound to the task that enters them, so the
+    enter/call/exit lifecycle must all happen on a single task. We therefore
+    run one dedicated owner task per slot that owns the connection and pulls
+    operations off ``queue``; request handlers submit jobs and await futures.
+    This keeps server processes (and warm Chromium) alive across calls and
+    tears down cleanly (no leaked subprocess) by cancelling the owner in-place.
+    """
+
     slot_id: int
-    exit_stack: contextlib.AsyncExitStack | None = None
-    client: Any | None = None
+    spec: McpServerSpec
+    queue: asyncio.Queue[_McpJob | None] | None = None
+    owner_task: asyncio.Task[None] | None = None
+    ready: asyncio.Event | None = None
+    start_error: str | None = None
+
+
+@dataclass
+class _McpServerPool:
+    """A fixed pool of warm connections for a single MCP server."""
+
+    spec: McpServerSpec
+    slots: list[McpServerSlot]
+    available: asyncio.Queue[int]
 
 
 @dataclass
@@ -265,11 +364,13 @@ class WorkerService:
                 2,
             )
         )
-        self._mcp_playwright_pool_size = get_positive_int_env("RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE", 2)
-        self._mcp_playwright_slots = [McpPlaywrightSlot(slot_id=i) for i in range(self._mcp_playwright_pool_size)]
-        self._mcp_playwright_available: asyncio.Queue[int] = asyncio.Queue(maxsize=self._mcp_playwright_pool_size)
-        for i in range(self._mcp_playwright_pool_size):
-            self._mcp_playwright_available.put_nowait(i)
+        self._mcp_default_pool_size = get_positive_int_env(
+            "RUNTIME_MCP_SERVER_POOL_SIZE",
+            get_positive_int_env("RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE", 2),
+        )
+        self._mcp_pools: dict[str, _McpServerPool] = {}
+        self._mcp_pools_lock = asyncio.Lock()
+        self._mcp_tool_catalog_cache: dict[str, list[RuntimeMcpToolInfo]] = {}
 
     def _normalize_file_path(
         self,
@@ -1414,88 +1515,188 @@ class WorkerService:
             return ""
         return self._compact_devserver_log_for_error(content)
 
-    async def _ensure_mcp_slot(self, slot: McpPlaywrightSlot):
-        if slot.client is not None:
-            return slot.client
+    async def _run_mcp_slot(self, slot: McpServerSlot) -> None:
+        """Owner task: own one MCP connection and serve queued operations.
+
+        Connect / initialize / run-op / teardown all run on this single task so
+        the MCP SDK's anyio cancel scopes are entered and exited on the same
+        task. Request handlers never touch the connection directly; they submit
+        jobs to ``slot.queue`` and await the per-job future.
+        """
+        assert slot.queue is not None and slot.ready is not None
+        queue = slot.queue
+        ready = slot.ready
+        spec = slot.spec
 
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Runtime MCP client dependencies are unavailable: {exc}") from exc
+        except Exception as exc:  # pragma: no cover - environment guard
+            slot.start_error = f"Runtime MCP client dependencies are unavailable: {exc}"
+            ready.set()
+            self._fail_pending_mcp_jobs(queue, slot.start_error)
+            return
 
-        slot.exit_stack = contextlib.AsyncExitStack()
+        params = StdioServerParameters(
+            command=spec.command,
+            args=list(spec.args),
+            env={**os.environ, **spec.env},
+        )
+
         try:
-            server_env = {
-                **os.environ,
-                "RAGTIME_PLAYWRIGHT_BROKER_JS_PATH": str(_PLAYWRIGHT_BROKER_JS_PATH),
-            }
-            params = StdioServerParameters(
-                command=sys.executable,
-                args=[str(_PLAYWRIGHT_MCP_SERVER_PATH)],
-                env=server_env,
-            )
-            stdio_ctx = stdio_client(params)
-            read_stream, write_stream = await slot.exit_stack.enter_async_context(stdio_ctx)
-            session_ctx = ClientSession(read_stream, write_stream)
-            slot.client = await slot.exit_stack.enter_async_context(session_ctx)
-            await asyncio.wait_for(slot.client.initialize(), timeout=10)  # type: ignore[union-attr]
-            return slot.client
-        except Exception:
-            await self._terminate_mcp_slot(slot)
+            async with stdio_client(params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as client:
+                    await asyncio.wait_for(client.initialize(), timeout=15)
+                    slot.start_error = None
+                    ready.set()
+                    while True:
+                        job = await queue.get()
+                        if job is None:
+                            break
+                        if job.future.cancelled():
+                            continue
+                        try:
+                            op_result = await asyncio.wait_for(
+                                job.run(client),
+                                timeout=max(5.0, job.timeout_ms / 1000.0 + 10.0),
+                            )
+                        except Exception as exc:
+                            if not job.future.done():
+                                job.future.set_exception(exc)
+                            # A failed op means the stdio transport is no longer
+                            # trustworthy; end this owner so the next request
+                            # rebuilds a fresh warm connection.
+                            raise
+                        if not job.future.done():
+                            job.future.set_result(op_result)
+        except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            if slot.start_error is None:
+                slot.start_error = str(exc)
+        finally:
+            if not ready.is_set():
+                ready.set()
+            slot.owner_task = None
+            self._fail_pending_mcp_jobs(queue, slot.start_error or "Runtime MCP session ended")
 
-    async def _terminate_mcp_slot(self, slot: McpPlaywrightSlot):
-        if slot.exit_stack:
+    @staticmethod
+    def _fail_pending_mcp_jobs(queue: "asyncio.Queue[_McpJob | None]", message: str) -> None:
+        while True:
             try:
-                await slot.exit_stack.aclose()
+                job = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if job is None:
+                continue
+            if not job.future.done():
+                job.future.set_exception(HTTPException(status_code=503, detail=message))
+
+    async def _ensure_mcp_slot(self, slot: McpServerSlot) -> None:
+        if slot.owner_task is not None and not slot.owner_task.done():
+            if slot.ready is not None:
+                try:
+                    await asyncio.wait_for(slot.ready.wait(), timeout=30)
+                except asyncio.TimeoutError as exc:
+                    await self._terminate_mcp_slot(slot)
+                    raise HTTPException(status_code=503, detail=f"Timed out waiting for runtime MCP server '{slot.spec.name}'") from exc
+            if slot.start_error:
+                detail = slot.start_error
+                await self._terminate_mcp_slot(slot)
+                raise HTTPException(status_code=503, detail=detail)
+            return
+
+        slot.queue = asyncio.Queue()
+        slot.ready = asyncio.Event()
+        slot.start_error = None
+        slot.owner_task = asyncio.create_task(self._run_mcp_slot(slot))
+        try:
+            await asyncio.wait_for(slot.ready.wait(), timeout=30)
+        except asyncio.TimeoutError as exc:
+            await self._terminate_mcp_slot(slot)
+            raise HTTPException(status_code=503, detail=f"Timed out starting runtime MCP server '{slot.spec.name}'") from exc
+        if slot.start_error:
+            detail = slot.start_error
+            await self._terminate_mcp_slot(slot)
+            raise HTTPException(status_code=503, detail=detail)
+
+    async def _terminate_mcp_slot(self, slot: McpServerSlot) -> None:
+        task = slot.owner_task
+        slot.owner_task = None
+        if slot.queue is not None:
+            self._fail_pending_mcp_jobs(slot.queue, "Runtime MCP session terminated")
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
-        slot.exit_stack = None
-        slot.client = None
+        slot.queue = None
+        slot.ready = None
 
-    async def _terminate_mcp_brokers(self):
-        for slot in self._mcp_playwright_slots:
-            await self._terminate_mcp_slot(slot)
+    async def _terminate_mcp_brokers(self) -> None:
+        for pool in list(self._mcp_pools.values()):
+            for slot in pool.slots:
+                await self._terminate_mcp_slot(slot)
 
-    async def _invoke_playwright_mcp_tool(
+    @staticmethod
+    def _resolve_mcp_spec(server_name: str) -> McpServerSpec:
+        spec = _BUILTIN_MCP_SERVERS.get(server_name)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"Unknown runtime MCP server: {server_name}")
+        return spec
+
+    async def _acquire_mcp_pool(self, spec: McpServerSpec) -> _McpServerPool:
+        pool = self._mcp_pools.get(spec.name)
+        if pool is not None:
+            return pool
+        async with self._mcp_pools_lock:
+            pool = self._mcp_pools.get(spec.name)
+            if pool is None:
+                size = max(1, spec.pool_size or self._mcp_default_pool_size)
+                slots = [McpServerSlot(slot_id=i, spec=spec) for i in range(size)]
+                available: asyncio.Queue[int] = asyncio.Queue(maxsize=size)
+                for i in range(size):
+                    available.put_nowait(i)
+                pool = _McpServerPool(spec=spec, slots=slots, available=available)
+                self._mcp_pools[spec.name] = pool
+        return pool
+
+    async def _run_on_mcp_pool(
         self,
-        session: WorkerSession | None,
-        tool_name: str,
-        arguments: dict[str, Any],
+        spec: McpServerSpec,
+        run: Callable[[Any], Awaitable[Any]],
         *,
         timeout_ms: int,
-        screenshot_dir: Path | None = None,
-    ) -> RuntimeMcpToolCallResponse:
-        """Call the runtime Playwright server over MCP stdio transport."""
-        if session is None and tool_name != "playwright_external_browse":
-            raise HTTPException(status_code=404, detail="Runtime session unavailable")
-        if tool_name not in _PLAYWRIGHT_MCP_TOOL_NAMES:
-            raise HTTPException(status_code=400, detail=f"Unknown runtime MCP tool: {tool_name}")
-
-        request_payload = dict(arguments or {})
-
-        if session:
-            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
-            request_payload["__ragtime_preview_base_url"] = upstream_base
-        else:
-            request_payload["__ragtime_preview_base_url"] = "http://127.0.0.1:0"
-
-        if screenshot_dir:
-            request_payload["__ragtime_screenshot_dir"] = str(screenshot_dir)
-
-        slot_index = await self._mcp_playwright_available.get()
-        slot = self._mcp_playwright_slots[slot_index]
+    ) -> Any:
+        """Acquire a warm slot for ``spec`` and run one MCP operation on it."""
+        pool = await self._acquire_mcp_pool(spec)
+        slot_index = await pool.available.get()
+        slot = pool.slots[slot_index]
+        result: Any = None
         try:
             for attempt in range(2):
                 try:
-                    client = await self._ensure_mcp_slot(slot)
-                    result = await asyncio.wait_for(
-                        client.call_tool(tool_name, request_payload),
-                        timeout=max(5.0, timeout_ms / 1000.0 + 10.0),
-                    )
+                    await self._ensure_mcp_slot(slot)
+                    queue = slot.queue
+                    if queue is None:
+                        raise HTTPException(status_code=503, detail=f"Runtime MCP server '{spec.name}' is unavailable")
+                    future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+                    await queue.put(_McpJob(run=run, timeout_ms=timeout_ms, future=future))
+                    result = await asyncio.wait_for(future, timeout=max(10.0, timeout_ms / 1000.0 + 20.0))
                     break
+                except asyncio.TimeoutError as exc:
+                    await self._terminate_mcp_slot(slot)
+                    if attempt == 0:
+                        continue
+                    raise HTTPException(status_code=504, detail="Runtime MCP tool call timed out") from exc
                 except HTTPException:
+                    # Raised on transient session loss (op failed mid-flight or
+                    # startup error); retry once with a fresh warm connection.
+                    if attempt == 0:
+                        continue
                     raise
                 except Exception as exc:
                     await self._terminate_mcp_slot(slot)
@@ -1504,9 +1705,42 @@ class WorkerService:
                     raise HTTPException(status_code=502, detail=f"Runtime MCP tool call failed: {exc}") from exc
         finally:
             try:
-                self._mcp_playwright_available.put_nowait(slot_index)
+                pool.available.put_nowait(slot_index)
             except asyncio.QueueFull:
                 pass
+        return result
+
+    async def _invoke_mcp_tool(
+        self,
+        session: WorkerSession | None,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout_ms: int,
+        screenshot_dir: Path | None = None,
+    ) -> RuntimeMcpToolCallResponse:
+        """Call a tool on a named runtime MCP server over stdio transport."""
+        spec = self._resolve_mcp_spec(server_name)
+        if session is None and tool_name not in spec.sessionless_tools:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        if spec.tool_names is not None and tool_name not in spec.tool_names:
+            raise HTTPException(status_code=400, detail=f"Unknown runtime MCP tool: {server_name}/{tool_name}")
+
+        request_payload = dict(arguments or {})
+        if spec.inject_preview_context:
+            if session:
+                request_payload["__ragtime_preview_base_url"] = f"http://127.0.0.1:{session.devserver_port}"
+            else:
+                request_payload["__ragtime_preview_base_url"] = "http://127.0.0.1:0"
+            if screenshot_dir:
+                request_payload["__ragtime_screenshot_dir"] = str(screenshot_dir)
+
+        result = await self._run_on_mcp_pool(
+            spec,
+            lambda client: client.call_tool(tool_name, request_payload),
+            timeout_ms=timeout_ms,
+        )
 
         request_payload.pop("__ragtime_preview_base_url", None)
         request_payload.pop("__ragtime_screenshot_dir", None)
@@ -1529,17 +1763,61 @@ class WorkerService:
                 response_payload = {"text": "\n".join(text_items)}
         if bool(getattr(result, "isError", False)) and "error" not in response_payload:
             response_payload["error"] = response_payload.get("text") or "MCP tool returned an error"
-        if response_payload.get("ok") is False and tool_name != "playwright_debug_steps":
+        if response_payload.get("ok") is False and tool_name not in spec.partial_failure_tools:
             raise HTTPException(status_code=502, detail=str(response_payload.get("error") or "Runtime MCP tool returned an error"))
 
         return RuntimeMcpToolCallResponse(
             ok=bool(response_payload.get("ok", True)),
-            server_id="runtime-playwright",
-            server_name="Runtime Playwright",
+            server_id=spec.server_id,
+            server_name=spec.display_name,
             tool_name=tool_name,
             request=request_payload,
             response=response_payload,
         )
+
+    async def _list_server_tools(self, spec: McpServerSpec) -> list[RuntimeMcpToolInfo]:
+        cached = self._mcp_tool_catalog_cache.get(spec.name)
+        if cached is not None:
+            return cached
+        list_result = await self._run_on_mcp_pool(
+            spec,
+            lambda client: client.list_tools(),
+            timeout_ms=10000,
+        )
+        discovered: list[RuntimeMcpToolInfo] = []
+        for tool in getattr(list_result, "tools", []) or []:
+            name = str(getattr(tool, "name", "") or "")
+            if not name:
+                continue
+            discovered.append(
+                RuntimeMcpToolInfo(
+                    server_name=spec.name,
+                    server_id=spec.server_id,
+                    name=name,
+                    description=str(getattr(tool, "description", "") or ""),
+                    input_schema=dict(getattr(tool, "inputSchema", {}) or {}),
+                    agent_excluded=name in spec.agent_excluded_tools,
+                )
+            )
+        self._mcp_tool_catalog_cache[spec.name] = discovered
+        return discovered
+
+    async def list_mcp_tools(self, worker_session_id: str) -> RuntimeMcpToolListResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+        tools: list[RuntimeMcpToolInfo] = []
+        for spec in _BUILTIN_MCP_SERVERS.values():
+            tools.extend(await self._list_server_tools(spec))
+        return RuntimeMcpToolListResponse(tools=tools)
+
+    async def list_global_mcp_tools(self) -> RuntimeMcpToolListResponse:
+        """List built-in MCP tools that do not require an active workspace session."""
+        tools: list[RuntimeMcpToolInfo] = []
+        for spec in _BUILTIN_MCP_SERVERS.values():
+            tools.extend(await self._list_server_tools(spec))
+        return RuntimeMcpToolListResponse(tools=tools)
 
     @staticmethod
     def _probe_looks_like_startup_blank(probe: dict[str, Any]) -> bool:
@@ -2445,8 +2723,9 @@ class WorkerService:
             output_dir = self._workspace_screenshot_dir(session.workspace_root)
             output_dir.mkdir(parents=True, exist_ok=True)
 
-        mcp_result = await self._invoke_playwright_mcp_tool(
+        mcp_result = await self._invoke_mcp_tool(
             session,
+            "playwright",
             "playwright_capture_screenshot",
             {
                 "path": normalized_preview_path,
@@ -2478,8 +2757,9 @@ class WorkerService:
                 max(requested_wait_after_load_ms + 2000, 1500),
                 12000,
             )
-            retry_mcp_result = await self._invoke_playwright_mcp_tool(
+            retry_mcp_result = await self._invoke_mcp_tool(
                 session,
+                "playwright",
                 "playwright_capture_screenshot",
                 {
                     "path": normalized_preview_path,
@@ -2561,8 +2841,9 @@ class WorkerService:
             if normalized_preview_path:
                 normalized_preview_path = self._normalize_file_path(normalized_preview_path)
 
-        mcp_result = await self._invoke_playwright_mcp_tool(
+        mcp_result = await self._invoke_mcp_tool(
             session,
+            "playwright",
             "playwright_content_probe",
             {
                 "path": normalized_preview_path,
@@ -2645,8 +2926,9 @@ class WorkerService:
                     raise HTTPException(status_code=409, detail="Worker session not active")
                 session.updated_at = utc_now()
 
-        mcp_result = await self._invoke_playwright_mcp_tool(
+        mcp_result = await self._invoke_mcp_tool(
             session,
+            "playwright",
             "playwright_external_browse",
             {
                 "url": payload.url,
@@ -2668,25 +2950,30 @@ class WorkerService:
         worker_session_id: str,
         payload: RuntimeMcpToolCallRequest,
     ) -> RuntimeMcpToolCallResponse:
+        spec = self._resolve_mcp_spec(payload.server_name)
         async with self._lock:
             session = self._sessions.get(worker_session_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Worker session not found")
             if session.state not in {"running", "starting"}:
                 raise HTTPException(status_code=409, detail="Worker session not active")
-            if not session.devserver_running or not session.devserver_port:
-                await self._sync_devserver_state_locked(session)
-            if not session.devserver_running or not session.devserver_port:
-                raise HTTPException(
-                    status_code=503,
-                    detail=session.last_error or "Dev server is starting. Retry when runtime is ready.",
-                )
+            screenshot_dir: Path | None = None
+            if spec.requires_devserver:
+                if not session.devserver_running or not session.devserver_port:
+                    await self._sync_devserver_state_locked(session)
+                if not session.devserver_running or not session.devserver_port:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=session.last_error or "Dev server is starting. Retry when runtime is ready.",
+                    )
             session.updated_at = utc_now()
-            screenshot_dir = self._workspace_screenshot_dir(session.workspace_root)
-            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            if spec.inject_preview_context:
+                screenshot_dir = self._workspace_screenshot_dir(session.workspace_root)
+                screenshot_dir.mkdir(parents=True, exist_ok=True)
 
-        return await self._invoke_playwright_mcp_tool(
+        return await self._invoke_mcp_tool(
             session,
+            payload.server_name,
             payload.tool_name,
             payload.arguments,
             timeout_ms=int(payload.timeout_ms),
@@ -3101,6 +3388,9 @@ class WorkerService:
                 await self._terminate_devserver_locked(sid)
             for sid in list(self._object_storage_processes.keys()):
                 await self._terminate_object_storage_locked(sid)
+        # Tear down warm Playwright MCP connections outside the lock so owner
+        # task cancellation (and stdio subprocess teardown) cannot deadlock on it.
+        await self._terminate_mcp_brokers()
 
     async def health(self) -> WorkerHealthResponse:
         async with self._lock:

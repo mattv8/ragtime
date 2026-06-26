@@ -116,6 +116,9 @@ class UserSpaceRuntimeService:
         self._collab_docs: dict[tuple[str, str], _CollabDocState] = {}
         self._collab_lock = asyncio.Lock()
         self._runtime_cache_lock = asyncio.Lock()
+        self._global_mcp_tools_cache: list[dict[str, Any]] = []
+        self._global_mcp_tools_cache_time: datetime = datetime.min.replace(tzinfo=timezone.utc)
+        self._global_mcp_tools_last_attempt: datetime = datetime.min.replace(tzinfo=timezone.utc)
         self._workspace_generation: dict[str, int] = {}
         self._collab_presence: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
         self._workspace_events: dict[str, asyncio.Condition] = {}
@@ -1381,6 +1384,32 @@ class UserSpaceRuntimeService:
             "POST",
             f"/sessions/{provider_session_id}/external-browse",
             json_payload=payload,
+        )
+
+    async def _runtime_provider_mcp_tool_call(
+        self,
+        provider_session_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "POST",
+            f"/sessions/{provider_session_id}/mcp/tools/call",
+            json_payload=payload,
+        )
+
+    async def _runtime_provider_mcp_tool_list(
+        self,
+        provider_session_id: str | None,
+    ) -> dict[str, Any]:
+        if not provider_session_id:
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        self._require_runtime_manager()
+        return await self._runtime_manager_request(
+            "GET",
+            f"/sessions/{provider_session_id}/mcp/tools",
         )
 
     async def _runtime_provider_exec_command(
@@ -3254,6 +3283,72 @@ class UserSpaceRuntimeService:
             session.provider_session_id,
             payload,
         )
+
+    async def call_workspace_mcp_tool(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        tool_name: str,
+        server_name: str = "playwright",
+        arguments: dict[str, Any] | None = None,
+        timeout_ms: int = 25000,
+    ) -> dict[str, Any]:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        session = await self.ensure_workspace_preview_session(workspace_id, user_id)
+        return await self._runtime_provider_mcp_tool_call(
+            session.provider_session_id,
+            {
+                "server_name": str(server_name or "playwright"),
+                "tool_name": str(tool_name or ""),
+                "arguments": arguments or {},
+                "timeout_ms": int(timeout_ms),
+            },
+        )
+
+    async def get_global_mcp_tools(self) -> list[dict[str, Any]]:
+        if not self._runtime_manager_enabled():
+            return []
+        if self._global_mcp_tools_cache and self._cache_entry_is_fresh(self._global_mcp_tools_cache_time, 300):
+            return self._global_mcp_tools_cache
+        if self._cache_entry_is_fresh(self._global_mcp_tools_last_attempt, 30):
+            return self._global_mcp_tools_cache
+        self._global_mcp_tools_last_attempt = utc_now()
+        try:
+            response = await self._runtime_manager_request("GET", "/mcp/tools")
+            tools = response.get("tools")
+            if isinstance(tools, list):
+                self._global_mcp_tools_cache = [t for t in tools if isinstance(t, dict)]
+                self._global_mcp_tools_cache_time = utc_now()
+        except Exception:
+            logger.debug("Global MCP tool discovery failed", exc_info=True)
+        return self._global_mcp_tools_cache
+
+    async def list_workspace_mcp_tools(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> list[dict[str, Any]]:
+        """Discover runtime MCP tools for a workspace.
+
+        Best-effort and non-forcing: it never starts a runtime session just to
+        enumerate tools. When no session is active (or discovery fails) it
+        returns an empty list so agent construction stays resilient.
+        """
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        if not self._runtime_manager_enabled():
+            return []
+        try:
+            row = await self._get_active_session_row(workspace_id)
+            provider_session_id = getattr(row, "providerSessionId", None) if row else None
+            if not provider_session_id:
+                return []
+            response = await self._runtime_provider_mcp_tool_list(provider_session_id)
+        except Exception:
+            logger.debug("Runtime MCP tool discovery failed for workspace %s", workspace_id, exc_info=True)
+            return []
+        tools = response.get("tools") if isinstance(response, dict) else None
+        return [tool for tool in tools if isinstance(tool, dict)] if isinstance(tools, list) else []
 
     async def exec_workspace_command(
         self,

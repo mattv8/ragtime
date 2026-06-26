@@ -177,6 +177,10 @@ class RuntimeContentProbeResponse(BaseModel):
         default_factory=list,
         description="First few console errors captured during page load",
     )
+    mcp: dict[str, Any] | None = Field(
+        default=None,
+        description="MCP request/response metadata for the runtime tool call",
+    )
 
 
 class RuntimeScreenshotRequest(BaseModel):
@@ -217,6 +221,59 @@ class RuntimeScreenshotResponse(BaseModel):
     screenshot_size_bytes: int = Field(description="Screenshot file size in bytes")
     render: dict[str, Any] = Field(description="Capture/render settings metadata")
     probe: dict[str, Any] = Field(description=("Captured browser probe metadata including optional element clipping diagnostics"))
+    mcp: dict[str, Any] | None = Field(
+        default=None,
+        description="MCP request/response metadata for the runtime tool call",
+    )
+
+
+class RuntimeMcpToolCallRequest(BaseModel):
+    server_name: str = Field(
+        default="playwright",
+        description="Runtime MCP server name to route the call to (e.g. 'playwright')",
+    )
+    tool_name: str = Field(description="Runtime MCP tool name to call")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON arguments passed to the MCP tool",
+    )
+    timeout_ms: int = Field(
+        default=25000,
+        ge=1000,
+        le=60000,
+        description="MCP tool call timeout in milliseconds",
+    )
+
+
+class RuntimeMcpToolCallResponse(BaseModel):
+    ok: bool = Field(description="Whether the MCP tool call succeeded")
+    server_id: str = Field(description="Runtime MCP server identifier")
+    server_name: str = Field(description="Runtime MCP server display name")
+    tool_name: str = Field(description="MCP tool name")
+    request: dict[str, Any] = Field(description="MCP tool request payload")
+    response: dict[str, Any] = Field(description="MCP tool response payload")
+
+
+class RuntimeMcpToolInfo(BaseModel):
+    server_name: str = Field(description="Runtime MCP server name the tool belongs to")
+    server_id: str = Field(description="Runtime MCP server identifier")
+    name: str = Field(description="MCP tool name")
+    description: str = Field(default="", description="Tool description")
+    input_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema describing the tool's input arguments",
+    )
+    agent_excluded: bool = Field(
+        default=False,
+        description="Whether this tool is reserved for UI/backend use and hidden from the agent",
+    )
+
+
+class RuntimeMcpToolListResponse(BaseModel):
+    tools: list[RuntimeMcpToolInfo] = Field(
+        default_factory=list,
+        description="Aggregated tools across all registered runtime MCP servers",
+    )
 
 
 class RuntimeRestartRequest(BaseModel):
@@ -333,6 +390,10 @@ class RuntimeExternalBrowseResponse(BaseModel):
     console_errors: list[str] = Field(
         default_factory=list,
         description="First few console errors observed during navigation",
+    )
+    mcp: dict[str, Any] | None = Field(
+        default=None,
+        description="MCP request/response metadata for the runtime tool call",
     )
 
 

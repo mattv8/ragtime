@@ -36,6 +36,9 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimeMcpToolCallRequest,
+    RuntimeMcpToolCallResponse,
+    RuntimeMcpToolListResponse,
     RuntimePdfReadRequest,
     RuntimePdfReadResponse,
     RuntimeScreenshotRequest,
@@ -424,6 +427,39 @@ async def external_browse(
     if method is None:
         raise HTTPException(status_code=503, detail="Runtime external browse not available")
     return await method(payload)
+
+
+@router.post(
+    "/worker/sessions/{worker_session_id}/mcp/tools/call",
+    response_model=RuntimeMcpToolCallResponse,
+)
+async def call_mcp_tool(
+    worker_session_id: str,
+    payload: RuntimeMcpToolCallRequest,
+    _auth: None = WorkerAuth,
+) -> RuntimeMcpToolCallResponse:
+    return await get_worker_service().call_mcp_tool(worker_session_id, payload)
+
+
+@router.get(
+    "/worker/mcp/tools",
+    response_model=RuntimeMcpToolListResponse,
+)
+async def list_global_mcp_tools(
+    _auth: None = WorkerAuth,
+) -> RuntimeMcpToolListResponse:
+    return await get_worker_service().list_global_mcp_tools()
+
+
+@router.get(
+    "/worker/sessions/{worker_session_id}/mcp/tools",
+    response_model=RuntimeMcpToolListResponse,
+)
+async def list_mcp_tools(
+    worker_session_id: str,
+    _auth: None = WorkerAuth,
+) -> RuntimeMcpToolListResponse:
+    return await get_worker_service().list_mcp_tools(worker_session_id)
 
 
 @router.post(

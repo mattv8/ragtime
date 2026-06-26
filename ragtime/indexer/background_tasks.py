@@ -1150,6 +1150,8 @@ class BackgroundTaskService:
                                 # Upgrade the ghost event with full tool_start data
                                 events[ghost_idx]["input"] = event.get("input")
                                 events[ghost_idx]["connection"] = event.get("connection")
+                                if event.get("mcp") is not None:
+                                    events[ghost_idx]["mcp"] = event.get("mcp")
                                 if event.get("presentation") is not None:
                                     events[ghost_idx]["presentation"] = event.get("presentation")
                                 if run_id:
@@ -1165,6 +1167,8 @@ class BackgroundTaskService:
                                     "connection": event.get("connection"),
                                     # No "output" key = running state
                                 }
+                                if event.get("mcp") is not None:
+                                    tool_event["mcp"] = event.get("mcp")
                                 if event.get("presentation") is not None:
                                     tool_event["presentation"] = event.get("presentation")
                                 events.append(tool_event)
@@ -1182,6 +1186,8 @@ class BackgroundTaskService:
                             if tool_idx is not None:
                                 # Update the existing tool event with output
                                 events[tool_idx]["output"] = event.get("output")
+                                if event.get("mcp") is not None:
+                                    events[tool_idx]["mcp"] = event.get("mcp")
                                 if event.get("presentation") is not None:
                                     events[tool_idx]["presentation"] = event.get("presentation")
                                 tool_calls.append(
@@ -1191,6 +1197,7 @@ class BackgroundTaskService:
                                         "output": events[tool_idx].get("output"),
                                         "connection": events[tool_idx].get("connection"),
                                         "presentation": events[tool_idx].get("presentation"),
+                                        "mcp": events[tool_idx].get("mcp"),
                                     }
                                 )
 

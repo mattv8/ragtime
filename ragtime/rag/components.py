@@ -48,7 +48,7 @@ from langchain_openai.chat_models.base import (
     _get_last_messages,
 )
 from PIL import Image, ImageOps, UnidentifiedImageError
-from pydantic import BaseModel, Field, SecretStr, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model, field_validator
 
 from ragtime.chat_runtime import chat_runtime_service
 from ragtime.chat_runtime.payloads import (
@@ -668,6 +668,108 @@ def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
 
     serialized = compact_json()
     return serialized if len(serialized) <= max_chars else None
+
+
+_MCP_METADATA_MAX_STR_CHARS = 800
+_MCP_METADATA_MAX_LIST_ITEMS = 25
+_MCP_METADATA_MAX_DEPTH = 6
+
+
+def _bound_mcp_json_value(value: Any, depth: int = 0) -> Any:
+    """Recursively bound an MCP request/response value for safe persistence/UI.
+
+    Preserves dict/list structure and small scalars (so keys like
+    ``preview_image_url`` survive) while truncating long strings and capping
+    large lists, keeping the streamed + stored ``mcp`` payload bounded.
+    """
+    if depth >= _MCP_METADATA_MAX_DEPTH:
+        return "..."
+    if isinstance(value, str):
+        if len(value) > _MCP_METADATA_MAX_STR_CHARS:
+            return value[:_MCP_METADATA_MAX_STR_CHARS] + "...(truncated)"
+        return value
+    if isinstance(value, dict):
+        return {str(key): _bound_mcp_json_value(item, depth + 1) for key, item in list(value.items())[:50]}
+    if isinstance(value, list):
+        bounded = [_bound_mcp_json_value(item, depth + 1) for item in value[:_MCP_METADATA_MAX_LIST_ITEMS]]
+        if len(value) > _MCP_METADATA_MAX_LIST_ITEMS:
+            bounded.append(f"...(+{len(value) - _MCP_METADATA_MAX_LIST_ITEMS} more)")
+        return bounded
+    return value
+
+
+def _compact_mcp_metadata(mcp: Any) -> Optional[dict[str, Any]]:
+    """Bound an MCP tool-call metadata envelope before it is rendered/persisted."""
+    if not isinstance(mcp, dict):
+        return None
+    return {
+        "ok": mcp.get("ok"),
+        "server_id": mcp.get("server_id"),
+        "server_name": mcp.get("server_name"),
+        "tool_name": mcp.get("tool_name"),
+        "request": _bound_mcp_json_value(mcp.get("request") or {}),
+        "response": _bound_mcp_json_value(mcp.get("response") or {}),
+    }
+
+
+_JSON_SCHEMA_PRIMITIVE_TYPES: dict[str, Any] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "object": dict,
+    "array": list,
+}
+
+
+def _json_schema_type_to_python(prop_schema: dict[str, Any]) -> Any:
+    """Map a single JSON Schema property to a Python type annotation."""
+    json_type = prop_schema.get("type")
+    if isinstance(json_type, list):
+        json_type = next((entry for entry in json_type if entry != "null"), None)
+    if json_type == "array":
+        items = prop_schema.get("items")
+        if isinstance(items, dict):
+            return list[_json_schema_type_to_python(items)]  # type: ignore[misc]
+        return list[Any]
+    if json_type == "object":
+        return dict[str, Any]
+    return _JSON_SCHEMA_PRIMITIVE_TYPES.get(str(json_type), Any)
+
+
+def _json_schema_to_pydantic(model_name: str, schema: dict[str, Any]) -> type[BaseModel]:
+    """Build a Pydantic model from an MCP tool JSON Schema for agent binding.
+
+    This is the bridge that lets any MCP server's advertised tools become
+    first-class, schema-validated agent tools without hand-written Pydantic
+    classes. Unknown/empty schemas degrade to a permissive free-form model.
+    """
+    safe_name = re.sub(r"[^0-9a-zA-Z_]", "_", model_name or "McpTool") or "McpTool"
+    fields: dict[str, Any] = {
+        "workspace_id": (Optional[str], Field(default=None, description="Optional target workspace ID for cross-workspace access.")),
+        "reason": (Optional[str], Field(default="", description="Brief description of why this tool is needed.")),
+    }
+
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict) or not properties:
+        # Permissive fallback: keep workspace targeting visible while allowing
+        # arbitrary MCP arguments for tools with no advertised schema.
+        return create_model(f"{safe_name}Args", __config__=ConfigDict(extra="allow"), **fields)
+
+    required = schema.get("required") if isinstance(schema, dict) else None
+    required_set = {str(item) for item in required} if isinstance(required, list) else set()
+
+    for raw_key, raw_prop in properties.items():
+        key = str(raw_key)
+        prop_schema = raw_prop if isinstance(raw_prop, dict) else {}
+        py_type = _json_schema_type_to_python(prop_schema)
+        description = str(prop_schema.get("description") or "")
+        if key in required_set:
+            fields[key] = (py_type, Field(description=description))
+        else:
+            default_value = prop_schema.get("default", None)
+            fields[key] = (Optional[py_type], Field(default=default_value, description=description))
+    return create_model(f"{safe_name}Args", **fields)
 
 
 def wrap_tool_with_truncation(
@@ -9279,6 +9381,7 @@ class RAGComponents:
                 "screenshot_size_bytes": response_payload.get("screenshot_size_bytes"),
                 "preview_image_url": response_payload.get("preview_image_url"),
                 "render": response_payload.get("render"),
+                "mcp": _compact_mcp_metadata(response_payload.get("mcp")),
             }
 
             probe = response_payload.get("probe")
@@ -11487,6 +11590,9 @@ class RAGComponents:
                 if screenshot_name:
                     image_url = f"/indexes/userspace/runtime/workspaces/{workspace_id}/screenshots/{quote(screenshot_name)}"
                     response_payload["preview_image_url"] = image_url
+                    mcp_payload = response_payload.get("mcp")
+                    if isinstance(mcp_payload, dict) and isinstance(mcp_payload.get("response"), dict):
+                        mcp_payload["response"]["preview_image_url"] = image_url
             compact_payload = _compact_userspace_screenshot_payload(response_payload)
             return _render_userspace_tool_payload(
                 tool_name="capture_userspace_screenshot",
@@ -11673,9 +11779,126 @@ class RAGComponents:
                 truncated=bool(payload.get("truncated", False)),
                 links=payload.get("links") or [],
                 console_errors=payload.get("console_errors") or [],
+                mcp=_compact_mcp_metadata(payload.get("mcp")),
             )
 
-        return [
+        def _make_dynamic_mcp_caller(server_name: str, mcp_tool_name: str) -> Any:
+            async def _dynamic_mcp_caller(workspace_id: Optional[str] = None, reason: str = "", **kwargs: Any) -> str:
+                del reason
+                target_ws, target_uid = await _resolve_target_workspace(workspace_id, "read")
+
+                call_arguments = {key: value for key, value in kwargs.items() if value is not None and key not in {"reason", "workspace_id"}}
+                try:
+                    mcp_payload = await userspace_runtime_service.call_workspace_mcp_tool(
+                        target_ws,
+                        target_uid,
+                        server_name=server_name,
+                        tool_name=mcp_tool_name,
+                        arguments=call_arguments,
+                    )
+                except HTTPException as exc:
+                    detail_text = str(getattr(exc, "detail", exc)).strip() or str(exc)
+                    return _render_userspace_tool_payload(
+                        tool_name=mcp_tool_name,
+                        status="rejected_not_persisted",
+                        rejected=True,
+                        persisted=False,
+                        retryable=True,
+                        failure_class=self._classify_userspace_failure(detail_text),
+                        next_best_tool="run_terminal_command",
+                        error=f"MCP tool '{server_name}/{mcp_tool_name}' failed: {detail_text}",
+                    )
+
+                response_payload = mcp_payload.get("response") if isinstance(mcp_payload, dict) else None
+                if not isinstance(response_payload, dict):
+                    response_payload = {}
+                # Shape-guarded artifact rewrite: any tool that returns step
+                # screenshots gets workspace-relative preview URLs. Harmless for
+                # servers that don't produce screenshots.
+                for step in response_payload.get("steps") or []:
+                    if not isinstance(step, dict):
+                        continue
+                    output_path = str(step.get("output_path") or "").strip()
+                    if not output_path:
+                        continue
+                    screenshot_name = Path(output_path).name
+                    if screenshot_name:
+                        step["preview_image_url"] = f"/indexes/userspace/runtime/workspaces/{target_ws}/screenshots/{quote(screenshot_name)}"
+
+                ok = bool(response_payload.get("ok", True))
+                return _render_userspace_tool_payload(
+                    tool_name=mcp_tool_name,
+                    status="completed" if ok else "completed_with_errors",
+                    message=f"MCP tool '{mcp_tool_name}' completed.",
+                    persisted=False,
+                    retryable=True,
+                    failure_class="none" if ok else "runtime_debug_failed",
+                    next_best_tool="patch_userspace_file",
+                    response=response_payload,
+                    mcp=_compact_mcp_metadata(mcp_payload),
+                )
+
+            return _dynamic_mcp_caller
+
+        async def _build_dynamic_workspace_mcp_tools(existing_names: set[str]) -> list[StructuredTool]:
+            """Discover runtime MCP servers and bind their tools to the agent.
+
+            Fetches globally available built-in tools (which don't require the session
+            to be running) and workspace-specific tools (if running). Zero per-tool
+            Python required. Best-effort: failures yield no extra tools.
+            """
+            dynamic_tools: list[StructuredTool] = []
+
+            global_tools = await userspace_runtime_service.get_global_mcp_tools()
+
+            try:
+                workspace_tools = await userspace_runtime_service.list_workspace_mcp_tools(primary_workspace_id, user_id)
+            except Exception:
+                workspace_tools = []
+
+            discovered = global_tools + workspace_tools
+
+            seen: set[tuple[str, str]] = set()
+            bound_tool_names = set(existing_names)
+            for entry in discovered:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("agent_excluded"):
+                    continue
+                mcp_tool_name = str(entry.get("name") or "").strip()
+                server_name = str(entry.get("server_name") or "").strip()
+                if not mcp_tool_name or not server_name:
+                    continue
+                dedupe_key = (server_name, mcp_tool_name)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                tool_public_name = mcp_tool_name
+                if tool_public_name in bound_tool_names:
+                    server_prefix = re.sub(r"[^0-9a-zA-Z_]", "_", server_name).strip("_") or "mcp"
+                    tool_public_name = f"{server_prefix}_{mcp_tool_name}"
+                    suffix = 2
+                    while tool_public_name in bound_tool_names:
+                        tool_public_name = f"{server_prefix}_{mcp_tool_name}_{suffix}"
+                        suffix += 1
+                bound_tool_names.add(tool_public_name)
+                schema = entry.get("input_schema")
+                args_schema = _json_schema_to_pydantic(
+                    tool_public_name,
+                    schema if isinstance(schema, dict) else {},
+                )
+                description = str(entry.get("description") or "").strip() or f"Runtime MCP tool '{mcp_tool_name}'."
+                dynamic_tools.append(
+                    _create_userspace_tool(
+                        coroutine=_make_dynamic_mcp_caller(server_name, mcp_tool_name),
+                        name=tool_public_name,
+                        description=description,
+                        args_schema=args_schema,
+                    )
+                )
+            return dynamic_tools
+
+        static_tools: list[StructuredTool] = [
             _create_userspace_tool(
                 coroutine=assay_userspace_code,
                 name="assay_userspace_code",
@@ -11837,6 +12060,9 @@ class RAGComponents:
                 args_schema=RunTerminalCommandInput,
             ),
         ]
+
+        dynamic_mcp_tools = await _build_dynamic_workspace_mcp_tools({tool.name for tool in static_tools})
+        return [*static_tools, *dynamic_mcp_tools]
 
     @staticmethod
     def _clone_structured_tool(tool: Any, **overrides: Any) -> StructuredTool:
@@ -15215,6 +15441,15 @@ class RAGComponents:
                                     else:
                                         logger.debug(f"Tool completed: {tool_name} in {elapsed:.1f}s (run_id={run_id[:8]})")
 
+                                raw_output_payload: dict[str, Any] | None = None
+                                if isinstance(tool_output, str):
+                                    try:
+                                        parsed_tool_output = json.loads(tool_output)
+                                        if isinstance(parsed_tool_output, dict):
+                                            raw_output_payload = parsed_tool_output
+                                    except (json.JSONDecodeError, TypeError):
+                                        raw_output_payload = None
+
                                 # Userspace write tools embed the full file content
                                 # in a `file` key which inflates the output beyond
                                 # the 2000-char display limit. Strip only the bulky
@@ -15293,6 +15528,10 @@ class RAGComponents:
                                     "connection": connection_meta,
                                     "run_id": run_id,
                                 }
+                                if isinstance(raw_output_payload, dict) and isinstance(raw_output_payload.get("mcp"), dict):
+                                    compact_mcp = _compact_mcp_metadata(raw_output_payload["mcp"])
+                                    if compact_mcp is not None:
+                                        tool_event["mcp"] = compact_mcp
                                 if presentation_meta:
                                     tool_event["presentation"] = presentation_meta
                                 yield tool_event

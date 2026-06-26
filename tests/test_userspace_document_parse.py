@@ -115,7 +115,7 @@ class _FakeUserSpaceService:
     def is_reserved_internal_path(self, relative_path: str) -> bool:
         from ragtime.userspace.service import UserSpaceService
 
-        return UserSpaceService.is_reserved_internal_path(self, relative_path)
+        return UserSpaceService.is_reserved_internal_path(self, relative_path)  # type: ignore[arg-type]
 
     async def enforce_workspace_role(self, workspace_id: str, user_id: str, required_role: str):
         return None

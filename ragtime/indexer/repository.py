@@ -262,6 +262,7 @@ def _extract_tool_calls_from_events(
                     cast(Optional[dict[str, Any]], event.get("connection")),
                     cast(Optional[dict[str, Any]], event.get("presentation")),
                 ),
+                mcp=event.get("mcp"),
             )
         )
 
@@ -293,6 +294,8 @@ def _normalize_message_events(
         )
         if presentation:
             normalized_event["presentation"] = presentation
+        if event.get("mcp") is not None:
+            normalized_event["mcp"] = event.get("mcp")
         normalized_events.append(normalized_event)
 
     return normalized_events
@@ -321,6 +324,8 @@ def _synthesize_events_from_legacy_message(
             "output": tool_call.get("output"),
             "connection": tool_call.get("connection"),
         }
+        if tool_call.get("mcp") is not None:
+            event["mcp"] = tool_call.get("mcp")
         presentation = normalize_tool_presentation(
             str(tool_call.get("tool", "")),
             cast(Optional[dict[str, Any]], tool_call.get("connection")),
@@ -4008,6 +4013,7 @@ class IndexerRepository:
                             cast(Optional[dict[str, Any]], tc.get("connection")),
                             cast(Optional[dict[str, Any]], tc.get("presentation")),
                         ),
+                        mcp=tc.get("mcp"),
                     )
                     for tc in m["tool_calls"]
                     if isinstance(tc, dict)
@@ -4137,6 +4143,7 @@ class IndexerRepository:
                             cast(Optional[dict[str, Any]], tc.get("connection")),
                             cast(Optional[dict[str, Any]], tc.get("presentation")),
                         ),
+                        mcp=tc.get("mcp"),
                     )
                     for tc in m["tool_calls"]
                     if isinstance(tc, dict)

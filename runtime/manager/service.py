@@ -19,6 +19,9 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimeMcpToolCallRequest,
+    RuntimeMcpToolCallResponse,
+    RuntimeMcpToolListResponse,
     RuntimePdfReadRequest,
     RuntimePdfReadResponse,
     RuntimePtyUrlResponse,
@@ -576,6 +579,33 @@ class SessionManager:
                 worker_session_id=session.worker_session_id,
             ),
             timeout=max(self._worker_call_timeout, int(payload.timeout_ms / 1000) + 5),
+        )
+
+    async def call_mcp_tool(
+        self,
+        provider_session_id: str,
+        payload: RuntimeMcpToolCallRequest,
+    ) -> RuntimeMcpToolCallResponse:
+        session = self._get_session_or_raise(provider_session_id)
+        return await asyncio.wait_for(
+            self._worker_service.call_mcp_tool(session.worker_session_id, payload),
+            timeout=max(self._worker_call_timeout, int(payload.timeout_ms / 1000) + 15),
+        )
+
+    async def list_mcp_tools(
+        self,
+        provider_session_id: str,
+    ) -> RuntimeMcpToolListResponse:
+        session = self._get_session_or_raise(provider_session_id)
+        return await asyncio.wait_for(
+            self._worker_service.list_mcp_tools(session.worker_session_id),
+            timeout=self._worker_call_timeout,
+        )
+
+    async def list_global_mcp_tools(self) -> RuntimeMcpToolListResponse:
+        return await asyncio.wait_for(
+            self._worker_service.list_global_mcp_tools(),
+            timeout=self._worker_call_timeout,
         )
 
     async def read_pdf(

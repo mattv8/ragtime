@@ -16,6 +16,9 @@ from runtime.manager.models import (
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
+    RuntimeMcpToolCallRequest,
+    RuntimeMcpToolCallResponse,
+    RuntimeMcpToolListResponse,
     RuntimeMountRefreshRequest,
     RuntimePdfReadRequest,
     RuntimePdfReadResponse,
@@ -227,6 +230,36 @@ def create_app() -> FastAPI:
         _auth: None = ManagerAuth,
     ) -> RuntimeExternalBrowseResponse:
         return await manager.external_browse_for_session(provider_session_id, payload)
+
+    @application.post(
+        "/sessions/{provider_session_id}/mcp/tools/call",
+        response_model=RuntimeMcpToolCallResponse,
+    )
+    async def call_mcp_tool(
+        provider_session_id: str,
+        payload: RuntimeMcpToolCallRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeMcpToolCallResponse:
+        return await manager.call_mcp_tool(provider_session_id, payload)
+
+    @application.get(
+        "/mcp/tools",
+        response_model=RuntimeMcpToolListResponse,
+    )
+    async def list_global_mcp_tools(
+        _auth: None = ManagerAuth,
+    ) -> RuntimeMcpToolListResponse:
+        return await manager.list_global_mcp_tools()
+
+    @application.get(
+        "/sessions/{provider_session_id}/mcp/tools",
+        response_model=RuntimeMcpToolListResponse,
+    )
+    async def list_mcp_tools(
+        provider_session_id: str,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeMcpToolListResponse:
+        return await manager.list_mcp_tools(provider_session_id)
 
     @application.post(
         "/external-browse",

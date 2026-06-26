@@ -2374,6 +2374,10 @@ class ToolCallRecord(BaseModel):
         default=None,
         description="Optional UI presentation metadata for deterministic rendering",
     )
+    mcp: Optional[dict] = Field(
+        default=None,
+        description="Optional MCP request/response metadata for the tool call",
+    )
 
 
 class ContentEvent(BaseModel):
@@ -2397,6 +2401,10 @@ class ToolCallEvent(BaseModel):
     presentation: Optional[dict] = Field(
         default=None,
         description="Optional UI presentation metadata for deterministic rendering",
+    )
+    mcp: Optional[dict] = Field(
+        default=None,
+        description="Optional MCP request/response metadata for the tool call",
     )
 
 

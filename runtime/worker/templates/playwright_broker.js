@@ -1,4 +1,7 @@
 const readline = require('readline');
+const dns = require('dns');
+const { promisify } = require('util');
+const lookupAsync = promisify(dns.lookup);
 
 let playwright;
 let playwrightLoadError = '';
@@ -120,6 +123,259 @@ function attachConsoleErrorCapture(page) {
     consoleErrors.push(String(err).slice(0, 300));
   });
   return consoleErrors;
+}
+
+function isPrivateOrLocalHostname(hostname) {
+  const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+  const parts = host.split('.').map((part) => Number(part));
+  if (parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
+    const [a, b] = parts;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+  return false;
+}
+
+async function isPrivateOrLocalIp(hostname) {
+  if (isPrivateOrLocalHostname(hostname)) return true;
+  try {
+    const { address } = await lookupAsync(hostname);
+    return isPrivateOrLocalHostname(address);
+  } catch (err) {
+    return true; // fail closed if DNS lookup fails
+  }
+}
+
+function parseUrl(value) {
+  try {
+    return new URL(String(value || ''));
+  } catch (_) {
+    return null;
+  }
+}
+
+function isSameOrigin(urlValue, originValue) {
+  const url = parseUrl(urlValue);
+  const origin = parseUrl(originValue);
+  return Boolean(url && origin && url.origin === origin.origin);
+}
+
+async function resolveDebugTargetUrl(value, baseUrl, allowExternalNavigation) {
+  const raw = String(value || '').trim();
+  if (!raw) return baseUrl;
+  let resolved;
+  try {
+    resolved = new URL(raw, baseUrl).toString();
+  } catch (_) {
+    throw makeError(`Invalid navigation target: ${raw}`, 'bad_request');
+  }
+  const parsed = parseUrl(resolved);
+  if (!parsed || !/^https?:$/i.test(parsed.protocol)) {
+    throw makeError('Only http/https navigation targets are allowed.', 'bad_request');
+  }
+  if (!isSameOrigin(resolved, baseUrl)) {
+    const isPrivate = await isPrivateOrLocalIp(parsed.hostname);
+    if (isPrivate) {
+      throw makeError(`Blocked private/local navigation target: ${parsed.hostname}`, 'blocked_url');
+    }
+    if (!allowExternalNavigation) {
+      throw makeError('External navigation is disabled for this debug run.', 'blocked_url');
+    }
+  }
+  return resolved;
+}
+
+function normalizeDebugSteps(value) {
+  if (!Array.isArray(value)) {
+    throw makeError('Debug steps must be an array.', 'bad_request');
+  }
+  if (value.length > 25) {
+    throw makeError('Debug runs are limited to 25 steps.', 'bad_request');
+  }
+  return value.map((step, index) => {
+    if (!step || typeof step !== 'object' || Array.isArray(step)) {
+      throw makeError(`Debug step ${index + 1} must be an object.`, 'bad_request');
+    }
+    return step;
+  });
+}
+
+async function installDebugRequestGuards(page, baseUrl, allowExternalNavigation) {
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    const requestUrl = request.url();
+    const parsed = parseUrl(requestUrl);
+    if (parsed && !isSameOrigin(requestUrl, baseUrl)) {
+      const isPrivate = await isPrivateOrLocalIp(parsed.hostname);
+      if (isPrivate) {
+        await route.abort('blockedbyclient').catch(() => null);
+        return;
+      }
+      if (!allowExternalNavigation && request.isNavigationRequest()) {
+        await route.abort('blockedbyclient').catch(() => null);
+        return;
+      }
+    }
+    await route.continue().catch(() => null);
+  });
+}
+
+async function runDebugSteps(request) {
+  const activeBrowser = await ensureBrowser();
+  const baseUrl = String(request.url || '');
+  if (!baseUrl) {
+    throw makeError('Debug run request is missing preview URL.', 'bad_request');
+  }
+  const allowExternalNavigation = Boolean(request.allow_external_navigation);
+  const steps = normalizeDebugSteps(request.steps || []);
+  const timeoutMs = Math.max(1000, Math.min(60000, Number(request.timeout_ms || 25000)));
+  const context = await activeBrowser.newContext({
+    viewport: {
+      width: Math.max(320, Math.min(1920, Number(request.viewport_width || 1280))),
+      height: Math.max(240, Math.min(1600, Number(request.viewport_height || 900))),
+    },
+    deviceScaleFactor: 1,
+  });
+
+  const stepResults = [];
+  const consoleErrors = [];
+
+  try {
+    const page = await context.newPage();
+    page.setDefaultTimeout(timeoutMs);
+    page.on('console', (msg) => {
+      if (['error', 'warning'].includes(msg.type())) {
+        consoleErrors.push(`${msg.type()}: ${msg.text()}`.slice(0, 300));
+      }
+    });
+    page.on('pageerror', (err) => consoleErrors.push(String(err).slice(0, 300)));
+    await installDebugRequestGuards(page, baseUrl, allowExternalNavigation);
+
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 8000) }).catch(() => null);
+
+    for (let i = 0; i < steps.length; i += 1) {
+      const step = steps[i];
+      const action = String(step.action || '').trim().toLowerCase();
+      const startedAt = Date.now();
+      const result = { index: i, action, ok: true };
+      try {
+        if (action === 'goto') {
+          const target = await resolveDebugTargetUrl(step.url || step.path || '', baseUrl, allowExternalNavigation);
+          const response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+          await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 8000) }).catch(() => null);
+          result.url = page.url();
+          result.status_code = response ? response.status() : null;
+        } else if (action === 'click') {
+          const selector = String(step.selector || '').slice(0, 500);
+          if (!selector) throw makeError('click requires selector.', 'bad_request');
+          await page.locator(selector).first().click({ timeout: Math.min(timeoutMs, Number(step.timeout_ms || timeoutMs)) });
+        } else if (action === 'fill') {
+          const selector = String(step.selector || '').slice(0, 500);
+          if (!selector) throw makeError('fill requires selector.', 'bad_request');
+          await page.locator(selector).first().fill(String(step.value || '').slice(0, 5000));
+        } else if (action === 'type') {
+          const selector = String(step.selector || '').slice(0, 500);
+          if (!selector) throw makeError('type requires selector.', 'bad_request');
+          await page.locator(selector).first().pressSequentially(String(step.text || step.value || '').slice(0, 5000), { delay: Math.max(0, Math.min(200, Number(step.delay_ms || 0))) });
+        } else if (action === 'press') {
+          const key = String(step.key || '').slice(0, 80);
+          if (!key) throw makeError('press requires key.', 'bad_request');
+          const selector = String(step.selector || '').slice(0, 500);
+          if (selector) await page.locator(selector).first().press(key);
+          else await page.keyboard.press(key);
+        } else if (action === 'select_option') {
+          const selector = String(step.selector || '').slice(0, 500);
+          if (!selector) throw makeError('select_option requires selector.', 'bad_request');
+          await page.locator(selector).first().selectOption(String(step.value || '').slice(0, 500));
+        } else if (action === 'wait_for_selector') {
+          const selector = String(step.selector || '').slice(0, 500);
+          if (!selector) throw makeError('wait_for_selector requires selector.', 'bad_request');
+          await page.waitForSelector(selector, { state: String(step.state || 'visible'), timeout: Math.min(timeoutMs, Number(step.timeout_ms || timeoutMs)) });
+        } else if (action === 'wait_for_timeout') {
+          await page.waitForTimeout(Math.max(0, Math.min(5000, Number(step.ms || step.timeout_ms || 1000))));
+        } else if (action === 'query') {
+          // Safe, structured DOM inspection. Intentionally does NOT evaluate
+          // agent-supplied JavaScript; it only reads element state through the
+          // Playwright locator API so the agent cannot run arbitrary scripts
+          // inside the workspace devserver origin.
+          const selector = String(step.selector || '').slice(0, 500);
+          if (!selector) throw makeError('query requires selector.', 'bad_request');
+          const locator = page.locator(selector);
+          const count = await locator.count();
+          result.count = count;
+          if (count > 0) {
+            const first = locator.first();
+            result.visible = await first.isVisible().catch(() => false);
+            const textContent = await first.textContent().catch(() => null);
+            result.text = textContent ? String(textContent).trim().slice(0, 2000) : '';
+            const requestedAttributes = Array.isArray(step.attributes)
+              ? step.attributes.slice(0, 12)
+              : [];
+            if (requestedAttributes.length > 0) {
+              const attributes = {};
+              for (const attrName of requestedAttributes) {
+                const name = String(attrName || '').slice(0, 80);
+                if (!name) continue;
+                attributes[name] = await first.getAttribute(name).catch(() => null);
+              }
+              result.attributes = attributes;
+            }
+          } else {
+            result.visible = false;
+            result.text = '';
+          }
+        } else if (action === 'content') {
+          const metrics = await page.evaluate(() => {
+            const bodyText = document.body && document.body.innerText ? document.body.innerText.trim() : '';
+            return {
+              title: document.title || '',
+              url: location.href,
+              body_text_preview: bodyText.slice(0, 1000),
+              body_text_length: bodyText.length,
+              body_html_length: document.body && document.body.innerHTML ? document.body.innerHTML.length : 0,
+            };
+          });
+          Object.assign(result, metrics);
+        } else if (action === 'screenshot') {
+          const outputPath = String(step.output_path || '');
+          if (!outputPath) throw makeError('screenshot step requires output_path.', 'bad_request');
+          await page.screenshot({ path: outputPath, fullPage: Boolean(step.full_page ?? true), animations: 'disabled' });
+          result.output_path = outputPath;
+        } else {
+          throw makeError(`Unsupported debug action: ${action}`, 'bad_request');
+        }
+      } catch (error) {
+        result.ok = false;
+        result.error = error && error.message ? String(error.message) : String(error);
+        stepResults.push(result);
+        if (step.stop_on_error !== false) break;
+        continue;
+      } finally {
+        result.elapsed_ms = Date.now() - startedAt;
+      }
+      stepResults.push(result);
+    }
+
+    return {
+      ok: stepResults.every((step) => step.ok),
+      url: page.url(),
+      title: await page.title().catch(() => ''),
+      steps: stepResults,
+      console_errors: consoleErrors.slice(0, 20),
+    };
+  } finally {
+    await context.close().catch(() => null);
+  }
 }
 
 async function runScreenshot(request) {
@@ -570,6 +826,9 @@ async function handleRequest(request) {
   }
   if (request.type === 'external_browse') {
     return await runExternalBrowse(request);
+  }
+  if (request.type === 'debug_steps') {
+    return await runDebugSteps(request);
   }
   throw makeError(`Unsupported Playwright broker request type: ${String(request.type || '')}`, 'bad_request');
 }
