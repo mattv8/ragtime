@@ -23,6 +23,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import get_browser_matched_origin
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret
@@ -34,7 +35,10 @@ from ragtime.core.security import (
     get_current_user_optional,
     require_admin,
 )
-from ragtime.core.userspace_limits import format_userspace_sqlite_import_limit
+from ragtime.core.userspace_limits import (
+    clamp_userspace_primitive_upload_max_bytes,
+    format_userspace_sqlite_import_limit,
+)
 from ragtime.indexer.models import (
     CheckRepoVisibilityRequest,
     FetchBranchesRequest,
@@ -65,6 +69,7 @@ from ragtime.userspace.models import (
     DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteUserSpaceObjectStorageObjectResponse,
     DeleteUserSpaceWorkspaceArchiveExportResponse,
     DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse,
@@ -75,6 +80,7 @@ from ragtime.userspace.models import (
     MountSourceAffectedWorkspacesResponse,
     PaginatedWorkspacesResponse,
     PromoteBranchToMainRequest,
+    RenameUserSpaceObjectStorageObjectRequest,
     RestoreSnapshotResponse,
     SqliteInspectorAlterTableRequest,
     SqliteInspectorAlterTableResponse,
@@ -114,6 +120,7 @@ from ragtime.userspace.models import (
     UpdateWorkspaceShareAccessRequest,
     UpdateWorkspaceShareLinkRequest,
     UpdateWorkspaceShareSlugRequest,
+    UploadUserSpaceObjectStorageObjectResponse,
     UpsertGlobalEnvVarRequest,
     UpsertWorkspaceAgentGrantRequest,
     UpsertWorkspaceEnvVarRequest,
@@ -128,6 +135,7 @@ from ragtime.userspace.models import (
     UserSpaceFileResponse,
     UserspaceMountSource,
     UserSpaceObjectStorageConfig,
+    UserSpaceObjectStorageListResponse,
     UserSpaceRuntimeRestartBatchTask,
     UserSpaceSharedPreviewResponse,
     UserSpaceSnapshot,
@@ -1198,6 +1206,134 @@ async def delete_workspace_object_storage_bucket(
     )
     await userspace_runtime_service.refresh_runtime_env_vars(workspace_id)
     return result
+
+
+# ── Object Storage Explorer (browse/upload/download/delete/rename) ────
+
+
+@router.get(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}/objects",
+    response_model=UserSpaceObjectStorageListResponse,
+)
+async def list_workspace_object_storage_objects(
+    workspace_id: str,
+    bucket_name: str,
+    prefix: str = Query(default=""),
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.list_workspace_object_storage_objects(
+        workspace_id,
+        user.id,
+        bucket_name,
+        prefix=prefix,
+    )
+
+
+@router.post(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}/objects/upload",
+    response_model=UploadUserSpaceObjectStorageObjectResponse,
+)
+async def upload_workspace_object_storage_object(
+    workspace_id: str,
+    bucket_name: str,
+    file: UploadFile = File(...),
+    prefix: str = Form(default=""),
+    user: Any = Depends(get_current_user),
+):
+    max_bytes = clamp_userspace_primitive_upload_max_bytes((await get_app_settings()).get("userspace_primitive_upload_max_bytes"))
+    raw_name = Path(str(file.filename or "")).name.strip() or "upload"
+    if raw_name in {".", ".."}:
+        raw_name = "upload"
+
+    content_chunks: list[bytes] = []
+    total_bytes = 0
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Uploaded object exceeds the configured upload size limit ({max_bytes:,} bytes).",
+                )
+            content_chunks.append(chunk)
+    finally:
+        await file.close()
+
+    normalized_prefix = userspace_service._normalize_object_storage_prefix(prefix)
+    object_key = f"{normalized_prefix}/{raw_name}" if normalized_prefix else raw_name
+    result = await userspace_service.upload_workspace_object_storage_object(
+        workspace_id,
+        user.id,
+        bucket_name,
+        object_key,
+        b"".join(content_chunks),
+        content_type=file.content_type or None,
+    )
+    return result
+
+
+@router.get(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}/objects/{object_key:path}/download",
+)
+async def download_workspace_object_storage_object(
+    workspace_id: str,
+    bucket_name: str,
+    object_key: str,
+    user: Any = Depends(get_current_user),
+):
+    target, key, content_type = await userspace_service.get_workspace_object_storage_object_path(
+        workspace_id,
+        user.id,
+        bucket_name,
+        object_key,
+    )
+    filename = Path(key).name or "object"
+    return FileResponse(
+        path=str(target),
+        media_type=content_type,
+        filename=filename,
+    )
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}/objects/{object_key:path}",
+    response_model=UploadUserSpaceObjectStorageObjectResponse,
+)
+async def rename_workspace_object_storage_object(
+    workspace_id: str,
+    bucket_name: str,
+    object_key: str,
+    request: RenameUserSpaceObjectStorageObjectRequest,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.rename_workspace_object_storage_object(
+        workspace_id,
+        user.id,
+        bucket_name,
+        object_key,
+        request,
+    )
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/object-storage/buckets/{bucket_name}/objects/{object_key:path}",
+    response_model=DeleteUserSpaceObjectStorageObjectResponse,
+)
+async def delete_workspace_object_storage_object(
+    workspace_id: str,
+    bucket_name: str,
+    object_key: str,
+    user: Any = Depends(get_current_user),
+):
+    return await userspace_service.delete_workspace_object_storage_object(
+        workspace_id,
+        user.id,
+        bucket_name,
+        object_key,
+    )
 
 
 # ── Workspace Mounts ─────────────────────────────────────────────────

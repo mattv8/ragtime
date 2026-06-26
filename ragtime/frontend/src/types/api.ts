@@ -2817,12 +2817,54 @@ export interface CreateUserSpaceObjectStorageBucketRequest {
 export interface UpdateUserSpaceObjectStorageBucketRequest {
   description?: string | null;
   make_default?: boolean | null;
+  new_name?: string | null;
 }
 
 export interface DeleteUserSpaceObjectStorageBucketResponse {
   success: boolean;
   bucket_name: string;
   workspace_id: string;
+}
+
+export type UserSpaceObjectStorageEntryType = 'object' | 'prefix';
+
+export interface UserSpaceObjectStorageEntry {
+  name: string;
+  key: string;
+  entry_type: UserSpaceObjectStorageEntryType;
+  size_bytes: number;
+  updated_at?: string | null;
+  content_type?: string | null;
+  object_count: number;
+}
+
+export interface UserSpaceObjectStorageListResponse {
+  workspace_id: string;
+  bucket_name: string;
+  prefix: string;
+  parent_prefix?: string | null;
+  entries: UserSpaceObjectStorageEntry[];
+  total_objects: number;
+  total_bytes: number;
+}
+
+export interface UploadUserSpaceObjectStorageObjectResponse {
+  workspace_id: string;
+  bucket_name: string;
+  key: string;
+  size_bytes: number;
+  content_type?: string | null;
+}
+
+export interface RenameUserSpaceObjectStorageObjectRequest {
+  new_key: string;
+}
+
+export interface DeleteUserSpaceObjectStorageObjectResponse {
+  success: boolean;
+  workspace_id: string;
+  bucket_name: string;
+  key: string;
 }
 
 // ── Workspace Mounts ──────────────────────────────────────────────────

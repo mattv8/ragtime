@@ -88,6 +88,10 @@ import type {
   CreateUserSpaceObjectStorageBucketRequest,
   UpdateUserSpaceObjectStorageBucketRequest,
   DeleteUserSpaceObjectStorageBucketResponse,
+  UserSpaceObjectStorageListResponse,
+  UploadUserSpaceObjectStorageObjectResponse,
+  RenameUserSpaceObjectStorageObjectRequest,
+  DeleteUserSpaceObjectStorageObjectResponse,
   UserspaceMountSource,
   CreateUserspaceMountSourceRequest,
   UpdateUserspaceMountSourceRequest,
@@ -3788,6 +3792,79 @@ export const api = {
       },
     );
     return handleResponse<DeleteUserSpaceObjectStorageBucketResponse>(response);
+  },
+
+  // ----- Object storage explorer (browse/upload/download/delete/rename) -----
+
+  async listUserSpaceObjectStorageObjects(
+    workspaceId: string,
+    bucketName: string,
+    prefix = '',
+  ): Promise<UserSpaceObjectStorageListResponse> {
+    const search = new URLSearchParams();
+    if (prefix) search.set('prefix', prefix);
+    const qs = search.toString();
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}/objects${qs ? `?${qs}` : ''}`,
+    );
+    return handleResponse<UserSpaceObjectStorageListResponse>(response);
+  },
+
+  async uploadUserSpaceObjectStorageObject(
+    workspaceId: string,
+    bucketName: string,
+    file: File,
+    prefix = '',
+  ): Promise<UploadUserSpaceObjectStorageObjectResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('prefix', prefix);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}/objects/upload`,
+      { method: 'POST', body: formData },
+    );
+    return handleResponse<UploadUserSpaceObjectStorageObjectResponse>(response);
+  },
+
+  async downloadUserSpaceObjectStorageObject(
+    workspaceId: string,
+    bucketName: string,
+    objectKey: string,
+  ): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}/objects/${encodeFilePath(objectKey)}/download`,
+    );
+    const fallback = objectKey.split('/').pop() || 'object';
+    await downloadBlobResponse(response, fallback, 'Object download failed');
+  },
+
+  async renameUserSpaceObjectStorageObject(
+    workspaceId: string,
+    bucketName: string,
+    objectKey: string,
+    request: RenameUserSpaceObjectStorageObjectRequest,
+  ): Promise<UploadUserSpaceObjectStorageObjectResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}/objects/${encodeFilePath(objectKey)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    return handleResponse<UploadUserSpaceObjectStorageObjectResponse>(response);
+  },
+
+  async deleteUserSpaceObjectStorageObject(
+    workspaceId: string,
+    bucketName: string,
+    objectKey: string,
+  ): Promise<DeleteUserSpaceObjectStorageObjectResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}/objects/${encodeFilePath(objectKey)}`,
+      { method: 'DELETE' },
+    );
+    return handleResponse<DeleteUserSpaceObjectStorageObjectResponse>(response);
   },
 
   async listUserspaceMountSources(): Promise<UserspaceMountSource[]> {

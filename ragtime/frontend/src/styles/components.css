@@ -8407,3 +8407,101 @@ fieldset legend.legend-with-status .legend-divider {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Object Storage Explorer --- */
+.userspace-object-explorer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.userspace-object-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+.userspace-object-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+.userspace-object-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+}
+.userspace-object-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.userspace-object-error {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  background: rgba(220, 53, 69, 0.08);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  color: var(--color-error, #c0392b);
+  font-size: var(--text-sm);
+}
+.userspace-object-table {
+  width: 100%;
+}
+.userspace-object-row-prefix {
+  cursor: pointer;
+}
+.userspace-object-row-prefix:hover {
+  background: var(--color-surface-hover);
+}
+.userspace-object-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 500;
+}
+.userspace-object-icon {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+.userspace-object-row-prefix .userspace-object-icon {
+  color: var(--color-accent, var(--color-text-primary));
+}
+.userspace-object-type {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userspace-object-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.userspace-object-explorer .userspace-sqlite-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.userspace-object-explorer .userspace-sqlite-card-title {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+.userspace-object-explorer .userspace-sqlite-card-title > span:not(.userspace-sqlite-card-badge) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.userspace-object-explorer .userspace-sqlite-card-title .userspace-sqlite-card-badge {
+  flex-shrink: 0;
+}
+.userspace-object-explorer .userspace-sqlite-card-title input.userspace-sqlite-cell-input {
+  min-width: 0;
+  flex: 1;
+}

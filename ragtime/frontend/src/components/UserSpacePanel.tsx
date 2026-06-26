@@ -107,7 +107,6 @@ import type {
   UserSpaceCollabPresenceUser,
   UserSpaceFileInfo,
   UserSpaceLiveDataConnection,
-  UserSpaceObjectStorageBucket,
   UserSpaceObjectStorageConfig,
   UserSpacePreviewWarning,
   UserSpaceRuntimeStatusResponse,
@@ -165,9 +164,9 @@ import { FileDiffOverlay } from './shared/FileDiffOverlay';
 import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
+import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import { Popover, DisabledPopover } from './Popover';
-import { WorkspaceObjectStorageWizard } from './MountSourceWizard';
 import { useWorkspaceScmWizardActivity, WorkspaceScmWizard } from './WorkspaceScmWizard';
 
 interface UserSpacePanelProps {
@@ -1041,12 +1040,6 @@ export function UserSpacePanel({
   const [objectStorageConfig, setObjectStorageConfig] =
     useState<UserSpaceObjectStorageConfig | null>(null);
   const [objectStorageLoading, setObjectStorageLoading] = useState(false);
-  const [showObjectStorageWizard, setShowObjectStorageWizard] = useState(false);
-  const [editingObjectStorageBucket, setEditingObjectStorageBucket] =
-    useState<UserSpaceObjectStorageBucket | null>(null);
-  const [deletingObjectStorageBucket, setDeletingObjectStorageBucket] = useState<string | null>(
-    null,
-  );
   const [savingEnvVar, setSavingEnvVar] = useState(false);
   const [showMountsModal, setShowMountsModal] = useState(false);
   const [mountsModalTab, setMountsModalTab] = useState<'mounts' | 'object-storage'>('mounts');
@@ -6056,33 +6049,6 @@ export function UserSpacePanel({
     return config;
   }, []);
 
-  const handleObjectStorageWizardSaved = useCallback((config: UserSpaceObjectStorageConfig) => {
-    setObjectStorageConfig(config);
-    setShowObjectStorageWizard(false);
-    setEditingObjectStorageBucket(null);
-    setSuccess('Object storage updated.');
-    setTimeout(() => setSuccess(null), 3000);
-  }, []);
-
-  const handleDeleteObjectStorageBucket = useCallback(
-    async (bucketName: string) => {
-      if (!activeWorkspaceId || !isOwner) return;
-      setDeletingObjectStorageBucket(bucketName);
-      try {
-        await api.deleteUserSpaceObjectStorageBucket(activeWorkspaceId, bucketName);
-        const next = await loadObjectStorageConfig(activeWorkspaceId);
-        setObjectStorageConfig(next);
-        setSuccess('Bucket deleted.');
-        setTimeout(() => setSuccess(null), 3000);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to delete bucket');
-      } finally {
-        setDeletingObjectStorageBucket(null);
-      }
-    },
-    [activeWorkspaceId, isOwner, loadObjectStorageConfig],
-  );
-
   const handleCreateEnvVar = useCallback(
     async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
       if (!activeWorkspaceId || !isOwner) return;
@@ -6167,8 +6133,6 @@ export function UserSpacePanel({
     setMountSyncPreviewMount(null);
     setMountSyncPreviewIntent(null);
     setMountSyncPreviewNextSyncMode(null);
-    setShowObjectStorageWizard(false);
-    setEditingObjectStorageBucket(null);
     setObjectStorageLoading(true);
     try {
       const [
@@ -6221,8 +6185,6 @@ export function UserSpacePanel({
     setMountSyncPreviewMount(null);
     setMountSyncPreviewIntent(null);
     setMountSyncPreviewNextSyncMode(null);
-    setShowObjectStorageWizard(false);
-    setEditingObjectStorageBucket(null);
   }, []);
 
   const refreshPersonalCloudMountState = useCallback(async () => {
@@ -9766,11 +9728,7 @@ export function UserSpacePanel({
                     fontWeight: 600,
                     transition: 'color 0.15s, border-color 0.15s',
                   }}
-                  onClick={() => {
-                    setMountsModalTab('mounts');
-                    setShowObjectStorageWizard(false);
-                    setEditingObjectStorageBucket(null);
-                  }}
+                  onClick={() => setMountsModalTab('mounts')}
                 >
                   Filesystem Mounts
                 </button>
@@ -9804,139 +9762,21 @@ export function UserSpacePanel({
             </div>
             <div className="modal-body">
               {mountsModalTab === 'object-storage' ? (
-                showObjectStorageWizard ? (
-                  <WorkspaceObjectStorageWizard
-                    workspaceId={activeWorkspaceId}
-                    existingBucket={editingObjectStorageBucket}
-                    existingBucketNames={
-                      objectStorageConfig?.buckets.map((bucket) => bucket.name) ?? []
+                <WorkspaceObjectStorageExplorer
+                  workspaceId={activeWorkspaceId}
+                  config={objectStorageConfig}
+                  loading={objectStorageLoading}
+                  canManage={isOwner}
+                  onConfigChange={setObjectStorageConfig}
+                  onNotify={(message, tone) => {
+                    if (tone === 'error') {
+                      setError(message);
+                    } else {
+                      setSuccess(message);
+                      setTimeout(() => setSuccess(null), 3000);
                     }
-                    onClose={() => {
-                      setShowObjectStorageWizard(false);
-                      setEditingObjectStorageBucket(null);
-                    }}
-                    onSaved={handleObjectStorageWizardSaved}
-                  />
-                ) : (
-                  <div style={{ display: 'grid', gap: 16 }}>
-                    <p className="userspace-muted" style={{ marginBottom: 0 }}>
-                      S3-compatible object storage with auto-injected credentials at runtime.
-                    </p>
-                    {objectStorageLoading ? (
-                      <p className="userspace-muted">Loading...</p>
-                    ) : objectStorageConfig ? (
-                      <>
-                        <div
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                          }}
-                        >
-                          <strong>Buckets</strong>
-                          <button
-                            type="button"
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => {
-                              setEditingObjectStorageBucket(null);
-                              setShowObjectStorageWizard(true);
-                            }}
-                          >
-                            <Plus size={14} />
-                            New Bucket
-                          </button>
-                        </div>
-
-                        <div style={{ display: 'grid', gap: 10 }}>
-                          {objectStorageConfig.buckets.map((bucket) => (
-                            <div
-                              key={bucket.name}
-                              style={{
-                                border: '1px solid var(--color-border)',
-                                borderRadius: 8,
-                                padding: 12,
-                                display: 'grid',
-                                gap: 8,
-                              }}
-                            >
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <strong>{bucket.name}</strong>
-                                {bucket.is_default && (
-                                  <span
-                                    className="userspace-muted"
-                                    style={{
-                                      fontSize: 12,
-                                      padding: '2px 6px',
-                                      borderRadius: 999,
-                                      background: 'var(--color-bg-tertiary)',
-                                    }}
-                                  >
-                                    Default
-                                  </span>
-                                )}
-                                <span style={{ marginLeft: 'auto' }} />
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => {
-                                    setEditingObjectStorageBucket(bucket);
-                                    setShowObjectStorageWizard(true);
-                                  }}
-                                  title="Edit bucket"
-                                >
-                                  <Pencil size={12} />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => {
-                                    void handleDeleteObjectStorageBucket(bucket.name);
-                                  }}
-                                  disabled={
-                                    objectStorageConfig.buckets.length <= 1 ||
-                                    deletingObjectStorageBucket === bucket.name
-                                  }
-                                  title={
-                                    objectStorageConfig.buckets.length <= 1
-                                      ? 'At least one bucket must remain'
-                                      : 'Delete bucket'
-                                  }
-                                >
-                                  {deletingObjectStorageBucket === bucket.name ? (
-                                    <MiniLoadingSpinner variant="icon" size={12} />
-                                  ) : (
-                                    <Trash2 size={12} />
-                                  )}
-                                </button>
-                              </div>
-                              <div className="userspace-muted" style={{ fontSize: 12 }}>
-                                {bucket.description || 'No description'}
-                              </div>
-                              <div style={{ display: 'grid', gap: 4 }}>
-                                <span className="userspace-muted" style={{ fontSize: 12 }}>
-                                  Public root:{' '}
-                                  <code>
-                                    /{bucket.name}/{bucket.public_prefix}
-                                  </code>
-                                </span>
-                                <span className="userspace-muted" style={{ fontSize: 12 }}>
-                                  Private root:{' '}
-                                  <code>
-                                    /{bucket.name}/{bucket.private_prefix}
-                                  </code>
-                                </span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </>
-                    ) : (
-                      <p className="userspace-muted">
-                        Object storage is unavailable for this workspace.
-                      </p>
-                    )}
-                  </div>
-                )
+                  }}
+                />
               ) : (
                 <>
                   {!mountsLoading && mounts.length === 0 && (

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import mimetypes
 import os
 import posixpath
 import re
@@ -129,6 +130,7 @@ from ragtime.userspace.models import (
     DeleteGlobalEnvVarResponse,
     DeleteUserspaceMountSourceResponse,
     DeleteUserSpaceObjectStorageBucketResponse,
+    DeleteUserSpaceObjectStorageObjectResponse,
     DeleteUserSpaceWorkspaceArchiveExportResponse,
     DeleteWorkspaceEnvVarResponse,
     DeleteWorkspaceMountResponse,
@@ -140,6 +142,7 @@ from ragtime.userspace.models import (
     MountSourceAffectedWorkspacesResponse,
     MountSourceUnavailableKind,
     PaginatedWorkspacesResponse,
+    RenameUserSpaceObjectStorageObjectRequest,
     RuntimeOperationPhase,
     RuntimeRestartBatchTaskPhase,
     RuntimeRestartWorkspacePhase,
@@ -154,6 +157,7 @@ from ragtime.userspace.models import (
     UpdateWorkspaceMountRequest,
     UpdateWorkspaceRequest,
     UpdateWorkspaceShareAccessRequest,
+    UploadUserSpaceObjectStorageObjectResponse,
     UpsertGlobalEnvVarRequest,
     UpsertWorkspaceAgentGrantRequest,
     UpsertWorkspaceEnvVarRequest,
@@ -170,6 +174,8 @@ from ragtime.userspace.models import (
     UserspaceMountSourceType,
     UserSpaceObjectStorageBucket,
     UserSpaceObjectStorageConfig,
+    UserSpaceObjectStorageEntry,
+    UserSpaceObjectStorageListResponse,
     UserSpaceRuntimeRestartBatchTask,
     UserSpaceRuntimeRestartWorkspaceTask,
     UserSpaceSharedPreviewResponse,
@@ -6572,11 +6578,35 @@ class UserSpaceService:
         if target is None:
             raise HTTPException(status_code=404, detail="Bucket not found")
 
+        final_name = normalized_name
+        if request.new_name is not None:
+            renamed = self._normalize_object_storage_bucket_name(request.new_name)
+            if renamed != normalized_name:
+                if any(str(bucket.get("name") or "") == renamed for bucket in buckets):
+                    raise HTTPException(status_code=409, detail="A bucket with that name already exists")
+                buckets_dir = self._workspace_object_storage_buckets_dir(workspace_id)
+                source_dir = buckets_dir / normalized_name
+                target_dir = buckets_dir / renamed
+                try:
+                    buckets_dir.mkdir(parents=True, exist_ok=True)
+                    if source_dir.exists():
+                        if target_dir.exists():
+                            raise HTTPException(status_code=409, detail="Bucket storage directory already exists")
+                        source_dir.rename(target_dir)
+                except HTTPException:
+                    raise
+                except OSError as exc:
+                    raise HTTPException(status_code=500, detail="Failed to rename bucket storage directory") from exc
+                target["name"] = renamed
+                if str(payload.get("default_bucket_name") or "") == normalized_name:
+                    payload["default_bucket_name"] = renamed
+                final_name = renamed
+
         if request.description is not None:
             target["description"] = self._normalize_object_storage_bucket_description(request.description)
         target["updated_at"] = utc_now().isoformat()
         if request.make_default:
-            payload["default_bucket_name"] = normalized_name
+            payload["default_bucket_name"] = final_name
 
         self._write_object_storage_config(workspace_id, payload)
         db = await get_db()
@@ -6585,6 +6615,270 @@ class UserSpaceService:
             data={"updatedAt": utc_now()},
         )
         return self._object_storage_config_model(workspace_id, payload)
+
+    # ── Object storage explorer (browse/upload/download/delete/rename) ──
+
+    @staticmethod
+    def _normalize_object_storage_object_key(object_key: str) -> str:
+        raw = str(object_key or "").replace("\\", "/").strip("/")
+        if not raw:
+            raise HTTPException(status_code=400, detail="Object key is required")
+        parts = PurePosixPath(raw).parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise HTTPException(status_code=400, detail="Object key must be a relative path")
+        return "/".join(parts)
+
+    @staticmethod
+    def _normalize_object_storage_prefix(prefix: str | None) -> str:
+        raw = str(prefix or "").replace("\\", "/").strip("/")
+        if not raw:
+            return ""
+        parts = PurePosixPath(raw).parts
+        if any(part in {"", ".", ".."} for part in parts):
+            raise HTTPException(status_code=400, detail="Prefix must be a relative path")
+        return "/".join(parts)
+
+    def _resolve_object_storage_bucket(self, workspace_id: str, bucket_name: str) -> tuple[str, Path]:
+        bucket = self._normalize_object_storage_bucket_name(bucket_name)
+        payload = self._ensure_object_storage_config(workspace_id)
+        raw_buckets = payload.get("buckets")
+        buckets = raw_buckets if isinstance(raw_buckets, list) else []
+        if not any(isinstance(item, dict) and str(item.get("name") or "") == bucket for item in buckets if item):
+            raise HTTPException(status_code=404, detail="Object storage bucket not found")
+        root = self._workspace_object_storage_buckets_dir(workspace_id).resolve()
+        bucket_dir = (root / bucket).resolve()
+        try:
+            bucket_dir.relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid bucket path") from exc
+        return bucket, bucket_dir
+
+    def _resolve_object_storage_target(self, bucket_dir: Path, key: str) -> Path:
+        target = (bucket_dir / key).resolve()
+        try:
+            target.relative_to(bucket_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Object key must stay inside the bucket") from exc
+        return target
+
+    def _list_object_storage_objects_sync(
+        self,
+        bucket_dir: Path,
+    ) -> tuple[list[tuple[str, int, datetime, str | None]], int]:
+        """Return all objects under a bucket as (key, size, modified, content_type)."""
+        objects: list[tuple[str, int, datetime, str | None]] = []
+        total_bytes = 0
+        if not bucket_dir.exists() or not bucket_dir.is_dir():
+            return objects, total_bytes
+        for path in sorted(bucket_dir.rglob("*")):
+            # Skip symlinks defensively to avoid traversal outside the bucket.
+            if path.is_symlink():
+                continue
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            rel = path.relative_to(bucket_dir).as_posix()
+            content_type = mimetypes.guess_type(path.name)[0]
+            modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            objects.append((rel, stat.st_size, modified, content_type))
+            total_bytes += stat.st_size
+        return objects, total_bytes
+
+    async def list_workspace_object_storage_objects(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        prefix: str | None = None,
+    ) -> UserSpaceObjectStorageListResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        normalized_prefix = self._normalize_object_storage_prefix(prefix)
+
+        objects, total_bytes = await asyncio.to_thread(
+            self._list_object_storage_objects_sync,
+            bucket_dir,
+        )
+
+        prefix_segment = f"{normalized_prefix}/" if normalized_prefix else ""
+        direct_objects: dict[str, UserSpaceObjectStorageEntry] = {}
+        child_prefixes: dict[str, dict[str, int]] = {}
+
+        for key, size, modified, content_type in objects:
+            if prefix_segment and not key.startswith(prefix_segment):
+                continue
+            remainder = key[len(prefix_segment) :]
+            if not remainder:
+                continue
+            if "/" in remainder:
+                child_name = remainder.split("/", 1)[0]
+                bucket_stats = child_prefixes.setdefault(child_name, {"count": 0})
+                bucket_stats["count"] += 1
+            else:
+                direct_objects[remainder] = UserSpaceObjectStorageEntry(
+                    name=remainder,
+                    key=key,
+                    entry_type="object",
+                    size_bytes=size,
+                    updated_at=modified,
+                    content_type=content_type,
+                )
+
+        entries: list[UserSpaceObjectStorageEntry] = []
+        for child_name in sorted(child_prefixes):
+            child_key = f"{prefix_segment}{child_name}"
+            entries.append(
+                UserSpaceObjectStorageEntry(
+                    name=child_name,
+                    key=child_key,
+                    entry_type="prefix",
+                    object_count=child_prefixes[child_name]["count"],
+                )
+            )
+        for name in sorted(direct_objects):
+            entries.append(direct_objects[name])
+
+        parent_prefix: str | None = None
+        if normalized_prefix:
+            parent_prefix = normalized_prefix.rsplit("/", 1)[0] if "/" in normalized_prefix else ""
+
+        return UserSpaceObjectStorageListResponse(
+            workspace_id=workspace_id,
+            bucket_name=bucket,
+            prefix=normalized_prefix,
+            parent_prefix=parent_prefix,
+            entries=entries,
+            total_objects=len(objects),
+            total_bytes=total_bytes,
+        )
+
+    async def upload_workspace_object_storage_object(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        object_key: str,
+        content: bytes,
+        content_type: str | None = None,
+    ) -> UploadUserSpaceObjectStorageObjectResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        key = self._normalize_object_storage_object_key(object_key)
+        target = self._resolve_object_storage_target(bucket_dir, key)
+
+        def _write() -> None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+
+        await asyncio.to_thread(_write)
+        await self._touch_workspace(workspace_id)
+        resolved_type = content_type or mimetypes.guess_type(target.name)[0]
+        return UploadUserSpaceObjectStorageObjectResponse(
+            workspace_id=workspace_id,
+            bucket_name=bucket,
+            key=key,
+            size_bytes=len(content),
+            content_type=resolved_type,
+        )
+
+    async def get_workspace_object_storage_object_path(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        object_key: str,
+    ) -> tuple[Path, str, str]:
+        """Resolve an object for download. Returns (path, key, content_type)."""
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        _, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        key = self._normalize_object_storage_object_key(object_key)
+        target = self._resolve_object_storage_target(bucket_dir, key)
+        if target.is_symlink() or not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="Object not found")
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return target, key, content_type
+
+    async def delete_workspace_object_storage_object(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        object_key: str,
+    ) -> DeleteUserSpaceObjectStorageObjectResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        key = self._normalize_object_storage_object_key(object_key)
+        target = self._resolve_object_storage_target(bucket_dir, key)
+        if target.is_symlink() or not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="Object not found")
+
+        def _delete() -> None:
+            target.unlink()
+            # Prune now-empty parent directories up to (but not including) bucket root.
+            parent = target.parent
+            while parent != bucket_dir and parent.is_dir():
+                try:
+                    next(parent.iterdir())
+                    break
+                except StopIteration:
+                    parent.rmdir()
+                    parent = parent.parent
+
+        await asyncio.to_thread(_delete)
+        await self._touch_workspace(workspace_id)
+        return DeleteUserSpaceObjectStorageObjectResponse(
+            success=True,
+            workspace_id=workspace_id,
+            bucket_name=bucket,
+            key=key,
+        )
+
+    async def rename_workspace_object_storage_object(
+        self,
+        workspace_id: str,
+        user_id: str,
+        bucket_name: str,
+        object_key: str,
+        request: RenameUserSpaceObjectStorageObjectRequest,
+    ) -> UploadUserSpaceObjectStorageObjectResponse:
+        await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+        bucket, bucket_dir = self._resolve_object_storage_bucket(workspace_id, bucket_name)
+        key = self._normalize_object_storage_object_key(object_key)
+        new_key = self._normalize_object_storage_object_key(request.new_key)
+        source = self._resolve_object_storage_target(bucket_dir, key)
+        target = self._resolve_object_storage_target(bucket_dir, new_key)
+        if source.is_symlink() or not source.exists() or not source.is_file():
+            raise HTTPException(status_code=404, detail="Object not found")
+        if new_key == key:
+            raise HTTPException(status_code=400, detail="New key must be different")
+        if target.exists():
+            raise HTTPException(status_code=409, detail="An object with that key already exists")
+
+        def _move() -> int:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(target)
+            parent = source.parent
+            while parent != bucket_dir and parent.is_dir():
+                try:
+                    next(parent.iterdir())
+                    break
+                except StopIteration:
+                    parent.rmdir()
+                    parent = parent.parent
+            return target.stat().st_size
+
+        size = await asyncio.to_thread(_move)
+        await self._touch_workspace(workspace_id)
+        return UploadUserSpaceObjectStorageObjectResponse(
+            workspace_id=workspace_id,
+            bucket_name=bucket,
+            key=new_key,
+            size_bytes=size,
+            content_type=mimetypes.guess_type(target.name)[0],
+        )
 
     async def delete_workspace_object_storage_bucket(
         self,

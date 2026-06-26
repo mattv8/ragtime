@@ -726,12 +726,71 @@ class CreateUserSpaceObjectStorageBucketRequest(BaseModel):
 class UpdateUserSpaceObjectStorageBucketRequest(BaseModel):
     description: str | None = Field(default=None, max_length=1000)
     make_default: bool | None = None
+    new_name: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=63,
+        description="Optional new bucket name (rename). Renames the bucket and its stored objects.",
+    )
 
 
 class DeleteUserSpaceObjectStorageBucketResponse(BaseModel):
     success: bool = True
     bucket_name: str
     workspace_id: str
+
+
+class UserSpaceObjectStorageEntry(BaseModel):
+    name: str = Field(description="Display name of the entry within the current prefix")
+    key: str = Field(description="Full object key relative to the bucket root")
+    entry_type: Literal["object", "prefix"] = Field(
+        description="'object' for a stored file, 'prefix' for a folder-like grouping",
+    )
+    size_bytes: int = Field(default=0, description="Size in bytes (0 for prefixes)")
+    updated_at: datetime | None = Field(
+        default=None,
+        description="Last modified time (objects only)",
+    )
+    content_type: str | None = Field(
+        default=None,
+        description="Best-effort MIME type for objects",
+    )
+    object_count: int = Field(
+        default=0,
+        description="Number of objects contained under a prefix (prefixes only)",
+    )
+
+
+class UserSpaceObjectStorageListResponse(BaseModel):
+    workspace_id: str
+    bucket_name: str
+    prefix: str = Field(default="", description="Current browse prefix (no leading slash)")
+    parent_prefix: str | None = Field(
+        default=None,
+        description="Parent prefix for upward navigation, or null at the bucket root",
+    )
+    entries: list[UserSpaceObjectStorageEntry] = Field(default_factory=list)
+    total_objects: int = Field(default=0, description="Total objects stored in the bucket")
+    total_bytes: int = Field(default=0, description="Total bytes stored in the bucket")
+
+
+class UploadUserSpaceObjectStorageObjectResponse(BaseModel):
+    workspace_id: str
+    bucket_name: str
+    key: str
+    size_bytes: int
+    content_type: str | None = None
+
+
+class RenameUserSpaceObjectStorageObjectRequest(BaseModel):
+    new_key: str = Field(min_length=1, max_length=1024, description="New object key relative to the bucket root")
+
+
+class DeleteUserSpaceObjectStorageObjectResponse(BaseModel):
+    success: bool = True
+    workspace_id: str
+    bucket_name: str
+    key: str
 
 
 class UpdateWorkspaceMembersRequest(BaseModel):
