@@ -8,6 +8,7 @@ from unittest import mock
 import httpx
 
 import ragtime.core.model_limits as model_limits
+from ragtime.core.model_providers import OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS, get_provider
 from ragtime.core.openai_codex_auth import (
     OPENAI_CODEX_RESPONSES_ENDPOINT,
     ensure_openai_codex_token_fresh,
@@ -45,19 +46,74 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
             "acct-from-url-claim",
         )
 
+    def test_codex_provider_declares_responses_payload_keys(self) -> None:
+        provider = get_provider("openai_codex")
+        self.assertIsNotNone(provider)
+        assert provider is not None
+        self.assertEqual(provider.responses_payload_keys, OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS)
+
     def test_codex_request_rewrites_openai_endpoint(self) -> None:
+        content = json.dumps({"input": "hello"}).encode("utf-8")
         request = httpx.Request(
             "POST",
             "https://api.openai.com/v1/responses",
             headers={"Authorization": "Bearer token", "ChatGPT-Account-Id": "acct_123"},
-            content=b"{}",
+            content=content,
         )
 
-        rewritten = _build_codex_request(request, b"{}")
+        rewritten = _build_codex_request(request, content)
 
         self.assertEqual(str(rewritten.url), OPENAI_CODEX_RESPONSES_ENDPOINT)
         self.assertEqual(rewritten.headers.get("Authorization"), "Bearer token")
         self.assertEqual(rewritten.headers.get("ChatGPT-Account-Id"), "acct_123")
+        self.assertEqual(json.loads(rewritten.read()), {"input": "hello", "store": False})
+
+    def test_codex_request_normalizes_payload_to_supported_fields(self) -> None:
+        content = json.dumps(
+            {
+                "input": "hello",
+                "max_output_tokens": 1000,
+                "temperature": 0,
+                "store": True,
+            }
+        ).encode("utf-8")
+        request = httpx.Request(
+            "POST",
+            "https://api.openai.com/v1/responses",
+            headers={"Content-Length": str(len(content))},
+            content=content,
+        )
+
+        rewritten = _build_codex_request(request, content)
+
+        rewritten_body = rewritten.read()
+        self.assertEqual(json.loads(rewritten_body), {"input": "hello", "store": False})
+        self.assertEqual(rewritten.headers.get("Content-Length"), str(len(rewritten_body)))
+
+    def test_codex_request_strips_input_item_ids_when_store_false(self) -> None:
+        content = json.dumps(
+            {
+                "input": [
+                    {"id": "rs_070e90e825564696016a3e97aa47208193a7c3f33403ed19fa", "type": "reasoning", "summary": []},
+                    {"id": "fc_123", "type": "function_call", "call_id": "call_123", "name": "lookup", "arguments": "{}"},
+                ],
+                "store": True,
+            }
+        ).encode("utf-8")
+        request = httpx.Request("POST", "https://api.openai.com/v1/responses", content=content)
+
+        rewritten = _build_codex_request(request, content)
+
+        self.assertEqual(
+            json.loads(rewritten.read()),
+            {
+                "input": [
+                    {"type": "reasoning", "summary": []},
+                    {"type": "function_call", "call_id": "call_123", "name": "lookup", "arguments": "{}"},
+                ],
+                "store": False,
+            },
+        )
 
     async def test_live_codex_model_catalog_registers_responses_endpoint(self) -> None:
         model_limits.invalidate_cache()

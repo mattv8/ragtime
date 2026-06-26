@@ -41,6 +41,7 @@ class ModelProvider:
     openai_compatible_embeddings: bool = False
     supports_vision_ocr: bool = False
     local: bool = False
+    responses_payload_keys: frozenset[str] = frozenset()
     model_family_tokenizer_labels: tuple[tuple[str, str], ...] = ()
 
 
@@ -135,6 +136,26 @@ OMLX_LLM_CONNECTION = ProviderConnection(
 )
 
 
+OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS = frozenset(
+    {
+        "model",
+        "instructions",
+        "input",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        "reasoning",
+        "store",
+        "stream",
+        "include",
+        "service_tier",
+        "prompt_cache_key",
+        "text",
+        "client_metadata",
+    }
+)
+
+
 MODEL_PROVIDERS: dict[str, ModelProvider] = {
     "openai": ModelProvider(
         name="openai",
@@ -157,6 +178,7 @@ MODEL_PROVIDERS: dict[str, ModelProvider] = {
         supports_embeddings=True,
         openai_compatible_chat=True,
         openai_compatible_embeddings=True,
+        responses_payload_keys=OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS,
     ),
     "anthropic": ModelProvider(
         name="anthropic",

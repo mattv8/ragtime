@@ -110,6 +110,7 @@ from ragtime.core.model_limits import (
 from ragtime.core.model_providers import (
     LLM_PROVIDER_NAMES,
     LOCAL_LLM_PROVIDER_NAMES,
+    OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS,
     get_provider,
     normalize_provider_name,
     providers_equivalent,
@@ -2018,14 +2019,53 @@ class _OpenAICodexAsyncTransport(httpx.AsyncBaseTransport):
         await self._delegate.aclose()
 
 
+def _strip_codex_input_item_ids(payload: dict[str, Any]) -> None:
+    input_items = payload.get("input")
+    if not isinstance(input_items, list):
+        return
+
+    updated_items: list[Any] = []
+    changed = False
+    for item in input_items:
+        if isinstance(item, dict) and "id" in item:
+            item = dict(item)
+            item.pop("id", None)
+            changed = True
+        updated_items.append(item)
+
+    if changed:
+        payload["input"] = updated_items
+
+
+def _normalize_codex_responses_payload(content: bytes) -> bytes:
+    if not content:
+        return content
+    try:
+        payload = json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return content
+    if not isinstance(payload, dict):
+        return content
+
+    normalized = {key: value for key, value in payload.items() if key in OPENAI_CODEX_RESPONSES_PAYLOAD_KEYS}
+    normalized["store"] = False
+    _strip_codex_input_item_ids(normalized)
+
+    if normalized == payload:
+        return content
+    return json.dumps(normalized, separators=(",", ":")).encode("utf-8")
+
+
 def _build_codex_request(request: httpx.Request, content: bytes) -> httpx.Request:
     target_url = request.url
     path = request.url.path.lower()
     if "/v1/responses" in path or path.endswith("/responses") or "/chat/completions" in path:
         target_url = httpx.URL(OPENAI_CODEX_RESPONSES_ENDPOINT)
+        content = _normalize_codex_responses_payload(content)
 
     headers = httpx.Headers(request.headers)
     headers.pop("host", None)
+    headers.pop("content-length", None)
     return httpx.Request(
         request.method,
         target_url,
