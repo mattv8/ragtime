@@ -1917,7 +1917,7 @@ textarea.chat-header-title-input {
   min-height: 0;
   height: 100%;
   box-sizing: border-box;
-  padding: 12px 108px 12px 52px;
+  padding: 12px 100px 12px 48px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
