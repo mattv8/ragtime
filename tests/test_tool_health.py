@@ -15,6 +15,129 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertEqual(monitor.healthy_tool_ids_for_configs([SimpleNamespace(id="tool-a")]), [])
         self.assertEqual(monitor.filter_healthy_tool_config_dicts([{"id": "tool-a"}]), [])
 
+    def test_read_path_does_not_seed_from_persisted_results(self) -> None:
+        # Reads must be pure O(1) lookups: a persisted result alone, without an
+        # explicit seed, must NOT make a tool healthy.
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        now = datetime.now(timezone.utc)
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=now, last_test_error=None)
+
+        self.assertEqual(monitor.healthy_tool_ids_for_configs([config]), [])
+        self.assertEqual(monitor.filter_healthy_tool_config_dicts([{"id": "tool-a"}]), [])
+        self.assertFalse(monitor.is_tool_healthy("tool-a"))
+
+    def test_cold_start_seed_warm_starts_health_after_restart(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        now = datetime.now(timezone.utc)
+        # last_test_at older than the normal stale window but within the
+        # cold-start grace window — the exact restart scenario.
+        last_test_at = now - timedelta(seconds=120)
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=last_test_at, last_test_error=None)
+
+        seeded = asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        self.assertEqual(set(seeded), {"tool-a"})
+        self.assertTrue(monitor.is_tool_healthy("tool-a"))
+        self.assertEqual(monitor.healthy_tool_ids_for_configs([config]), ["tool-a"])
+
+    def test_cold_start_seed_rejects_results_older_than_grace(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        too_old = datetime.now(timezone.utc) - timedelta(seconds=601)
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=too_old, last_test_error=None)
+
+        seeded = asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        self.assertEqual(seeded, {})
+        self.assertFalse(monitor.is_tool_healthy("tool-a"))
+
+    def test_cold_start_seed_does_not_warm_start_failed_results(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        now = datetime.now(timezone.utc)
+        config = SimpleNamespace(id="tool-a", last_test_result=False, last_test_at=now, last_test_error="Connection refused")
+
+        asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        self.assertFalse(monitor.is_tool_healthy("tool-a"))
+        self.assertEqual(monitor.get_unavailable_reason("tool-a"), "Connection refused")
+
+    def test_cold_start_seed_is_idempotent(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        now = datetime.now(timezone.utc)
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=now, last_test_error=None)
+
+        first = asyncio.run(monitor.seed_from_persisted_results([config]))
+        second = asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        self.assertEqual(set(first), {"tool-a"})
+        self.assertEqual(second, {})
+
+    def test_cold_start_seed_does_not_overwrite_live_status(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        now = datetime.now(timezone.utc)
+        # A live heartbeat already marked the tool offline before seeding runs.
+        monitor._statuses = {
+            "tool-a": ToolHeartbeatStatus(tool_id="tool-a", alive=False, error="Connection refused", checked_at=now),
+        }
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=now, last_test_error=None)
+
+        seeded = asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        self.assertEqual(seeded, {})
+        self.assertFalse(monitor.is_tool_healthy("tool-a"))
+
+    def test_cold_start_seed_clamps_future_dated_results(self) -> None:
+        # A backward host-clock shift can leave last_test_at in the future.
+        # The seed must be clamped to <= now so a later live heartbeat still
+        # out-ranks it in the newest-wins guard rather than being dropped.
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        seed_call_time = datetime.now(timezone.utc)
+        future = seed_call_time + timedelta(seconds=300)
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=future, last_test_error=None)
+
+        asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        seeded = monitor.get_status("tool-a")
+        assert seeded is not None
+        assert seeded.checked_at is not None
+        self.assertLessEqual(seeded.checked_at, datetime.now(timezone.utc))
+        self.assertTrue(monitor.is_tool_healthy("tool-a"))
+
+        persisted: list[dict[str, ToolHeartbeatStatus]] = []
+
+        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
+            persisted.append(statuses)
+
+        monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
+
+        live_time = datetime.now(timezone.utc)
+        asyncio.run(monitor._store_statuses({"tool-a": ToolHeartbeatStatus(tool_id="tool-a", alive=False, error="Connection refused", checked_at=live_time)}))
+
+        status = monitor.get_status("tool-a")
+        assert status is not None
+        self.assertFalse(status.provisional)
+        self.assertFalse(status.alive)
+
+    def test_live_heartbeat_overwrites_provisional_seed(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
+        seed_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        config = SimpleNamespace(id="tool-a", last_test_result=True, last_test_at=seed_time, last_test_error=None)
+        asyncio.run(monitor.seed_from_persisted_results([config]))
+
+        persisted: list[dict[str, ToolHeartbeatStatus]] = []
+
+        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
+            persisted.append(statuses)
+
+        monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
+
+        live_time = datetime.now(timezone.utc)
+        asyncio.run(monitor._store_statuses({"tool-a": ToolHeartbeatStatus(tool_id="tool-a", alive=False, error="Connection timeout", checked_at=live_time)}))
+
+        status = monitor.get_status("tool-a")
+        assert status is not None
+        self.assertFalse(status.provisional)
+        self.assertFalse(status.alive)
+
     def test_only_recent_successful_heartbeats_are_healthy(self) -> None:
         monitor = ToolHealthMonitor(stale_after_seconds=30)
         now = datetime.now(timezone.utc)

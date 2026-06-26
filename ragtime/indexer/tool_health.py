@@ -13,6 +13,13 @@ logger = get_logger(__name__)
 TOOL_HEALTH_CHECK_INTERVAL_SECONDS = 30.0
 TOOL_HEALTH_STALE_AFTER_SECONDS = TOOL_HEALTH_CHECK_INTERVAL_SECONDS * 3
 TOOL_HEALTH_FAILURES_BEFORE_OFFLINE = 2
+# Cold-start grace window for provisional statuses seeded from persisted test
+# results. A process restart inherently pauses live heartbeats; during that gap
+# we trust the last persisted DB state so default-all workspaces do not briefly
+# resolve to zero tools. This window must comfortably exceed a slow container
+# boot (image pull, Postgres init, migrations) so the seed survives until the
+# first live heartbeat lands and overwrites it.
+TOOL_HEALTH_COLD_START_GRACE_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -22,6 +29,11 @@ class ToolHeartbeatStatus:
     latency_ms: float | None = None
     error: str | None = None
     checked_at: datetime | None = None
+    # True only for statuses seeded from persisted test results at startup.
+    # Provisional statuses use the longer cold-start grace window for freshness
+    # and are always overwritten by the first live heartbeat (which carries a
+    # newer checked_at). They never survive a normal heartbeat cycle.
+    provisional: bool = False
 
     def checked_at_iso(self) -> str:
         checked_at = self.checked_at or datetime.now(timezone.utc)
@@ -63,16 +75,19 @@ class ToolHealthMonitor:
         interval_seconds: float = TOOL_HEALTH_CHECK_INTERVAL_SECONDS,
         stale_after_seconds: float = TOOL_HEALTH_STALE_AFTER_SECONDS,
         failures_before_offline: int = TOOL_HEALTH_FAILURES_BEFORE_OFFLINE,
+        cold_start_grace_seconds: float = TOOL_HEALTH_COLD_START_GRACE_SECONDS,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.stale_after_seconds = stale_after_seconds
         self.failures_before_offline = max(1, failures_before_offline)
+        self.cold_start_grace_seconds = max(stale_after_seconds, cold_start_grace_seconds)
         self._statuses: dict[str, ToolHeartbeatStatus] = {}
         self._failure_counts: dict[str, int] = {}
         self._subscribers: set[asyncio.Queue[ToolHealthCheckResult]] = set()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
+        self._seeded = False
 
     def get_status(self, tool_id: str | None) -> ToolHeartbeatStatus | None:
         if not tool_id:
@@ -104,7 +119,8 @@ class ToolHealthMonitor:
         checked_at = status.checked_at
         if checked_at.tzinfo is None:
             checked_at = checked_at.replace(tzinfo=timezone.utc)
-        return (reference - checked_at).total_seconds() <= self.stale_after_seconds
+        limit = self.cold_start_grace_seconds if status.provisional else self.stale_after_seconds
+        return (reference - checked_at).total_seconds() <= limit
 
     def is_tool_healthy(self, tool_id: str | None) -> bool:
         status = self.get_status(tool_id)
@@ -132,6 +148,99 @@ class ToolHealthMonitor:
             if tool_id and self.is_tool_healthy(tool_id):
                 healthy_ids.append(tool_id)
         return healthy_ids
+
+    def _coerce_persisted_status(self, tool: Any, *, now: datetime) -> ToolHeartbeatStatus | None:
+        """Build a provisional status from a tool's persisted test result.
+
+        Returns None when the tool has no usable persisted result or when that
+        result is older than the cold-start grace window. Runs only at startup
+        seeding time, never on the request hot path.
+        """
+        tool_id = str(_tool_attr(tool, "id", "") or "")
+        if not tool_id:
+            return None
+
+        last_test_result = _tool_attr(tool, "last_test_result", None)
+        if last_test_result is None:
+            last_test_result = _tool_attr(tool, "lastTestResult", None)
+        last_test_at = _tool_attr(tool, "last_test_at", None)
+        if last_test_at is None:
+            last_test_at = _tool_attr(tool, "lastTestAt", None)
+        if last_test_result is None or last_test_at is None:
+            return None
+
+        if isinstance(last_test_at, str):
+            try:
+                last_test_at = datetime.fromisoformat(last_test_at)
+            except ValueError:
+                return None
+        if not isinstance(last_test_at, datetime):
+            return None
+        if last_test_at.tzinfo is None:
+            last_test_at = last_test_at.replace(tzinfo=timezone.utc)
+        if (now - last_test_at).total_seconds() > self.cold_start_grace_seconds:
+            return None
+
+        last_test_error = _tool_attr(tool, "last_test_error", None)
+        if last_test_error is None:
+            last_test_error = _tool_attr(tool, "lastTestError", None)
+        # Clamp checked_at to now so a backward host-clock shift across the
+        # restart can never stamp the seed in the future. A future-dated seed
+        # would otherwise out-rank the first live heartbeat in the
+        # newest-wins guard in _store_statuses and pin a stale state.
+        seed_checked_at = min(last_test_at, now)
+        return ToolHeartbeatStatus(
+            tool_id=tool_id,
+            alive=bool(last_test_result),
+            error=None if last_test_result else last_test_error,
+            checked_at=seed_checked_at,
+            provisional=True,
+        )
+
+    async def seed_from_persisted_results(self, tool_configs: list[Any] | None = None) -> dict[str, ToolHeartbeatStatus]:
+        """Warm-start in-memory health from persisted test results, exactly once.
+
+        Must be awaited during startup BEFORE the first reader (e.g.
+        ``rag.initialize()``) consults tool availability, so default-all
+        workspaces never observe an empty health cache. Idempotent: subsequent
+        calls are no-ops. Seeds only tools that have no live status yet, so a
+        heartbeat that landed first is never clobbered. Seeded entries are
+        provisional and are superseded by the first live heartbeat.
+        """
+        if self._seeded:
+            return {}
+
+        if tool_configs is None:
+            from ragtime.indexer.repository import repository
+
+            try:
+                tool_configs = await repository.list_tool_configs(enabled_only=True)
+            except Exception:
+                logger.warning("Tool health cold-start seed skipped: failed to load tool configs", exc_info=True)
+                return {}
+
+        now = datetime.now(timezone.utc)
+        seeded: dict[str, ToolHeartbeatStatus] = {}
+        async with self._lock:
+            if self._seeded:
+                return {}
+            for tool in tool_configs:
+                tool_id = str(_tool_attr(tool, "id", "") or "")
+                if not tool_id or tool_id in self._statuses:
+                    continue
+                status = self._coerce_persisted_status(tool, now=now)
+                if status is None:
+                    continue
+                self._statuses[tool_id] = status
+                seeded[tool_id] = status
+            self._seeded = True
+
+        if seeded:
+            logger.info(
+                "Cold-start seeded %d tool heartbeat status(es) from persisted results",
+                len(seeded),
+            )
+        return seeded
 
     async def check_once(self, tool_configs: list[Any] | None = None) -> ToolHealthCheckResult:
         """Refresh heartbeat status for enabled tools and persist the latest result."""
@@ -235,10 +344,15 @@ class ToolHealthMonitor:
                         status_checked_at = status_checked_at.replace(tzinfo=timezone.utc)
                     if status_checked_at < previous_checked_at:
                         continue
-                previous_healthy = bool(previous and previous.alive and self.is_status_fresh(previous, now=now))
+                # Observed health reflects what consumers see (includes a fresh
+                # provisional seed) and drives change notifications.
+                previous_observed_healthy = bool(previous and previous.alive and self.is_status_fresh(previous, now=now))
                 if status.alive:
                     self._failure_counts.pop(tool_id, None)
-                elif previous_healthy and require_consecutive_failures:
+                elif previous is not None and previous_observed_healthy and not previous.provisional and require_consecutive_failures:
+                    # Hysteresis only smooths flaps between CONFIRMED live states.
+                    # A provisional seed is a guess, so the first live failure
+                    # must replace it immediately rather than earn extra grace.
                     failure_count = self._failure_counts.get(tool_id, 0) + 1
                     self._failure_counts[tool_id] = failure_count
                     if failure_count < self.failures_before_offline:
@@ -251,7 +365,7 @@ class ToolHealthMonitor:
                         )
                         continue
                 current_healthy = bool(status.alive and self.is_status_fresh(status, now=now))
-                if previous is None or previous_healthy != current_healthy:
+                if previous is None or previous_observed_healthy != current_healthy:
                     changed_tool_ids.add(tool_id)
                 self._statuses[tool_id] = status
                 stored_statuses[tool_id] = status

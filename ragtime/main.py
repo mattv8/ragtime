@@ -184,6 +184,12 @@ async def lifespan(app: FastAPI):
     # Connect to database
     await connect_db()
 
+    # Seed tool health from persisted test results BEFORE any reader consults
+    # tool availability. A process restart pauses live heartbeats; without this
+    # warm-start the in-memory cache is empty and default-all workspaces would
+    # briefly resolve to zero tools until the first background probe completes.
+    await tool_health_monitor.seed_from_persisted_results()
+
     # Start heartbeat checks before runtime tools are materialized, but do not
     # block API readiness on remote SSH/Docker health probes.
     tool_health_monitor.start(on_change=_handle_tool_health_change)
