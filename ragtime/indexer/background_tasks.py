@@ -8,6 +8,8 @@ Also handles scheduled filesystem re-indexing tasks.
 """
 
 import asyncio
+import contextlib
+import copy
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -965,6 +967,45 @@ class BackgroundTaskService:
                 hit_max_iterations = False  # Track if we hit the iteration limit
                 last_update = utc_now()
                 current_version = 0  # Version counter for efficient client polling
+                pending_streaming_publish = False
+                streaming_publish_lock = asyncio.Lock()
+                streaming_pending_flush_interval_s = 0.25
+
+                async def emit_streaming_state(*, require_pending: bool = False) -> bool:
+                    nonlocal current_version, last_update, pending_streaming_publish
+
+                    async with streaming_publish_lock:
+                        if require_pending and not pending_streaming_publish:
+                            return False
+
+                        events_snapshot = copy.deepcopy(events)
+                        tool_calls_snapshot = copy.deepcopy(tool_calls)
+
+                        result = await repository.update_chat_task_streaming_state(
+                            task_id,
+                            full_response,
+                            events_snapshot,
+                            tool_calls_snapshot,
+                            hit_max_iterations,
+                            current_version,
+                        )
+                        last_update = utc_now()
+                        pending_streaming_publish = False
+                        if result and result.streaming_state:
+                            current_version = result.streaming_state.version
+                            await task_event_bus.publish(task_id, result.streaming_state.dict())
+                            await _notify_conversation_progress(conversation_id, task_id)
+                            return True
+                        return False
+
+                async def flush_pending_streaming_state() -> None:
+                    while True:
+                        await asyncio.sleep(streaming_pending_flush_interval_s)
+                        if not pending_streaming_publish:
+                            continue
+                        if (utc_now() - last_update).total_seconds() < streaming_pending_flush_interval_s:
+                            continue
+                        await emit_streaming_state(require_pending=True)
 
                 # Use UI agent (with chart tool and enhanced prompt)
                 # Parse user message in case it's a JSON-encoded multimodal array
@@ -993,6 +1034,7 @@ class BackgroundTaskService:
                     disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 )
                 _stream_iter = _stream.__aiter__()
+                pending_streaming_flusher = asyncio.create_task(flush_pending_streaming_state())
                 try:
                     while True:
                         try:
@@ -1078,22 +1120,11 @@ class BackgroundTaskService:
                                 )
 
                             # Update streaming state less frequently (every 400ms) for text tokens
-                            # Tool events are still updated immediately above
+                            # and let the periodic flusher publish the trailing text during quiet gaps.
+                            pending_streaming_publish = True
                             now = utc_now()
                             if (now - last_update).total_seconds() > 0.4:
-                                result = await repository.update_chat_task_streaming_state(
-                                    task_id,
-                                    full_response,
-                                    events,
-                                    tool_calls,
-                                    hit_max_iterations,
-                                    current_version,
-                                )
-                                if result and result.streaming_state:
-                                    current_version = result.streaming_state.version
-                                    await task_event_bus.publish(task_id, result.streaming_state.dict())
-                                    await _notify_conversation_progress(conversation_id, task_id)
-                                last_update = now
+                                await emit_streaming_state()
                             continue
 
                         event_type = event.get("type")
@@ -1101,6 +1132,10 @@ class BackgroundTaskService:
                         if event_type == "tool_start":
                             run_id = event.get("run_id", "")
                             tool_name = event.get("tool")
+                            # If the text throttle left final tokens unpublished, ship them
+                            # before appending the running tool placeholder so the UI renders
+                            # text completion and tool start as separate frames.
+                            await emit_streaming_state(require_pending=True)
                             # Check if a ghost generating event already exists
                             # for this tool (created by tool_generating before
                             # on_tool_start fires).
@@ -1138,19 +1173,7 @@ class BackgroundTaskService:
                                     running_tool_indices[run_id] = len(events) - 1
 
                             # Force immediate update so the UI shows the running tool
-                            result = await repository.update_chat_task_streaming_state(
-                                task_id,
-                                full_response,
-                                events,
-                                tool_calls,
-                                hit_max_iterations,
-                                current_version,
-                            )
-                            if result and result.streaming_state:
-                                current_version = result.streaming_state.version
-                                await task_event_bus.publish(task_id, result.streaming_state.dict())
-                                await _notify_conversation_progress(conversation_id, task_id)
-                            last_update = utc_now()
+                            await emit_streaming_state()
 
                         elif event_type == "tool_end":
                             run_id = event.get("run_id", "")
@@ -1172,49 +1195,27 @@ class BackgroundTaskService:
                                 )
 
                                 # Force immediate update so the UI shows the completed tool
-                                result = await repository.update_chat_task_streaming_state(
-                                    task_id,
-                                    full_response,
-                                    events,
-                                    tool_calls,
-                                    hit_max_iterations,
-                                    current_version,
-                                )
-                                if result and result.streaming_state:
-                                    current_version = result.streaming_state.version
-                                    await task_event_bus.publish(task_id, result.streaming_state.dict())
-                                    await _notify_conversation_progress(conversation_id, task_id)
-                                last_update = utc_now()
+                                await emit_streaming_state()
 
                         elif event_type == "max_iterations_reached":
                             hit_max_iterations = True
                             logger.info(f"Task {task_id} hit max iterations limit")
                             # Force immediate update
-                            result = await repository.update_chat_task_streaming_state(
-                                task_id,
-                                full_response,
-                                events,
-                                tool_calls,
-                                hit_max_iterations,
-                                current_version,
-                            )
-                            if result and result.streaming_state:
-                                current_version = result.streaming_state.version
-                                await task_event_bus.publish(task_id, result.streaming_state.dict())
-                                await _notify_conversation_progress(conversation_id, task_id)
-                            last_update = utc_now()
+                            await emit_streaming_state()
 
                         elif event_type == "tool_generating":
                             # LLM is streaming tool call arguments - update
                             # the latest running tool event with line progress.
                             gen_tool = event.get("tool", "")
                             gen_lines = event.get("lines", 0)
+                            updated_tool_progress = False
                             if gen_tool and gen_lines:
                                 # Find the last running tool event matching this name
                                 for i in range(len(events) - 1, -1, -1):
                                     ev = events[i]
                                     if ev.get("type") == "tool" and ev.get("tool") == gen_tool and "output" not in ev:
                                         ev["generating_lines"] = gen_lines
+                                        updated_tool_progress = True
                                         break
                                 else:
                                     # No matching running tool - emit a ghost
@@ -1228,23 +1229,15 @@ class BackgroundTaskService:
                                             **({"presentation": event.get("presentation")} if event.get("presentation") is not None else {}),
                                         }
                                     )
+                                    updated_tool_progress = True
+
+                            if updated_tool_progress:
+                                pending_streaming_publish = True
 
                             # Throttle updates to avoid flooding the SSE bus
                             now = utc_now()
-                            if (now - last_update).total_seconds() > 0.6:
-                                result = await repository.update_chat_task_streaming_state(
-                                    task_id,
-                                    full_response,
-                                    events,
-                                    tool_calls,
-                                    hit_max_iterations,
-                                    current_version,
-                                )
-                                if result and result.streaming_state:
-                                    current_version = result.streaming_state.version
-                                    await task_event_bus.publish(task_id, result.streaming_state.dict())
-                                    await _notify_conversation_progress(conversation_id, task_id)
-                                last_update = now
+                            if pending_streaming_publish and (now - last_update).total_seconds() > 0.6:
+                                await emit_streaming_state()
 
                         elif event_type == "reasoning":
                             # Reasoning/thinking content from LLM
@@ -1256,26 +1249,18 @@ class BackgroundTaskService:
                                     reasoning_text,
                                     reasoning_block_started_at,
                                 )
+                                pending_streaming_publish = True
 
                                 # Publish reasoning while it is still streaming. Without
                                 # this, the UI only sees the thinking block after a later
                                 # final/commentary/tool update flushes task state.
                                 now = utc_now()
                                 if reasoning_was_inactive or (now - last_update).total_seconds() > 0.4:
-                                    result = await repository.update_chat_task_streaming_state(
-                                        task_id,
-                                        full_response,
-                                        events,
-                                        tool_calls,
-                                        hit_max_iterations,
-                                        current_version,
-                                    )
-                                    if result and result.streaming_state:
-                                        current_version = result.streaming_state.version
-                                        await task_event_bus.publish(task_id, result.streaming_state.dict())
-                                        await _notify_conversation_progress(conversation_id, task_id)
-                                    last_update = now
+                                    await emit_streaming_state()
                 finally:
+                    pending_streaming_flusher.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pending_streaming_flusher
                     await _close_stream_handles(_stream_iter, _stream, task_id)
 
                 # Task completed successfully - save final state
