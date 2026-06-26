@@ -4113,6 +4113,7 @@ class IndexerRepository:
         """Convert Prisma Conversation to Pydantic model."""
         # Parse messages from JSON
         messages_data = _normalize_message_payloads(prisma_conv.messages)
+        total_tokens = _estimate_effective_conversation_tokens(messages_data)
         messages: List[ChatMessage] = []
         for m in messages_data:
             # Parse events if present; synthesize them for legacy tool_calls-only messages.
@@ -4164,6 +4165,13 @@ class IndexerRepository:
         if tool_selection_mode not in {"default_all", "custom"}:
             tool_selection_mode = "custom"
 
+        created_at = getattr(prisma_conv, "createdAt", None)
+        updated_at = getattr(prisma_conv, "updatedAt", None)
+        if created_at is None:
+            created_at = updated_at or utc_now()
+        if updated_at is None:
+            updated_at = created_at
+
         return Conversation(
             id=prisma_conv.id,
             title=prisma_conv.title,
@@ -4173,11 +4181,11 @@ class IndexerRepository:
             username=getattr(user, "username", None) if user else None,
             display_name=getattr(user, "displayName", None) if user else None,
             messages=messages,
-            total_tokens=prisma_conv.totalTokens,
+            total_tokens=total_tokens,
             disabled_builtin_tool_ids=_normalize_string_list(getattr(prisma_conv, "disabledBuiltinToolIds", [])),
             tool_selection_mode=tool_selection_mode,
-            created_at=prisma_conv.createdAt,
-            updated_at=prisma_conv.updatedAt,
+            created_at=created_at,
+            updated_at=updated_at,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),
             active_branch_id=getattr(prisma_conv, "activeBranchId", None),
             tool_output_mode=tool_output_mode,

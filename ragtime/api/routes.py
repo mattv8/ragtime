@@ -617,7 +617,7 @@ async def health_check(
     )
 
 
-@router.get("/v1/models", response_model=ModelsResponse)
+@router.get("/v1/models", response_model=ModelsResponse, dependencies=[Depends(verify_api_key)])
 async def list_models():
     """List available models (OpenAI-compatible)."""
     now = int(time.time())

@@ -223,6 +223,37 @@ class ConversationCompactionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertLess(provider_history_tokens, raw_output_tokens)
 
+    def test_conversation_model_recomputes_stale_total_tokens(self) -> None:
+        messages = [
+            {"role": "user", "content": "old raw text " * 1000},
+            {"role": "assistant", "content": "old assistant text " * 1000},
+            {"role": "compaction", "content": "compact summary"},
+            {"role": "user", "content": "short recent user"},
+            {"role": "assistant", "content": "short recent assistant"},
+        ]
+        stale_row = SimpleNamespace(
+            id="conv-1",
+            title="Compacted chat",
+            model="test-model",
+            userId="user-1",
+            workspaceId=None,
+            messages=messages,
+            totalTokens=999999,
+            disabledBuiltinToolIds=[],
+            toolOutputMode="default",
+            toolSelectionMode="custom",
+            createdAt=None,
+            updatedAt=None,
+            activeTaskId=None,
+            activeBranchId=None,
+            user=None,
+        )
+
+        converted = IndexerRepository()._prisma_conversation_to_model(stale_row)
+
+        self.assertEqual(converted.total_tokens, _estimate_effective_conversation_tokens(messages))
+        self.assertLess(converted.total_tokens, stale_row.totalTokens)
+
     async def test_build_chat_history_resets_at_compaction_marker(self) -> None:
         messages = [
             _message("user", "old user should be omitted"),

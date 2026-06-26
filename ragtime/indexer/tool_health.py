@@ -12,6 +12,7 @@ logger = get_logger(__name__)
 
 TOOL_HEALTH_CHECK_INTERVAL_SECONDS = 30.0
 TOOL_HEALTH_STALE_AFTER_SECONDS = TOOL_HEALTH_CHECK_INTERVAL_SECONDS * 3
+TOOL_HEALTH_FAILURES_BEFORE_OFFLINE = 2
 
 
 @dataclass(frozen=True)
@@ -61,10 +62,13 @@ class ToolHealthMonitor:
         *,
         interval_seconds: float = TOOL_HEALTH_CHECK_INTERVAL_SECONDS,
         stale_after_seconds: float = TOOL_HEALTH_STALE_AFTER_SECONDS,
+        failures_before_offline: int = TOOL_HEALTH_FAILURES_BEFORE_OFFLINE,
     ) -> None:
         self.interval_seconds = interval_seconds
         self.stale_after_seconds = stale_after_seconds
+        self.failures_before_offline = max(1, failures_before_offline)
         self._statuses: dict[str, ToolHeartbeatStatus] = {}
+        self._failure_counts: dict[str, int] = {}
         self._subscribers: set[asyncio.Queue[ToolHealthCheckResult]] = set()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -209,7 +213,12 @@ class ToolHealthMonitor:
 
         return await self._store_statuses(statuses)
 
-    async def _store_statuses(self, statuses: dict[str, ToolHeartbeatStatus]) -> ToolHealthCheckResult:
+    async def _store_statuses(
+        self,
+        statuses: dict[str, ToolHeartbeatStatus],
+        *,
+        require_consecutive_failures: bool = True,
+    ) -> ToolHealthCheckResult:
         changed_tool_ids: set[str] = set()
         now = datetime.now(timezone.utc)
         subscribers: list[asyncio.Queue[ToolHealthCheckResult]] = []
@@ -227,6 +236,20 @@ class ToolHealthMonitor:
                     if status_checked_at < previous_checked_at:
                         continue
                 previous_healthy = bool(previous and previous.alive and self.is_status_fresh(previous, now=now))
+                if status.alive:
+                    self._failure_counts.pop(tool_id, None)
+                elif previous_healthy and require_consecutive_failures:
+                    failure_count = self._failure_counts.get(tool_id, 0) + 1
+                    self._failure_counts[tool_id] = failure_count
+                    if failure_count < self.failures_before_offline:
+                        logger.info(
+                            "Ignoring transient heartbeat failure %d/%d for tool %s: %s",
+                            failure_count,
+                            self.failures_before_offline,
+                            tool_id,
+                            status.error or "Heartbeat failed",
+                        )
+                        continue
                 current_healthy = bool(status.alive and self.is_status_fresh(status, now=now))
                 if previous is None or previous_healthy != current_healthy:
                     changed_tool_ids.add(tool_id)
@@ -267,7 +290,7 @@ class ToolHealthMonitor:
             error=None if success else message,
             checked_at=checked_at or datetime.now(timezone.utc),
         )
-        return await self._store_statuses({tool_id: status})
+        return await self._store_statuses({tool_id: status}, require_consecutive_failures=False)
 
     async def _persist_statuses(self, statuses: dict[str, ToolHeartbeatStatus]) -> None:
         if not statuses:

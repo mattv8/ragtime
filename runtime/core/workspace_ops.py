@@ -97,6 +97,21 @@ def workspace_path_matches_mount_prefix(path: str, prefix: str) -> bool:
     return normalized_path == normalized_prefix or normalized_path.startswith(normalized_prefix + "/")
 
 
+def _is_path_contained_under(child: Path, parent: Path) -> bool:
+    """Return True if ``child`` is contained within ``parent`` after resolving symlinks.
+
+    ``Path.resolve(strict=False)`` follows any existing symlinks but still keeps
+    non-existent suffixes, so the same check works for existing files and paths
+    that are about to be written.
+    """
+    try:
+        resolved_parent = parent.resolve(strict=False)
+        resolved_child = child.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return resolved_child.is_relative_to(resolved_parent)
+
+
 def resolve_workspace_mount_source_path(
     mounts: list[dict[str, Any]],
     rel_path: str,
@@ -106,11 +121,15 @@ def resolve_workspace_mount_source_path(
     Iterates ``mounts`` looking for the deepest target prefix that contains
     ``rel_path`` and returns the corresponding source-side absolute path plus
     the mount's read-only flag. Returns None if no mount matches.
+
+    Symlink containment is enforced: if the resolved target path escapes the
+    mount source root (e.g. via a symlink planted inside the mount), this
+    function returns None rather than exposing the out-of-bounds path.
     """
     normalized = rel_path.strip().replace("\\", "/").lstrip("/")
     if not normalized:
         return None
-    candidates: list[tuple[str, Path, bool]] = []
+    candidates: list[tuple[str, Path, Path, bool]] = []
     for mount in mounts:
         repo_rel = workspace_mount_target_repo_relative_path(str(mount.get("target_path", "") or ""))
         source_local_path = str(mount.get("source_local_path", "") or "").strip()
@@ -121,10 +140,12 @@ def resolve_workspace_mount_source_path(
         source_root = Path(source_local_path)
         suffix = normalized[len(repo_rel) :].lstrip("/")
         source_file = source_root if not suffix else source_root.joinpath(*suffix.split("/"))
-        candidates.append((repo_rel, source_file, bool(mount.get("read_only", True))))
+        candidates.append((repo_rel, source_file, source_root, bool(mount.get("read_only", True))))
     if not candidates:
         return None
-    _, source_file, read_only = max(candidates, key=lambda item: len(item[0]))
+    _, source_file, source_root, read_only = max(candidates, key=lambda item: len(item[0]))
+    if not _is_path_contained_under(source_file, source_root):
+        return None
     return source_file, read_only
 
 

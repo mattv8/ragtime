@@ -1384,6 +1384,7 @@ def _proxy_request_headers(request: Request, *, allow_user_cookies: bool = False
         "cookie",
         "x-api-key",
         "x-userspace-share-password",
+        "x-userspace-share-auth",
     }
     forwarded_headers = {key: value for key, value in request.headers.items() if key.lower() not in _blocked}
     if allow_user_cookies:
@@ -1945,12 +1946,12 @@ def _build_bridge_script_tag(
 
 def _build_bridge_config_tag(sandbox_flags: list[str]) -> bytes:
     normalized_flags = [flag.strip() for flag in sandbox_flags if isinstance(flag, str) and flag.strip()]
-    serialized_flags = json.dumps(normalized_flags).encode("utf-8")
+    serialized_flags = _json_for_inline_script(normalized_flags)
     return b"<script>window.__ragtime_preview_sandbox_flags=" + serialized_flags + b";</script>"
 
 
 def _build_bridge_context_tag(bridge_context: dict[str, Any]) -> bytes:
-    serialized_context = json.dumps(bridge_context, separators=(",", ":")).encode("utf-8")
+    serialized_context = _json_for_inline_script(bridge_context)
     return b"<script>window.__ragtime_preview_bridge=" + serialized_context + b";</script>"
 
 

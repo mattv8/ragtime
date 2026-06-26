@@ -9,11 +9,12 @@ set -euo pipefail
 # IMPORTANT: Secrets Encryption
 # -----------------------------
 # Ragtime encrypts sensitive data (API keys, passwords) using Fernet symmetric
-# encryption. The encryption key is auto-generated on first startup and stored
-# at data/.encryption_key.
+# encryption. If ENCRYPTION_KEY is set, it is the effective key and is mirrored
+# to data/.encryption_key on app startup. If ENCRYPTION_KEY is unset, Ragtime
+# loads data/.encryption_key or auto-generates one and stores it there.
 #
 # To ensure backups can be restored with working secrets:
-#   1. Use --include-secret to include the encryption key in backups
+#   1. Use --include-secret to include the effective encryption key in backups
 #   2. Or manually backup the .encryption_key file
 #   3. Or re-enter all passwords/API keys after restore
 #
@@ -669,6 +670,9 @@ restore_legacy_secret_if_requested() {
             cp "$backup_key_file" "$DATA_DIR/.encryption_key"
             chmod 600 "$DATA_DIR/.encryption_key"
             log "INFO" "Encryption key file restored"
+            if [ -n "${ENCRYPTION_KEY:-}" ]; then
+                log "WARNING" "ENCRYPTION_KEY is set and will take precedence over the restored .encryption_key file after restart"
+            fi
             log "DEBUG" "Restart the container to use the restored encryption key"
         elif [ ! -f "$DATA_DIR/.encryption_key" ]; then
             log "WARNING" "--include-secret specified but no encryption key file was found in the backup"
@@ -691,8 +695,8 @@ Options:
   --files-only       Backup Ragtime data directory only (no database)
   --data-dir-only    Alias for --files-only
   --faiss-only       Legacy alias for --files-only
-  --include-secret   Include the .encryption_key file in backup
-                     (required to decrypt secrets on restore)
+  --include-secret   Include the effective encryption key in backup
+                     (ENCRYPTION_KEY if set, otherwise .encryption_key)
   -h, --help         Show this help message
 
 Examples:
@@ -822,11 +826,14 @@ do_backup() {
     fi
 
     if [ "$include_secret" = true ]; then
-        if [ -f "$DATA_DIR/.encryption_key" ]; then
+        if [ -n "${ENCRYPTION_KEY:-}" ]; then
             includes_secret=true
-            log "INFO" "Including encryption key file"
+            log "INFO" "Including encryption key from ENCRYPTION_KEY"
+        elif [ -f "$DATA_DIR/.encryption_key" ]; then
+            includes_secret=true
+            log "INFO" "Including encryption key file from $DATA_DIR/.encryption_key"
         else
-            log "WARNING" "--include-secret specified but no .encryption_key file found in $DATA_DIR"
+            log "WARNING" "--include-secret specified but ENCRYPTION_KEY is unset and no .encryption_key file found in $DATA_DIR"
         fi
     fi
 
@@ -847,7 +854,14 @@ do_backup() {
     fi
 
     if [ "$includes_secret" = true ]; then
-        cp "$DATA_DIR/.encryption_key" "$TEMP_DIR/.encryption_key"
+        if [ -n "${ENCRYPTION_KEY:-}" ]; then
+            printf '%s\n' "$ENCRYPTION_KEY" >"$TEMP_DIR/.encryption_key"
+            mkdir -p "$TEMP_DIR/data"
+            printf '%s\n' "$ENCRYPTION_KEY" >"$TEMP_DIR/data/.encryption_key"
+            chmod 600 "$TEMP_DIR/data/.encryption_key"
+        else
+            cp "$DATA_DIR/.encryption_key" "$TEMP_DIR/.encryption_key"
+        fi
         chmod 600 "$TEMP_DIR/.encryption_key"
     fi
 

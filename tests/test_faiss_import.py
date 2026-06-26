@@ -271,5 +271,101 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 409)
 
 
+def _build_traversal_zip(name: str, *, evil_member: str) -> bytes:
+    """Build a zip that contains a traversal member alongside valid FAISS files.
+
+    The evil_member path is injected verbatim into the zip so the extraction
+    code must reject it rather than writing outside the target directory.
+    """
+    docstore = _FakeInMemoryDocstore({})
+    pkl_bytes = pickle.dumps((docstore, {}))
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{name}/index.faiss", b"fake faiss data")
+        zf.writestr(f"{name}/index.pkl", pkl_bytes)
+        # Inject the malicious member directly
+        zf.writestr(evil_member, b"evil payload")
+    return buf.getvalue()
+
+
+class ZipSlipContainmentTests(unittest.IsolatedAsyncioTestCase):
+    """Verify that _extract_zip rejects members that would escape target_path."""
+
+    def _make_service_and_patches(self, temp_path: Path) -> tuple[IndexerService, SimpleNamespace, SimpleNamespace]:
+        service = IndexerService(index_base_path=str(temp_path))
+        fake_repo = SimpleNamespace(
+            get_index_metadata=AsyncMock(return_value=None),
+            upsert_index_metadata=AsyncMock(),
+        )
+        fake_rag = SimpleNamespace(
+            unload_index=lambda _name: None,
+            load_faiss_index_from_metadata=AsyncMock(return_value=True),
+        )
+        return service, fake_repo, fake_rag
+
+    async def _run_import(self, service: IndexerService, fake_repo: SimpleNamespace, fake_rag: SimpleNamespace, zip_bytes: bytes, index_name: str) -> None:
+        upload = _make_upload(f"{index_name}.zip", zip_bytes)
+        with (
+            patch.object(_routes_module, "indexer", service),
+            patch.object(_routes_module, "repository", fake_repo),
+            patch.object(_routes_module, "rag", fake_rag),
+        ):
+            await import_faiss_index(
+                file=upload,
+                name=index_name,
+                description=None,
+                overwrite=False,
+                _user=_make_admin(),
+            )
+
+    async def test_dotdot_traversal_member_is_not_extracted(self) -> None:
+        """A member with ../ components must not be written outside target_path."""
+        with _TempDir() as temp:
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp.path)
+            sentinel = temp.path / "escaped.txt"
+            zip_bytes = _build_traversal_zip("safe_idx", evil_member=f"safe_idx/../../../escaped.txt")
+
+            await self._run_import(service, fake_repo, fake_rag, zip_bytes, "safe_idx")
+
+            self.assertFalse(sentinel.exists(), "Traversal member must not be extracted outside target_path")
+
+    async def test_absolute_path_member_is_not_extracted(self) -> None:
+        """A member with an absolute path must not be written to that absolute location."""
+        with _TempDir() as temp:
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp.path)
+            # Use a path inside the temp dir but expressed absolutely so it
+            # would bypass the relative-path check if not caught.
+            evil_target = temp.path / "abs_escaped.txt"
+            zip_bytes = _build_traversal_zip("abs_idx", evil_member=str(evil_target))
+
+            await self._run_import(service, fake_repo, fake_rag, zip_bytes, "abs_idx")
+
+            self.assertFalse(evil_target.exists(), "Absolute-path member must not be extracted")
+
+    async def test_unexpected_basename_is_not_extracted(self) -> None:
+        """Members whose basename is not index.faiss or index.pkl must be skipped."""
+        with _TempDir() as temp:
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp.path)
+            zip_bytes = _build_traversal_zip("extra_idx", evil_member="extra_idx/evil_script.sh")
+
+            await self._run_import(service, fake_repo, fake_rag, zip_bytes, "extra_idx")
+
+            target = service.index_base_path / "extra_idx"
+            self.assertFalse((target / "evil_script.sh").exists(), "Unexpected basename must not be extracted")
+
+    async def test_valid_members_still_extracted_despite_evil_sibling(self) -> None:
+        """Presence of a traversal member must not prevent valid files from being extracted."""
+        with _TempDir() as temp:
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp.path)
+            zip_bytes = _build_traversal_zip("good_idx", evil_member="good_idx/../../../escaped.txt")
+
+            await self._run_import(service, fake_repo, fake_rag, zip_bytes, "good_idx")
+
+            target = service.index_base_path / "good_idx"
+            self.assertTrue((target / "index.faiss").exists(), "index.faiss must still be extracted")
+            self.assertTrue((target / "index.pkl").exists(), "index.pkl must still be extracted")
+
+
 if __name__ == "__main__":
     unittest.main()

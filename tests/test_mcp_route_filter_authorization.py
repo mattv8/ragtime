@@ -115,6 +115,76 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(hanging_tool.started)
         self.assertIn("timed out after 1 seconds", result)
 
+    def test_invalidate_cache_drops_built_tool_definitions(self) -> None:
+        adapter = MCPToolAdapter()
+
+        async def stale_executor(**_kwargs: object) -> str:
+            return "stale"
+
+        adapter._tool_definitions["ssh_docker_1"] = MCPToolDefinition(  # pyright: ignore[reportPrivateUsage]
+            name="ssh_docker_1",
+            description="Execute shell commands via SSH.",
+            input_schema={},
+            tool_config={"id": "tool-1", "tool_type": "ssh_shell", "allow_write": False},
+            execute_fn=stale_executor,
+        )
+        adapter._tool_executors["ssh_docker_1"] = stale_executor  # pyright: ignore[reportPrivateUsage]
+
+        adapter.invalidate_cache()
+
+        self.assertNotIn("ssh_docker_1", adapter._tool_definitions)  # pyright: ignore[reportPrivateUsage]
+        self.assertNotIn("ssh_docker_1", adapter._tool_executors)  # pyright: ignore[reportPrivateUsage]
+
+    async def test_execute_tool_rebuilds_from_config_after_invalidation(self) -> None:
+        adapter = MCPToolAdapter()
+        calls: list[str] = []
+
+        async def stale_executor(**_kwargs: object) -> str:
+            calls.append("stale")
+            return "stale"
+
+        async def fresh_executor(**_kwargs: object) -> str:
+            calls.append("fresh")
+            return "fresh"
+
+        # Simulate a previously-built definition with the old (read-only) closure.
+        adapter._tool_definitions["ssh_docker_1"] = MCPToolDefinition(  # pyright: ignore[reportPrivateUsage]
+            name="ssh_docker_1",
+            description="Execute shell commands via SSH.",
+            input_schema={},
+            tool_config={"id": "tool-1", "tool_type": "ssh_shell", "allow_write": False},
+            execute_fn=stale_executor,
+        )
+
+        fresh_config = {
+            "id": "tool-1",
+            "name": "Docker 1",
+            "tool_type": "ssh_shell",
+            "enabled": True,
+            "allow_write": True,
+        }
+        fresh_definition = MCPToolDefinition(
+            name="ssh_docker_1",
+            description="Execute shell commands via SSH.",
+            input_schema={},
+            tool_config=fresh_config,
+            execute_fn=fresh_executor,
+        )
+
+        # A tool change drops the stale cache; the next call rebuilds from config.
+        adapter.invalidate_cache()
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[fresh_config])) as get_tool_configs,
+            mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=fresh_definition)) as create_tool_definition,
+        ):
+            result = await adapter.execute_tool("ssh_docker_1", {"command": "touch /tmp/file"})
+
+        self.assertEqual(result, "fresh")
+        self.assertEqual(calls, ["fresh"])
+        get_tool_configs.assert_awaited_once_with()
+        create_tool_definition.assert_awaited_once_with(fresh_config)
+
 
 if __name__ == "__main__":
     unittest.main()

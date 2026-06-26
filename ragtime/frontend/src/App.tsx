@@ -768,205 +768,229 @@ export function App() {
     );
   }
 
+  const warningToMessage = (w: ConfigurationWarning): string =>
+    w.recommendation ? `${w.message} ${w.recommendation}` : w.message;
+  const encryptionKeyErrorMessages = configurationWarnings
+    .filter((w) => w.category === 'encryption')
+    .map(warningToMessage);
+  const encryptionBackupMessages = configurationWarnings
+    .filter((w) => w.category === 'encryption_backup')
+    .map(warningToMessage);
+  const otherConfigurationWarnings = configurationWarnings.filter(
+    (w) => w.category !== 'encryption' && w.category !== 'encryption_backup',
+  );
+
   return (
     <AvailableModelsProvider>
-    <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}${authenticatedWebglBackgroundEnabled ? ' app-shell-webgl-background' : ''}`}>
-      {effectiveWebglEnabled ? (
-        <WebGLGradient
-          className="app-background-gradient"
-          fullscreen
-          ignorePointerSelector=".topnav, .container, .modal, .modal-overlay, [role='dialog'], button, input, textarea, select, a"
-          onBatteryStatusChange={setWebglBackgroundPausedForBattery}
+      <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}${authenticatedWebglBackgroundEnabled ? ' app-shell-webgl-background' : ''}`}>
+        {effectiveWebglEnabled ? (
+          <WebGLGradient
+            className="app-background-gradient"
+            fullscreen
+            ignorePointerSelector=".topnav, .container, .modal, .modal-overlay, [role='dialog'], button, input, textarea, select, a"
+            onBatteryStatusChange={setWebglBackgroundPausedForBattery}
+          />
+        ) : null}
+        {authenticatedWebglBackgroundEnabled && currentUser && !hideChrome && !webglBackgroundPausedForBattery ? (
+          <button
+            className="webgl-motion-toggle"
+            data-active={effectiveWebglEnabled}
+            onClick={toggleWebglBackground}
+            aria-label={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
+            title={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
+          >
+            <Waves size={14} />
+          </button>
+        ) : null}
+        <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
+          <span className="topnav-brand"><BrandName name={serverName} /></span>
+          <div className="topnav-links">
+            <button
+              className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
+              onClick={() => setActiveView('chat')}
+            >
+              Chat
+            </button>
+            <button
+              className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
+              onClick={() => setActiveView('userspace')}
+            >
+              Workspace
+            </button>
+            {isAdmin && (
+              <>
+                <button
+                  className={`topnav-link ${activeView === 'indexer' ? 'active' : ''}`}
+                  onClick={() => setActiveView('indexer')}
+                >
+                  Indexer
+                </button>
+                <button
+                  className={`topnav-link ${activeView === 'tools' ? 'active' : ''}`}
+                  onClick={() => setActiveView('tools')}
+                >
+                  Tools
+                </button>
+                <button
+                  className={`topnav-link ${activeView === 'users' ? 'active' : ''}`}
+                  onClick={() => setActiveView('users')}
+                >
+                  Users
+                </button>
+                <button
+                  className={`topnav-link ${activeView === 'settings' ? 'active' : ''}`}
+                  onClick={() => setActiveView('settings')}
+                >
+                  Settings
+                </button>
+              </>
+            )}
+          </div>
+          <div className="topnav-actions">
+            <MemoryStatus />
+            <UserMenu user={currentUser} onLogout={handleLogout} />
+          </div>
+        </nav>
+        <SecurityBanner
+          authStatus={authStatus}
+          isAdmin={isAdmin}
+          hidden={hideChrome}
+          onNavigateToSettings={(highlightTarget) => {
+            if (isAdmin) {
+              setHighlightSetting(highlightTarget || 'api_key_info');
+              setActiveView('settings');
+            }
+          }}
         />
-      ) : null}
-      {authenticatedWebglBackgroundEnabled && currentUser && !hideChrome && !webglBackgroundPausedForBattery ? (
-        <button
-          className="webgl-motion-toggle"
-          data-active={effectiveWebglEnabled}
-          onClick={toggleWebglBackground}
-          aria-label={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
-          title={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
-        >
-          <Waves size={14} />
-        </button>
-      ) : null}
-      <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
-        <span className="topnav-brand"><BrandName name={serverName} /></span>
-        <div className="topnav-links">
-          <button
-            className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
-            onClick={() => setActiveView('chat')}
-          >
-            Chat
-          </button>
-          <button
-            className={`topnav-link ${activeView === 'userspace' ? 'active' : ''}`}
-            onClick={() => setActiveView('userspace')}
-          >
-            Workspace
-          </button>
-          {isAdmin && (
+        <WarningsBanner
+          title="Encryption Key Error"
+          warnings={encryptionKeyErrorMessages}
+          hidden={hideChrome || !isAdmin}
+        />
+        <WarningsBanner
+          title="Back Up Your Encryption Key"
+          warnings={encryptionBackupMessages}
+          dismissKey="ragtime_encryption_backup_reminder"
+          persistDismiss
+          hidden={hideChrome || !isAdmin}
+        />
+        <ConfigurationBanner
+          warnings={otherConfigurationWarnings}
+          isAdmin={isAdmin}
+          hidden={hideChrome}
+          onNavigateToSettings={() => {
+            if (isAdmin) {
+              setHighlightSetting('embedding_config');
+              setActiveView('settings');
+            }
+          }}
+        />
+        <WarningsBanner
+          title={previewWarning?.title || 'Userspace Preview Setup'}
+          warnings={previewWarning?.warnings || []}
+          dismissKey={previewWarning?.dismiss_key}
+          compact
+          hidden={hideChrome || !isAdmin}
+        />
+        <div className="container">
+
+          {activeView === 'userspace' ? (
+            <div className="userspace-page-container">
+              <UserSpacePanel
+                currentUser={currentUser}
+                debugMode={Boolean(authStatus?.debug_mode)}
+                openWorkspaceRequest={workspaceOpenRequest}
+                onFullscreenChange={setUserspaceFullscreen}
+                onPreviewWarningChange={setPreviewWarning}
+                onNavigateToTools={(section) => {
+                  setHighlightToolsSection(section ?? null);
+                  setActiveView('tools');
+                }}
+              />
+            </div>
+          ) : isChatView ? (
+            <div className="chat-page-container">
+              <ChatPage
+                key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
+                currentUser={currentUser}
+                debugMode={Boolean(authStatus?.debug_mode)}
+                initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
+                chatCompactionThresholdPercent={authStatus?.chat_compaction_threshold_percent ?? 80}
+                chatAutoCompactionThresholdPercent={authStatus?.chat_auto_compaction_threshold_percent ?? 99}
+                onFullscreenChange={setChatFullscreen}
+              />
+            </div>
+          ) : activeView === 'settings' ? (
+            <SettingsPanel
+              currentUser={currentUser}
+              onServerNameChange={handleServerNameChange}
+              onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
+              onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
+              onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
+              highlightSetting={highlightSetting}
+              onHighlightComplete={() => setHighlightSetting(null)}
+              authStatus={authStatus}
+            />
+          ) : activeView === 'tools' ? (
+            <ToolsPanel
+              onSchemaJobTriggered={loadSchemaJobs}
+              schemaJobs={schemaJobs}
+              highlightSection={highlightToolsSection}
+              onHighlightComplete={() => setHighlightToolsSection(null)}
+            />
+          ) : activeView === 'users' ? (
+            <UsersPanel
+              currentUser={currentUser}
+              onOpenWorkspace={handleOpenWorkspaceFromUsers}
+              onOpenChat={handleOpenChatFromUsers}
+            />
+          ) : (
             <>
-              <button
-                className={`topnav-link ${activeView === 'indexer' ? 'active' : ''}`}
-                onClick={() => setActiveView('indexer')}
-              >
-                Indexer
-              </button>
-              <button
-                className={`topnav-link ${activeView === 'tools' ? 'active' : ''}`}
-                onClick={() => setActiveView('tools')}
-              >
-                Tools
-              </button>
-              <button
-                className={`topnav-link ${activeView === 'users' ? 'active' : ''}`}
-                onClick={() => setActiveView('users')}
-              >
-                Users
-              </button>
-              <button
-                className={`topnav-link ${activeView === 'settings' ? 'active' : ''}`}
-                onClick={() => setActiveView('settings')}
-              >
-                Settings
-              </button>
+              {/* Document Indexes (FAISS) */}
+              <IndexesList
+                indexes={indexes}
+                jobs={jobs}
+                loading={indexesLoading}
+                error={indexesError}
+                onDelete={loadIndexes}
+                onToggle={loadIndexes}
+                onDescriptionUpdate={loadIndexes}
+                onJobCreated={handleJobCreated}
+                aggregateSearch={aggregateSearch}
+                embeddingDimensions={embeddingDimensions}
+                onNavigateToSettings={() => {
+                  setHighlightSetting('sequential_index_loading');
+                  setActiveView('settings');
+                }}
+              />
+
+              {/* Filesystem Indexes (pgvector) */}
+              <FilesystemIndexPanel
+                onToolsChanged={handleFilesystemToolsChanged}
+                onJobsChanged={loadFilesystemJobs}
+                embeddingDimensions={embeddingDimensions}
+              />
+
+              {/* Jobs Table */}
+              <JobsTable
+                jobs={jobs}
+                filesystemJobs={filesystemJobs}
+                schemaJobs={schemaJobs}
+                pdmJobs={pdmJobs}
+                loading={jobsLoading}
+                error={jobsError}
+                onJobsChanged={loadJobs}
+                onFilesystemJobsChanged={loadFilesystemJobs}
+                onSchemaJobsChanged={loadSchemaJobs}
+                onPdmJobsChanged={loadPdmJobs}
+                onCancelFilesystemJob={handleCancelFilesystemJob}
+                onCancelSchemaJob={handleCancelSchemaJob}
+                onCancelPdmJob={handleCancelPdmJob}
+              />
             </>
           )}
         </div>
-        <div className="topnav-actions">
-          {isAdmin && isIndexerView ? <MemoryStatus /> : null}
-          <UserMenu user={currentUser} onLogout={handleLogout} />
-        </div>
-      </nav>
-      <SecurityBanner
-        authStatus={authStatus}
-        isAdmin={isAdmin}
-        hidden={hideChrome}
-        onNavigateToSettings={(highlightTarget) => {
-          if (isAdmin) {
-            setHighlightSetting(highlightTarget || 'api_key_info');
-            setActiveView('settings');
-          }
-        }}
-      />
-      <ConfigurationBanner
-        warnings={configurationWarnings}
-        isAdmin={isAdmin}
-        hidden={hideChrome}
-        onNavigateToSettings={() => {
-          if (isAdmin) {
-            setHighlightSetting('embedding_config');
-            setActiveView('settings');
-          }
-        }}
-      />
-      <WarningsBanner
-        title={previewWarning?.title || 'Userspace Preview Setup'}
-        warnings={previewWarning?.warnings || []}
-        dismissKey={previewWarning?.dismiss_key}
-        compact
-        hidden={hideChrome || !isAdmin}
-      />
-      <div className="container">
-
-      {activeView === 'userspace' ? (
-        <div className="userspace-page-container">
-          <UserSpacePanel
-            currentUser={currentUser}
-            debugMode={Boolean(authStatus?.debug_mode)}
-            openWorkspaceRequest={workspaceOpenRequest}
-            onFullscreenChange={setUserspaceFullscreen}
-            onPreviewWarningChange={setPreviewWarning}
-            onNavigateToTools={(section) => {
-              setHighlightToolsSection(section ?? null);
-              setActiveView('tools');
-            }}
-          />
-        </div>
-      ) : isChatView ? (
-        <div className="chat-page-container">
-          <ChatPage
-            key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
-            currentUser={currentUser}
-            debugMode={Boolean(authStatus?.debug_mode)}
-            initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
-            chatCompactionThresholdPercent={authStatus?.chat_compaction_threshold_percent ?? 80}
-            chatAutoCompactionThresholdPercent={authStatus?.chat_auto_compaction_threshold_percent ?? 99}
-            onFullscreenChange={setChatFullscreen}
-          />
-        </div>
-      ) : activeView === 'settings' ? (
-        <SettingsPanel
-          currentUser={currentUser}
-          onServerNameChange={handleServerNameChange}
-          onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
-          onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
-          onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
-          highlightSetting={highlightSetting}
-          onHighlightComplete={() => setHighlightSetting(null)}
-          authStatus={authStatus}
-        />
-      ) : activeView === 'tools' ? (
-        <ToolsPanel
-          onSchemaJobTriggered={loadSchemaJobs}
-          schemaJobs={schemaJobs}
-          highlightSection={highlightToolsSection}
-          onHighlightComplete={() => setHighlightToolsSection(null)}
-        />
-      ) : activeView === 'users' ? (
-        <UsersPanel
-          currentUser={currentUser}
-          onOpenWorkspace={handleOpenWorkspaceFromUsers}
-          onOpenChat={handleOpenChatFromUsers}
-        />
-      ) : (
-        <>
-          {/* Document Indexes (FAISS) */}
-          <IndexesList
-            indexes={indexes}
-            jobs={jobs}
-            loading={indexesLoading}
-            error={indexesError}
-            onDelete={loadIndexes}
-            onToggle={loadIndexes}
-            onDescriptionUpdate={loadIndexes}
-            onJobCreated={handleJobCreated}
-            aggregateSearch={aggregateSearch}
-            embeddingDimensions={embeddingDimensions}
-            onNavigateToSettings={() => {
-              setHighlightSetting('sequential_index_loading');
-              setActiveView('settings');
-            }}
-          />
-
-          {/* Filesystem Indexes (pgvector) */}
-          <FilesystemIndexPanel
-            onToolsChanged={handleFilesystemToolsChanged}
-            onJobsChanged={loadFilesystemJobs}
-            embeddingDimensions={embeddingDimensions}
-          />
-
-          {/* Jobs Table */}
-          <JobsTable
-            jobs={jobs}
-            filesystemJobs={filesystemJobs}
-            schemaJobs={schemaJobs}
-            pdmJobs={pdmJobs}
-            loading={jobsLoading}
-            error={jobsError}
-            onJobsChanged={loadJobs}
-            onFilesystemJobsChanged={loadFilesystemJobs}
-            onSchemaJobsChanged={loadSchemaJobs}
-            onPdmJobsChanged={loadPdmJobs}
-            onCancelFilesystemJob={handleCancelFilesystemJob}
-            onCancelSchemaJob={handleCancelSchemaJob}
-            onCancelPdmJob={handleCancelPdmJob}
-          />
-        </>
-      )}
       </div>
-    </div>
     </AvailableModelsProvider>
   );
 }

@@ -166,6 +166,87 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertTrue(monitor.is_tool_healthy("ssh-1"))
         self.assertEqual(persisted_statuses, [])
 
+    def test_single_transient_failure_does_not_disable_healthy_tool(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, failures_before_offline=2)
+        now = datetime.now(timezone.utc)
+        monitor._statuses = {
+            "ssh-1": ToolHeartbeatStatus(
+                tool_id="ssh-1",
+                alive=True,
+                checked_at=now,
+            )
+        }
+
+        persisted_statuses = []
+
+        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
+            persisted_statuses.append(statuses)
+
+        monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
+
+        result = asyncio.run(
+            monitor._store_statuses(
+                {
+                    "ssh-1": ToolHeartbeatStatus(
+                        tool_id="ssh-1",
+                        alive=False,
+                        error="Connection timeout",
+                        checked_at=now + timedelta(seconds=1),
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(result.statuses, {})
+        self.assertEqual(result.changed_tool_ids, set())
+        self.assertTrue(monitor.is_tool_healthy("ssh-1"))
+        self.assertEqual(persisted_statuses, [])
+
+    def test_consecutive_failures_disable_healthy_tool(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30, failures_before_offline=2)
+        now = datetime.now(timezone.utc)
+        monitor._statuses = {
+            "ssh-1": ToolHeartbeatStatus(
+                tool_id="ssh-1",
+                alive=True,
+                checked_at=now,
+            )
+        }
+
+        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
+            del statuses
+
+        monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
+
+        asyncio.run(
+            monitor._store_statuses(
+                {
+                    "ssh-1": ToolHeartbeatStatus(
+                        tool_id="ssh-1",
+                        alive=False,
+                        error="Timeout 1",
+                        checked_at=now + timedelta(seconds=1),
+                    )
+                }
+            )
+        )
+        result = asyncio.run(
+            monitor._store_statuses(
+                {
+                    "ssh-1": ToolHeartbeatStatus(
+                        tool_id="ssh-1",
+                        alive=False,
+                        error="Timeout 2",
+                        checked_at=now + timedelta(seconds=2),
+                    )
+                }
+            )
+        )
+
+        self.assertEqual(result.changed_tool_ids, {"ssh-1"})
+        self.assertFalse(monitor.is_tool_healthy("ssh-1"))
+        self.assertEqual(monitor.get_unavailable_reason("ssh-1"), "Timeout 2")
+
 
 if __name__ == "__main__":
     unittest.main()
