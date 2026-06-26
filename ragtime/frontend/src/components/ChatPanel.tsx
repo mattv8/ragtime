@@ -7721,6 +7721,9 @@ export function ChatPanel({
   const messageSegmentsRef = useRef<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  // Tracks which conversation the active stream belongs to so streaming output
+  // is never rendered under a different conversation after the user switches chats.
+  const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactingConversationId, setCompactingConversationId] = useState<string | null>(null);
   const [queuedCompactionMessage, setQueuedCompactionMessage] = useState<QueuedCompactionMessage | null>(null);
@@ -8837,7 +8840,7 @@ export function ChatPanel({
   // handler (defined earlier in the component) can trigger task streaming
   // as soon as a task_started event arrives, without waiting for the
   // periodic task-state poll.
-  const connectTaskStreamRef = useRef<((taskId: string) => void) | null>(null);
+  const connectTaskStreamRef = useRef<((taskId: string, conversationId?: string) => void) | null>(null);
   const watchCompactionTaskRef = useRef<((taskId: string, conversationId: string) => void) | null>(null);
   const autoCompactionCompletionRef = useRef<{ conversationId: string; messageKey: string; completedAt: number } | null>(null);
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
@@ -9538,6 +9541,12 @@ export function ChatPanel({
 
     return segments;
   }, [streamingContent, streamingEvents]);
+
+  // Only render streaming output when it belongs to the conversation currently
+  // in view. `streamingConversationId === null` covers legacy/self-initiated
+  // streams whose owner has not been recorded yet (always the active chat).
+  const isStreamingForActiveConversation = isStreaming
+    && (streamingConversationId === null || streamingConversationId === activeConversation?.id);
 
   // Save showToolCalls preference to localStorage
   useEffect(() => {
@@ -10392,7 +10401,7 @@ export function ChatPanel({
               syncConversationActiveTaskId(conversationId, data.task_id);
               return;
             }
-            connectTaskStreamRef.current?.(data.task_id);
+            connectTaskStreamRef.current?.(data.task_id, conversationId);
             return;
           }
 
@@ -10481,20 +10490,39 @@ export function ChatPanel({
     stopTaskStreaming();
     setActiveTask(null);
     setIsStreaming(false);
+    setStreamingConversationId(null);
     setStreamingContent('');
     setStreamingEvents([]);
     syncConversationActiveTaskId(activeConversationRef.current?.id ?? '', null);
   }, [stopTaskStreaming, syncConversationActiveTaskId]);
 
-  const connectTaskStream = useCallback(async (taskId: string) => {
+  const connectTaskStream = useCallback(async (taskId: string, conversationId?: string) => {
     // Prevent duplicate connection for same task
     if (processingTaskRef.current === taskId) return;
+
+    // Determine which conversation owns this task so its streaming output is
+    // only rendered while that conversation is active. Fall back to the
+    // conversation currently in view when the caller does not specify one.
+    const ownerConversationId = conversationId ?? activeConversationRef.current?.id ?? null;
+
+    // Do not start streaming a task that belongs to a conversation other than
+    // the one currently in view. Without this guard, a background task started
+    // in a previous chat would bleed its output into the chat the user has
+    // since switched to.
+    if (
+      ownerConversationId
+      && activeConversationRef.current
+      && activeConversationRef.current.id !== ownerConversationId
+    ) {
+      return;
+    }
 
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
 
     processingTaskRef.current = taskId;
+    setStreamingConversationId(ownerConversationId);
     setIsPollingTask(true);
     setIsStreaming(true);
 
@@ -10504,11 +10532,24 @@ export function ChatPanel({
     const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
     lastSeenVersionRef.current = sinceVersion;
     let terminalStatus: string | null = null;
+    let switchedAway = false;
 
     try {
       const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
 
       for await (const data of stream) {
+        // Stop applying updates if the user switched to a different
+        // conversation mid-stream. The background task keeps running on the
+        // server and will be reconnected when its conversation is reopened.
+        if (
+          ownerConversationId
+          && activeConversationRef.current
+          && activeConversationRef.current.id !== ownerConversationId
+        ) {
+          switchedAway = true;
+          break;
+        }
+
         // Handle explicit completion event
         if (data.type === 'completion' || data.completed) {
           const status = data.status || (data.completed ? 'completed' : 'unknown');
@@ -10576,6 +10617,20 @@ export function ChatPanel({
       if (processingTaskRef.current === taskId) {
         processingTaskRef.current = null;
         setIsPollingTask(false);
+
+        // The user moved to a different conversation while this task was
+        // streaming. Tear down this stream's UI without treating it as a
+        // completion for the now-active conversation (which would otherwise
+        // refresh the wrong conversation and fire onTaskComplete).
+        if (switchedAway) {
+          setActiveTask(prev => (prev && prev.id === taskId ? null : prev));
+          setIsStreaming(false);
+          setStreamingConversationId(null);
+          setStreamingContent('');
+          setStreamingEvents([]);
+          return;
+        }
+
         setActiveTask(null);
 
         // Refresh conversation on completion before clearing streaming state.
@@ -10598,6 +10653,7 @@ export function ChatPanel({
         }
 
         setIsStreaming(false);
+        setStreamingConversationId(null);
         setStreamingContent('');
         setStreamingEvents([]);
         taskStreamVersionRef.current.delete(taskId);
@@ -10762,7 +10818,7 @@ export function ChatPanel({
       syncConversationActiveTaskId(conversationId, task.id);
 
       // 3. Connect to stream
-      await connectTaskStream(task.id);
+      await connectTaskStream(task.id, conversationId);
     } catch (err: any) {
       console.error(err);
       let messagePersisted = false;
@@ -10795,18 +10851,29 @@ export function ChatPanel({
   useEffect(() => {
     if (!activeTask) return;
     if (activeTask.status !== 'pending' && activeTask.status !== 'running') return;
+    // Only stream a task that belongs to the conversation currently in view.
+    // This prevents a task adopted from aggregate/workspace state (which may
+    // momentarily reference a previously-active conversation) from streaming
+    // into the chat the user has switched to.
+    if (
+      activeConversation?.id
+      && activeTask.conversation_id
+      && activeTask.conversation_id !== activeConversation.id
+    ) {
+      return;
+    }
     if (isCompactionTask(activeTask)) {
       void watchCompactionTask(activeTask.id, activeTask.conversation_id);
       return;
     }
-    void connectTaskStream(activeTask.id);
-  }, [activeTask?.id, activeTask?.status, activeTask?.conversation_id, activeTask?.user_message, connectTaskStream, watchCompactionTask]);
+    void connectTaskStream(activeTask.id, activeTask.conversation_id);
+  }, [activeTask?.id, activeTask?.status, activeTask?.conversation_id, activeTask?.user_message, activeConversation?.id, connectTaskStream, watchCompactionTask]);
 
   // Expose connectTaskStream via ref so the conversation event SSE handler
   // (declared earlier in the component) can trigger task streaming the moment
   // a task_started event is received.
   useEffect(() => {
-    connectTaskStreamRef.current = (taskId: string) => { void connectTaskStream(taskId); };
+    connectTaskStreamRef.current = (taskId: string, conversationId?: string) => { void connectTaskStream(taskId, conversationId); };
     return () => { connectTaskStreamRef.current = null; };
   }, [connectTaskStream]);
 
@@ -10823,6 +10890,7 @@ export function ChatPanel({
       return;
     }
 
+    let cancelled = false;
     let checkInProgress = false;
     const checkTasks = async () => {
       if (checkInProgress) return;
@@ -10843,6 +10911,8 @@ export function ChatPanel({
 
       try {
         const taskState = await api.getConversationTaskState(activeConversation.id, workspaceId);
+        if (cancelled) return;
+        
         const activeT = taskState.active_task;
         const interruptedT = taskState.interrupted_task;
 
@@ -10860,7 +10930,7 @@ export function ChatPanel({
           }
 
           // Connect to stream if not already processing this task
-          connectTaskStreamRef.current?.(activeT.id);
+          connectTaskStreamRef.current?.(activeT.id, activeConversation.id);
         } else {
           // No active task for this conversation.
           // If we are streaming something that is NOT this task, we should stop?
@@ -10894,6 +10964,7 @@ export function ChatPanel({
     }, 30000);
 
     return () => {
+      cancelled = true;
       clearInterval(interval);
       // Stop streaming when conversation ID changes (unmounting this effect instance)
       stopTaskStreaming();
@@ -11192,6 +11263,7 @@ export function ChatPanel({
     }
 
     setIsStreaming(true);
+    setStreamingConversationId(conversation.id);
     setStreamingContent('');
     setStreamingEvents([]);
     setHitMaxIterations(false);
@@ -12042,6 +12114,7 @@ export function ChatPanel({
 
       shouldAutoScrollRef.current = true;
       setIsStreaming(true);
+      setStreamingConversationId(conversationId);
       setStreamingContent('');
       setStreamingEvents([]);
       setHitMaxIterations(false);
@@ -12050,7 +12123,7 @@ export function ChatPanel({
       const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
       setActiveTask(task);
       syncConversationActiveTaskId(conversationId, task.id);
-      await connectTaskStream(task.id);
+      await connectTaskStream(task.id, conversationId);
 
       const replayResult = activeConversationRef.current;
       if (replayBranch && replayResult?.id === conversationId && replayResult.messages.length <= truncateAt) {
@@ -12236,6 +12309,7 @@ export function ChatPanel({
       setConversations(prev => prev.map(c => c.id === optimisticConv.id ? optimisticConv : c));
 
       setIsStreaming(true);
+      setStreamingConversationId(conversationId);
       setStreamingContent('');
       setStreamingEvents([]);
       setHitMaxIterations(false);
@@ -12248,7 +12322,7 @@ export function ChatPanel({
       syncConversationActiveTaskId(conversationId, task.id);
 
       // 4. Connect to stream
-      await connectTaskStream(task.id);
+      await connectTaskStream(task.id, conversationId);
 
       // 5. Refresh branch points for UI
       void refreshBranchPoints(conversationId);
@@ -13929,7 +14003,7 @@ export function ChatPanel({
                     )}
 
                     {/* Streaming assistant message - uses consolidated segments for performance */}
-                    {isStreaming && consolidatedSegments.length > 0 && (
+                    {isStreamingForActiveConversation && consolidatedSegments.length > 0 && (
                       <div className="chat-message chat-message-assistant chat-message-streaming-active">
                         <div className="chat-message-content">
                           {consolidatedSegments.map((segment, idx) => (
@@ -13974,7 +14048,7 @@ export function ChatPanel({
                     )}
 
                     {/* Loading indicator - only when nothing is streaming yet */}
-                    {isStreaming && consolidatedSegments.length === 0 && (
+                    {isStreamingForActiveConversation && consolidatedSegments.length === 0 && (
                       <div className="chat-message chat-message-assistant">
                         <div className="chat-message-content">
                           <div className="chat-typing-indicator">
