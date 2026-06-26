@@ -29,18 +29,20 @@ export async function fetchUserSpaceToolCatalog(): Promise<UserSpaceToolCatalog>
 
   return {
     availableTools: toolsResult.status === 'fulfilled' ? toolsResult.value : [],
-    toolGroups: groupsResult.status === 'fulfilled'
-      ? groupsResult.value.map((group) => ({ id: group.id, name: group.name }))
-      : [],
+    toolGroups:
+      groupsResult.status === 'fulfilled'
+        ? groupsResult.value.map((group) => ({ id: group.id, name: group.name }))
+        : [],
     toolsError: toolsResult.status === 'rejected' ? toolsResult.reason : null,
     toolGroupsError: groupsResult.status === 'rejected' ? groupsResult.reason : null,
   };
 }
 
-export function getUserSpaceGroupToolIds(tools: UserSpaceAvailableTool[], groupId: string): string[] {
-  return tools
-    .filter((tool) => tool.group_id === groupId)
-    .map((tool) => tool.id);
+export function getUserSpaceGroupToolIds(
+  tools: UserSpaceAvailableTool[],
+  groupId: string,
+): string[] {
+  return tools.filter((tool) => tool.group_id === groupId).map((tool) => tool.id);
 }
 
 export function isUserSpaceToolAvailable(tool: UserSpaceAvailableTool): boolean {
@@ -64,7 +66,11 @@ export function resolveDefaultSelectedToolIds(
   if (toolSelectionMode === 'default_all') {
     return getSelectableUserSpaceToolIds(availableTools);
   }
-  if (selectedToolIds.length > 0 || selectedToolGroupIds.length > 0 || toolSelectionMode === 'custom') {
+  if (
+    selectedToolIds.length > 0 ||
+    selectedToolGroupIds.length > 0 ||
+    toolSelectionMode === 'custom'
+  ) {
     return selectedToolIds;
   }
   return getSelectableUserSpaceToolIds(availableTools);
@@ -163,11 +169,14 @@ export function toggleUserSpaceToolSelection(
     nextIds.add(toolId);
   }
 
-  return normalizeUserSpaceToolSelection({
-    mode: 'custom',
-    toolIds: Array.from(nextIds),
-    toolGroupIds: Array.from(nextGroupIds),
-  }, availableTools);
+  return normalizeUserSpaceToolSelection(
+    {
+      mode: 'custom',
+      toolIds: Array.from(nextIds),
+      toolGroupIds: Array.from(nextGroupIds),
+    },
+    availableTools,
+  );
 }
 
 export function toggleUserSpaceToolGroupSelection(
@@ -192,11 +201,14 @@ export function toggleUserSpaceToolGroupSelection(
     for (const toolId of selectableGroupIds) nextIds.delete(toolId);
   }
 
-  return normalizeUserSpaceToolSelection({
-    mode: 'custom',
-    toolIds: Array.from(nextIds),
-    toolGroupIds: Array.from(nextGroupIds),
-  }, availableTools);
+  return normalizeUserSpaceToolSelection(
+    {
+      mode: 'custom',
+      toolIds: Array.from(nextIds),
+      toolGroupIds: Array.from(nextGroupIds),
+    },
+    availableTools,
+  );
 }
 
 export function setUserSpaceToolSelectionForTools(
@@ -220,9 +232,12 @@ export function setUserSpaceToolSelectionForTools(
     for (const toolId of selectableScope) nextIds.delete(toolId);
   }
 
-  return normalizeUserSpaceToolSelection({
-    mode: 'custom',
-    toolIds: Array.from(nextIds),
-    toolGroupIds: [],
-  }, availableTools);
+  return normalizeUserSpaceToolSelection(
+    {
+      mode: 'custom',
+      toolIds: Array.from(nextIds),
+      toolGroupIds: [],
+    },
+    availableTools,
+  );
 }

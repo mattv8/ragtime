@@ -40,10 +40,22 @@ import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { useToast, ToastContainer } from './shared/Toast';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import { formatProviderDisplayName, formatModelDisplayName } from '@/utils/modelDisplay';
-import { calculateConversationContextUsage, parseStoredModelIdentifier } from '@/utils/contextUsage';
+import {
+  calculateConversationContextUsage,
+  parseStoredModelIdentifier,
+} from '@/utils/contextUsage';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Filler, Tooltip, Legend);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Filler,
+  Tooltip,
+  Legend,
+);
 
 const CHART_PALETTE = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
 
@@ -61,11 +73,17 @@ function useThemeColors() {
 
   useEffect(() => {
     const observer = new MutationObserver(() => setColors(read()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = () => setColors(read());
     mq.addEventListener('change', handler);
-    return () => { observer.disconnect(); mq.removeEventListener('change', handler); };
+    return () => {
+      observer.disconnect();
+      mq.removeEventListener('change', handler);
+    };
   }, [read]);
 
   return colors;
@@ -97,7 +115,11 @@ function toEpochMs(value: string | null | undefined): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function resolveConversationContextLimit(storedModel: string | null | undefined, availableModels: AvailableModel[], fallbackLimit: number): number {
+function resolveConversationContextLimit(
+  storedModel: string | null | undefined,
+  availableModels: AvailableModel[],
+  fallbackLimit: number,
+): number {
   const parsed = parseStoredModelIdentifier(storedModel || '');
   const modelId = parsed.modelId.trim();
   const explicitProvider = (parsed.provider || '').trim().toLowerCase();
@@ -106,7 +128,9 @@ function resolveConversationContextLimit(storedModel: string | null | undefined,
 
   let matchedModel: AvailableModel | undefined;
   if (explicitProvider) {
-    matchedModel = availableModels.find((model) => model.id === modelId && String(model.provider).toLowerCase() === explicitProvider);
+    matchedModel = availableModels.find(
+      (model) => model.id === modelId && String(model.provider).toLowerCase() === explicitProvider,
+    );
   }
 
   if (!matchedModel) {
@@ -117,10 +141,13 @@ function resolveConversationContextLimit(storedModel: string | null | undefined,
     const slashIndex = modelId.indexOf('/');
     const providerFromModelId = modelId.slice(0, slashIndex).trim().toLowerCase();
     const providerModelId = modelId.slice(slashIndex + 1).trim();
-    matchedModel = availableModels.find((model) => (
-      model.id === providerModelId
-      && (!explicitProvider || String(model.provider).toLowerCase() === explicitProvider || String(model.provider).toLowerCase() === providerFromModelId)
-    ));
+    matchedModel = availableModels.find(
+      (model) =>
+        model.id === providerModelId &&
+        (!explicitProvider ||
+          String(model.provider).toLowerCase() === explicitProvider ||
+          String(model.provider).toLowerCase() === providerFromModelId),
+    );
   }
 
   return matchedModel?.context_limit || fallbackLimit;
@@ -133,7 +160,9 @@ function normalizeDateLabel(value: string): string {
 function buildDateLabels(days: number): string[] {
   const labels: string[] = [];
   const todayUtc = new Date();
-  const base = new Date(Date.UTC(todayUtc.getUTCFullYear(), todayUtc.getUTCMonth(), todayUtc.getUTCDate()));
+  const base = new Date(
+    Date.UTC(todayUtc.getUTCFullYear(), todayUtc.getUTCMonth(), todayUtc.getUTCDate()),
+  );
 
   for (let offset = days - 1; offset >= 0; offset -= 1) {
     const current = new Date(base);
@@ -144,7 +173,11 @@ function buildDateLabels(days: number): string[] {
   return labels;
 }
 
-function paginate<T>(items: T[], page: number, pageSize: number): { pageItems: T[]; totalPages: number; safePage: number } {
+function paginate<T>(
+  items: T[],
+  page: number,
+  pageSize: number,
+): { pageItems: T[]; totalPages: number; safePage: number } {
   const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const start = (safePage - 1) * pageSize;
@@ -171,10 +204,31 @@ type PanelTab = 'management' | 'usage';
 type TrendTab = 'reliability' | 'daily-chart' | 'daily-table';
 type UsageMetric = 'requests' | 'tokens';
 type McpUsageTab = 'chart' | 'table';
-type ManagementSortKey = 'user' | 'auth' | 'chats' | 'workspaces' | 'memberships' | 'workspaceChats' | 'liveInterrupted' | 'storage' | 'role' | 'actions';
+type ManagementSortKey =
+  | 'user'
+  | 'auth'
+  | 'chats'
+  | 'workspaces'
+  | 'memberships'
+  | 'workspaceChats'
+  | 'liveInterrupted'
+  | 'storage'
+  | 'role'
+  | 'actions';
 type UsageSortKey = 'user' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed';
 type ProviderSortKey = 'provider' | 'model' | 'source' | 'requests' | 'input' | 'output' | 'total';
-type DailySortKey = 'date' | 'requests' | 'input' | 'output' | 'total' | 'completed' | 'failed' | 'mcpRequests' | 'mcpErrors' | 'apiRequests' | 'apiErrors';
+type DailySortKey =
+  | 'date'
+  | 'requests'
+  | 'input'
+  | 'output'
+  | 'total'
+  | 'completed'
+  | 'failed'
+  | 'mcpRequests'
+  | 'mcpErrors'
+  | 'apiRequests'
+  | 'apiErrors';
 type McpUserSortKey = 'user' | 'auth' | 'route' | 'requests' | 'success' | 'errors';
 
 const WORKSPACE_DELETE_TASK_POLL_INTERVAL_MS = 1000;
@@ -234,7 +288,14 @@ interface PagerProps {
   onPageSizeChange: (size: number) => void;
 }
 
-function TablePager({ page, totalPages, totalItems, pageSize, onPageChange, onPageSizeChange }: PagerProps) {
+function TablePager({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+}: PagerProps) {
   return (
     <div className="users-pager">
       <span className="users-pager-meta">{totalItems} items</span>
@@ -247,11 +308,23 @@ function TablePager({ page, totalPages, totalItems, pageSize, onPageChange, onPa
           <option value={50}>50</option>
         </select>
       </label>
-      <button type="button" className="users-page-btn" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+      <button
+        type="button"
+        className="users-page-btn"
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+      >
         Prev
       </button>
-      <span className="users-page-indicator">{page}/{totalPages}</span>
-      <button type="button" className="users-page-btn" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
+      <span className="users-page-indicator">
+        {page}/{totalPages}
+      </span>
+      <button
+        type="button"
+        className="users-page-btn"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+      >
         Next
       </button>
     </div>
@@ -322,7 +395,9 @@ function UserEditModal({
       <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>Override - {user.display_name || user.username}</h3>
-          <button className="modal-close" onClick={onClose}>&times;</button>
+          <button className="modal-close" onClick={onClose}>
+            &times;
+          </button>
         </div>
         <div className="modal-body">
           <div className="form-group">
@@ -360,13 +435,20 @@ function UserEditModal({
                 searchPlaceholder="Search Group Memberships..."
                 disabled={actionLoading === user.id}
               />
-              <p className="field-help">Internal groups can be assigned manually. LDAP groups are read-only here and stay controlled by directory sync.</p>
+              <p className="field-help">
+                Internal groups can be assigned manually. LDAP groups are read-only here and stay
+                controlled by directory sync.
+              </p>
             </div>
-          ) : user.auth_provider === 'ldap' && (
-            <div className="form-group">
-              <label>Group Memberships</label>
-              <p className="field-help">No LDAP group memberships are currently cached for this user.</p>
-            </div>
+          ) : (
+            user.auth_provider === 'ldap' && (
+              <div className="form-group">
+                <label>Group Memberships</label>
+                <p className="field-help">
+                  No LDAP group memberships are currently cached for this user.
+                </p>
+              </div>
+            )
           )}
         </div>
       </div>
@@ -380,8 +462,12 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [users, setUsers] = useState<User[]>([]);
   const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
-  const [workspaceStateById, setWorkspaceStateById] = useState<Record<string, WorkspaceConversationStateSummaryItem>>({});
-  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const [workspaceStateById, setWorkspaceStateById] = useState<
+    Record<string, WorkspaceConversationStateSummaryItem>
+  >({});
+  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<
+    Record<string, UserSpaceWorkspaceDeleteTask>
+  >({});
   const deletingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   const deletingWorkspaceTaskCount = Object.keys(deletingWorkspaceTasks).length;
 
@@ -425,19 +511,47 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const [dailyPageSize, setDailyPageSize] = useState(10);
   const [mcpUsersPageSize, setMcpUsersPageSize] = useState(10);
 
-  const [managementSort, setManagementSort] = useState<TableSortConfig<ManagementSortKey>>({ key: 'chats', direction: 'desc' });
-  const [usageSort, setUsageSort] = useState<TableSortConfig<UsageSortKey>>({ key: 'requests', direction: 'desc' });
-  const [providerSort, setProviderSort] = useState<TableSortConfig<ProviderSortKey>>({ key: 'total', direction: 'desc' });
-  const [dailySort, setDailySort] = useState<TableSortConfig<DailySortKey>>({ key: 'date', direction: 'desc' });
-  const [mcpUserSort, setMcpUserSort] = useState<TableSortConfig<McpUserSortKey>>({ key: 'requests', direction: 'desc' });
+  const [managementSort, setManagementSort] = useState<TableSortConfig<ManagementSortKey>>({
+    key: 'chats',
+    direction: 'desc',
+  });
+  const [usageSort, setUsageSort] = useState<TableSortConfig<UsageSortKey>>({
+    key: 'requests',
+    direction: 'desc',
+  });
+  const [providerSort, setProviderSort] = useState<TableSortConfig<ProviderSortKey>>({
+    key: 'total',
+    direction: 'desc',
+  });
+  const [dailySort, setDailySort] = useState<TableSortConfig<DailySortKey>>({
+    key: 'date',
+    direction: 'desc',
+  });
+  const [mcpUserSort, setMcpUserSort] = useState<TableSortConfig<McpUserSortKey>>({
+    key: 'requests',
+    direction: 'desc',
+  });
 
-  const [expandedUserDetail, setExpandedUserDetail] = useState<{ userId: string; mode: ExpandedUserDetailMode } | null>(null);
-  const [standaloneChatsByUserId, setStandaloneChatsByUserId] = useState<Record<string, ConversationSummary[]>>({});
+  const [expandedUserDetail, setExpandedUserDetail] = useState<{
+    userId: string;
+    mode: ExpandedUserDetailMode;
+  } | null>(null);
+  const [standaloneChatsByUserId, setStandaloneChatsByUserId] = useState<
+    Record<string, ConversationSummary[]>
+  >({});
   const [standaloneChatsLoaded, setStandaloneChatsLoaded] = useState(false);
-  const [standaloneChatsLoadingUserId, setStandaloneChatsLoadingUserId] = useState<string | null>(null);
-  const [workspaceLastMessageAtById, setWorkspaceLastMessageAtById] = useState<Record<string, string | null>>({});
-  const [workspaceLastConversationById, setWorkspaceLastConversationById] = useState<Record<string, ConversationSummary | null>>({});
-  const [workspaceLastMessageLoadingByUserId, setWorkspaceLastMessageLoadingByUserId] = useState<Record<string, boolean>>({});
+  const [standaloneChatsLoadingUserId, setStandaloneChatsLoadingUserId] = useState<string | null>(
+    null,
+  );
+  const [workspaceLastMessageAtById, setWorkspaceLastMessageAtById] = useState<
+    Record<string, string | null>
+  >({});
+  const [workspaceLastConversationById, setWorkspaceLastConversationById] = useState<
+    Record<string, ConversationSummary | null>
+  >({});
+  const [workspaceLastMessageLoadingByUserId, setWorkspaceLastMessageLoadingByUserId] = useState<
+    Record<string, boolean>
+  >({});
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
 
   const themeColors = useThemeColors();
@@ -458,13 +572,16 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     setAuthGroups(groups);
   }, []);
 
-  const fetchUsageDetails = useCallback(async (d: number): Promise<Pick<UsageDataSnapshot, 'userDailySeries'>> => {
-    const userDailyRes = await api.getUsageUsersDaily(d);
+  const fetchUsageDetails = useCallback(
+    async (d: number): Promise<Pick<UsageDataSnapshot, 'userDailySeries'>> => {
+      const userDailyRes = await api.getUsageUsersDaily(d);
 
-    return {
-      userDailySeries: userDailyRes.series,
-    };
-  }, []);
+      return {
+        userDailySeries: userDailyRes.series,
+      };
+    },
+    [],
+  );
 
   const applyUsageSnapshot = useCallback((snapshot: UsageDataSnapshot) => {
     setUsageSummary(snapshot.usageSummary);
@@ -485,10 +602,13 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       const summary = await api.getWorkspacesConversationStateSummaryLite(workspaceIds);
       if (requestId !== workspaceStateRequestIdRef.current) return;
 
-      const byId = summary.reduce<Record<string, WorkspaceConversationStateSummaryItem>>((acc, item) => {
-        acc[item.workspace_id] = item;
-        return acc;
-      }, {});
+      const byId = summary.reduce<Record<string, WorkspaceConversationStateSummaryItem>>(
+        (acc, item) => {
+          acc[item.workspace_id] = item;
+          return acc;
+        },
+        {},
+      );
       setWorkspaceStateById(byId);
     } catch (err) {
       // Keep management table responsive even if state summaries fail.
@@ -523,82 +643,81 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   const loadManagementData = useCallback(async () => {
     setLoading(true);
     try {
-      await Promise.all([
-        loadUsers(),
-        loadAuthGroups(),
-        loadWorkspaces(),
-      ]);
+      await Promise.all([loadUsers(), loadAuthGroups(), loadWorkspaces()]);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to load users data');
     } finally {
       setLoading(false);
     }
-  }, [loadAuthGroups, loadUsers, loadWorkspaces]);
+  }, [loadAuthGroups, loadUsers, loadWorkspaces, toast]);
 
-  const loadUsageData = useCallback(async (d: number) => {
-    const cached = usageCacheRef.current[d];
-    if (cached) {
-      applyUsageSnapshot(cached);
-      setUsageLoadedDays(d);
-      return;
-    }
-
-    const requestId = usageRequestIdRef.current + 1;
-    usageRequestIdRef.current = requestId;
-
-    setUsageLoading(true);
-    try {
-      const [summaryRes, providersRes, dailyRes, apiRes, mcpRes, rangeRes] = await Promise.all([
-        api.getUsageSummary(d),
-        api.getUsageProviders(d),
-        api.getUsageDaily(d),
-        api.getUsageApi(d),
-        api.getUsageMcp(d),
-        hasLoadedUsageRange ? Promise.resolve(null) : api.getUsageRange(),
-      ]);
-
-      if (requestId !== usageRequestIdRef.current) return;
-
-      // Show key usage cards/charts first, then enrich with heavier series calls.
-      setUsageSummary(summaryRes.users);
-      setProviderBreakdown(providersRes.providers);
-      setDailyTrend(dailyRes.daily);
-      setApiDaily(apiRes.daily);
-      setUserDailySeries([]);
-      setMcpUsers(mcpRes.users);
-      setMcpDaily(mcpRes.daily);
-      setMcpRoutes(mcpRes.routes);
-
-      if (rangeRes) {
-        setEarliestDate(rangeRes.earliest_date);
-        setHasLoadedUsageRange(true);
+  const loadUsageData = useCallback(
+    async (d: number) => {
+      const cached = usageCacheRef.current[d];
+      if (cached) {
+        applyUsageSnapshot(cached);
+        setUsageLoadedDays(d);
+        return;
       }
-      setUsageLoadedDays(d);
 
-      const details = await fetchUsageDetails(d);
-      if (requestId !== usageRequestIdRef.current) return;
+      const requestId = usageRequestIdRef.current + 1;
+      usageRequestIdRef.current = requestId;
 
-      const snapshot: UsageDataSnapshot = {
-        usageSummary: summaryRes.users,
-        providerBreakdown: providersRes.providers,
-        dailyTrend: dailyRes.daily,
-        apiDaily: apiRes.daily,
-        userDailySeries: details.userDailySeries,
-        mcpUsers: mcpRes.users,
-        mcpDaily: mcpRes.daily,
-        mcpRoutes: mcpRes.routes,
-      };
+      setUsageLoading(true);
+      try {
+        const [summaryRes, providersRes, dailyRes, apiRes, mcpRes, rangeRes] = await Promise.all([
+          api.getUsageSummary(d),
+          api.getUsageProviders(d),
+          api.getUsageDaily(d),
+          api.getUsageApi(d),
+          api.getUsageMcp(d),
+          hasLoadedUsageRange ? Promise.resolve(null) : api.getUsageRange(),
+        ]);
 
-      applyUsageSnapshot(snapshot);
-      usageCacheRef.current[d] = snapshot;
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to load usage data');
-    } finally {
-      if (requestId === usageRequestIdRef.current) {
-        setUsageLoading(false);
+        if (requestId !== usageRequestIdRef.current) return;
+
+        // Show key usage cards/charts first, then enrich with heavier series calls.
+        setUsageSummary(summaryRes.users);
+        setProviderBreakdown(providersRes.providers);
+        setDailyTrend(dailyRes.daily);
+        setApiDaily(apiRes.daily);
+        setUserDailySeries([]);
+        setMcpUsers(mcpRes.users);
+        setMcpDaily(mcpRes.daily);
+        setMcpRoutes(mcpRes.routes);
+
+        if (rangeRes) {
+          setEarliestDate(rangeRes.earliest_date);
+          setHasLoadedUsageRange(true);
+        }
+        setUsageLoadedDays(d);
+
+        const details = await fetchUsageDetails(d);
+        if (requestId !== usageRequestIdRef.current) return;
+
+        const snapshot: UsageDataSnapshot = {
+          usageSummary: summaryRes.users,
+          providerBreakdown: providersRes.providers,
+          dailyTrend: dailyRes.daily,
+          apiDaily: apiRes.daily,
+          userDailySeries: details.userDailySeries,
+          mcpUsers: mcpRes.users,
+          mcpDaily: mcpRes.daily,
+          mcpRoutes: mcpRes.routes,
+        };
+
+        applyUsageSnapshot(snapshot);
+        usageCacheRef.current[d] = snapshot;
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Failed to load usage data');
+      } finally {
+        if (requestId === usageRequestIdRef.current) {
+          setUsageLoading(false);
+        }
       }
-    }
-  }, [applyUsageSnapshot, fetchUsageDetails, hasLoadedUsageRange]);
+    },
+    [applyUsageSnapshot, fetchUsageDetails, hasLoadedUsageRange, toast],
+  );
 
   useEffect(() => {
     void loadManagementData();
@@ -627,7 +746,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     setActionLoading(userId);
     try {
       await api.updateUserRole(userId, newRole);
-      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: newRole, role_manually_set: true } : u)));
+      setUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, role: newRole, role_manually_set: true } : u)),
+      );
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to update role');
     } finally {
@@ -639,9 +760,13 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     setActionLoading(userId);
     try {
       const response = await api.resetUserRoleOverride(userId);
-      setUsers((prev) => prev.map((u) => (
-        u.id === userId ? { ...u, role: response.role, role_manually_set: response.role_manually_set } : u
-      )));
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === userId
+            ? { ...u, role: response.role, role_manually_set: response.role_manually_set }
+            : u,
+        ),
+      );
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to reset role override');
     } finally {
@@ -711,14 +836,20 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       pollInFlight = true;
 
       try {
-        const results = await Promise.all(tasks.map(async (task) => {
-          try {
-            const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
-            return { task, status, error: null as Error | null };
-          } catch (error) {
-            return { task, status: null as UserSpaceWorkspaceDeleteTask | null, error: error as Error };
-          }
-        }));
+        const results = await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
+              return { task, status, error: null as Error | null };
+            } catch (error) {
+              return {
+                task,
+                status: null as UserSpaceWorkspaceDeleteTask | null,
+                error: error as Error,
+              };
+            }
+          }),
+        );
 
         if (cancelled) {
           return;
@@ -736,7 +867,8 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
               if (result.status.phase === 'completed') {
                 completedWorkspaceIds.add(result.status.workspace_id);
               } else if (!nextError) {
-                nextError = result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
+                nextError =
+                  result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
               }
             } else {
               updatedTasks[result.status.workspace_id] = result.status;
@@ -767,7 +899,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         });
 
         if (completedWorkspaceIds.size > 0) {
-          setWorkspaces((prev) => prev.filter((workspace) => !completedWorkspaceIds.has(workspace.id)));
+          setWorkspaces((prev) =>
+            prev.filter((workspace) => !completedWorkspaceIds.has(workspace.id)),
+          );
           setWorkspaceStateById((prev) => {
             const next = { ...prev };
             for (const workspaceId of completedWorkspaceIds) {
@@ -805,7 +939,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
 
   const handleTransferWorkspace = async (workspaceId: string, newOwnerId: string) => {
     try {
-      const updated = await api.updateUserSpaceWorkspace(workspaceId, { owner_user_id: newOwnerId });
+      const updated = await api.updateUserSpaceWorkspace(workspaceId, {
+        owner_user_id: newOwnerId,
+      });
       setWorkspaces((prev) => prev.map((ws) => (ws.id === workspaceId ? updated : ws)));
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Failed to transfer workspace ownership');
@@ -825,7 +961,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
           const entries = await api.listUserSpaceFiles(workspaceId);
           const total = entries.reduce((sum, entry) => sum + (entry.size_bytes || 0), 0);
           return { workspaceId, total };
-        })
+        }),
       );
 
       const updates: Record<string, number> = {};
@@ -854,9 +990,10 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     [deletingWorkspaceTasks],
   );
 
-  const workspaceConversationIdSet = useMemo(() => (
-    new Set(workspaces.flatMap((workspace) => workspace.conversation_ids))
-  ), [workspaces]);
+  const workspaceConversationIdSet = useMemo(
+    () => new Set(workspaces.flatMap((workspace) => workspace.conversation_ids)),
+    [workspaces],
+  );
 
   useEffect(() => {
     setStandaloneChatsByUserId({});
@@ -870,24 +1007,27 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     }
 
     const allConversations = await api.listConversationSummaries();
-    const grouped = allConversations.reduce<Record<string, ConversationSummary[]>>((acc, conversation) => {
-      const linkedWorkspaceId = conversation.workspace_id ?? conversation.workspaceId ?? null;
-      if (linkedWorkspaceId) {
-        return acc;
-      }
-      if (workspaceConversationIdSet.has(conversation.id)) {
-        return acc;
-      }
-      if (!conversation.user_id) {
-        return acc;
-      }
+    const grouped = allConversations.reduce<Record<string, ConversationSummary[]>>(
+      (acc, conversation) => {
+        const linkedWorkspaceId = conversation.workspace_id ?? conversation.workspaceId ?? null;
+        if (linkedWorkspaceId) {
+          return acc;
+        }
+        if (workspaceConversationIdSet.has(conversation.id)) {
+          return acc;
+        }
+        if (!conversation.user_id) {
+          return acc;
+        }
 
-      if (!acc[conversation.user_id]) {
-        acc[conversation.user_id] = [];
-      }
-      acc[conversation.user_id].push(conversation);
-      return acc;
-    }, {});
+        if (!acc[conversation.user_id]) {
+          acc[conversation.user_id] = [];
+        }
+        acc[conversation.user_id].push(conversation);
+        return acc;
+      },
+      {},
+    );
 
     for (const list of Object.values(grouped)) {
       list.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
@@ -897,24 +1037,27 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     setStandaloneChatsLoaded(true);
   }, [standaloneChatsLoaded, workspaceConversationIdSet]);
 
-  const loadStandaloneChatsForUser = useCallback(async (userId: string) => {
-    if (standaloneChatsByUserId[userId]) {
-      return;
-    }
+  const loadStandaloneChatsForUser = useCallback(
+    async (userId: string) => {
+      if (standaloneChatsByUserId[userId]) {
+        return;
+      }
 
-    setStandaloneChatsLoadingUserId(userId);
-    try {
-      await loadStandaloneChatsSnapshot();
-      setStandaloneChatsByUserId((prev) => ({
-        ...prev,
-        [userId]: prev[userId] ?? [],
-      }));
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to load user chats');
-    } finally {
-      setStandaloneChatsLoadingUserId((prev) => (prev === userId ? null : prev));
-    }
-  }, [loadStandaloneChatsSnapshot, standaloneChatsByUserId, toast]);
+      setStandaloneChatsLoadingUserId(userId);
+      try {
+        await loadStandaloneChatsSnapshot();
+        setStandaloneChatsByUserId((prev) => ({
+          ...prev,
+          [userId]: prev[userId] ?? [],
+        }));
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Failed to load user chats');
+      } finally {
+        setStandaloneChatsLoadingUserId((prev) => (prev === userId ? null : prev));
+      }
+    },
+    [loadStandaloneChatsSnapshot, standaloneChatsByUserId, toast],
+  );
 
   useEffect(() => {
     if (activeTab !== 'management') {
@@ -928,19 +1071,22 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     });
   }, [activeTab, loadStandaloneChatsSnapshot, standaloneChatsLoaded, toast]);
 
-  const standaloneChatCountsByUserId = useMemo(() => (
-    Object.entries(standaloneChatsByUserId).reduce<Record<string, number>>((acc, [userId, conversations]) => {
-      acc[userId] = conversations.length;
-      return acc;
-    }, {})
-  ), [standaloneChatsByUserId]);
+  const standaloneChatCountsByUserId = useMemo(
+    () =>
+      Object.entries(standaloneChatsByUserId).reduce<Record<string, number>>(
+        (acc, [userId, conversations]) => {
+          acc[userId] = conversations.length;
+          return acc;
+        },
+        {},
+      ),
+    [standaloneChatsByUserId],
+  );
 
   const toggleUserWorkspaceDetails = useCallback((userId: string) => {
-    setExpandedUserDetail((prev) => (
-      prev?.userId === userId && prev.mode === 'workspaces'
-        ? null
-        : { userId, mode: 'workspaces' }
-    ));
+    setExpandedUserDetail((prev) =>
+      prev?.userId === userId && prev.mode === 'workspaces' ? null : { userId, mode: 'workspaces' },
+    );
   }, []);
 
   useEffect(() => {
@@ -1003,78 +1149,97 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     return Math.max(8192, maxAvailable);
   }, [availableModels]);
 
-  const getConversationContextMeta = useCallback((conversation: Conversation | ConversationSummary | null | undefined): string => {
-    if (!conversation) return 'n/a';
+  const getConversationContextMeta = useCallback(
+    (conversation: Conversation | ConversationSummary | null | undefined): string => {
+      if (!conversation) return 'n/a';
 
-    const contextLimit = resolveConversationContextLimit(conversation.model, availableModels, defaultContextLimit);
-    const usage = calculateConversationContextUsage({
-      messages: 'messages' in conversation ? conversation.messages : [],
-      persistedConversationTokens: conversation.total_tokens,
-      contextLimit,
-    });
+      const contextLimit = resolveConversationContextLimit(
+        conversation.model,
+        availableModels,
+        defaultContextLimit,
+      );
+      const usage = calculateConversationContextUsage({
+        messages: 'messages' in conversation ? conversation.messages : [],
+        persistedConversationTokens: conversation.total_tokens,
+        contextLimit,
+      });
 
-    return `${formatNumber(usage.totalTokens)} / ${formatNumber(contextLimit)}`;
-  }, [availableModels, defaultContextLimit]);
+      return `${formatNumber(usage.totalTokens)} / ${formatNumber(contextLimit)}`;
+    },
+    [availableModels, defaultContextLimit],
+  );
 
-  const loadWorkspaceLastMessageTimesForUser = useCallback(async (userId: string) => {
-    const owned = workspaces.filter((workspace) => workspace.owner_user_id === userId);
-    const missing = owned
-      .map((workspace) => workspace.id)
-      .filter((workspaceId) => !(workspaceId in workspaceLastMessageAtById));
+  const loadWorkspaceLastMessageTimesForUser = useCallback(
+    async (userId: string) => {
+      const owned = workspaces.filter((workspace) => workspace.owner_user_id === userId);
+      const missing = owned
+        .map((workspace) => workspace.id)
+        .filter((workspaceId) => !(workspaceId in workspaceLastMessageAtById));
 
-    if (missing.length === 0) {
-      return;
-    }
+      if (missing.length === 0) {
+        return;
+      }
 
-    setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: true }));
-    try {
-      const settled = await Promise.allSettled(missing.map(async (workspaceId) => {
-        const conversations = await api.listConversationSummaries(workspaceId);
-        const latestConversation = conversations.reduce<ConversationSummary | null>((latest, conversation) => {
-          if (!latest) return conversation;
-          return toEpochMs(conversation.updated_at) > toEpochMs(latest.updated_at)
-            ? conversation
-            : latest;
-        }, null);
-        return {
-          workspaceId,
-          lastUpdatedAt: latestConversation?.updated_at ?? null,
-          latestConversation,
-        };
-      }));
+      setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: true }));
+      try {
+        const settled = await Promise.allSettled(
+          missing.map(async (workspaceId) => {
+            const conversations = await api.listConversationSummaries(workspaceId);
+            const latestConversation = conversations.reduce<ConversationSummary | null>(
+              (latest, conversation) => {
+                if (!latest) return conversation;
+                return toEpochMs(conversation.updated_at) > toEpochMs(latest.updated_at)
+                  ? conversation
+                  : latest;
+              },
+              null,
+            );
+            return {
+              workspaceId,
+              lastUpdatedAt: latestConversation?.updated_at ?? null,
+              latestConversation,
+            };
+          }),
+        );
 
-      const updates: Record<string, string | null> = {};
-      const lastConversationUpdates: Record<string, ConversationSummary | null> = {};
-      for (const item of settled) {
-        if (item.status === 'fulfilled') {
-          updates[item.value.workspaceId] = item.value.lastUpdatedAt;
-          lastConversationUpdates[item.value.workspaceId] = item.value.latestConversation;
+        const updates: Record<string, string | null> = {};
+        const lastConversationUpdates: Record<string, ConversationSummary | null> = {};
+        for (const item of settled) {
+          if (item.status === 'fulfilled') {
+            updates[item.value.workspaceId] = item.value.lastUpdatedAt;
+            lastConversationUpdates[item.value.workspaceId] = item.value.latestConversation;
+          }
         }
+
+        if (Object.keys(updates).length > 0) {
+          setWorkspaceLastMessageAtById((prev) => ({ ...prev, ...updates }));
+          setWorkspaceLastConversationById((prev) => ({ ...prev, ...lastConversationUpdates }));
+        }
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Failed to load workspace message timestamps');
+      } finally {
+        setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: false }));
+      }
+    },
+    [toast, workspaceLastMessageAtById, workspaces],
+  );
+
+  const toggleUserChatDetails = useCallback(
+    async (userId: string) => {
+      const isAlreadyExpanded =
+        expandedUserDetail?.userId === userId && expandedUserDetail.mode === 'chats';
+      if (isAlreadyExpanded) {
+        setExpandedUserDetail(null);
+        return;
       }
 
-      if (Object.keys(updates).length > 0) {
-        setWorkspaceLastMessageAtById((prev) => ({ ...prev, ...updates }));
-        setWorkspaceLastConversationById((prev) => ({ ...prev, ...lastConversationUpdates }));
+      setExpandedUserDetail({ userId, mode: 'chats' });
+      if (!standaloneChatsByUserId[userId]) {
+        await loadStandaloneChatsForUser(userId);
       }
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to load workspace message timestamps');
-    } finally {
-      setWorkspaceLastMessageLoadingByUserId((prev) => ({ ...prev, [userId]: false }));
-    }
-  }, [toast, workspaceLastMessageAtById, workspaces]);
-
-  const toggleUserChatDetails = useCallback(async (userId: string) => {
-    const isAlreadyExpanded = expandedUserDetail?.userId === userId && expandedUserDetail.mode === 'chats';
-    if (isAlreadyExpanded) {
-      setExpandedUserDetail(null);
-      return;
-    }
-
-    setExpandedUserDetail({ userId, mode: 'chats' });
-    if (!standaloneChatsByUserId[userId]) {
-      await loadStandaloneChatsForUser(userId);
-    }
-  }, [expandedUserDetail, loadStandaloneChatsForUser, standaloneChatsByUserId]);
+    },
+    [expandedUserDetail, loadStandaloneChatsForUser, standaloneChatsByUserId],
+  );
 
   useEffect(() => {
     if (!expandedUserDetail || expandedUserDetail.mode !== 'workspaces') {
@@ -1083,43 +1248,51 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     void loadWorkspaceLastMessageTimesForUser(expandedUserDetail.userId);
   }, [expandedUserDetail, loadWorkspaceLastMessageTimesForUser]);
 
-  const handleDeleteConversation = useCallback(async (conversationId: string) => {
-    try {
-      await api.deleteConversation(conversationId);
-      setStandaloneChatsByUserId((prev) => {
-        const next: Record<string, ConversationSummary[]> = {};
-        for (const [userId, conversations] of Object.entries(prev)) {
-          next[userId] = conversations.filter((conversation) => conversation.id !== conversationId);
-        }
-        return next;
-      });
-      toast.success('Chat deleted');
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to delete chat');
-      throw e;
-    }
-  }, [toast]);
+  const handleDeleteConversation = useCallback(
+    async (conversationId: string) => {
+      try {
+        await api.deleteConversation(conversationId);
+        setStandaloneChatsByUserId((prev) => {
+          const next: Record<string, ConversationSummary[]> = {};
+          for (const [userId, conversations] of Object.entries(prev)) {
+            next[userId] = conversations.filter(
+              (conversation) => conversation.id !== conversationId,
+            );
+          }
+          return next;
+        });
+        toast.success('Chat deleted');
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Failed to delete chat');
+        throw e;
+      }
+    },
+    [toast],
+  );
 
-  const handleCancelConversationTask = useCallback(async (conversationId: string, taskId: string) => {
-    try {
-      await api.cancelChatTask(taskId);
-      setStandaloneChatsByUserId((prev) => {
-        const next: Record<string, ConversationSummary[]> = {};
-        for (const [userId, conversations] of Object.entries(prev)) {
-          next[userId] = conversations.map((conversation) => (
-            conversation.id === conversationId
-              ? { ...conversation, active_task_id: null }
-              : conversation
-          ));
-        }
-        return next;
-      });
-      toast.success('Chat task cancellation requested');
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Failed to cancel chat task');
-      throw e;
-    }
-  }, [toast]);
+  const handleCancelConversationTask = useCallback(
+    async (conversationId: string, taskId: string) => {
+      try {
+        await api.cancelChatTask(taskId);
+        setStandaloneChatsByUserId((prev) => {
+          const next: Record<string, ConversationSummary[]> = {};
+          for (const [userId, conversations] of Object.entries(prev)) {
+            next[userId] = conversations.map((conversation) =>
+              conversation.id === conversationId
+                ? { ...conversation, active_task_id: null }
+                : conversation,
+            );
+          }
+          return next;
+        });
+        toast.success('Chat task cancellation requested');
+      } catch (e: unknown) {
+        toast.error(e instanceof Error ? e.message : 'Failed to cancel chat task');
+        throw e;
+      }
+    },
+    [toast],
+  );
 
   const userStatsRows = useMemo<DerivedUserStats[]>(() => {
     const byUserOwned = workspaces.reduce<Record<string, UserSpaceWorkspace[]>>((acc, ws) => {
@@ -1135,51 +1308,53 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       return acc;
     }, {});
 
-    return users.map((user) => {
-      const owned = byUserOwned[user.id] || [];
-      const usage = usageByUserId[user.id] || null;
+    return users
+      .map((user) => {
+        const owned = byUserOwned[user.id] || [];
+        const usage = usageByUserId[user.id] || null;
 
-      let workspaceConversationCount = 0;
-      let workspaceMemberSlots = 0;
-      let liveWorkspaceCount = 0;
-      let interruptedWorkspaceCount = 0;
-      let storageBytesKnown = 0;
-      let storageKnownCount = 0;
+        let workspaceConversationCount = 0;
+        let workspaceMemberSlots = 0;
+        let liveWorkspaceCount = 0;
+        let interruptedWorkspaceCount = 0;
+        let storageBytesKnown = 0;
+        let storageKnownCount = 0;
 
-      for (const ws of owned) {
-        workspaceConversationCount += ws.conversation_ids.length;
-        workspaceMemberSlots += ws.members.length;
+        for (const ws of owned) {
+          workspaceConversationCount += ws.conversation_ids.length;
+          workspaceMemberSlots += ws.members.length;
 
-        const state = workspaceStateById[ws.id];
-        if (state?.has_live_task) liveWorkspaceCount += 1;
-        if (state?.has_interrupted_task) interruptedWorkspaceCount += 1;
+          const state = workspaceStateById[ws.id];
+          if (state?.has_live_task) liveWorkspaceCount += 1;
+          if (state?.has_interrupted_task) interruptedWorkspaceCount += 1;
 
-        const size = storageByWorkspaceId[ws.id];
-        if (typeof size === 'number') {
-          storageBytesKnown += size;
-          storageKnownCount += 1;
+          const size = storageByWorkspaceId[ws.id];
+          if (typeof size === 'number') {
+            storageBytesKnown += size;
+            storageKnownCount += 1;
+          }
         }
-      }
 
-      return {
-        user,
-        usage,
-        ownedWorkspaceCount: owned.length,
-        memberWorkspaceCount: byUserMember[user.id] || 0,
-        workspaceConversationCount,
-        workspaceMemberSlots,
-        liveWorkspaceCount,
-        interruptedWorkspaceCount,
-        ownedWorkspaces: owned,
-        storageBytesKnown,
-        storageCoverage: owned.length === 0 ? 1 : storageKnownCount / owned.length,
-      };
-    }).sort((a, b) => {
-      const aChats = a.usage?.total_requests || 0;
-      const bChats = b.usage?.total_requests || 0;
-      if (bChats !== aChats) return bChats - aChats;
-      return a.user.username.localeCompare(b.user.username);
-    });
+        return {
+          user,
+          usage,
+          ownedWorkspaceCount: owned.length,
+          memberWorkspaceCount: byUserMember[user.id] || 0,
+          workspaceConversationCount,
+          workspaceMemberSlots,
+          liveWorkspaceCount,
+          interruptedWorkspaceCount,
+          ownedWorkspaces: owned,
+          storageBytesKnown,
+          storageCoverage: owned.length === 0 ? 1 : storageKnownCount / owned.length,
+        };
+      })
+      .sort((a, b) => {
+        const aChats = a.usage?.total_requests || 0;
+        const bChats = b.usage?.total_requests || 0;
+        if (bChats !== aChats) return bChats - aChats;
+        return a.user.username.localeCompare(b.user.username);
+      });
   }, [users, usageByUserId, workspaces, workspaceStateById, storageByWorkspaceId]);
 
   const availableRanges = useMemo(() => {
@@ -1199,18 +1374,25 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       return acc;
     }, {});
 
-    return dateLabels.map((date) => byDate[date] ?? {
-      date,
-      total_requests: 0,
-      total_input_tokens: 0,
-      total_output_tokens: 0,
-      total_tokens: 0,
-      completed_count: 0,
-      failed_count: 0,
-    });
+    return dateLabels.map(
+      (date) =>
+        byDate[date] ?? {
+          date,
+          total_requests: 0,
+          total_input_tokens: 0,
+          total_output_tokens: 0,
+          total_tokens: 0,
+          completed_count: 0,
+          failed_count: 0,
+        },
+    );
   }, [dailyTrend, dateLabels]);
 
-  const compareSortValues = (a: string | number | null, b: string | number | null, direction: 'asc' | 'desc') => {
+  const compareSortValues = (
+    a: string | number | null,
+    b: string | number | null,
+    direction: 'asc' | 'desc',
+  ) => {
     if (a === null && b === null) return 0;
     if (a === null) return 1;
     if (b === null) return -1;
@@ -1229,12 +1411,15 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   };
 
   const providerChartData = useMemo(() => {
-    const grouped = new Map<string, {
-      provider: string;
-      model: string;
-      bySource: Record<string, { requests: number; tokens: number }>;
-      total: number;
-    }>();
+    const grouped = new Map<
+      string,
+      {
+        provider: string;
+        model: string;
+        bySource: Record<string, { requests: number; tokens: number }>;
+        total: number;
+      }
+    >();
 
     for (const row of providerBreakdown) {
       const key = `${row.provider}::${row.model}`;
@@ -1267,14 +1452,16 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     });
 
     const sourceOrder = ['ui', 'api'];
-    const sources = [...new Set(providerBreakdown.map((row) => row.request_source || 'ui'))].sort((a, b) => {
-      const ai = sourceOrder.indexOf(a);
-      const bi = sourceOrder.indexOf(b);
-      if (ai === -1 && bi === -1) return a.localeCompare(b);
-      if (ai === -1) return 1;
-      if (bi === -1) return -1;
-      return ai - bi;
-    });
+    const sources = [...new Set(providerBreakdown.map((row) => row.request_source || 'ui'))].sort(
+      (a, b) => {
+        const ai = sourceOrder.indexOf(a);
+        const bi = sourceOrder.indexOf(b);
+        if (ai === -1 && bi === -1) return a.localeCompare(b);
+        if (ai === -1) return 1;
+        if (bi === -1) return -1;
+        return ai - bi;
+      },
+    );
 
     const labelForSource = (source: string) => {
       if (source === 'ui') return 'Ragtime Chat';
@@ -1300,7 +1487,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
   }, [providerBreakdown, providerChartMetric]);
 
   const perUserChartData = useMemo(() => {
-    const pointsByUser = userDailySeries.reduce<Record<string, Record<string, UserDailyUsageSeriesPoint>>>((acc, row) => {
+    const pointsByUser = userDailySeries.reduce<
+      Record<string, Record<string, UserDailyUsageSeriesPoint>>
+    >((acc, row) => {
       const date = normalizeDateLabel(row.date);
       if (!acc[row.user_id]) acc[row.user_id] = {};
       acc[row.user_id][date] = { ...row, date };
@@ -1321,12 +1510,15 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       datasets: topUsers.map((row, idx) => {
         const color = CHART_PALETTE[idx % CHART_PALETTE.length];
         return {
-          label: (row.display_name || row.username).length > 16
-            ? (row.display_name || row.username).slice(0, 15) + '\u2026'
-            : (row.display_name || row.username),
+          label:
+            (row.display_name || row.username).length > 16
+              ? (row.display_name || row.username).slice(0, 15) + '\u2026'
+              : row.display_name || row.username,
           data: dateLabels.map((date) => {
             const point = pointsByUser[row.user_id]?.[date];
-            return perUserChartMetric === 'requests' ? point?.total_requests || 0 : point?.total_tokens || 0;
+            return perUserChartMetric === 'requests'
+              ? point?.total_requests || 0
+              : point?.total_tokens || 0;
           }),
           borderColor: color,
           backgroundColor: color,
@@ -1346,13 +1538,16 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       return acc;
     }, {});
 
-    return dateLabels.map((date) => byDate[date] ?? {
-      date,
-      total_requests: 0,
-      success_count: 0,
-      error_count: 0,
-      unique_users: 0,
-    });
+    return dateLabels.map(
+      (date) =>
+        byDate[date] ?? {
+          date,
+          total_requests: 0,
+          success_count: 0,
+          error_count: 0,
+          unique_users: 0,
+        },
+    );
   }, [dateLabels, mcpDaily]);
 
   const apiDailyRows = useMemo<ApiDailyTrend[]>(() => {
@@ -1362,256 +1557,294 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       return acc;
     }, {});
 
-    return dateLabels.map((date) => byDate[date] ?? {
-      date,
-      total_requests: 0,
-      success_count: 0,
-      error_count: 0,
-      unique_users: 0,
-    });
+    return dateLabels.map(
+      (date) =>
+        byDate[date] ?? {
+          date,
+          total_requests: 0,
+          success_count: 0,
+          error_count: 0,
+          unique_users: 0,
+        },
+    );
   }, [apiDaily, dateLabels]);
 
-  const dailyCombinedRows = useMemo<DailyCombinedRow[]>(() =>
-    dailyTrendRows.map((row, i) => ({
-      ...row,
-      mcp_requests: mcpDailyRows[i]?.total_requests ?? 0,
-      mcp_errors: mcpDailyRows[i]?.error_count ?? 0,
-      api_requests: apiDailyRows[i]?.total_requests ?? 0,
-      api_errors: apiDailyRows[i]?.error_count ?? 0,
-    })),
-  [apiDailyRows, dailyTrendRows, mcpDailyRows]);
+  const dailyCombinedRows = useMemo<DailyCombinedRow[]>(
+    () =>
+      dailyTrendRows.map((row, i) => ({
+        ...row,
+        mcp_requests: mcpDailyRows[i]?.total_requests ?? 0,
+        mcp_errors: mcpDailyRows[i]?.error_count ?? 0,
+        api_requests: apiDailyRows[i]?.total_requests ?? 0,
+        api_errors: apiDailyRows[i]?.error_count ?? 0,
+      })),
+    [apiDailyRows, dailyTrendRows, mcpDailyRows],
+  );
 
-  const dailyChartData = useMemo(() => ({
-    labels: dailyTrendRows.map((row) => row.date),
-    datasets: [
-      {
-        label: 'Chat Requests',
-        data: dailyTrendRows.map((row) => row.total_requests),
-        borderColor: '#f59e0b',
-        backgroundColor: 'rgba(245, 158, 11, 0.25)',
-        yAxisID: 'yRequests',
-        tension: 0.25,
-      },
-      {
-        label: 'MCP / API Requests',
-        data: mcpDailyRows.map((row) => row.total_requests),
-        borderColor: '#22c55e',
-        backgroundColor: 'rgba(34, 197, 94, 0.25)',
-        yAxisID: 'yRequests',
-        tension: 0.25,
-      },
-      {
-        label: 'API Requests',
-        data: apiDailyRows.map((row) => row.total_requests),
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.25)',
-        yAxisID: 'yRequests',
-        tension: 0.25,
-      },
-      {
-        label: 'Total Tokens',
-        data: dailyTrendRows.map((row) => row.total_tokens),
-        borderColor: '#8b5cf6',
-        backgroundColor: 'rgba(139, 92, 246, 0.25)',
-        yAxisID: 'yTokens',
-        tension: 0.25,
-      },
-    ],
-  }), [apiDailyRows, dailyTrendRows, mcpDailyRows]);
-
-  const singleAxisLineOptions = useMemo<ChartOptions<'line'>>(() => ({
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: {
-      legend: {
-        labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
-      },
-      tooltip: { mode: 'index', intersect: false },
-    },
-    scales: {
-      x: {
-        ticks: { color: themeColors.textSecondary, maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: days >= 90 ? 12 : undefined },
-        grid: { color: themeColors.grid },
-      },
-      y: {
-        type: 'linear',
-        beginAtZero: true,
-        ticks: { color: themeColors.textSecondary },
-        grid: { color: themeColors.grid },
-      },
-    },
-  }), [days, themeColors]);
-
-  const dailyLineOptions = useMemo<ChartOptions<'line'>>(() => ({
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: {
-      legend: {
-        labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
-      },
-      tooltip: { mode: 'index', intersect: false },
-    },
-    scales: {
-      x: {
-        ticks: { color: themeColors.textSecondary, maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: days >= 90 ? 12 : undefined },
-        grid: { color: themeColors.grid },
-      },
-      yRequests: {
-        type: 'linear',
-        position: 'left',
-        beginAtZero: true,
-        ticks: { color: themeColors.textSecondary },
-        grid: { color: themeColors.grid },
-      },
-      yTokens: {
-        type: 'linear',
-        position: 'right',
-        beginAtZero: true,
-        ticks: { color: themeColors.textSecondary },
-        grid: { drawOnChartArea: false },
-      },
-    },
-  }), [days, themeColors]);
-
-  const providerBarOptions = useMemo<ChartOptions<'bar'>>(() => ({
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    indexAxis: 'y',
-    plugins: {
-      legend: { display: true, labels: { color: themeColors.text } },
-      tooltip: { mode: 'nearest', intersect: false },
-    },
-    scales: {
-      x: {
-        beginAtZero: true,
-        stacked: true,
-        ticks: { color: themeColors.textSecondary },
-        grid: { color: themeColors.grid },
-      },
-      y: {
-        stacked: true,
-        ticks: { color: themeColors.text, autoSkip: false },
-        grid: { display: false },
-      },
-    },
-  }), [themeColors]);
-
-  const mcpChartData = useMemo(() => ({
-    labels: mcpDailyRows.map((row) => row.date),
-    datasets: [
-      {
-        label: 'MCP Success',
-        data: mcpDailyRows.map((row) => row.success_count),
-        backgroundColor: 'rgba(34, 197, 94, 0.75)',
-        borderColor: '#22c55e',
-        borderWidth: 1,
-        stack: 'requests',
-      },
-      {
-        label: 'MCP Error',
-        data: mcpDailyRows.map((row) => row.error_count),
-        backgroundColor: 'rgba(239, 68, 68, 0.75)',
-        borderColor: '#ef4444',
-        borderWidth: 1,
-        stack: 'requests',
-      },
-      {
-        label: 'API Success',
-        data: apiDailyRows.map((row) => row.success_count),
-        backgroundColor: 'rgba(59, 130, 246, 0.75)',
-        borderColor: '#3b82f6',
-        borderWidth: 1,
-        stack: 'requests',
-      },
-      {
-        label: 'API Error',
-        data: apiDailyRows.map((row) => row.error_count),
-        backgroundColor: 'rgba(245, 158, 11, 0.75)',
-        borderColor: '#f59e0b',
-        borderWidth: 1,
-        stack: 'requests',
-      },
-    ],
-  }), [apiDailyRows, mcpDailyRows]);
-
-  const mcpChartOptions = useMemo<ChartOptions<'bar'>>(() => ({
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: {
-      legend: {
-        labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
-      },
-      tooltip: { mode: 'index', intersect: false },
-    },
-    scales: {
-      x: {
-        stacked: true,
-        ticks: {
-          color: themeColors.textSecondary,
-          maxRotation: 45,
-          minRotation: 45,
-          autoSkip: true,
-          maxTicksLimit: days >= 90 ? 12 : undefined,
+  const dailyChartData = useMemo(
+    () => ({
+      labels: dailyTrendRows.map((row) => row.date),
+      datasets: [
+        {
+          label: 'Chat Requests',
+          data: dailyTrendRows.map((row) => row.total_requests),
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245, 158, 11, 0.25)',
+          yAxisID: 'yRequests',
+          tension: 0.25,
         },
-        grid: { color: themeColors.grid },
-      },
-      y: {
-        stacked: true,
-        beginAtZero: true,
-        ticks: { color: themeColors.textSecondary },
-        grid: { color: themeColors.grid },
-      },
-    },
-  }), [days, themeColors]);
+        {
+          label: 'MCP / API Requests',
+          data: mcpDailyRows.map((row) => row.total_requests),
+          borderColor: '#22c55e',
+          backgroundColor: 'rgba(34, 197, 94, 0.25)',
+          yAxisID: 'yRequests',
+          tension: 0.25,
+        },
+        {
+          label: 'API Requests',
+          data: apiDailyRows.map((row) => row.total_requests),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.25)',
+          yAxisID: 'yRequests',
+          tension: 0.25,
+        },
+        {
+          label: 'Total Tokens',
+          data: dailyTrendRows.map((row) => row.total_tokens),
+          borderColor: '#8b5cf6',
+          backgroundColor: 'rgba(139, 92, 246, 0.25)',
+          yAxisID: 'yTokens',
+          tension: 0.25,
+        },
+      ],
+    }),
+    [apiDailyRows, dailyTrendRows, mcpDailyRows],
+  );
 
-  const reliabilityTrendData = useMemo(() => ({
-    labels: dailyTrendRows.map((row) => row.date),
-    datasets: [
-      {
-        label: 'Chat Success %',
-        data: dailyTrendRows.map((row) => {
-          const total = row.total_requests;
-          return total > 0 ? (row.completed_count / total) * 100 : null;
-        }),
-        borderColor: '#f59e0b',
-        backgroundColor: 'rgba(245, 158, 11, 0.08)',
-        tension: 0.25,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-        fill: true,
+  const singleAxisLineOptions = useMemo<ChartOptions<'line'>>(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: {
+          labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
+        },
+        tooltip: { mode: 'index', intersect: false },
       },
-      {
-        label: 'MCP Success %',
-        data: mcpDailyRows.map((row) => {
-          const total = row.total_requests;
-          return total > 0 ? (row.success_count / total) * 100 : null;
-        }),
-        borderColor: '#22c55e',
-        backgroundColor: 'rgba(34, 197, 94, 0.08)',
-        tension: 0.25,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-        fill: true,
+      scales: {
+        x: {
+          ticks: {
+            color: themeColors.textSecondary,
+            maxRotation: 45,
+            minRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: days >= 90 ? 12 : undefined,
+          },
+          grid: { color: themeColors.grid },
+        },
+        y: {
+          type: 'linear',
+          beginAtZero: true,
+          ticks: { color: themeColors.textSecondary },
+          grid: { color: themeColors.grid },
+        },
       },
-      {
-        label: 'API Success %',
-        data: apiDailyRows.map((row) => {
-          const total = row.total_requests;
-          return total > 0 ? (row.success_count / total) * 100 : null;
-        }),
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.08)',
-        tension: 0.25,
-        pointRadius: 2,
-        pointHoverRadius: 4,
-        fill: true,
+    }),
+    [days, themeColors],
+  );
+
+  const dailyLineOptions = useMemo<ChartOptions<'line'>>(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: {
+          labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
+        },
+        tooltip: { mode: 'index', intersect: false },
       },
-    ],
-  }), [apiDailyRows, dailyTrendRows, mcpDailyRows]);
+      scales: {
+        x: {
+          ticks: {
+            color: themeColors.textSecondary,
+            maxRotation: 45,
+            minRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: days >= 90 ? 12 : undefined,
+          },
+          grid: { color: themeColors.grid },
+        },
+        yRequests: {
+          type: 'linear',
+          position: 'left',
+          beginAtZero: true,
+          ticks: { color: themeColors.textSecondary },
+          grid: { color: themeColors.grid },
+        },
+        yTokens: {
+          type: 'linear',
+          position: 'right',
+          beginAtZero: true,
+          ticks: { color: themeColors.textSecondary },
+          grid: { drawOnChartArea: false },
+        },
+      },
+    }),
+    [days, themeColors],
+  );
+
+  const providerBarOptions = useMemo<ChartOptions<'bar'>>(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      indexAxis: 'y',
+      plugins: {
+        legend: { display: true, labels: { color: themeColors.text } },
+        tooltip: { mode: 'nearest', intersect: false },
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          stacked: true,
+          ticks: { color: themeColors.textSecondary },
+          grid: { color: themeColors.grid },
+        },
+        y: {
+          stacked: true,
+          ticks: { color: themeColors.text, autoSkip: false },
+          grid: { display: false },
+        },
+      },
+    }),
+    [themeColors],
+  );
+
+  const mcpChartData = useMemo(
+    () => ({
+      labels: mcpDailyRows.map((row) => row.date),
+      datasets: [
+        {
+          label: 'MCP Success',
+          data: mcpDailyRows.map((row) => row.success_count),
+          backgroundColor: 'rgba(34, 197, 94, 0.75)',
+          borderColor: '#22c55e',
+          borderWidth: 1,
+          stack: 'requests',
+        },
+        {
+          label: 'MCP Error',
+          data: mcpDailyRows.map((row) => row.error_count),
+          backgroundColor: 'rgba(239, 68, 68, 0.75)',
+          borderColor: '#ef4444',
+          borderWidth: 1,
+          stack: 'requests',
+        },
+        {
+          label: 'API Success',
+          data: apiDailyRows.map((row) => row.success_count),
+          backgroundColor: 'rgba(59, 130, 246, 0.75)',
+          borderColor: '#3b82f6',
+          borderWidth: 1,
+          stack: 'requests',
+        },
+        {
+          label: 'API Error',
+          data: apiDailyRows.map((row) => row.error_count),
+          backgroundColor: 'rgba(245, 158, 11, 0.75)',
+          borderColor: '#f59e0b',
+          borderWidth: 1,
+          stack: 'requests',
+        },
+      ],
+    }),
+    [apiDailyRows, mcpDailyRows],
+  );
+
+  const mcpChartOptions = useMemo<ChartOptions<'bar'>>(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: {
+          labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
+        },
+        tooltip: { mode: 'index', intersect: false },
+      },
+      scales: {
+        x: {
+          stacked: true,
+          ticks: {
+            color: themeColors.textSecondary,
+            maxRotation: 45,
+            minRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: days >= 90 ? 12 : undefined,
+          },
+          grid: { color: themeColors.grid },
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: { color: themeColors.textSecondary },
+          grid: { color: themeColors.grid },
+        },
+      },
+    }),
+    [days, themeColors],
+  );
+
+  const reliabilityTrendData = useMemo(
+    () => ({
+      labels: dailyTrendRows.map((row) => row.date),
+      datasets: [
+        {
+          label: 'Chat Success %',
+          data: dailyTrendRows.map((row) => {
+            const total = row.total_requests;
+            return total > 0 ? (row.completed_count / total) * 100 : null;
+          }),
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+          tension: 0.25,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          fill: true,
+        },
+        {
+          label: 'MCP Success %',
+          data: mcpDailyRows.map((row) => {
+            const total = row.total_requests;
+            return total > 0 ? (row.success_count / total) * 100 : null;
+          }),
+          borderColor: '#22c55e',
+          backgroundColor: 'rgba(34, 197, 94, 0.08)',
+          tension: 0.25,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          fill: true,
+        },
+        {
+          label: 'API Success %',
+          data: apiDailyRows.map((row) => {
+            const total = row.total_requests;
+            return total > 0 ? (row.success_count / total) * 100 : null;
+          }),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.08)',
+          tension: 0.25,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          fill: true,
+        },
+      ],
+    }),
+    [apiDailyRows, dailyTrendRows, mcpDailyRows],
+  );
 
   const reliabilityTrendOptions = useMemo<ChartOptions<'line'>>(() => {
     const chatRates = dailyTrendRows
@@ -1639,13 +1872,20 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
           mode: 'index',
           intersect: false,
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${typeof ctx.raw === 'number' ? ctx.raw.toFixed(1) : '\u2014'}%`,
+            label: (ctx) =>
+              `${ctx.dataset.label}: ${typeof ctx.raw === 'number' ? ctx.raw.toFixed(1) : '\u2014'}%`,
           },
         },
       },
       scales: {
         x: {
-          ticks: { color: themeColors.textSecondary, maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: days >= 90 ? 12 : undefined },
+          ticks: {
+            color: themeColors.textSecondary,
+            maxRotation: 45,
+            minRotation: 45,
+            autoSkip: true,
+            maxTicksLimit: days >= 90 ? 12 : undefined,
+          },
           grid: { color: themeColors.grid },
         },
         y: {
@@ -1702,49 +1942,52 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     };
   }, [usageSummary]);
 
-  const paretoChartOptions = useMemo<ChartOptions<'bar'>>(() => ({
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: {
-      legend: {
-        labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
-      },
-      tooltip: {
-        mode: 'index',
-        intersect: false,
-        callbacks: {
-          label: (ctx) => {
-            if (ctx.dataset.yAxisID === 'yPercent') {
-              return `${ctx.dataset.label}: ${typeof ctx.raw === 'number' ? ctx.raw.toFixed(1) : ''}%`;
-            }
-            return `${ctx.dataset.label}: ${typeof ctx.raw === 'number' ? formatNumber(ctx.raw) : ''}`;
+  const paretoChartOptions = useMemo<ChartOptions<'bar'>>(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: {
+          labels: { color: themeColors.text, boxWidth: 10, boxHeight: 10 },
+        },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            label: (ctx) => {
+              if (ctx.dataset.yAxisID === 'yPercent') {
+                return `${ctx.dataset.label}: ${typeof ctx.raw === 'number' ? ctx.raw.toFixed(1) : ''}%`;
+              }
+              return `${ctx.dataset.label}: ${typeof ctx.raw === 'number' ? formatNumber(ctx.raw) : ''}`;
+            },
           },
         },
       },
-    },
-    scales: {
-      x: {
-        ticks: { color: themeColors.textSecondary, maxRotation: 45, minRotation: 45 },
-        grid: { color: themeColors.grid },
+      scales: {
+        x: {
+          ticks: { color: themeColors.textSecondary, maxRotation: 45, minRotation: 45 },
+          grid: { color: themeColors.grid },
+        },
+        yTokens: {
+          type: 'linear',
+          position: 'left',
+          beginAtZero: true,
+          ticks: { color: themeColors.textSecondary },
+          grid: { color: themeColors.grid },
+        },
+        yPercent: {
+          type: 'linear',
+          position: 'right',
+          min: 0,
+          max: 100,
+          ticks: { color: '#ef4444', callback: (value) => `${value}%` },
+          grid: { drawOnChartArea: false },
+        },
       },
-      yTokens: {
-        type: 'linear',
-        position: 'left',
-        beginAtZero: true,
-        ticks: { color: themeColors.textSecondary },
-        grid: { color: themeColors.grid },
-      },
-      yPercent: {
-        type: 'linear',
-        position: 'right',
-        min: 0,
-        max: 100,
-        ticks: { color: '#ef4444', callback: (value) => `${value}%` },
-        grid: { drawOnChartArea: false },
-      },
-    },
-  }), [themeColors]);
+    }),
+    [themeColors],
+  );
 
   const sortedMcpUsers = useMemo(() => {
     const rows = [...mcpUsers];
@@ -1765,7 +2008,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         success: b.success_count,
         errors: b.error_count,
       };
-      return compareSortValues(sortValueA[mcpUserSort.key], sortValueB[mcpUserSort.key], mcpUserSort.direction);
+      return compareSortValues(
+        sortValueA[mcpUserSort.key],
+        sortValueB[mcpUserSort.key],
+        mcpUserSort.direction,
+      );
     });
   }, [mcpUserSort.direction, mcpUserSort.key, mcpUsers]);
 
@@ -1779,7 +2026,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
 
   const totalWorkspaces = workspaces.length;
   const liveWorkspaces = Object.values(workspaceStateById).filter((s) => s.has_live_task).length;
-  const interruptedWorkspaces = Object.values(workspaceStateById).filter((s) => s.has_interrupted_task).length;
+  const interruptedWorkspaces = Object.values(workspaceStateById).filter(
+    (s) => s.has_interrupted_task,
+  ).length;
 
   const isSelf = (userId: string) => currentUser?.id === userId;
 
@@ -1790,7 +2039,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       const bFail = (b.usage?.failed_count || 0) + (b.usage?.interrupted_count || 0);
 
       const sortValueA: Record<ManagementSortKey, string | number | null> = {
-        user: (a.user.display_name || a.user.username),
+        user: a.user.display_name || a.user.username,
         auth: a.user.auth_provider,
         chats: standaloneChatCountsByUserId[a.user.id] ?? 0,
         workspaces: a.ownedWorkspaceCount,
@@ -1802,7 +2051,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         actions: null,
       };
       const sortValueB: Record<ManagementSortKey, string | number | null> = {
-        user: (b.user.display_name || b.user.username),
+        user: b.user.display_name || b.user.username,
         auth: b.user.auth_provider,
         chats: standaloneChatCountsByUserId[b.user.id] ?? 0,
         workspaces: b.ownedWorkspaceCount,
@@ -1814,7 +2063,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         actions: null,
       };
 
-      const result = compareSortValues(sortValueA[managementSort.key], sortValueB[managementSort.key], managementSort.direction);
+      const result = compareSortValues(
+        sortValueA[managementSort.key],
+        sortValueB[managementSort.key],
+        managementSort.direction,
+      );
       if (result !== 0) return result;
       // Preserve previous relevance as deterministic tiebreaker
       if ((b.usage?.total_requests || 0) !== (a.usage?.total_requests || 0)) {
@@ -1848,7 +2101,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         completed: b.completed_count,
         failed: bFail,
       };
-      return compareSortValues(sortValueA[usageSort.key], sortValueB[usageSort.key], usageSort.direction);
+      return compareSortValues(
+        sortValueA[usageSort.key],
+        sortValueB[usageSort.key],
+        usageSort.direction,
+      );
     });
   }, [usageSort.direction, usageSort.key, usageSummary]);
 
@@ -1873,7 +2130,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         output: b.total_output_tokens,
         total: b.total_tokens,
       };
-      return compareSortValues(sortValueA[providerSort.key], sortValueB[providerSort.key], providerSort.direction);
+      return compareSortValues(
+        sortValueA[providerSort.key],
+        sortValueB[providerSort.key],
+        providerSort.direction,
+      );
     });
   }, [providerBreakdown, providerSort.direction, providerSort.key]);
 
@@ -1906,65 +2167,104 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
         apiRequests: b.api_requests,
         apiErrors: b.api_errors,
       };
-      return compareSortValues(sortValueA[dailySort.key], sortValueB[dailySort.key], dailySort.direction);
+      return compareSortValues(
+        sortValueA[dailySort.key],
+        sortValueB[dailySort.key],
+        dailySort.direction,
+      );
     });
   }, [dailyCombinedRows, dailySort.direction, dailySort.key]);
 
-  const managementColumns = useMemo<DataTableColumn<DerivedUserStats, ManagementSortKey>[]>(() => ([
-    { key: 'user', label: 'User' },
-    { key: 'auth', label: 'Auth' },
-    { key: 'chats', label: 'Chats', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'workspaces', label: 'Workspaces', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'memberships', label: 'Memberships', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'workspaceChats', label: 'Workspace Chats', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'liveInterrupted', label: 'Live/Interrupted', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'storage', label: 'Storage', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'role', label: 'Role' },
-    { key: 'actions', label: 'Actions', headerClassName: 'num', cellClassName: 'num', sortable: false },
-  ]), []);
+  const managementColumns = useMemo<DataTableColumn<DerivedUserStats, ManagementSortKey>[]>(
+    () => [
+      { key: 'user', label: 'User' },
+      { key: 'auth', label: 'Auth' },
+      { key: 'chats', label: 'Chats', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'workspaces', label: 'Workspaces', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'memberships', label: 'Memberships', headerClassName: 'num', cellClassName: 'num' },
+      {
+        key: 'workspaceChats',
+        label: 'Workspace Chats',
+        headerClassName: 'num',
+        cellClassName: 'num',
+      },
+      {
+        key: 'liveInterrupted',
+        label: 'Live/Interrupted',
+        headerClassName: 'num',
+        cellClassName: 'num',
+      },
+      { key: 'storage', label: 'Storage', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'role', label: 'Role' },
+      {
+        key: 'actions',
+        label: 'Actions',
+        headerClassName: 'num',
+        cellClassName: 'num',
+        sortable: false,
+      },
+    ],
+    [],
+  );
 
-  const usageColumns = useMemo<DataTableColumn<UserUsageSummary, UsageSortKey>[]>(() => ([
-    { key: 'user', label: 'User' },
-    { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'completed', label: 'Completed', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'failed', label: 'Failed', headerClassName: 'num', cellClassName: 'num' },
-  ]), []);
+  const usageColumns = useMemo<DataTableColumn<UserUsageSummary, UsageSortKey>[]>(
+    () => [
+      { key: 'user', label: 'User' },
+      { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'completed', label: 'Completed', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'failed', label: 'Failed', headerClassName: 'num', cellClassName: 'num' },
+    ],
+    [],
+  );
 
-  const providerColumns = useMemo<DataTableColumn<ProviderModelBreakdown, ProviderSortKey>[]>(() => ([
-    { key: 'provider', label: 'Provider' },
-    { key: 'model', label: 'Model' },
-    { key: 'source', label: 'Source' },
-    { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
-  ]), []);
+  const providerColumns = useMemo<DataTableColumn<ProviderModelBreakdown, ProviderSortKey>[]>(
+    () => [
+      { key: 'provider', label: 'Provider' },
+      { key: 'model', label: 'Model' },
+      { key: 'source', label: 'Source' },
+      { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'input', label: 'Input Tokens', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'output', label: 'Output Tokens', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'total', label: 'Total Tokens', headerClassName: 'num', cellClassName: 'num' },
+    ],
+    [],
+  );
 
-  const mcpUsersColumns = useMemo<DataTableColumn<McpUserUsage, McpUserSortKey>[]>(() => ([
-    { key: 'user', label: 'User' },
-    { key: 'auth', label: 'Auth' },
-    { key: 'route', label: 'Route' },
-    { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'success', label: 'Success', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'errors', label: 'Errors', headerClassName: 'num', cellClassName: 'num' },
-  ]), []);
+  const mcpUsersColumns = useMemo<DataTableColumn<McpUserUsage, McpUserSortKey>[]>(
+    () => [
+      { key: 'user', label: 'User' },
+      { key: 'auth', label: 'Auth' },
+      { key: 'route', label: 'Route' },
+      { key: 'requests', label: 'Requests', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'success', label: 'Success', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'errors', label: 'Errors', headerClassName: 'num', cellClassName: 'num' },
+    ],
+    [],
+  );
 
-  const dailyColumns = useMemo<DataTableColumn<DailyCombinedRow, DailySortKey>[]>(() => ([
-    { key: 'date', label: 'Date' },
-    { key: 'requests', label: 'Chat Req', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'completed', label: 'Chat OK', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'failed', label: 'Chat Fail', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'mcpRequests', label: 'MCP Req', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'mcpErrors', label: 'MCP Fail', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'apiRequests', label: 'API Req', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'apiErrors', label: 'API Fail', headerClassName: 'num', cellClassName: 'num' },
-    { key: 'total', label: 'Tokens', headerClassName: 'num', cellClassName: 'num' },
-  ]), []);
+  const dailyColumns = useMemo<DataTableColumn<DailyCombinedRow, DailySortKey>[]>(
+    () => [
+      { key: 'date', label: 'Date' },
+      { key: 'requests', label: 'Chat Req', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'completed', label: 'Chat OK', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'failed', label: 'Chat Fail', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'mcpRequests', label: 'MCP Req', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'mcpErrors', label: 'MCP Fail', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'apiRequests', label: 'API Req', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'apiErrors', label: 'API Fail', headerClassName: 'num', cellClassName: 'num' },
+      { key: 'total', label: 'Tokens', headerClassName: 'num', cellClassName: 'num' },
+    ],
+    [],
+  );
 
-  const handleSort = <K extends string>(current: TableSortConfig<K>, key: K, setter: (next: TableSortConfig<K>) => void) => {
+  const handleSort = <K extends string>(
+    current: TableSortConfig<K>,
+    key: K,
+    setter: (next: TableSortConfig<K>) => void,
+  ) => {
     const direction = current.key === key && current.direction === 'asc' ? 'desc' : 'asc';
     setter({ key, direction });
   };
@@ -1999,10 +2299,16 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     <div className="users-panel">
       <div className="users-header-bar">
         <div className="tabs" style={{ marginBottom: 0 }}>
-          <button className={`tab ${activeTab === 'management' ? 'active' : ''}`} onClick={() => setActiveTab('management')}>
+          <button
+            className={`tab ${activeTab === 'management' ? 'active' : ''}`}
+            onClick={() => setActiveTab('management')}
+          >
             Users
           </button>
-          <button className={`tab ${activeTab === 'usage' ? 'active' : ''}`} onClick={() => setActiveTab('usage')}>
+          <button
+            className={`tab ${activeTab === 'usage' ? 'active' : ''}`}
+            onClick={() => setActiveTab('usage')}
+          >
             Usage
           </button>
         </div>
@@ -2029,7 +2335,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
       <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
 
       {loading ? (
-        <div className="card"><div className="card-body"><p>Loading...</p></div></div>
+        <div className="card">
+          <div className="card-body">
+            <p>Loading...</p>
+          </div>
+        </div>
       ) : activeTab === 'management' ? (
         <>
           <div className="users-summary-row">
@@ -2044,7 +2354,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
             <div className="users-summary-card">
               <div className="users-summary-value">
                 {liveWorkspaces}
-                {liveWorkspaces > 0 && <MiniLoadingSpinner variant="icon" size={14} className="users-live-spin" />}
+                {liveWorkspaces > 0 && (
+                  <MiniLoadingSpinner variant="icon" size={14} className="users-live-spin" />
+                )}
               </div>
               <div className="users-summary-label">Live Task Workspaces</div>
             </div>
@@ -2055,7 +2367,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
           </div>
 
           <div className="card">
-            <div className="card-header"><h3>User Accounts</h3></div>
+            <div className="card-header">
+              <h3>User Accounts</h3>
+            </div>
             <div className="card-body users-compact-card-body">
               {userStatsRows.length === 0 ? (
                 <p className="muted-text">No users found.</p>
@@ -2073,18 +2387,24 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                       renderRow={(row) => {
                         const user = row.user;
                         const chatCount = standaloneChatCountsByUserId[user.id] ?? 0;
-                        const failedCount = (row.usage?.failed_count || 0) + (row.usage?.interrupted_count || 0);
+                        const failedCount =
+                          (row.usage?.failed_count || 0) + (row.usage?.interrupted_count || 0);
                         const isRowSelf = isSelf(user.id);
-                        const sortedOwnedWorkspaces = [...row.ownedWorkspaces].sort((left, right) => {
-                          const leftLast = toEpochMs(workspaceLastMessageAtById[left.id]);
-                          const rightLast = toEpochMs(workspaceLastMessageAtById[right.id]);
-                          if (rightLast !== leftLast) {
-                            return rightLast - leftLast;
-                          }
-                          return left.name.localeCompare(right.name);
-                        });
-                        const sortedStandaloneChats = [...(standaloneChatsByUserId[user.id] ?? [])].sort((left, right) => {
-                          const updatedDiff = toEpochMs(right.updated_at) - toEpochMs(left.updated_at);
+                        const sortedOwnedWorkspaces = [...row.ownedWorkspaces].sort(
+                          (left, right) => {
+                            const leftLast = toEpochMs(workspaceLastMessageAtById[left.id]);
+                            const rightLast = toEpochMs(workspaceLastMessageAtById[right.id]);
+                            if (rightLast !== leftLast) {
+                              return rightLast - leftLast;
+                            }
+                            return left.name.localeCompare(right.name);
+                          },
+                        );
+                        const sortedStandaloneChats = [
+                          ...(standaloneChatsByUserId[user.id] ?? []),
+                        ].sort((left, right) => {
+                          const updatedDiff =
+                            toEpochMs(right.updated_at) - toEpochMs(left.updated_at);
                           if (updatedDiff !== 0) {
                             return updatedDiff;
                           }
@@ -2104,26 +2424,37 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                 </div>
                               </td>
                               <td>
-                                <span className={`users-auth-badge users-auth-${user.auth_provider}`}>
+                                <span
+                                  className={`users-auth-badge users-auth-${user.auth_provider}`}
+                                >
                                   {user.auth_provider}
                                 </span>
-                                {user.source_provider && user.source_provider !== user.auth_provider && (
-                                  <div className="users-subnum">source: {user.source_provider}</div>
-                                )}
+                                {user.source_provider &&
+                                  user.source_provider !== user.auth_provider && (
+                                    <div className="users-subnum">
+                                      source: {user.source_provider}
+                                    </div>
+                                  )}
                                 {user.source_synced_at && (
-                                  <div className="users-subnum">synced {new Date(user.source_synced_at).toLocaleDateString()}</div>
+                                  <div className="users-subnum">
+                                    synced {new Date(user.source_synced_at).toLocaleDateString()}
+                                  </div>
                                 )}
                               </td>
                               <td className="num">
                                 <button
                                   type="button"
                                   className="users-link-btn"
-                                  onClick={() => { void toggleUserChatDetails(user.id); }}
+                                  onClick={() => {
+                                    void toggleUserChatDetails(user.id);
+                                  }}
                                   title="Show non-workspace chats"
                                 >
                                   {formatNumber(chatCount)}
                                 </button>
-                                {failedCount > 0 && <div className="users-subnum">{failedCount} fail/int</div>}
+                                {failedCount > 0 && (
+                                  <div className="users-subnum">{failedCount} fail/int</div>
+                                )}
                               </td>
                               <td className="num">
                                 <button
@@ -2138,7 +2469,14 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                               <td className="num">{row.memberWorkspaceCount}</td>
                               <td className="num">{row.workspaceConversationCount}</td>
                               <td className="num">
-                                {row.liveWorkspaceCount > 0 && <MiniLoadingSpinner variant="icon" size={12} className="users-live-spin" title="Live task running" />}
+                                {row.liveWorkspaceCount > 0 && (
+                                  <MiniLoadingSpinner
+                                    variant="icon"
+                                    size={12}
+                                    className="users-live-spin"
+                                    title="Live task running"
+                                  />
+                                )}
                                 {row.liveWorkspaceCount}/{row.interruptedWorkspaceCount}
                               </td>
                               <td className="num">
@@ -2148,7 +2486,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                   <div>
                                     <div>{formatBytes(row.storageBytesKnown)}</div>
                                     {row.storageCoverage < 1 && (
-                                      <div className="users-subnum">{Math.round(row.storageCoverage * 100)}% sampled</div>
+                                      <div className="users-subnum">
+                                        {Math.round(row.storageCoverage * 100)}% sampled
+                                      </div>
                                     )}
                                   </div>
                                 ) : (
@@ -2163,15 +2503,25 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                 )}
                               </td>
                               <td>
-                                <span className={`users-role-badge${user.role === 'admin' ? ' users-role-admin' : ''}`}>{user.role}</span>
+                                <span
+                                  className={`users-role-badge${user.role === 'admin' ? ' users-role-admin' : ''}`}
+                                >
+                                  {user.role}
+                                </span>
                                 {user.role_manually_set && (
                                   <div className="users-subnum">overridden</div>
                                 )}
                                 {getUserManualGroupIds(user).length > 0 && (
-                                  <div className="users-subnum">{getUserManualGroupIds(user).length} manual group{getUserManualGroupIds(user).length !== 1 ? 's' : ''}</div>
+                                  <div className="users-subnum">
+                                    {getUserManualGroupIds(user).length} manual group
+                                    {getUserManualGroupIds(user).length !== 1 ? 's' : ''}
+                                  </div>
                                 )}
                                 {(user.ldap_group_ids?.length ?? 0) > 0 && (
-                                  <div className="users-subnum">{user.ldap_group_ids!.length} LDAP group{user.ldap_group_ids!.length !== 1 ? 's' : ''}</div>
+                                  <div className="users-subnum">
+                                    {user.ldap_group_ids!.length} LDAP group
+                                    {user.ldap_group_ids!.length !== 1 ? 's' : ''}
+                                  </div>
                                 )}
                               </td>
                               <td className="num">
@@ -2213,8 +2563,10 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                         renderMeta={(ws) => {
                                           const state = workspaceStateById[ws.id];
                                           const wsStorage = storageByWorkspaceId[ws.id];
-                                          const lastMessageAt = workspaceLastMessageAtById[ws.id] ?? null;
-                                          const latestConversation = workspaceLastConversationById[ws.id] ?? null;
+                                          const lastMessageAt =
+                                            workspaceLastMessageAtById[ws.id] ?? null;
+                                          const latestConversation =
+                                            workspaceLastConversationById[ws.id] ?? null;
                                           const stateLabel = state?.has_live_task
                                             ? 'live'
                                             : state?.has_interrupted_task
@@ -2222,16 +2574,33 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                               : 'idle';
                                           return (
                                             <span className="users-detail-meta users-detail-meta-workspace admin-ws-item-date">
-                                              <span className="users-detail-col">Chats {ws.conversation_ids.length}</span>
+                                              <span className="users-detail-col">
+                                                Chats {ws.conversation_ids.length}
+                                              </span>
                                               <span className="users-detail-col">
                                                 {workspaceLastMessageLoadingByUserId[user.id]
                                                   ? 'Last message loading'
                                                   : formatDateTime(lastMessageAt)}
                                               </span>
-                                              <span className="users-detail-col">Context {getConversationContextMeta(latestConversation)}</span>
-                                              <span className="users-detail-col">Model {latestConversation ? formatModelDisplayName(latestConversation.model) : 'n/a'}</span>
-                                              <span className="users-detail-col">Status {stateLabel}</span>
-                                              <span className="users-detail-col">Storage {typeof wsStorage === 'number' ? formatBytes(wsStorage) : 'not sampled'}</span>
+                                              <span className="users-detail-col">
+                                                Context{' '}
+                                                {getConversationContextMeta(latestConversation)}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                Model{' '}
+                                                {latestConversation
+                                                  ? formatModelDisplayName(latestConversation.model)
+                                                  : 'n/a'}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                Status {stateLabel}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                Storage{' '}
+                                                {typeof wsStorage === 'number'
+                                                  ? formatBytes(wsStorage)
+                                                  : 'not sampled'}
+                                              </span>
                                             </span>
                                           );
                                         }}
@@ -2244,17 +2613,30 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                         onDelete={handleDeleteConversation}
                                         onCancelTask={handleCancelConversationTask}
                                         renderMeta={(conversation) => {
-                                          const messageCount = 'message_count' in conversation
-                                            ? conversation.message_count
-                                            : conversation.messages?.length ?? 0;
-                                          const taskState = conversation.active_task_id ? 'running' : 'idle';
+                                          const messageCount =
+                                            'message_count' in conversation
+                                              ? conversation.message_count
+                                              : (conversation.messages?.length ?? 0);
+                                          const taskState = conversation.active_task_id
+                                            ? 'running'
+                                            : 'idle';
                                           return (
                                             <span className="users-detail-meta users-detail-meta-chat admin-ws-item-date">
-                                              <span className="users-detail-col">Messages {messageCount}</span>
-                                              <span className="users-detail-col">{formatDateTime(conversation.updated_at)}</span>
-                                              <span className="users-detail-col">Context {getConversationContextMeta(conversation)}</span>
-                                              <span className="users-detail-col">Model {formatModelDisplayName(conversation.model)}</span>
-                                              <span className="users-detail-col">Task {taskState}</span>
+                                              <span className="users-detail-col">
+                                                Messages {messageCount}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                {formatDateTime(conversation.updated_at)}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                Context {getConversationContextMeta(conversation)}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                Model {formatModelDisplayName(conversation.model)}
+                                              </span>
+                                              <span className="users-detail-col">
+                                                Task {taskState}
+                                              </span>
                                             </span>
                                           );
                                         }}
@@ -2276,14 +2658,25 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                     totalItems={userStatsRows.length}
                     pageSize={managementPageSize}
                     onPageChange={setManagementPage}
-                    onPageSizeChange={(size) => { setManagementPageSize(size); setManagementPage(1); }}
+                    onPageSizeChange={(size) => {
+                      setManagementPageSize(size);
+                      setManagementPage(1);
+                    }}
                   />
                   <div className="users-admin-table-actions">
-                    <button type="button" className="btn btn-secondary" onClick={() => setShowCreateLocalUserModal(true)}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowCreateLocalUserModal(true)}
+                    >
                       <UserPlus size={16} />
                       Create Internal User
                     </button>
-                    <button type="button" className="btn btn-secondary" onClick={() => setShowManageAuthGroupsModal(true)}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowManageAuthGroupsModal(true)}
+                    >
                       <Shield size={16} />
                       Manage Group Memberships
                     </button>
@@ -2294,7 +2687,11 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
           </div>
         </>
       ) : usageLoadedDays === null ? (
-        <div className="card"><div className="card-body"><p>Loading usage data...</p></div></div>
+        <div className="card">
+          <div className="card-body">
+            <p>Loading usage data...</p>
+          </div>
+        </div>
       ) : (
         <>
           <div className="users-summary-row">
@@ -2311,12 +2708,19 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
               <div className="users-summary-label">Tokens ({days}d)</div>
             </div>
             <div className="users-summary-card">
-              <div className={`users-summary-value ${successRate >= 95 ? 'users-slo-green' : successRate >= 90 ? 'users-slo-yellow' : 'users-slo-red'}`}>
+              <div
+                className={`users-summary-value ${successRate >= 95 ? 'users-slo-green' : successRate >= 90 ? 'users-slo-yellow' : 'users-slo-red'}`}
+              >
                 {successRate.toFixed(1)}%
               </div>
               <div className="users-summary-label">
                 Success Rate
-                {totalFailed > 0 && <span className="users-slo-detail"> ({totalFailedOnly}f · {totalInterrupted}i)</span>}
+                {totalFailed > 0 && (
+                  <span className="users-slo-detail">
+                    {' '}
+                    ({totalFailedOnly}f · {totalInterrupted}i)
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -2390,7 +2794,10 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                     totalItems={dailyCombinedRows.length}
                     pageSize={dailyPageSize}
                     onPageChange={setDailyPage}
-                    onPageSizeChange={(size) => { setDailyPageSize(size); setDailyPage(1); }}
+                    onPageSizeChange={(size) => {
+                      setDailyPageSize(size);
+                      setDailyPage(1);
+                    }}
                   />
                 </div>
               )}
@@ -2424,7 +2831,8 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                 <div className="users-two-column">
                   <div className="users-two-column-panel users-chart-panel">
                     <div className="users-chart-caption">
-                      Top 5 users by {perUserChartMetric === 'requests' ? 'requests' : 'total tokens'} over {days}d
+                      Top 5 users by{' '}
+                      {perUserChartMetric === 'requests' ? 'requests' : 'total tokens'} over {days}d
                     </div>
                     <div className="users-chart-shell users-chart-shell-tall">
                       <Line data={perUserChartData} options={singleAxisLineOptions} />
@@ -2440,8 +2848,12 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                         renderRow={(row) => (
                           <tr key={row.user_id}>
                             <td>
-                              <span className="users-username">{row.display_name || row.username}</span>
-                              {row.display_name && <span className="users-handle">@{row.username}</span>}
+                              <span className="users-username">
+                                {row.display_name || row.username}
+                              </span>
+                              {row.display_name && (
+                                <span className="users-handle">@{row.username}</span>
+                              )}
                             </td>
                             <td className="num">{formatNumber(row.total_requests)}</td>
                             <td className="num">{formatNumber(row.total_input_tokens)}</td>
@@ -2459,7 +2871,10 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                       totalItems={usageSummary.length}
                       pageSize={usagePageSize}
                       onPageChange={setUsagePage}
-                      onPageSizeChange={(size) => { setUsagePageSize(size); setUsagePage(1); }}
+                      onPageSizeChange={(size) => {
+                        setUsagePageSize(size);
+                        setUsagePage(1);
+                      }}
                     />
                   </div>
                 </div>
@@ -2494,7 +2909,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                     <p className="muted-text">No MCP requests in the selected window.</p>
                   ) : (
                     <>
-                      <div className="users-chart-caption">Daily MCP requests split by success/error</div>
+                      <div className="users-chart-caption">
+                        Daily MCP requests split by success/error
+                      </div>
                       <div className="users-chart-shell users-chart-shell-tall">
                         <Bar data={mcpChartData} options={mcpChartOptions} />
                       </div>
@@ -2507,12 +2924,18 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                         rows={mcpUsersPaging.pageItems}
                         columns={mcpUsersColumns}
                         sortConfig={mcpUserSort}
-                        onSort={(key) => handleSort(mcpUserSort, key as McpUserSortKey, setMcpUserSort)}
+                        onSort={(key) =>
+                          handleSort(mcpUserSort, key as McpUserSortKey, setMcpUserSort)
+                        }
                         renderRow={(row) => (
                           <tr key={`${row.user_id}-${row.auth_method}-${row.route_name}`}>
                             <td>
-                              <span className="users-username">{row.display_name || row.username}</span>
-                              {row.display_name && row.username !== 'anonymous' && <span className="users-handle">@{row.username}</span>}
+                              <span className="users-username">
+                                {row.display_name || row.username}
+                              </span>
+                              {row.display_name && row.username !== 'anonymous' && (
+                                <span className="users-handle">@{row.username}</span>
+                              )}
                             </td>
                             <td>{row.auth_method}</td>
                             <td>{row.route_name}</td>
@@ -2529,7 +2952,10 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                       totalItems={sortedMcpUsers.length}
                       pageSize={mcpUsersPageSize}
                       onPageChange={setMcpUsersPage}
-                      onPageSizeChange={(size) => { setMcpUsersPageSize(size); setMcpUsersPage(1); }}
+                      onPageSizeChange={(size) => {
+                        setMcpUsersPageSize(size);
+                        setMcpUsersPage(1);
+                      }}
                     />
                   </div>
                 )}
@@ -2537,17 +2963,24 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
             </div>
 
             <div className="card" style={{ minWidth: 0, marginBottom: 0 }}>
-              <div className="card-header"><h3>Token Concentration</h3></div>
+              <div className="card-header">
+                <h3>Token Concentration</h3>
+              </div>
               <div className="card-body users-compact-card-body">
                 {usageSummary.length < 2 ? (
                   <p className="muted-text">Not enough users for distribution analysis.</p>
                 ) : (
                   <>
                     <div className="users-chart-caption">
-                      Users sorted by token usage — bars show total tokens, line shows cumulative share
+                      Users sorted by token usage — bars show total tokens, line shows cumulative
+                      share
                     </div>
                     <div className="users-chart-shell users-chart-shell-tall">
-                      <Chart type="bar" data={paretoChartData as never} options={paretoChartOptions} />
+                      <Chart
+                        type="bar"
+                        data={paretoChartData as never}
+                        options={paretoChartOptions}
+                      />
                     </div>
                   </>
                 )}
@@ -2581,7 +3014,9 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
               ) : (
                 <div className="users-two-column">
                   <div className="users-two-column-panel users-chart-panel">
-                    <div className="users-chart-caption">Bar chart for the selected {days}d range</div>
+                    <div className="users-chart-caption">
+                      Bar chart for the selected {days}d range
+                    </div>
                     <div className="users-chart-shell users-chart-shell-tall">
                       <Bar data={providerChartData} options={providerBarOptions} />
                     </div>
@@ -2592,12 +3027,20 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                         rows={providerPaging.pageItems}
                         columns={providerColumns}
                         sortConfig={providerSort}
-                        onSort={(key) => handleSort(providerSort, key as ProviderSortKey, setProviderSort)}
+                        onSort={(key) =>
+                          handleSort(providerSort, key as ProviderSortKey, setProviderSort)
+                        }
                         renderRow={(row) => (
                           <tr key={`${row.provider}-${row.model}-${row.request_source}`}>
                             <td>{formatProviderDisplayName(row.provider)}</td>
                             <td>{formatModelDisplayName(row.model, row.provider)}</td>
-                            <td>{row.request_source === 'ui' ? 'Ragtime Chat' : row.request_source === 'api' ? 'API' : row.request_source}</td>
+                            <td>
+                              {row.request_source === 'ui'
+                                ? 'Ragtime Chat'
+                                : row.request_source === 'api'
+                                  ? 'API'
+                                  : row.request_source}
+                            </td>
                             <td className="num">{formatNumber(row.total_requests)}</td>
                             <td className="num">{formatNumber(row.total_input_tokens)}</td>
                             <td className="num">{formatNumber(row.total_output_tokens)}</td>
@@ -2612,32 +3055,35 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                       totalItems={providerBreakdown.length}
                       pageSize={providerPageSize}
                       onPageChange={setProviderPage}
-                      onPageSizeChange={(size) => { setProviderPageSize(size); setProviderPage(1); }}
+                      onPageSizeChange={(size) => {
+                        setProviderPageSize(size);
+                        setProviderPage(1);
+                      }}
                     />
                   </div>
                 </div>
               )}
             </div>
           </div>
-
         </>
       )}
 
-      {editingUserId !== null && (() => {
-        const editUser = users.find((u) => u.id === editingUserId);
-        if (!editUser) return null;
-        return (
-          <UserEditModal
-            user={editUser}
-            authGroups={authGroups}
-            actionLoading={actionLoading}
-            onRoleChange={handleRoleChange}
-            onResetRoleOverride={handleResetRoleOverride}
-            onLocalGroupsChange={handleLocalGroupsChange}
-            onClose={() => setEditingUserId(null)}
-          />
-        );
-      })()}
+      {editingUserId !== null &&
+        (() => {
+          const editUser = users.find((u) => u.id === editingUserId);
+          if (!editUser) return null;
+          return (
+            <UserEditModal
+              user={editUser}
+              authGroups={authGroups}
+              actionLoading={actionLoading}
+              onRoleChange={handleRoleChange}
+              onResetRoleOverride={handleResetRoleOverride}
+              onLocalGroupsChange={handleLocalGroupsChange}
+              onClose={() => setEditingUserId(null)}
+            />
+          );
+        })()}
 
       <AuthAdminModalHost
         createUserOpen={showCreateLocalUserModal}

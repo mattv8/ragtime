@@ -2,10 +2,224 @@
  * API client for Ragtime Indexer
  */
 
-import type { IndexJob, IndexInfo, CreateIndexRequest, ImportFaissIndexResponse, AppSettings, GetSettingsResponse, UpdateSettingsRequest, OllamaTestRequest, OllamaTestResponse, OllamaVisionModelsRequest, OllamaVisionModelsResponse, VisionModelsRequest, VisionModelsResponse, LLMModelsRequest, LLMModelsResponse, EmbeddingModelsRequest, EmbeddingModelsResponse, LmStudioModelLoadRequest, LmStudioModelUnloadRequest, LmStudioModelActionResponse, ToolConfig, CreateToolConfigRequest, UpdateToolConfigRequest, ReorderToolsRequest, ToolTestRequest, ToolTestResponse, ToolGroup, CreateToolGroupRequest, UpdateToolGroupRequest, PostgresDiscoverRequest, PostgresDiscoverResponse, MssqlDiscoverRequest, MssqlDiscoverResponse, MysqlDiscoverRequest, MysqlDiscoverResponse, InfluxdbDiscoverRequest, InfluxdbDiscoverResponse, PdmDiscoverRequest, PdmDiscoverResponse, SSHKeyPairResponse, HeartbeatResponse, Conversation, ConversationSummary, ConversationCountResponse, CreateConversationRequest, SendMessageRequest, ChatMessage, AvailableModelsResponse, LoginRequest, LoginResponse, AuthStatus, User, LdapConfig, LdapDiscoverRequest, LdapDiscoverResponse, LdapBindDnLookupRequest, LdapBindDnLookupResponse, AnalyzeIndexRequest, IndexAnalysisResult, CheckRepoVisibilityRequest, RepoVisibilityResponse, FetchBranchesRequest, FetchBranchesResponse, McpRouteConfig, CreateMcpRouteRequest, UpdateMcpRouteRequest, McpRouteListResponse, HealthResponse, UserSpaceWorkspace, CreateUserSpaceWorkspaceRequest, DuplicateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceRequest, UpdateUserSpaceWorkspaceMembersRequest, WorkspaceAgentGrant, UpsertWorkspaceAgentGrantRequest, RevokeWorkspaceAgentGrantResponse, UserSpaceWorkspaceEnvVar, UpsertUserSpaceWorkspaceEnvVarRequest, DeleteUserSpaceWorkspaceEnvVarResponse, UpsertUserSpaceGlobalEnvVarRequest, DeleteUserSpaceGlobalEnvVarResponse, UserSpaceObjectStorageConfig, CreateUserSpaceObjectStorageBucketRequest, UpdateUserSpaceObjectStorageBucketRequest, DeleteUserSpaceObjectStorageBucketResponse, UserspaceMountSource, CreateUserspaceMountSourceRequest, UpdateUserspaceMountSourceRequest, BrowseUserspaceMountSourceRequest, BrowseCloudMountSourceRequest, CreateCloudMountSourceDirectoryRequest, DeleteUserspaceMountSourceResponse, CreateUserUserspaceMountSourceRequest, UpdateUserUserspaceMountSourceRequest, UserCloudOAuthAccount, CloudOAuthProviderStatus, CloudOAuthStartRequest, CloudOAuthStartResponse, CloudOAuthCallbackRequest, WorkspaceMount, MountableSource, BrowseWorkspaceMountSourceRequest, WorkspaceMountBrowseResponse, WorkspaceMountDirectoryEntry, CreateWorkspaceMountRequest, UpdateWorkspaceMountRequest, DeleteWorkspaceMountResponse, WorkspaceMountSyncPreviewRequest, WorkspaceMountSyncPreviewResponse, WorkspaceMountSyncRequest, WorkspaceMountSyncResponse, MountSourceAffectedWorkspacesResponse, UserSpaceFileInfo, UserSpaceFile, UpsertUserSpaceFileRequest, UserSpaceSnapshot, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, CreateUserSpaceSnapshotRequest, UpdateUserSpaceSnapshotRequest, SwitchUserSpaceSnapshotBranchRequest, CreateUserSpaceSnapshotBranchRequest, PromoteUserSpaceSnapshotBranchRequest, RestoreUserSpaceSnapshotResponse, UserSpaceAvailableTool, PaginatedWorkspacesResponse, ExecuteComponentRequest, ExecuteComponentResponse, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceArchiveExportRequest, UserSpaceWorkspaceArchiveExportTask, UserSpaceWorkspaceArchiveImportTask, UserSpaceWorkspaceArchiveExportListResponse, DeleteUserSpaceWorkspaceArchiveExportResponse, UserSpaceRuntimeRestartBatchTask, UserSpaceWorkspaceShareLink, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceShareLinkListResponse, CreateWorkspaceShareLinkRequest, UpdateWorkspaceShareLinkRequest, WorkspaceShareSlugAvailabilityResponse, UpdateUserSpaceWorkspaceShareAccessRequest, ConversationMember, UpdateConversationMembersRequest, UpdateConversationToolsRequest, UserSpaceRuntimeSessionResponse, UserSpaceRuntimeStatusResponse, UserSpaceRuntimeActionResponse, UserSpaceCapabilityTokenResponse, UserSpaceBrowserAuthResponse, UserSpaceBrowserSurface, UserSpacePreviewLaunchRequest, UserSpacePreviewLaunchResponse, UserSpaceWorkspaceTabStateResponse, WorkspaceConversationSearchResponse, ConversationBranchSearchResponse, ProviderPromptDebugListResponse, ProviderPromptDebugRecord, CopilotAuthStatusResponse, CopilotDevicePollRequest, CopilotDevicePollResponse, CopilotDeviceStartRequest, CopilotDeviceStartResponse, LlmProviderWire, UserSpaceAcknowledgeChangedFilePathRequest, UserSpaceChangedFileState, UserSpacePreviewSettingsResponse, UserSpaceWorkspaceScmConnectionRequest, UserSpaceWorkspaceScmConnectionResponse, UserSpaceWorkspaceScmPreviewRequest, UserSpaceWorkspaceScmPreviewResponse, UserSpaceWorkspaceScmImportRequest, UserSpaceWorkspaceScmExportRequest, UserSpaceWorkspaceScmSyncResponse, UserSpaceWorkspaceScmSettingsRequest, UserSpaceWorkspaceSqliteImportTask, UserSpaceCollabPresenceResponse, ConversationShareLink, ConversationShareLinkStatus, ConversationShareLinkListResponse, CreateConversationShareLinkRequest, UpdateConversationShareLinkRequest, ConversationShareSlugAvailabilityResponse, UpdateConversationShareAccessRequest, SharedConversationResponse, PublicShareTargetResponse } from '@/types';
+import type {
+  IndexJob,
+  IndexInfo,
+  CreateIndexRequest,
+  ImportFaissIndexResponse,
+  AppSettings,
+  GetSettingsResponse,
+  UpdateSettingsRequest,
+  OllamaTestRequest,
+  OllamaTestResponse,
+  OllamaVisionModelsRequest,
+  OllamaVisionModelsResponse,
+  VisionModelsRequest,
+  VisionModelsResponse,
+  LLMModelsRequest,
+  LLMModelsResponse,
+  EmbeddingModelsRequest,
+  EmbeddingModelsResponse,
+  LmStudioModelLoadRequest,
+  LmStudioModelUnloadRequest,
+  LmStudioModelActionResponse,
+  ToolConfig,
+  CreateToolConfigRequest,
+  UpdateToolConfigRequest,
+  ReorderToolsRequest,
+  ToolTestRequest,
+  ToolTestResponse,
+  ToolGroup,
+  CreateToolGroupRequest,
+  UpdateToolGroupRequest,
+  PostgresDiscoverRequest,
+  PostgresDiscoverResponse,
+  MssqlDiscoverRequest,
+  MssqlDiscoverResponse,
+  MysqlDiscoverRequest,
+  MysqlDiscoverResponse,
+  InfluxdbDiscoverRequest,
+  InfluxdbDiscoverResponse,
+  PdmDiscoverRequest,
+  PdmDiscoverResponse,
+  SSHKeyPairResponse,
+  HeartbeatResponse,
+  Conversation,
+  ConversationSummary,
+  ConversationCountResponse,
+  CreateConversationRequest,
+  SendMessageRequest,
+  ChatMessage,
+  AvailableModelsResponse,
+  LoginRequest,
+  LoginResponse,
+  AuthStatus,
+  User,
+  LdapConfig,
+  LdapDiscoverRequest,
+  LdapDiscoverResponse,
+  LdapBindDnLookupRequest,
+  LdapBindDnLookupResponse,
+  AnalyzeIndexRequest,
+  IndexAnalysisResult,
+  CheckRepoVisibilityRequest,
+  RepoVisibilityResponse,
+  FetchBranchesRequest,
+  FetchBranchesResponse,
+  McpRouteConfig,
+  CreateMcpRouteRequest,
+  UpdateMcpRouteRequest,
+  McpRouteListResponse,
+  HealthResponse,
+  UserSpaceWorkspace,
+  CreateUserSpaceWorkspaceRequest,
+  DuplicateUserSpaceWorkspaceRequest,
+  UpdateUserSpaceWorkspaceRequest,
+  UpdateUserSpaceWorkspaceMembersRequest,
+  WorkspaceAgentGrant,
+  UpsertWorkspaceAgentGrantRequest,
+  RevokeWorkspaceAgentGrantResponse,
+  UserSpaceWorkspaceEnvVar,
+  UpsertUserSpaceWorkspaceEnvVarRequest,
+  DeleteUserSpaceWorkspaceEnvVarResponse,
+  UpsertUserSpaceGlobalEnvVarRequest,
+  DeleteUserSpaceGlobalEnvVarResponse,
+  UserSpaceObjectStorageConfig,
+  CreateUserSpaceObjectStorageBucketRequest,
+  UpdateUserSpaceObjectStorageBucketRequest,
+  DeleteUserSpaceObjectStorageBucketResponse,
+  UserspaceMountSource,
+  CreateUserspaceMountSourceRequest,
+  UpdateUserspaceMountSourceRequest,
+  BrowseUserspaceMountSourceRequest,
+  BrowseCloudMountSourceRequest,
+  CreateCloudMountSourceDirectoryRequest,
+  DeleteUserspaceMountSourceResponse,
+  CreateUserUserspaceMountSourceRequest,
+  UpdateUserUserspaceMountSourceRequest,
+  UserCloudOAuthAccount,
+  CloudOAuthProviderStatus,
+  CloudOAuthStartRequest,
+  CloudOAuthStartResponse,
+  CloudOAuthCallbackRequest,
+  WorkspaceMount,
+  MountableSource,
+  BrowseWorkspaceMountSourceRequest,
+  WorkspaceMountBrowseResponse,
+  WorkspaceMountDirectoryEntry,
+  CreateWorkspaceMountRequest,
+  UpdateWorkspaceMountRequest,
+  DeleteWorkspaceMountResponse,
+  WorkspaceMountSyncPreviewRequest,
+  WorkspaceMountSyncPreviewResponse,
+  WorkspaceMountSyncRequest,
+  WorkspaceMountSyncResponse,
+  MountSourceAffectedWorkspacesResponse,
+  UserSpaceFileInfo,
+  UserSpaceFile,
+  UpsertUserSpaceFileRequest,
+  UserSpaceSnapshot,
+  UserSpaceSnapshotDiffSummary,
+  UserSpaceSnapshotFileDiff,
+  UserSpaceSnapshotTimeline,
+  CreateUserSpaceSnapshotRequest,
+  UpdateUserSpaceSnapshotRequest,
+  SwitchUserSpaceSnapshotBranchRequest,
+  CreateUserSpaceSnapshotBranchRequest,
+  PromoteUserSpaceSnapshotBranchRequest,
+  RestoreUserSpaceSnapshotResponse,
+  UserSpaceAvailableTool,
+  PaginatedWorkspacesResponse,
+  ExecuteComponentRequest,
+  ExecuteComponentResponse,
+  UserSpaceWorkspaceCreateTask,
+  UserSpaceWorkspaceDeleteTask,
+  UserSpaceWorkspaceDuplicateTask,
+  UserSpaceWorkspaceArchiveExportRequest,
+  UserSpaceWorkspaceArchiveExportTask,
+  UserSpaceWorkspaceArchiveImportTask,
+  UserSpaceWorkspaceArchiveExportListResponse,
+  DeleteUserSpaceWorkspaceArchiveExportResponse,
+  UserSpaceRuntimeRestartBatchTask,
+  UserSpaceWorkspaceShareLink,
+  UserSpaceWorkspaceShareLinkStatus,
+  UserSpaceWorkspaceShareLinkListResponse,
+  CreateWorkspaceShareLinkRequest,
+  UpdateWorkspaceShareLinkRequest,
+  WorkspaceShareSlugAvailabilityResponse,
+  UpdateUserSpaceWorkspaceShareAccessRequest,
+  ConversationMember,
+  UpdateConversationMembersRequest,
+  UpdateConversationToolsRequest,
+  UserSpaceRuntimeSessionResponse,
+  UserSpaceRuntimeStatusResponse,
+  UserSpaceRuntimeActionResponse,
+  UserSpaceCapabilityTokenResponse,
+  UserSpaceBrowserAuthResponse,
+  UserSpaceBrowserSurface,
+  UserSpacePreviewLaunchRequest,
+  UserSpacePreviewLaunchResponse,
+  UserSpaceWorkspaceTabStateResponse,
+  WorkspaceConversationSearchResponse,
+  ConversationBranchSearchResponse,
+  ProviderPromptDebugListResponse,
+  ProviderPromptDebugRecord,
+  CopilotAuthStatusResponse,
+  CopilotDevicePollRequest,
+  CopilotDevicePollResponse,
+  CopilotDeviceStartRequest,
+  CopilotDeviceStartResponse,
+  LlmProviderWire,
+  UserSpaceAcknowledgeChangedFilePathRequest,
+  UserSpaceChangedFileState,
+  UserSpacePreviewSettingsResponse,
+  UserSpaceWorkspaceScmConnectionRequest,
+  UserSpaceWorkspaceScmConnectionResponse,
+  UserSpaceWorkspaceScmPreviewRequest,
+  UserSpaceWorkspaceScmPreviewResponse,
+  UserSpaceWorkspaceScmImportRequest,
+  UserSpaceWorkspaceScmExportRequest,
+  UserSpaceWorkspaceScmSyncResponse,
+  UserSpaceWorkspaceScmSettingsRequest,
+  UserSpaceWorkspaceSqliteImportTask,
+  UserSpaceCollabPresenceResponse,
+  ConversationShareLink,
+  ConversationShareLinkStatus,
+  ConversationShareLinkListResponse,
+  CreateConversationShareLinkRequest,
+  UpdateConversationShareLinkRequest,
+  ConversationShareSlugAvailabilityResponse,
+  UpdateConversationShareAccessRequest,
+  SharedConversationResponse,
+  PublicShareTargetResponse,
+} from '@/types';
 
-import type { AuthProviderConfig, UpdateAuthProviderConfigRequest, LocalUserCreateRequest, LocalUserUpdateRequest, AuthGroup, AuthGroupListResponse, AuthGroupUpsertRequest, SetUserGroupsRequest, LdapUserSearchRequest, LdapUserProfile, LdapUserImportResponse, LdapUserTypeaheadRequest, LdapUserTypeaheadResponse, UserDirectoryEntry } from '@/types';
-import type { ClaudeCodeAuthCompleteResponse, ClaudeCodeAuthStartResponse, ClaudeCodeAuthStatusResponse, OpenAICodexAuthStatusResponse, OpenAICodexDevicePollRequest, OpenAICodexDevicePollResponse, OpenAICodexDeviceStartRequest, OpenAICodexDeviceStartResponse } from '@/types';
+import type {
+  AuthProviderConfig,
+  UpdateAuthProviderConfigRequest,
+  LocalUserCreateRequest,
+  LocalUserUpdateRequest,
+  AuthGroup,
+  AuthGroupListResponse,
+  AuthGroupUpsertRequest,
+  SetUserGroupsRequest,
+  LdapUserSearchRequest,
+  LdapUserProfile,
+  LdapUserImportResponse,
+  LdapUserTypeaheadRequest,
+  LdapUserTypeaheadResponse,
+  UserDirectoryEntry,
+} from '@/types';
+import type {
+  ClaudeCodeAuthCompleteResponse,
+  ClaudeCodeAuthStartResponse,
+  ClaudeCodeAuthStatusResponse,
+  OpenAICodexAuthStatusResponse,
+  OpenAICodexDevicePollRequest,
+  OpenAICodexDevicePollResponse,
+  OpenAICodexDeviceStartRequest,
+  OpenAICodexDeviceStartResponse,
+} from '@/types';
 import type { UserSpaceWorkspaceScmImportTask } from '@/types';
 
 import type {
@@ -105,7 +319,7 @@ class ApiError extends Error {
   constructor(
     message: string,
     public status: number,
-    public detail?: string
+    public detail?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -150,23 +364,23 @@ async function handleResponse<T>(response: Response): Promise<T> {
     throw new ApiError(
       data.detail || `Request failed with status ${response.status}`,
       response.status,
-      data.detail
+      data.detail,
     );
   }
   return response.json();
 }
 
-async function downloadBlobResponse(response: Response, fallbackFilename: string, errorMessage: string): Promise<void> {
+async function downloadBlobResponse(
+  response: Response,
+  fallbackFilename: string,
+  errorMessage: string,
+): Promise<void> {
   if (!response.ok) {
     if (response.status === 401) {
       notifyAuthExpired();
     }
     const data = await response.json().catch(() => ({}));
-    throw new ApiError(
-      data.detail || errorMessage,
-      response.status,
-      data.detail,
-    );
+    throw new ApiError(data.detail || errorMessage, response.status, data.detail);
   }
   const contentDisposition = response.headers.get('content-disposition') || '';
   const filenameMatch = contentDisposition.match(/filename="?([^";]+)"?/);
@@ -180,6 +394,24 @@ async function downloadBlobResponse(response: Response, fallbackFilename: string
   link.click();
   document.body.removeChild(link);
   window.URL.revokeObjectURL(url);
+}
+
+/**
+ * A single Server-Sent Event payload yielded by {@link api.streamChatTask}.
+ * The backend stream is dynamically shaped; all fields are optional and an
+ * index signature covers forward-compatible keys.
+ */
+export interface ChatTaskStreamEvent {
+  type?: string;
+  completed?: boolean;
+  status?: string;
+  error?: string;
+  state?: ChatTaskStreamEvent;
+  content?: string;
+  events?: unknown[];
+  version?: number;
+  hit_max_iterations?: boolean;
+  [key: string]: unknown;
 }
 
 export const api = {
@@ -207,7 +439,7 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
-       // Include cookies
+      // Include cookies
     });
     const result = await handleResponse<LoginResponse>(response);
     resetAuthExpiredNotification();
@@ -220,7 +452,6 @@ export const api = {
   async logout(): Promise<void> {
     await fetch(`${AUTH_BASE}/logout`, {
       method: 'POST',
-
     });
   },
 
@@ -228,9 +459,7 @@ export const api = {
    * Get current user info
    */
   async getCurrentUser(): Promise<User> {
-    const response = await apiFetch(`${AUTH_BASE}/me`, {
-
-    });
+    const response = await apiFetch(`${AUTH_BASE}/me`, {});
     const user = await handleResponse<User>(response);
     resetAuthExpiredNotification();
     return user;
@@ -240,9 +469,7 @@ export const api = {
    * Get LDAP configuration (admin only)
    */
   async getLdapConfig(): Promise<LdapConfig> {
-    const response = await apiFetch(`${AUTH_BASE}/ldap/config`, {
-
-    });
+    const response = await apiFetch(`${AUTH_BASE}/ldap/config`, {});
     return handleResponse<LdapConfig>(response);
   },
 
@@ -254,7 +481,6 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
-
     });
     return handleResponse<LdapDiscoverResponse>(response);
   },
@@ -284,12 +510,13 @@ export const api = {
   /**
    * Update LDAP configuration (admin only)
    */
-  async updateLdapConfig(config: Partial<LdapConfig> & { bind_password?: string }): Promise<LdapConfig> {
+  async updateLdapConfig(
+    config: Partial<LdapConfig> & { bind_password?: string },
+  ): Promise<LdapConfig> {
     const response = await apiFetch(`${AUTH_BASE}/ldap/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
-
     });
     return handleResponse<LdapConfig>(response);
   },
@@ -326,7 +553,9 @@ export const api = {
     return handleResponse<AuthProviderConfig>(response);
   },
 
-  async updateAuthProviderConfig(request: UpdateAuthProviderConfigRequest): Promise<AuthProviderConfig> {
+  async updateAuthProviderConfig(
+    request: UpdateAuthProviderConfigRequest,
+  ): Promise<AuthProviderConfig> {
     const response = await apiFetch(`${AUTH_BASE}/provider/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -397,11 +626,9 @@ export const api = {
    * List all users
    */
   async listUsers(): Promise<User[]> {
-    const response = await apiFetch(`${AUTH_BASE}/users`, {
-
-    });
+    const response = await apiFetch(`${AUTH_BASE}/users`, {});
     const data = await handleResponse<{ users: User[] } | User[]>(response);
-    return Array.isArray(data) ? data : (data as { users: User[] }).users ?? [];
+    return Array.isArray(data) ? data : ((data as { users: User[] }).users ?? []);
   },
 
   /**
@@ -409,8 +636,10 @@ export const api = {
    */
   async listUsersDirectory(): Promise<UserDirectoryEntry[]> {
     const response = await apiFetch(`${AUTH_BASE}/users/directory`, {});
-    const data = await handleResponse<{ users: UserDirectoryEntry[] } | UserDirectoryEntry[]>(response);
-    return Array.isArray(data) ? data : (data as { users: UserDirectoryEntry[] }).users ?? [];
+    const data = await handleResponse<{ users: UserDirectoryEntry[] } | UserDirectoryEntry[]>(
+      response,
+    );
+    return Array.isArray(data) ? data : ((data as { users: UserDirectoryEntry[] }).users ?? []);
   },
 
   async getUsageSummary(days = 30): Promise<import('../types/api').UsageSummaryResponse> {
@@ -438,7 +667,9 @@ export const api = {
     return handleResponse(response);
   },
 
-  async getUsageProviderDailyFailures(days = 30): Promise<import('../types/api').ProviderDailyFailuresResponse> {
+  async getUsageProviderDailyFailures(
+    days = 30,
+  ): Promise<import('../types/api').ProviderDailyFailuresResponse> {
     const response = await apiFetch(`${AUTH_BASE}/usage/providers/daily-failures?days=${days}`, {});
     return handleResponse(response);
   },
@@ -469,7 +700,9 @@ export const api = {
     await handleResponse(response);
   },
 
-  async resetUserRoleOverride(userId: string): Promise<{ success: boolean; role: 'admin' | 'user'; role_manually_set: boolean }> {
+  async resetUserRoleOverride(
+    userId: string,
+  ): Promise<{ success: boolean; role: 'admin' | 'user'; role_manually_set: boolean }> {
     const response = await apiFetch(`${AUTH_BASE}/users/${userId}/role/reset`, {
       method: 'POST',
     });
@@ -484,7 +717,7 @@ export const api = {
    * List all available indexes
    */
   async listIndexes(): Promise<IndexInfo[]> {
-    const response = await apiFetch(API_BASE, {  });
+    const response = await apiFetch(API_BASE, {});
     return handleResponse<IndexInfo[]>(response);
   },
 
@@ -543,7 +776,7 @@ export const api = {
    * List all indexing jobs
    */
   async listJobs(): Promise<IndexJob[]> {
-    const response = await apiFetch(`${API_BASE}/jobs`, {  });
+    const response = await apiFetch(`${API_BASE}/jobs`, {});
     return handleResponse<IndexJob[]>(response);
   },
 
@@ -551,7 +784,7 @@ export const api = {
    * Get a specific job by ID
    */
   async getJob(jobId: string): Promise<IndexJob> {
-    const response = await apiFetch(`${API_BASE}/jobs/${jobId}`, {  });
+    const response = await apiFetch(`${API_BASE}/jobs/${jobId}`, {});
     return handleResponse<IndexJob>(response);
   },
 
@@ -561,15 +794,10 @@ export const api = {
   async cancelJob(jobId: string): Promise<void> {
     const response = await apiFetch(`${API_BASE}/jobs/${jobId}/cancel`, {
       method: 'POST',
-
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Cancel failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Cancel failed', response.status, data.detail);
     }
   },
 
@@ -592,7 +820,6 @@ export const api = {
     const response = await apiFetch(`${API_BASE}/upload`, {
       method: 'POST',
       body: formData,
-
     });
     return handleResponse<IndexJob>(response);
   },
@@ -618,11 +845,7 @@ export const api = {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Delete failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
     }
   },
 
@@ -641,7 +864,10 @@ export const api = {
   /**
    * Update an index's description for AI context
    */
-  async updateIndexDescription(name: string, description: string): Promise<{ description: string }> {
+  async updateIndexDescription(
+    name: string,
+    description: string,
+  ): Promise<{ description: string }> {
     const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/description`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -665,13 +891,19 @@ export const api = {
   /**
    * Update an index's configuration for next re-index (git indexes only)
    */
-  async updateIndexConfig(name: string, config: import('@/types').UpdateIndexConfigRequest): Promise<{ git_branch: string; config_snapshot: import('@/types').IndexConfigSnapshot }> {
+  async updateIndexConfig(
+    name: string,
+    config: import('@/types').UpdateIndexConfigRequest,
+  ): Promise<{ git_branch: string; config_snapshot: import('@/types').IndexConfigSnapshot }> {
     const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/config`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
     });
-    return handleResponse<{ git_branch: string; config_snapshot: import('@/types').IndexConfigSnapshot }>(response);
+    return handleResponse<{
+      git_branch: string;
+      config_snapshot: import('@/types').IndexConfigSnapshot;
+    }>(response);
   },
 
   /**
@@ -705,11 +937,7 @@ export const api = {
     const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/download`);
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Download failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Download failed', response.status, data.detail);
     }
 
     // Get the filename from the Content-Disposition header
@@ -733,14 +961,12 @@ export const api = {
    * Download a filesystem FAISS index as a zip file
    */
   async downloadFilesystemFaissIndex(indexName: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/filesystem/${encodeURIComponent(indexName)}/download`);
+    const response = await apiFetch(
+      `${API_BASE}/filesystem/${encodeURIComponent(indexName)}/download`,
+    );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Download failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Download failed', response.status, data.detail);
     }
 
     // Get the filename from the Content-Disposition header
@@ -769,9 +995,7 @@ export const api = {
    *
    * Returns the metadata for the newly restored index.
    */
-  async importFaissIndex(
-    formData: FormData,
-  ): Promise<ImportFaissIndexResponse> {
+  async importFaissIndex(formData: FormData): Promise<ImportFaissIndexResponse> {
     const response = await apiFetch(`${API_BASE}/import-faiss`, {
       method: 'POST',
       body: formData,
@@ -822,7 +1046,10 @@ export const api = {
       body: JSON.stringify(settings),
     });
     // Backend returns {settings: AppSettings, embedding_warning: string | null}
-    const result = await handleResponse<{ settings: AppSettings; embedding_warning: string | null }>(response);
+    const result = await handleResponse<{
+      settings: AppSettings;
+      embedding_warning: string | null;
+    }>(response);
     return result.settings;
   },
 
@@ -841,7 +1068,9 @@ export const api = {
   /**
    * Get vision-capable models from an Ollama server
    */
-  async getOllamaVisionModels(request: OllamaVisionModelsRequest): Promise<OllamaVisionModelsResponse> {
+  async getOllamaVisionModels(
+    request: OllamaVisionModelsRequest,
+  ): Promise<OllamaVisionModelsResponse> {
     const response = await apiFetch(`${API_BASE}/ollama/vision-models`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -877,7 +1106,9 @@ export const api = {
   /**
    * Start GitHub Copilot OAuth device authorization flow.
    */
-  async startCopilotDeviceFlow(request: CopilotDeviceStartRequest): Promise<CopilotDeviceStartResponse> {
+  async startCopilotDeviceFlow(
+    request: CopilotDeviceStartRequest,
+  ): Promise<CopilotDeviceStartResponse> {
     const response = await apiFetch(`${API_BASE}/github-copilot/device/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -889,7 +1120,9 @@ export const api = {
   /**
    * Poll GitHub Copilot OAuth device authorization status.
    */
-  async pollCopilotDeviceFlow(request: CopilotDevicePollRequest): Promise<CopilotDevicePollResponse> {
+  async pollCopilotDeviceFlow(
+    request: CopilotDevicePollRequest,
+  ): Promise<CopilotDevicePollResponse> {
     const response = await apiFetch(`${API_BASE}/github-copilot/device/poll`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -919,7 +1152,9 @@ export const api = {
   /**
    * Start OpenAI Codex OAuth device authorization flow.
    */
-  async startOpenAICodexDeviceFlow(request: OpenAICodexDeviceStartRequest = {}): Promise<OpenAICodexDeviceStartResponse> {
+  async startOpenAICodexDeviceFlow(
+    request: OpenAICodexDeviceStartRequest = {},
+  ): Promise<OpenAICodexDeviceStartResponse> {
     const response = await apiFetch(`${API_BASE}/openai-codex/device/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -931,7 +1166,9 @@ export const api = {
   /**
    * Poll OpenAI Codex OAuth device authorization status.
    */
-  async pollOpenAICodexDeviceFlow(request: OpenAICodexDevicePollRequest): Promise<OpenAICodexDevicePollResponse> {
+  async pollOpenAICodexDeviceFlow(
+    request: OpenAICodexDevicePollRequest,
+  ): Promise<OpenAICodexDevicePollResponse> {
     const response = await apiFetch(`${API_BASE}/openai-codex/device/poll`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -970,7 +1207,10 @@ export const api = {
     return handleResponse<ClaudeCodeAuthStartResponse>(response);
   },
 
-  async completeClaudeCodeAuth(request: { request_id: string; code: string }): Promise<ClaudeCodeAuthCompleteResponse> {
+  async completeClaudeCodeAuth(request: {
+    request_id: string;
+    code: string;
+  }): Promise<ClaudeCodeAuthCompleteResponse> {
     const response = await apiFetch(`${API_BASE}/claude-code/auth/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -979,7 +1219,9 @@ export const api = {
     return handleResponse<ClaudeCodeAuthCompleteResponse>(response);
   },
 
-  async cancelClaudeCodeAuth(request: { request_id: string }): Promise<ClaudeCodeAuthCompleteResponse> {
+  async cancelClaudeCodeAuth(request: {
+    request_id: string;
+  }): Promise<ClaudeCodeAuthCompleteResponse> {
     const response = await apiFetch(`${API_BASE}/claude-code/auth/cancel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -997,7 +1239,9 @@ export const api = {
     return handleResponse<LmStudioModelActionResponse>(response);
   },
 
-  async unloadLmstudioModel(request: LmStudioModelUnloadRequest): Promise<LmStudioModelActionResponse> {
+  async unloadLmstudioModel(
+    request: LmStudioModelUnloadRequest,
+  ): Promise<LmStudioModelActionResponse> {
     const response = await apiFetch(`${API_BASE}/lmstudio/models/unload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1072,11 +1316,7 @@ export const api = {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Delete failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
     }
   },
 
@@ -1154,7 +1394,9 @@ export const api = {
   /**
    * Discover available databases on a PostgreSQL server
    */
-  async discoverPostgresDatabases(request: PostgresDiscoverRequest): Promise<PostgresDiscoverResponse> {
+  async discoverPostgresDatabases(
+    request: PostgresDiscoverRequest,
+  ): Promise<PostgresDiscoverResponse> {
     const response = await apiFetch(`${API_BASE}/tools/postgres/discover`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1190,7 +1432,9 @@ export const api = {
   /**
    * Discover available buckets on an InfluxDB server
    */
-  async discoverInfluxdbBuckets(request: InfluxdbDiscoverRequest): Promise<InfluxdbDiscoverResponse> {
+  async discoverInfluxdbBuckets(
+    request: InfluxdbDiscoverRequest,
+  ): Promise<InfluxdbDiscoverResponse> {
     const response = await apiFetch(`${API_BASE}/tools/influxdb/discover`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1302,11 +1546,7 @@ export const api = {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Delete failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
     }
   },
 
@@ -1345,7 +1585,9 @@ export const api = {
   /**
    * Create a new default route filter
    */
-  async createMcpDefaultFilter(config: import('@/types').CreateMcpDefaultRouteFilterRequest): Promise<import('@/types').McpDefaultRouteFilter> {
+  async createMcpDefaultFilter(
+    config: import('@/types').CreateMcpDefaultRouteFilterRequest,
+  ): Promise<import('@/types').McpDefaultRouteFilter> {
     const response = await apiFetch('/mcp-routes/default-filters', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1357,7 +1599,10 @@ export const api = {
   /**
    * Update a default route filter
    */
-  async updateMcpDefaultFilter(filterId: string, updates: import('@/types').UpdateMcpDefaultRouteFilterRequest): Promise<import('@/types').McpDefaultRouteFilter> {
+  async updateMcpDefaultFilter(
+    filterId: string,
+    updates: import('@/types').UpdateMcpDefaultRouteFilterRequest,
+  ): Promise<import('@/types').McpDefaultRouteFilter> {
     const response = await apiFetch(`/mcp-routes/default-filters/${filterId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1375,11 +1620,7 @@ export const api = {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Delete failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
     }
   },
 
@@ -1387,16 +1628,15 @@ export const api = {
    * Toggle a default route filter's enabled status
    */
   async toggleMcpDefaultFilter(filterId: string, enabled: boolean): Promise<void> {
-    const response = await apiFetch(`/mcp-routes/default-filters/${filterId}/toggle?enabled=${enabled}`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `/mcp-routes/default-filters/${filterId}/toggle?enabled=${enabled}`,
+      {
+        method: 'POST',
+      },
+    );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Toggle failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Toggle failed', response.status, data.detail);
     }
   },
 
@@ -1433,7 +1673,10 @@ export const api = {
   /**
    * Get filesystem analysis job status and results
    */
-  async getFilesystemAnalysisJob(toolId: string, jobId: string): Promise<import('@/types').FilesystemAnalysisJob> {
+  async getFilesystemAnalysisJob(
+    toolId: string,
+    jobId: string,
+  ): Promise<import('@/types').FilesystemAnalysisJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/analyze/${jobId}`);
     return handleResponse<import('@/types').FilesystemAnalysisJob>(response);
   },
@@ -1441,7 +1684,10 @@ export const api = {
   /**
    * Trigger filesystem indexing for a tool
    */
-  async triggerFilesystemIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').FilesystemIndexJob> {
+  async triggerFilesystemIndex(
+    toolId: string,
+    fullReindex?: boolean,
+  ): Promise<import('@/types').FilesystemIndexJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/index`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1453,7 +1699,10 @@ export const api = {
   /**
    * Cancel an active filesystem indexing job
    */
-  async cancelFilesystemJob(toolId: string, jobId: string): Promise<{ success: boolean; message: string }> {
+  async cancelFilesystemJob(
+    toolId: string,
+    jobId: string,
+  ): Promise<{ success: boolean; message: string }> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/jobs/${jobId}/cancel`, {
       method: 'POST',
     });
@@ -1463,7 +1712,10 @@ export const api = {
   /**
    * Retry a failed or cancelled filesystem indexing job
    */
-  async retryFilesystemJob(toolId: string, jobId: string): Promise<import('@/types').FilesystemIndexJob> {
+  async retryFilesystemJob(
+    toolId: string,
+    jobId: string,
+  ): Promise<import('@/types').FilesystemIndexJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/jobs/${jobId}/retry`, {
       method: 'POST',
     });
@@ -1473,7 +1725,9 @@ export const api = {
   /**
    * Delete filesystem index for a tool
    */
-  async deleteFilesystemIndex(toolId: string): Promise<{ success: boolean; deleted_count: number }> {
+  async deleteFilesystemIndex(
+    toolId: string,
+  ): Promise<{ success: boolean; deleted_count: number }> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/filesystem/index`, {
       method: 'DELETE',
     });
@@ -1487,7 +1741,9 @@ export const api = {
    *   filesystem indexer source paths. 'userspace_mount' inspects the runtime
    *   container for paths bind-mounted into User Space sandboxes.
    */
-  async discoverMounts(context?: 'indexing' | 'userspace_mount'): Promise<import('@/types').MountDiscoveryResponse> {
+  async discoverMounts(
+    context?: 'indexing' | 'userspace_mount',
+  ): Promise<import('@/types').MountDiscoveryResponse> {
     const query = context ? `?context=${encodeURIComponent(context)}` : '';
     const response = await apiFetch(`${API_BASE}/filesystem/mounts${query}`);
     return handleResponse<import('@/types').MountDiscoveryResponse>(response);
@@ -1506,7 +1762,9 @@ export const api = {
    * Browse a directory in the container filesystem
    */
   async browseFilesystem(path: string): Promise<import('@/types').BrowseResponse> {
-    const response = await apiFetch(`${API_BASE}/filesystem/browse?path=${encodeURIComponent(path)}`);
+    const response = await apiFetch(
+      `${API_BASE}/filesystem/browse?path=${encodeURIComponent(path)}`,
+    );
     return handleResponse<import('@/types').BrowseResponse>(response);
   },
 
@@ -1515,7 +1773,7 @@ export const api = {
    */
   async browseSSHFilesystem(
     config: import('@/types').SSHShellConnectionConfig,
-    path: string
+    path: string,
   ): Promise<import('@/types').BrowseResponse> {
     const response = await apiFetch(`${API_BASE}/filesystem/ssh/browse`, {
       method: 'POST',
@@ -1538,14 +1796,20 @@ export const api = {
    * Discover NFS exports from a server
    */
   async discoverNfsExports(host: string): Promise<import('@/types').NFSDiscoveryResponse> {
-    const response = await apiFetch(`${API_BASE}/filesystem/nfs/discover?host=${encodeURIComponent(host)}`);
+    const response = await apiFetch(
+      `${API_BASE}/filesystem/nfs/discover?host=${encodeURIComponent(host)}`,
+    );
     return handleResponse<import('@/types').NFSDiscoveryResponse>(response);
   },
 
   /**
    * Browse an NFS export
    */
-  async browseNfsExport(host: string, exportPath: string, path: string = ''): Promise<import('@/types').BrowseResponse> {
+  async browseNfsExport(
+    host: string,
+    exportPath: string,
+    path: string = '',
+  ): Promise<import('@/types').BrowseResponse> {
     const params = new URLSearchParams({ host, export_path: exportPath });
     if (path) params.set('path', path);
     const response = await apiFetch(`${API_BASE}/filesystem/nfs/browse?${params}`);
@@ -1555,7 +1819,12 @@ export const api = {
   /**
    * Discover SMB shares from a server
    */
-  async discoverSmbShares(host: string, user?: string, password?: string, domain?: string): Promise<import('@/types').SMBDiscoveryResponse> {
+  async discoverSmbShares(
+    host: string,
+    user?: string,
+    password?: string,
+    domain?: string,
+  ): Promise<import('@/types').SMBDiscoveryResponse> {
     const params = new URLSearchParams({ host });
     if (user) params.set('user', user);
     if (password) params.set('password', password);
@@ -1567,7 +1836,14 @@ export const api = {
   /**
    * Browse an SMB share
    */
-  async browseSmbShare(host: string, share: string, path: string = '', user?: string, password?: string, domain?: string): Promise<import('@/types').BrowseResponse> {
+  async browseSmbShare(
+    host: string,
+    share: string,
+    path: string = '',
+    user?: string,
+    password?: string,
+    domain?: string,
+  ): Promise<import('@/types').BrowseResponse> {
     const params = new URLSearchParams({ host, share });
     if (path) params.set('path', path);
     if (user) params.set('user', user);
@@ -1597,9 +1873,12 @@ export const api = {
    * Connect ragtime container to a Docker network
    */
   async connectToNetwork(networkName: string): Promise<{ success: boolean; message: string }> {
-    const response = await apiFetch(`${API_BASE}/docker/connect-network?network_name=${encodeURIComponent(networkName)}`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/docker/connect-network?network_name=${encodeURIComponent(networkName)}`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<{ success: boolean; message: string }>(response);
   },
 
@@ -1607,9 +1886,12 @@ export const api = {
    * Disconnect ragtime container from a Docker network
    */
   async disconnectFromNetwork(networkName: string): Promise<{ success: boolean; message: string }> {
-    const response = await apiFetch(`${API_BASE}/docker/disconnect-network?network_name=${encodeURIComponent(networkName)}`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/docker/disconnect-network?network_name=${encodeURIComponent(networkName)}`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<{ success: boolean; message: string }>(response);
   },
 
@@ -1620,7 +1902,10 @@ export const api = {
   /**
    * Trigger schema indexing for a SQL database tool
    */
-  async triggerSchemaIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').SchemaIndexJob> {
+  async triggerSchemaIndex(
+    toolId: string,
+    fullReindex?: boolean,
+  ): Promise<import('@/types').SchemaIndexJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/index`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1640,7 +1925,10 @@ export const api = {
   /**
    * Get a specific schema index job
    */
-  async getSchemaIndexJob(toolId: string, jobId: string): Promise<import('@/types').SchemaIndexJob> {
+  async getSchemaIndexJob(
+    toolId: string,
+    jobId: string,
+  ): Promise<import('@/types').SchemaIndexJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/job/${jobId}`);
     return handleResponse<import('@/types').SchemaIndexJob>(response);
   },
@@ -1648,7 +1936,10 @@ export const api = {
   /**
    * Cancel an active schema indexing job
    */
-  async cancelSchemaIndexJob(toolId: string, jobId: string): Promise<{ success: boolean; message: string }> {
+  async cancelSchemaIndexJob(
+    toolId: string,
+    jobId: string,
+  ): Promise<{ success: boolean; message: string }> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/schema/job/${jobId}/cancel`, {
       method: 'POST',
     });
@@ -1699,7 +1990,10 @@ export const api = {
   /**
    * Trigger PDM document indexing for a SolidWorks PDM tool
    */
-  async triggerPdmIndex(toolId: string, fullReindex?: boolean): Promise<import('@/types').PdmIndexJob> {
+  async triggerPdmIndex(
+    toolId: string,
+    fullReindex?: boolean,
+  ): Promise<import('@/types').PdmIndexJob> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/index`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1727,7 +2021,10 @@ export const api = {
   /**
    * Cancel an active PDM indexing job
    */
-  async cancelPdmIndexJob(toolId: string, jobId: string): Promise<{ success: boolean; message: string }> {
+  async cancelPdmIndexJob(
+    toolId: string,
+    jobId: string,
+  ): Promise<{ success: boolean; message: string }> {
     const response = await apiFetch(`${API_BASE}/tools/${toolId}/pdm/job/${jobId}/cancel`, {
       method: 'POST',
     });
@@ -1812,8 +2109,10 @@ export const api = {
     const extra: string[] = [];
     if (options?.since) extra.push(`since=${encodeURIComponent(options.since)}`);
     if (options?.until) extra.push(`until=${encodeURIComponent(options.until)}`);
-    if (typeof options?.limit === 'number') extra.push(`limit=${encodeURIComponent(String(options.limit))}`);
-    if (options?.cursorUpdatedAt) extra.push(`cursor_updated_at=${encodeURIComponent(options.cursorUpdatedAt)}`);
+    if (typeof options?.limit === 'number')
+      extra.push(`limit=${encodeURIComponent(String(options.limit))}`);
+    if (options?.cursorUpdatedAt)
+      extra.push(`cursor_updated_at=${encodeURIComponent(options.cursorUpdatedAt)}`);
     if (options?.cursorId) extra.push(`cursor_id=${encodeURIComponent(options.cursorId)}`);
     if (extra.length) {
       url += url.includes('?') ? `&${extra.join('&')}` : `?${extra.join('&')}`;
@@ -1855,15 +2154,21 @@ export const api = {
   /**
    * Get combined workspace conversation polling state.
    */
-  async getWorkspaceConversationState(workspaceId: string): Promise<import('@/types').ConversationWorkspaceStateResponse> {
-    const response = await apiFetch(`${API_BASE}/conversations/workspace/${workspaceId}/conversation-state`);
+  async getWorkspaceConversationState(
+    workspaceId: string,
+  ): Promise<import('@/types').ConversationWorkspaceStateResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/conversations/workspace/${workspaceId}/conversation-state`,
+    );
     return handleResponse<import('@/types').ConversationWorkspaceStateResponse>(response);
   },
 
   /**
    * Get live/interrupted summary for multiple workspaces in one request.
    */
-  async getWorkspacesConversationStateSummary(workspaceIds: string[]): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
+  async getWorkspacesConversationStateSummary(
+    workspaceIds: string[],
+  ): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
     const response = await apiFetch(`${API_BASE}/conversations/workspaces/state-summary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1875,7 +2180,9 @@ export const api = {
   /**
    * Get live/interrupted summary for multiple workspaces in one lightweight request.
    */
-  async getWorkspacesConversationStateSummaryLite(workspaceIds: string[]): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
+  async getWorkspacesConversationStateSummaryLite(
+    workspaceIds: string[],
+  ): Promise<import('@/types').WorkspaceConversationStateSummaryItem[]> {
     const response = await apiFetch(`${API_BASE}/conversations/workspaces/state-summary-lite`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1884,7 +2191,10 @@ export const api = {
     return handleResponse<import('@/types').WorkspaceConversationStateSummaryItem[]>(response);
   },
 
-  async searchWorkspaceConversations(workspaceIds: string[], query: string): Promise<WorkspaceConversationSearchResponse> {
+  async searchWorkspaceConversations(
+    workspaceIds: string[],
+    query: string,
+  ): Promise<WorkspaceConversationSearchResponse> {
     const response = await apiFetch(`${API_BASE}/conversations/workspaces/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1893,7 +2203,10 @@ export const api = {
     return handleResponse<WorkspaceConversationSearchResponse>(response);
   },
 
-  async searchConversationBranches(conversationIds: string[], query: string): Promise<ConversationBranchSearchResponse> {
+  async searchConversationBranches(
+    conversationIds: string[],
+    query: string,
+  ): Promise<ConversationBranchSearchResponse> {
     const response = await apiFetch(`${API_BASE}/conversations/branches/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1905,7 +2218,10 @@ export const api = {
   /**
    * Create a new conversation
    */
-  async createConversation(request?: CreateConversationRequest, workspaceId?: string): Promise<Conversation> {
+  async createConversation(
+    request?: CreateConversationRequest,
+    workspaceId?: string,
+  ): Promise<Conversation> {
     const payload = { ...(request || {}) };
     if (workspaceId) {
       (payload as CreateConversationRequest).workspace_id = workspaceId;
@@ -1922,7 +2238,9 @@ export const api = {
    * Get a specific conversation by ID
    */
   async getConversation(conversationId: string, workspaceId?: string): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}`, workspaceId));
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}`, workspaceId),
+    );
     return handleResponse<Conversation>(response);
   },
 
@@ -1936,9 +2254,7 @@ export const api = {
     limit: number = 100,
   ): Promise<ProviderPromptDebugRecord[]> {
     const url = `${API_BASE}/conversations/${conversationId}/provider-debug-prompts?limit=${Math.max(1, Math.min(limit, 200))}&message_index=${messageIndex}`;
-    const response = await apiFetch(
-      withWorkspaceQuery(url, workspaceId)
-    );
+    const response = await apiFetch(withWorkspaceQuery(url, workspaceId));
     const payload = await handleResponse<ProviderPromptDebugListResponse>(response);
     return payload.records || [];
   },
@@ -1947,28 +2263,34 @@ export const api = {
    * Delete a conversation
    */
   async deleteConversation(conversationId: string, workspaceId?: string): Promise<void> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}`, workspaceId), {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}`, workspaceId),
+      {
+        method: 'DELETE',
+      },
+    );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Delete failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
     }
   },
 
   /**
    * Update conversation title
    */
-  async updateConversationTitle(conversationId: string, title: string, workspaceId?: string): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/title`, workspaceId), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
+  async updateConversationTitle(
+    conversationId: string,
+    title: string,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/title`, workspaceId),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
@@ -1979,37 +2301,57 @@ export const api = {
     conversationId: string,
     model: string,
     workspaceId?: string,
-    provider?: LlmProviderWire
+    provider?: LlmProviderWire,
   ): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/model`, workspaceId), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, provider }),
-    });
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/model`, workspaceId),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, provider }),
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
   /**
    * Update a conversation's tool output mode
    */
-  async updateConversationToolOutputMode(conversationId: string, toolOutputMode: import('@/types').ToolOutputMode, workspaceId?: string): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/tool-output-mode`, workspaceId), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool_output_mode: toolOutputMode }),
-    });
+  async updateConversationToolOutputMode(
+    conversationId: string,
+    toolOutputMode: import('@/types').ToolOutputMode,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/tool-output-mode`,
+        workspaceId,
+      ),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_output_mode: toolOutputMode }),
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
   /**
    * Send a message to a conversation (non-streaming)
    */
-  async sendMessage(conversationId: string, request: SendMessageRequest, workspaceId?: string): Promise<{ message: ChatMessage; conversation: Conversation }> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withClientClock(request)),
-    });
+  async sendMessage(
+    conversationId: string,
+    request: SendMessageRequest,
+    workspaceId?: string,
+  ): Promise<{ message: ChatMessage; conversation: Conversation }> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages`, workspaceId),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock(request)),
+      },
+    );
     return handleResponse<{ message: ChatMessage; conversation: Conversation }>(response);
   },
 
@@ -2017,20 +2359,31 @@ export const api = {
    * Send a message with streaming response
    * Returns an async generator that yields structured stream events
    */
-  async *sendMessageStream(conversationId: string, message: string, signal?: AbortSignal, workspaceId?: string): AsyncGenerator<import('@/types').StreamEvent, void, unknown> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages/stream`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withClientClock({ message })),
-      signal,
-    });
+  async *sendMessageStream(
+    conversationId: string,
+    message: string,
+    signal?: AbortSignal,
+    workspaceId?: string,
+  ): AsyncGenerator<import('@/types').StreamEvent, void, unknown> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/messages/stream`,
+        workspaceId,
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock({ message })),
+        signal,
+      },
+    );
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new ApiError(
         data.detail || `Request failed with status ${response.status}`,
         response.status,
-        data.detail
+        data.detail,
       );
     }
 
@@ -2070,7 +2423,7 @@ export const api = {
                     tool: tc.tool,
                     input: tc.input,
                     connection: tc.connection,
-                  }
+                  },
                 };
               } else if (tc.type === 'end') {
                 yield {
@@ -2079,13 +2432,28 @@ export const api = {
                     tool: tc.tool,
                     output: tc.output,
                     connection: tc.connection,
-                  }
+                  },
                 };
               }
             }
             // Check for reasoning/thinking tokens
-            else if (delta?.reasoning || delta?.reasoning_text || delta?.reasoning_content || delta?.reasoning_summary || delta?.reasoning_summary_text || delta?.reasoning_details || delta?.thinking) {
-              const reasoning = delta.reasoning || delta.reasoning_text || delta.reasoning_content || delta.reasoning_summary || delta.reasoning_summary_text || delta.reasoning_details || delta.thinking;
+            else if (
+              delta?.reasoning ||
+              delta?.reasoning_text ||
+              delta?.reasoning_content ||
+              delta?.reasoning_summary ||
+              delta?.reasoning_summary_text ||
+              delta?.reasoning_details ||
+              delta?.thinking
+            ) {
+              const reasoning =
+                delta.reasoning ||
+                delta.reasoning_text ||
+                delta.reasoning_content ||
+                delta.reasoning_summary ||
+                delta.reasoning_summary_text ||
+                delta.reasoning_details ||
+                delta.thinking;
               yield {
                 type: 'reasoning',
                 content: reasoning,
@@ -2096,14 +2464,14 @@ export const api = {
             else if (delta?.content) {
               yield {
                 type: 'content',
-                content: delta.content
+                content: delta.content,
               };
             }
             // Check for error finish_reason
             else if (parsed.choices?.[0]?.finish_reason === 'error') {
               yield {
                 type: 'error',
-                error: delta?.content || 'Unknown error occurred'
+                error: delta?.content || 'Unknown error occurred',
               };
             }
           } catch {
@@ -2118,10 +2486,20 @@ export const api = {
    * Truncate conversation messages to keep only the first N messages.
    * Used when editing/resending a message.
    */
-  async truncateConversation(conversationId: string, keepCount: number, workspaceId?: string): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/truncate?keep_count=${keepCount}`, workspaceId), {
-      method: 'POST',
-    });
+  async truncateConversation(
+    conversationId: string,
+    keepCount: number,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/truncate?keep_count=${keepCount}`,
+        workspaceId,
+      ),
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
@@ -2133,18 +2511,25 @@ export const api = {
     conversationId: string,
     workspaceId?: string,
     keepRecentPairs = 4,
-    options?: { replaceMessageId?: string; replaceMessageIndex?: number; createRevisionBranch?: boolean },
+    options?: {
+      replaceMessageId?: string;
+      replaceMessageIndex?: number;
+      createRevisionBranch?: boolean;
+    },
   ): Promise<import('@/types').ChatTask> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compact`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        keep_recent_pairs: keepRecentPairs,
-        replace_message_id: options?.replaceMessageId,
-        replace_message_index: options?.replaceMessageIndex,
-        create_revision_branch: options?.createRevisionBranch,
-      }),
-    });
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compact`, workspaceId),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keep_recent_pairs: keepRecentPairs,
+          replace_message_id: options?.replaceMessageId,
+          replace_message_index: options?.replaceMessageIndex,
+          create_revision_branch: options?.createRevisionBranch,
+        }),
+      },
+    );
     return handleResponse<import('@/types').ChatTask>(response);
   },
 
@@ -2156,11 +2541,17 @@ export const api = {
     request: import('@/types').UpdateConversationCompactionRequest,
     workspaceId?: string,
   ): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/compaction-marker`, workspaceId), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/compaction-marker`,
+        workspaceId,
+      ),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
@@ -2186,32 +2577,54 @@ export const api = {
   /**
    * List branch points for a conversation (branches grouped by message index).
    */
-  async getConversationBranchPoints(conversationId: string, workspaceId?: string): Promise<import('@/types').ConversationBranchPointInfo[]> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branch-points`, workspaceId));
+  async getConversationBranchPoints(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<import('@/types').ConversationBranchPointInfo[]> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branch-points`, workspaceId),
+    );
     return handleResponse<import('@/types').ConversationBranchPointInfo[]>(response);
   },
 
   /**
    * Create a conversation branch at a message edit point.
    */
-  async createConversationBranch(conversationId: string, request: import('@/types').CreateConversationBranchRequest, workspaceId?: string): Promise<import('@/types').ConversationBranchSummary> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async createConversationBranch(
+    conversationId: string,
+    request: import('@/types').CreateConversationBranchRequest,
+    workspaceId?: string,
+  ): Promise<import('@/types').ConversationBranchSummary> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches`, workspaceId),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<import('@/types').ConversationBranchSummary>(response);
   },
 
   /**
    * Switch to a different conversation branch.
    */
-  async switchConversationBranch(conversationId: string, branchId: string, workspaceId?: string): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches/switch`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ branch_id: branchId }),
-    });
+  async switchConversationBranch(
+    conversationId: string,
+    branchId: string,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/branches/switch`,
+        workspaceId,
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ branch_id: branchId }),
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
@@ -2220,21 +2633,40 @@ export const api = {
    * Stashes current downstream into the active branch so the user can
    * toggle between the restored state and the post-delete "Current" state.
    */
-  async releaseConversationBranch(conversationId: string, workspaceId?: string): Promise<Conversation> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches/release`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
+  async releaseConversationBranch(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<Conversation> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/branches/release`,
+        workspaceId,
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
     return handleResponse<Conversation>(response);
   },
 
   /**
    * Delete a conversation branch.
    */
-  async deleteConversationBranch(conversationId: string, branchId: string, workspaceId?: string): Promise<void> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/branches/${branchId}`, workspaceId), {
-      method: 'DELETE',
-    });
+  async deleteConversationBranch(
+    conversationId: string,
+    branchId: string,
+    workspaceId?: string,
+  ): Promise<void> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/branches/${branchId}`,
+        workspaceId,
+      ),
+      {
+        method: 'DELETE',
+      },
+    );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
@@ -2252,28 +2684,37 @@ export const api = {
   /**
    * Update conversation members
    */
-  async updateConversationMembers(conversationId: string, request: UpdateConversationMembersRequest): Promise<void> {
+  async updateConversationMembers(
+    conversationId: string,
+    request: UpdateConversationMembersRequest,
+  ): Promise<void> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/members`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
+      body: JSON.stringify(request),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Update failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Update failed', response.status, data.detail);
     }
   },
 
   /**
    * Get conversation tools
    */
-  async getConversationTools(conversationId: string): Promise<{ tool_config_ids: string[]; tool_group_ids: string[]; tool_selection_mode: 'default_all' | 'custom'; disabled_builtin_tool_ids: string[] }> {
+  async getConversationTools(conversationId: string): Promise<{
+    tool_config_ids: string[];
+    tool_group_ids: string[];
+    tool_selection_mode: 'default_all' | 'custom';
+    disabled_builtin_tool_ids: string[];
+  }> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tools`);
-    const data = await handleResponse<{ tool_config_ids: string[]; tool_group_ids?: string[]; tool_selection_mode?: 'default_all' | 'custom'; disabled_builtin_tool_ids?: string[] }>(response);
+    const data = await handleResponse<{
+      tool_config_ids: string[];
+      tool_group_ids?: string[];
+      tool_selection_mode?: 'default_all' | 'custom';
+      disabled_builtin_tool_ids?: string[];
+    }>(response);
     return {
       tool_config_ids: data.tool_config_ids || [],
       tool_group_ids: data.tool_group_ids || [],
@@ -2285,19 +2726,18 @@ export const api = {
   /**
    * Update conversation tools
    */
-  async updateConversationTools(conversationId: string, request: UpdateConversationToolsRequest): Promise<void> {
+  async updateConversationTools(
+    conversationId: string,
+    request: UpdateConversationToolsRequest,
+  ): Promise<void> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tools`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
+      body: JSON.stringify(request),
     });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Update failed',
-        response.status,
-        data.detail
-      );
+      throw new ApiError(data.detail || 'Update failed', response.status, data.detail);
     }
   },
 
@@ -2309,12 +2749,22 @@ export const api = {
    * Send a message to be processed in the background.
    * Returns a task object that can be polled for status.
    */
-  async sendMessageBackground(conversationId: string, message: string, workspaceId?: string): Promise<import('@/types').ChatTask> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/messages/background`, workspaceId), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withClientClock({ message })),
-    });
+  async sendMessageBackground(
+    conversationId: string,
+    message: string,
+    workspaceId?: string,
+  ): Promise<import('@/types').ChatTask> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/messages/background`,
+        workspaceId,
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock({ message })),
+      },
+    );
     return handleResponse<import('@/types').ChatTask>(response);
   },
 
@@ -2338,8 +2788,13 @@ export const api = {
   /**
    * Get the active task for a conversation, if any.
    */
-  async getConversationActiveTask(conversationId: string, workspaceId?: string): Promise<import('@/types').ChatTask | null> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/task`, workspaceId));
+  async getConversationActiveTask(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<import('@/types').ChatTask | null> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/task`, workspaceId),
+    );
     if (response.status === 204 || response.status === 404) {
       return null;
     }
@@ -2350,16 +2805,26 @@ export const api = {
   /**
    * Get combined active/interrupted task state for a conversation.
    */
-  async getConversationTaskState(conversationId: string, workspaceId?: string): Promise<import('@/types').ConversationTaskStateResponse> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/task-state`, workspaceId));
+  async getConversationTaskState(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<import('@/types').ConversationTaskStateResponse> {
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/task-state`, workspaceId),
+    );
     return handleResponse<import('@/types').ConversationTaskStateResponse>(response);
   },
 
-  async getWorkspaceChatState(workspaceId: string, selectedConversationId?: string | null): Promise<import('@/types').WorkspaceChatStateResponse> {
+  async getWorkspaceChatState(
+    workspaceId: string,
+    selectedConversationId?: string | null,
+  ): Promise<import('@/types').WorkspaceChatStateResponse> {
     const selectedQuery = selectedConversationId
       ? `?selected_conversation_id=${encodeURIComponent(selectedConversationId)}`
       : '';
-    const response = await apiFetch(`${API_BASE}/conversations/workspace/${workspaceId}/chat-state${selectedQuery}`);
+    const response = await apiFetch(
+      `${API_BASE}/conversations/workspace/${workspaceId}/chat-state${selectedQuery}`,
+    );
     return handleResponse<import('@/types').WorkspaceChatStateResponse>(response);
   },
 
@@ -2367,8 +2832,16 @@ export const api = {
    * Get the last interrupted task for a conversation, if any.
    * Used to show Continue button after server restart.
    */
-  async getConversationInterruptedTask(conversationId: string, workspaceId?: string): Promise<import('@/types').ChatTask | null> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/interrupted-task`, workspaceId));
+  async getConversationInterruptedTask(
+    conversationId: string,
+    workspaceId?: string,
+  ): Promise<import('@/types').ChatTask | null> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${conversationId}/interrupted-task`,
+        workspaceId,
+      ),
+    );
     if (response.status === 204 || response.status === 404) {
       return null;
     }
@@ -2380,7 +2853,9 @@ export const api = {
    * Get conversation IDs that have interrupted tasks in a workspace (batch).
    */
   async getWorkspaceInterruptedConversationIds(workspaceId: string): Promise<string[]> {
-    const response = await apiFetch(`${API_BASE}/conversations/workspace/${workspaceId}/interrupted-conversation-ids`);
+    const response = await apiFetch(
+      `${API_BASE}/conversations/workspace/${workspaceId}/interrupted-conversation-ids`,
+    );
     return handleResponse<string[]>(response);
   },
 
@@ -2391,10 +2866,15 @@ export const api = {
    * @param sinceVersion Optional version to enable delta polling - if provided and
    *                     version hasn't changed, streaming_state will be null to reduce data transfer
    */
-  async getChatTask(taskId: string, sinceVersion?: number, workspaceId?: string): Promise<import('@/types').ChatTask> {
-    const url = sinceVersion !== undefined
-      ? `${API_BASE}/tasks/${taskId}?since_version=${sinceVersion}`
-      : `${API_BASE}/tasks/${taskId}`;
+  async getChatTask(
+    taskId: string,
+    sinceVersion?: number,
+    workspaceId?: string,
+  ): Promise<import('@/types').ChatTask> {
+    const url =
+      sinceVersion !== undefined
+        ? `${API_BASE}/tasks/${taskId}?since_version=${sinceVersion}`
+        : `${API_BASE}/tasks/${taskId}`;
     const response = await apiFetch(withWorkspaceQuery(url, workspaceId));
     return handleResponse<import('@/types').ChatTask>(response);
   },
@@ -2402,10 +2882,16 @@ export const api = {
   /**
    * Stream updates for a chat task via SSE.
    */
-  async *streamChatTask(taskId: string, sinceVersion?: number, signal?: AbortSignal, workspaceId?: string): AsyncGenerator<any, void, unknown> {
-    const url = sinceVersion !== undefined
-      ? `${API_BASE}/tasks/${taskId}/stream?since_version=${sinceVersion}`
-      : `${API_BASE}/tasks/${taskId}/stream`;
+  async *streamChatTask(
+    taskId: string,
+    sinceVersion?: number,
+    signal?: AbortSignal,
+    workspaceId?: string,
+  ): AsyncGenerator<ChatTaskStreamEvent, void, unknown> {
+    const url =
+      sinceVersion !== undefined
+        ? `${API_BASE}/tasks/${taskId}/stream?since_version=${sinceVersion}`
+        : `${API_BASE}/tasks/${taskId}/stream`;
 
     const response = await apiFetch(withWorkspaceQuery(url, workspaceId), {
       method: 'GET',
@@ -2417,7 +2903,7 @@ export const api = {
       throw new ApiError(
         data.detail || `Stream failed: ${response.status}`,
         response.status,
-        data.detail
+        data.detail,
       );
     }
 
@@ -2439,8 +2925,10 @@ export const api = {
         if (line.trim().startsWith('data: ')) {
           const data = line.trim().slice(6);
           try {
-             yield JSON.parse(data);
-          } catch { }
+            yield JSON.parse(data);
+          } catch {
+            // Ignore malformed SSE data lines.
+          }
         }
       }
     }
@@ -2450,9 +2938,12 @@ export const api = {
    * Cancel a running chat task.
    */
   async cancelChatTask(taskId: string, workspaceId?: string): Promise<import('@/types').ChatTask> {
-    const response = await apiFetch(withWorkspaceQuery(`${API_BASE}/tasks/${taskId}/cancel`, workspaceId), {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      withWorkspaceQuery(`${API_BASE}/tasks/${taskId}/cancel`, workspaceId),
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<import('@/types').ChatTask>(response);
   },
 
@@ -2460,7 +2951,11 @@ export const api = {
   // User Space API
   // =========================================================================
 
-  async listUserSpaceWorkspaces(offset = 0, limit = 50, includeAll = false): Promise<PaginatedWorkspacesResponse> {
+  async listUserSpaceWorkspaces(
+    offset = 0,
+    limit = 50,
+    includeAll = false,
+  ): Promise<PaginatedWorkspacesResponse> {
     const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     if (includeAll) params.set('include_all', 'true');
     const response = await apiFetch(`${API_BASE}/userspace/workspaces?${params}`);
@@ -2477,7 +2972,9 @@ export const api = {
     return handleResponse<ToolGroup[]>(response);
   },
 
-  async createUserSpaceWorkspace(request: CreateUserSpaceWorkspaceRequest): Promise<UserSpaceWorkspace> {
+  async createUserSpaceWorkspace(
+    request: CreateUserSpaceWorkspaceRequest,
+  ): Promise<UserSpaceWorkspace> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2486,7 +2983,9 @@ export const api = {
     return handleResponse<UserSpaceWorkspace>(response);
   },
 
-  async queueUserSpaceWorkspaceCreate(request: CreateUserSpaceWorkspaceRequest): Promise<UserSpaceWorkspaceCreateTask> {
+  async queueUserSpaceWorkspaceCreate(
+    request: CreateUserSpaceWorkspaceRequest,
+  ): Promise<UserSpaceWorkspaceCreateTask> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/create-task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2496,21 +2995,33 @@ export const api = {
   },
 
   async getUserSpaceWorkspaceCreateTask(taskId: string): Promise<UserSpaceWorkspaceCreateTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-create-tasks/${encodeURIComponent(taskId)}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-create-tasks/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceWorkspaceCreateTask>(response);
   },
 
-  async queueUserSpaceWorkspaceDuplicate(workspaceId: string, request: DuplicateUserSpaceWorkspaceRequest = {}): Promise<UserSpaceWorkspaceDuplicateTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/duplicate-task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async queueUserSpaceWorkspaceDuplicate(
+    workspaceId: string,
+    request: DuplicateUserSpaceWorkspaceRequest = {},
+  ): Promise<UserSpaceWorkspaceDuplicateTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/duplicate-task`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceDuplicateTask>(response);
   },
 
-  async getUserSpaceWorkspaceDuplicateTask(taskId: string): Promise<UserSpaceWorkspaceDuplicateTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-duplicate-tasks/${encodeURIComponent(taskId)}`);
+  async getUserSpaceWorkspaceDuplicateTask(
+    taskId: string,
+  ): Promise<UserSpaceWorkspaceDuplicateTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-duplicate-tasks/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceWorkspaceDuplicateTask>(response);
   },
 
@@ -2518,28 +3029,33 @@ export const api = {
     workspaceId: string,
     request: UserSpaceWorkspaceArchiveExportRequest,
   ): Promise<UserSpaceWorkspaceArchiveExportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/archive/export-task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/archive/export-task`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceArchiveExportTask>(response);
   },
 
-  async getUserSpaceWorkspaceArchiveExportTask(taskId: string): Promise<UserSpaceWorkspaceArchiveExportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}`);
+  async getUserSpaceWorkspaceArchiveExportTask(
+    taskId: string,
+  ): Promise<UserSpaceWorkspaceArchiveExportTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceWorkspaceArchiveExportTask>(response);
   },
 
   async downloadUserSpaceWorkspaceArchiveExportTask(taskId: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}/download`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}/download`,
+    );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new ApiError(
-        data.detail || 'Archive download failed',
-        response.status,
-        data.detail,
-      );
+      throw new ApiError(data.detail || 'Archive download failed', response.status, data.detail);
     }
 
     const contentDisposition = response.headers.get('content-disposition') || '';
@@ -2570,16 +3086,21 @@ export const api = {
   async listUserSpaceWorkspaceArchiveExports(
     workspaceId: string,
   ): Promise<UserSpaceWorkspaceArchiveExportListResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/archive-exports`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/archive-exports`,
+    );
     return handleResponse<UserSpaceWorkspaceArchiveExportListResponse>(response);
   },
 
   async deleteUserSpaceWorkspaceArchiveExportTask(
     taskId: string,
   ): Promise<DeleteUserSpaceWorkspaceArchiveExportResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-archive-export-tasks/${encodeURIComponent(taskId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserSpaceWorkspaceArchiveExportResponse>(response);
   },
 
@@ -2587,15 +3108,22 @@ export const api = {
     workspaceId: string,
     formData: FormData,
   ): Promise<UserSpaceWorkspaceArchiveImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/archive/import-task`, {
-      method: 'POST',
-      body: formData,
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/archive/import-task`,
+      {
+        method: 'POST',
+        body: formData,
+      },
+    );
     return handleResponse<UserSpaceWorkspaceArchiveImportTask>(response);
   },
 
-  async getUserSpaceWorkspaceArchiveImportTask(taskId: string): Promise<UserSpaceWorkspaceArchiveImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-archive-import-tasks/${encodeURIComponent(taskId)}`);
+  async getUserSpaceWorkspaceArchiveImportTask(
+    taskId: string,
+  ): Promise<UserSpaceWorkspaceArchiveImportTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-archive-import-tasks/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceWorkspaceArchiveImportTask>(response);
   },
 
@@ -2603,11 +3131,14 @@ export const api = {
     workspaceId: string,
     request: UserSpaceWorkspaceScmImportRequest,
   ): Promise<UserSpaceWorkspaceScmImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/import-task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/import-task`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceScmImportTask>(response);
   },
 
@@ -2615,16 +3146,23 @@ export const api = {
     workspaceId: string,
     request: UserSpaceWorkspaceScmPreviewRequest,
   ): Promise<UserSpaceWorkspaceScmImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-import-task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-import-task`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceScmImportTask>(response);
   },
 
-  async getUserSpaceWorkspaceScmImportTask(taskId: string): Promise<UserSpaceWorkspaceScmImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-scm-import-tasks/${encodeURIComponent(taskId)}`);
+  async getUserSpaceWorkspaceScmImportTask(
+    taskId: string,
+  ): Promise<UserSpaceWorkspaceScmImportTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-scm-import-tasks/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceWorkspaceScmImportTask>(response);
   },
 
@@ -2633,12 +3171,19 @@ export const api = {
     return handleResponse<UserSpaceWorkspace>(response);
   },
 
-  async getUserSpaceWorkspaceCollabPresence(workspaceId: string): Promise<UserSpaceCollabPresenceResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/collab/presence`);
+  async getUserSpaceWorkspaceCollabPresence(
+    workspaceId: string,
+  ): Promise<UserSpaceCollabPresenceResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/collab/presence`,
+    );
     return handleResponse<UserSpaceCollabPresenceResponse>(response);
   },
 
-  async updateUserSpaceWorkspace(workspaceId: string, request: UpdateUserSpaceWorkspaceRequest): Promise<UserSpaceWorkspace> {
+  async updateUserSpaceWorkspace(
+    workspaceId: string,
+    request: UpdateUserSpaceWorkspaceRequest,
+  ): Promise<UserSpaceWorkspace> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2655,16 +3200,23 @@ export const api = {
   },
 
   async getUserSpaceWorkspaceDeleteTask(taskId: string): Promise<UserSpaceWorkspaceDeleteTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-delete-tasks/${encodeURIComponent(taskId)}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-delete-tasks/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceWorkspaceDeleteTask>(response);
   },
 
-  async getUserSpaceWorkspaceScm(workspaceId: string): Promise<UserSpaceWorkspaceScmConnectionResponse> {
+  async getUserSpaceWorkspaceScm(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceScmConnectionResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm`);
     return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
   },
 
-  async updateUserSpaceWorkspaceScm(workspaceId: string, request: UserSpaceWorkspaceScmConnectionRequest): Promise<UserSpaceWorkspaceScmConnectionResponse> {
+  async updateUserSpaceWorkspaceScm(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmConnectionRequest,
+  ): Promise<UserSpaceWorkspaceScmConnectionResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2673,50 +3225,79 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
   },
 
-  async disconnectUserSpaceWorkspaceScm(workspaceId: string): Promise<UserSpaceWorkspaceScmConnectionResponse> {
+  async disconnectUserSpaceWorkspaceScm(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceScmConnectionResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm`, {
       method: 'DELETE',
     });
     return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
   },
 
-  async checkUserSpaceWorkspaceScmRepoVisibility(workspaceId: string, request: CheckRepoVisibilityRequest): Promise<RepoVisibilityResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/check-visibility`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async checkUserSpaceWorkspaceScmRepoVisibility(
+    workspaceId: string,
+    request: CheckRepoVisibilityRequest,
+  ): Promise<RepoVisibilityResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/check-visibility`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<RepoVisibilityResponse>(response);
   },
 
-  async fetchUserSpaceWorkspaceScmBranches(workspaceId: string, request: FetchBranchesRequest): Promise<FetchBranchesResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/fetch-branches`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async fetchUserSpaceWorkspaceScmBranches(
+    workspaceId: string,
+    request: FetchBranchesRequest,
+  ): Promise<FetchBranchesResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/fetch-branches`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<FetchBranchesResponse>(response);
   },
 
-  async previewUserSpaceWorkspaceScmSync(workspaceId: string, request: UserSpaceWorkspaceScmPreviewRequest): Promise<UserSpaceWorkspaceScmPreviewResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-sync`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async previewUserSpaceWorkspaceScmSync(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+  ): Promise<UserSpaceWorkspaceScmPreviewResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-sync`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceScmPreviewResponse>(response);
   },
 
-  async previewUserSpaceWorkspaceScmImport(workspaceId: string, request: UserSpaceWorkspaceScmPreviewRequest): Promise<UserSpaceWorkspaceScmPreviewResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-import`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async previewUserSpaceWorkspaceScmImport(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+  ): Promise<UserSpaceWorkspaceScmPreviewResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-import`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceScmPreviewResponse>(response);
   },
 
-  async importUserSpaceWorkspaceFromScm(workspaceId: string, request: UserSpaceWorkspaceScmImportRequest): Promise<UserSpaceWorkspaceScmSyncResponse> {
+  async importUserSpaceWorkspaceFromScm(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmImportRequest,
+  ): Promise<UserSpaceWorkspaceScmSyncResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2725,16 +3306,25 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceScmSyncResponse>(response);
   },
 
-  async previewUserSpaceWorkspaceScmExport(workspaceId: string, request: UserSpaceWorkspaceScmPreviewRequest): Promise<UserSpaceWorkspaceScmPreviewResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-export`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async previewUserSpaceWorkspaceScmExport(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmPreviewRequest,
+  ): Promise<UserSpaceWorkspaceScmPreviewResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/preview-export`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceScmPreviewResponse>(response);
   },
 
-  async exportUserSpaceWorkspaceToScm(workspaceId: string, request: UserSpaceWorkspaceScmExportRequest): Promise<UserSpaceWorkspaceScmSyncResponse> {
+  async exportUserSpaceWorkspaceToScm(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmExportRequest,
+  ): Promise<UserSpaceWorkspaceScmSyncResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2743,34 +3333,57 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceScmSyncResponse>(response);
   },
 
-  async updateUserSpaceWorkspaceScmSettings(workspaceId: string, request: UserSpaceWorkspaceScmSettingsRequest): Promise<UserSpaceWorkspaceScmConnectionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/scm/settings`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async updateUserSpaceWorkspaceScmSettings(
+    workspaceId: string,
+    request: UserSpaceWorkspaceScmSettingsRequest,
+  ): Promise<UserSpaceWorkspaceScmConnectionResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/scm/settings`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
   },
 
-  async importSqlToWorkspaceSqlite(workspaceId: string, formData: FormData): Promise<UserSpaceWorkspaceSqliteImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/sqlite-import`, {
-      method: 'POST',
-      body: formData,
-    });
+  async importSqlToWorkspaceSqlite(
+    workspaceId: string,
+    formData: FormData,
+  ): Promise<UserSpaceWorkspaceSqliteImportTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite-import`,
+      {
+        method: 'POST',
+        body: formData,
+      },
+    );
     return handleResponse<UserSpaceWorkspaceSqliteImportTask>(response);
   },
 
-  async getUserSpaceWorkspaceSqliteImportTask(taskId: string): Promise<UserSpaceWorkspaceSqliteImportTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspace-sqlite-import-tasks/${taskId}`);
+  async getUserSpaceWorkspaceSqliteImportTask(
+    taskId: string,
+  ): Promise<UserSpaceWorkspaceSqliteImportTask> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspace-sqlite-import-tasks/${taskId}`,
+    );
     return handleResponse<UserSpaceWorkspaceSqliteImportTask>(response);
   },
 
-  async getLatestUserSpaceWorkspaceSqliteImportTask(workspaceId: string): Promise<UserSpaceWorkspaceSqliteImportTask | null> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/sqlite-import-task`);
+  async getLatestUserSpaceWorkspaceSqliteImportTask(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceSqliteImportTask | null> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite-import-task`,
+    );
     return handleResponse<UserSpaceWorkspaceSqliteImportTask | null>(response);
   },
 
-  async updateUserSpaceWorkspaceMembers(workspaceId: string, request: UpdateUserSpaceWorkspaceMembersRequest): Promise<UserSpaceWorkspace> {
+  async updateUserSpaceWorkspaceMembers(
+    workspaceId: string,
+    request: UpdateUserSpaceWorkspaceMembersRequest,
+  ): Promise<UserSpaceWorkspace> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/members`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2779,25 +3392,42 @@ export const api = {
     return handleResponse<UserSpaceWorkspace>(response);
   },
 
-  async listUserSpaceWorkspaceAgentGrants(workspaceId: string, direction: 'source' | 'target' = 'source'): Promise<WorkspaceAgentGrant[]> {
+  async listUserSpaceWorkspaceAgentGrants(
+    workspaceId: string,
+    direction: 'source' | 'target' = 'source',
+  ): Promise<WorkspaceAgentGrant[]> {
     const params = new URLSearchParams({ direction });
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/agent-grants?${params.toString()}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/agent-grants?${params.toString()}`,
+    );
     return handleResponse<WorkspaceAgentGrant[]>(response);
   },
 
-  async upsertUserSpaceWorkspaceAgentGrant(workspaceId: string, request: UpsertWorkspaceAgentGrantRequest): Promise<WorkspaceAgentGrant> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/agent-grants`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async upsertUserSpaceWorkspaceAgentGrant(
+    workspaceId: string,
+    request: UpsertWorkspaceAgentGrantRequest,
+  ): Promise<WorkspaceAgentGrant> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/agent-grants`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceAgentGrant>(response);
   },
 
-  async revokeUserSpaceWorkspaceAgentGrant(workspaceId: string, targetWorkspaceId: string): Promise<RevokeWorkspaceAgentGrantResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/agent-grants/${encodeURIComponent(targetWorkspaceId)}`, {
-      method: 'DELETE',
-    });
+  async revokeUserSpaceWorkspaceAgentGrant(
+    workspaceId: string,
+    targetWorkspaceId: string,
+  ): Promise<RevokeWorkspaceAgentGrantResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/agent-grants/${encodeURIComponent(targetWorkspaceId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<RevokeWorkspaceAgentGrantResponse>(response);
   },
 
@@ -2806,7 +3436,10 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceEnvVar[]>(response);
   },
 
-  async upsertUserSpaceWorkspaceEnvVar(workspaceId: string, request: UpsertUserSpaceWorkspaceEnvVarRequest): Promise<UserSpaceWorkspaceEnvVar> {
+  async upsertUserSpaceWorkspaceEnvVar(
+    workspaceId: string,
+    request: UpsertUserSpaceWorkspaceEnvVarRequest,
+  ): Promise<UserSpaceWorkspaceEnvVar> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/env-vars`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2815,10 +3448,16 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceEnvVar>(response);
   },
 
-  async deleteUserSpaceWorkspaceEnvVar(workspaceId: string, key: string): Promise<DeleteUserSpaceWorkspaceEnvVarResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/env-vars/${encodeURIComponent(key)}`, {
-      method: 'DELETE',
-    });
+  async deleteUserSpaceWorkspaceEnvVar(
+    workspaceId: string,
+    key: string,
+  ): Promise<DeleteUserSpaceWorkspaceEnvVarResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/env-vars/${encodeURIComponent(key)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserSpaceWorkspaceEnvVarResponse>(response);
   },
 
@@ -2827,7 +3466,9 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceEnvVar[]>(response);
   },
 
-  async upsertUserSpaceGlobalEnvVar(request: UpsertUserSpaceGlobalEnvVarRequest): Promise<UserSpaceWorkspaceEnvVar> {
+  async upsertUserSpaceGlobalEnvVar(
+    request: UpsertUserSpaceGlobalEnvVarRequest,
+  ): Promise<UserSpaceWorkspaceEnvVar> {
     const response = await apiFetch(`${API_BASE}/userspace/admin/env-vars`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2837,9 +3478,12 @@ export const api = {
   },
 
   async deleteUserSpaceGlobalEnvVar(key: string): Promise<DeleteUserSpaceGlobalEnvVarResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/admin/env-vars/${encodeURIComponent(key)}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/admin/env-vars/${encodeURIComponent(key)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserSpaceGlobalEnvVarResponse>(response);
   },
 
@@ -2850,8 +3494,12 @@ export const api = {
 
   // ----- Workspace SQLite inspector -----
 
-  async listUserSpaceSqliteDatabases(workspaceId: string): Promise<SqliteInspectorDatabaseListResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases`);
+  async listUserSpaceSqliteDatabases(
+    workspaceId: string,
+  ): Promise<SqliteInspectorDatabaseListResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases`,
+    );
     return handleResponse<SqliteInspectorDatabaseListResponse>(response);
   },
 
@@ -2859,11 +3507,14 @@ export const api = {
     workspaceId: string,
     request: SqliteInspectorInitializeRequest = {},
   ): Promise<SqliteInspectorInitializeResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<SqliteInspectorInitializeResponse>(response);
   },
 
@@ -2963,7 +3614,11 @@ export const api = {
     return handleResponse<SqliteInspectorDropTableResponse>(response);
   },
 
-  async exportUserSpaceSqliteTable(workspaceId: string, databaseName: string, tableName: string): Promise<void> {
+  async exportUserSpaceSqliteTable(
+    workspaceId: string,
+    databaseName: string,
+    tableName: string,
+  ): Promise<void> {
     const response = await apiFetch(
       `${API_BASE}/userspace/workspaces/${workspaceId}/sqlite/databases/${encodeURIComponent(databaseName)}/tables/${encodeURIComponent(tableName)}/export`,
     );
@@ -3076,12 +3731,18 @@ export const api = {
   },
 
   async getUserSpaceRuntimeRestartTask(taskId: string): Promise<UserSpaceRuntimeRestartBatchTask> {
-    const response = await apiFetch(`${API_BASE}/userspace/admin/runtime-restart-task/${encodeURIComponent(taskId)}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/admin/runtime-restart-task/${encodeURIComponent(taskId)}`,
+    );
     return handleResponse<UserSpaceRuntimeRestartBatchTask>(response);
   },
 
-  async getUserSpaceObjectStorageConfig(workspaceId: string): Promise<UserSpaceObjectStorageConfig> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/object-storage`);
+  async getUserSpaceObjectStorageConfig(
+    workspaceId: string,
+  ): Promise<UserSpaceObjectStorageConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage`,
+    );
     return handleResponse<UserSpaceObjectStorageConfig>(response);
   },
 
@@ -3089,11 +3750,14 @@ export const api = {
     workspaceId: string,
     request: CreateUserSpaceObjectStorageBucketRequest,
   ): Promise<UserSpaceObjectStorageConfig> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceObjectStorageConfig>(response);
   },
 
@@ -3102,11 +3766,14 @@ export const api = {
     bucketName: string,
     request: UpdateUserSpaceObjectStorageBucketRequest,
   ): Promise<UserSpaceObjectStorageConfig> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceObjectStorageConfig>(response);
   },
 
@@ -3114,9 +3781,12 @@ export const api = {
     workspaceId: string,
     bucketName: string,
   ): Promise<DeleteUserSpaceObjectStorageBucketResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/object-storage/buckets/${encodeURIComponent(bucketName)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserSpaceObjectStorageBucketResponse>(response);
   },
 
@@ -3125,7 +3795,9 @@ export const api = {
     return handleResponse<UserspaceMountSource[]>(response);
   },
 
-  async createUserspaceMountSource(request: CreateUserspaceMountSourceRequest): Promise<UserspaceMountSource> {
+  async createUserspaceMountSource(
+    request: CreateUserspaceMountSourceRequest,
+  ): Promise<UserspaceMountSource> {
     const response = await apiFetch(`${API_BASE}/userspace/mount-sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3138,23 +3810,35 @@ export const api = {
     mountSourceId: string,
     request: UpdateUserspaceMountSourceRequest,
   ): Promise<UserspaceMountSource> {
-    const response = await apiFetch(`${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserspaceMountSource>(response);
   },
 
-  async getMountSourceAffectedWorkspaces(mountSourceId: string): Promise<MountSourceAffectedWorkspacesResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/affected-workspaces`);
+  async getMountSourceAffectedWorkspaces(
+    mountSourceId: string,
+  ): Promise<MountSourceAffectedWorkspacesResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/affected-workspaces`,
+    );
     return handleResponse<MountSourceAffectedWorkspacesResponse>(response);
   },
 
-  async deleteUserspaceMountSource(mountSourceId: string): Promise<DeleteUserspaceMountSourceResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}`, {
-      method: 'DELETE',
-    });
+  async deleteUserspaceMountSource(
+    mountSourceId: string,
+  ): Promise<DeleteUserspaceMountSourceResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserspaceMountSourceResponse>(response);
   },
 
@@ -3162,11 +3846,14 @@ export const api = {
     mountSourceId: string,
     request: BrowseUserspaceMountSourceRequest,
   ): Promise<WorkspaceMountBrowseResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/browse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/browse`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceMountBrowseResponse>(response);
   },
 
@@ -3174,11 +3861,14 @@ export const api = {
     toolConfigId: string,
     request: BrowseUserspaceMountSourceRequest,
   ): Promise<WorkspaceMountBrowseResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/tool-configs/${encodeURIComponent(toolConfigId)}/browse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/tool-configs/${encodeURIComponent(toolConfigId)}/browse`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceMountBrowseResponse>(response);
   },
 
@@ -3186,11 +3876,14 @@ export const api = {
     mountSourceId: string,
     request: BrowseUserspaceMountSourceRequest,
   ): Promise<WorkspaceMountDirectoryEntry> {
-    const response = await apiFetch(`${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/directory`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/mount-sources/${encodeURIComponent(mountSourceId)}/directory`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceMountDirectoryEntry>(response);
   },
 
@@ -3245,9 +3938,12 @@ export const api = {
   },
 
   async disconnectUserCloudOAuth(accountId: string): Promise<DeleteUserspaceMountSourceResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/cloud-oauth/accounts/${encodeURIComponent(accountId)}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/cloud-oauth/accounts/${encodeURIComponent(accountId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserspaceMountSourceResponse>(response);
   },
 
@@ -3256,7 +3952,9 @@ export const api = {
     return handleResponse<UserspaceMountSource[]>(response);
   },
 
-  async createUserUserspaceMountSource(request: CreateUserUserspaceMountSourceRequest): Promise<UserspaceMountSource> {
+  async createUserUserspaceMountSource(
+    request: CreateUserUserspaceMountSourceRequest,
+  ): Promise<UserspaceMountSource> {
     const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3269,18 +3967,26 @@ export const api = {
     mountSourceId: string,
     request: UpdateUserUserspaceMountSourceRequest,
   ): Promise<UserspaceMountSource> {
-    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserspaceMountSource>(response);
   },
 
-  async deleteUserUserspaceMountSource(mountSourceId: string): Promise<DeleteUserspaceMountSourceResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}`, {
-      method: 'DELETE',
-    });
+  async deleteUserUserspaceMountSource(
+    mountSourceId: string,
+  ): Promise<DeleteUserspaceMountSourceResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteUserspaceMountSourceResponse>(response);
   },
 
@@ -3288,11 +3994,14 @@ export const api = {
     mountSourceId: string,
     request: BrowseUserspaceMountSourceRequest,
   ): Promise<WorkspaceMountBrowseResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}/browse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/user-mount-sources/${encodeURIComponent(mountSourceId)}/browse`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceMountBrowseResponse>(response);
   },
 
@@ -3304,7 +4013,9 @@ export const api = {
   },
 
   async listMountableSources(workspaceId: string): Promise<MountableSource[]> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mountable-sources`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mountable-sources`,
+    );
     return handleResponse<MountableSource[]>(response);
   },
 
@@ -3312,15 +4023,21 @@ export const api = {
     workspaceId: string,
     request: BrowseWorkspaceMountSourceRequest,
   ): Promise<WorkspaceMountBrowseResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/browse`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mounts/browse`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceMountBrowseResponse>(response);
   },
 
-  async createWorkspaceMount(workspaceId: string, request: CreateWorkspaceMountRequest): Promise<WorkspaceMount> {
+  async createWorkspaceMount(
+    workspaceId: string,
+    request: CreateWorkspaceMountRequest,
+  ): Promise<WorkspaceMount> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3334,18 +4051,27 @@ export const api = {
     mountId: string,
     request: UpdateWorkspaceMountRequest,
   ): Promise<WorkspaceMount> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<WorkspaceMount>(response);
   },
 
-  async deleteWorkspaceMount(workspaceId: string, mountId: string): Promise<DeleteWorkspaceMountResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}`, {
-      method: 'DELETE',
-    });
+  async deleteWorkspaceMount(
+    workspaceId: string,
+    mountId: string,
+  ): Promise<DeleteWorkspaceMountResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<DeleteWorkspaceMountResponse>(response);
   },
 
@@ -3354,11 +4080,14 @@ export const api = {
     mountId: string,
     request?: WorkspaceMountSyncPreviewRequest,
   ): Promise<WorkspaceMountSyncPreviewResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}/sync-preview`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request ?? {}),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}/sync-preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request ?? {}),
+      },
+    );
     return handleResponse<WorkspaceMountSyncPreviewResponse>(response);
   },
 
@@ -3367,17 +4096,20 @@ export const api = {
     mountId: string,
     request?: WorkspaceMountSyncRequest,
   ): Promise<WorkspaceMountSyncResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}/sync`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request ?? {}),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/mounts/${encodeURIComponent(mountId)}/sync`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request ?? {}),
+      },
+    );
     return handleResponse<WorkspaceMountSyncResponse>(response);
   },
 
   async listUserSpaceFiles(
     workspaceId: string,
-    options?: { includeDirs?: boolean }
+    options?: { includeDirs?: boolean },
   ): Promise<UserSpaceFileInfo[]> {
     const params = new URLSearchParams();
     if (options?.includeDirs) {
@@ -3385,29 +4117,43 @@ export const api = {
     }
     const query = params.toString();
     const querySuffix = query ? `?${query}` : '';
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files${querySuffix}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/files${querySuffix}`,
+    );
     const data = await handleResponse<UserSpaceFileInfo[]>(response);
     return data;
   },
 
   async getUserSpaceFile(workspaceId: string, filePath: string): Promise<UserSpaceFile> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files/${encodeFilePath(filePath)}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/files/${encodeFilePath(filePath)}`,
+    );
     return handleResponse<UserSpaceFile>(response);
   },
 
-  async upsertUserSpaceFile(workspaceId: string, filePath: string, request: UpsertUserSpaceFileRequest): Promise<UserSpaceFile> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files/${encodeFilePath(filePath)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async upsertUserSpaceFile(
+    workspaceId: string,
+    filePath: string,
+    request: UpsertUserSpaceFileRequest,
+  ): Promise<UserSpaceFile> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/files/${encodeFilePath(filePath)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceFile>(response);
   },
 
   async deleteUserSpaceFile(workspaceId: string, filePath: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/files/${encodeFilePath(filePath)}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/files/${encodeFilePath(filePath)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new ApiError(data.detail || 'Delete failed', response.status, data.detail);
@@ -3415,30 +4161,49 @@ export const api = {
   },
 
   async getUserSpaceChangedFileState(workspaceId: string): Promise<UserSpaceChangedFileState> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-state`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-state`,
+    );
     return handleResponse<UserSpaceChangedFileState>(response);
   },
 
-  async acknowledgeUserSpaceChangedFilePath(workspaceId: string, request: UserSpaceAcknowledgeChangedFilePathRequest): Promise<UserSpaceChangedFileState> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-acknowledgements`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async acknowledgeUserSpaceChangedFilePath(
+    workspaceId: string,
+    request: UserSpaceAcknowledgeChangedFilePathRequest,
+  ): Promise<UserSpaceChangedFileState> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-acknowledgements`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceChangedFileState>(response);
   },
 
-  async clearUserSpaceChangedFileAcknowledgement(workspaceId: string, filePath: string): Promise<UserSpaceChangedFileState> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-acknowledgements/${encodeFilePath(filePath)}`, {
-      method: 'DELETE',
-    });
+  async clearUserSpaceChangedFileAcknowledgement(
+    workspaceId: string,
+    filePath: string,
+  ): Promise<UserSpaceChangedFileState> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-acknowledgements/${encodeFilePath(filePath)}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<UserSpaceChangedFileState>(response);
   },
 
-  async clearUserSpaceChangedFileAcknowledgements(workspaceId: string): Promise<UserSpaceChangedFileState> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-acknowledgements`, {
-      method: 'DELETE',
-    });
+  async clearUserSpaceChangedFileAcknowledgements(
+    workspaceId: string,
+  ): Promise<UserSpaceChangedFileState> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/changed-file-acknowledgements`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<UserSpaceChangedFileState>(response);
   },
 
@@ -3447,7 +4212,10 @@ export const api = {
     return handleResponse<UserSpaceSnapshot[]>(response);
   },
 
-  async createUserSpaceSnapshot(workspaceId: string, request: CreateUserSpaceSnapshotRequest): Promise<UserSpaceSnapshot> {
+  async createUserSpaceSnapshot(
+    workspaceId: string,
+    request: CreateUserSpaceSnapshotRequest,
+  ): Promise<UserSpaceSnapshot> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3457,94 +4225,165 @@ export const api = {
   },
 
   async getUserSpaceSnapshotTimeline(workspaceId: string): Promise<UserSpaceSnapshotTimeline> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/timeline`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/timeline`,
+    );
     return handleResponse<UserSpaceSnapshotTimeline>(response);
   },
 
-  async getUserSpaceSnapshotDiffSummary(workspaceId: string, snapshotId: string): Promise<UserSpaceSnapshotDiffSummary> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}/diff-summary`);
+  async getUserSpaceSnapshotDiffSummary(
+    workspaceId: string,
+    snapshotId: string,
+  ): Promise<UserSpaceSnapshotDiffSummary> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}/diff-summary`,
+    );
     return handleResponse<UserSpaceSnapshotDiffSummary>(response);
   },
 
-  async getUserSpaceSnapshotFileDiff(workspaceId: string, snapshotId: string, filePath: string): Promise<UserSpaceSnapshotFileDiff> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}/file-diff?file_path=${encodeURIComponent(filePath)}`);
+  async getUserSpaceSnapshotFileDiff(
+    workspaceId: string,
+    snapshotId: string,
+    filePath: string,
+  ): Promise<UserSpaceSnapshotFileDiff> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}/file-diff?file_path=${encodeURIComponent(filePath)}`,
+    );
     return handleResponse<UserSpaceSnapshotFileDiff>(response);
   },
 
-  async updateUserSpaceSnapshot(workspaceId: string, snapshotId: string, request: UpdateUserSpaceSnapshotRequest): Promise<UserSpaceSnapshot> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async updateUserSpaceSnapshot(
+    workspaceId: string,
+    snapshotId: string,
+    request: UpdateUserSpaceSnapshotRequest,
+  ): Promise<UserSpaceSnapshot> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceSnapshot>(response);
   },
 
-  async restoreUserSpaceSnapshot(workspaceId: string, snapshotId: string): Promise<RestoreUserSpaceSnapshotResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}/restore`, {
-      method: 'POST',
-    });
+  async restoreUserSpaceSnapshot(
+    workspaceId: string,
+    snapshotId: string,
+  ): Promise<RestoreUserSpaceSnapshotResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}/restore`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<RestoreUserSpaceSnapshotResponse>(response);
   },
 
-  async restorePreviousUserSpaceSnapshot(workspaceId: string): Promise<RestoreUserSpaceSnapshotResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/previous`, {
-      method: 'POST',
-    });
+  async restorePreviousUserSpaceSnapshot(
+    workspaceId: string,
+  ): Promise<RestoreUserSpaceSnapshotResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/previous`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<RestoreUserSpaceSnapshotResponse>(response);
   },
 
-  async restoreNextUserSpaceSnapshot(workspaceId: string): Promise<RestoreUserSpaceSnapshotResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/next`, {
-      method: 'POST',
-    });
+  async restoreNextUserSpaceSnapshot(
+    workspaceId: string,
+  ): Promise<RestoreUserSpaceSnapshotResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/next`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<RestoreUserSpaceSnapshotResponse>(response);
   },
 
-  async switchUserSpaceSnapshotBranch(workspaceId: string, request: SwitchUserSpaceSnapshotBranchRequest): Promise<UserSpaceSnapshotTimeline> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/switch-branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async switchUserSpaceSnapshotBranch(
+    workspaceId: string,
+    request: SwitchUserSpaceSnapshotBranchRequest,
+  ): Promise<UserSpaceSnapshotTimeline> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/switch-branch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceSnapshotTimeline>(response);
   },
 
-  async createUserSpaceSnapshotBranch(workspaceId: string, request: CreateUserSpaceSnapshotBranchRequest): Promise<UserSpaceSnapshotTimeline> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/create-branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async createUserSpaceSnapshotBranch(
+    workspaceId: string,
+    request: CreateUserSpaceSnapshotBranchRequest,
+  ): Promise<UserSpaceSnapshotTimeline> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/create-branch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceSnapshotTimeline>(response);
   },
 
-  async promoteBranchToMain(workspaceId: string, request: PromoteUserSpaceSnapshotBranchRequest): Promise<UserSpaceSnapshotTimeline> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/promote-branch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async promoteBranchToMain(
+    workspaceId: string,
+    request: PromoteUserSpaceSnapshotBranchRequest,
+  ): Promise<UserSpaceSnapshotTimeline> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/promote-branch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceSnapshotTimeline>(response);
   },
 
-  async deleteUserSpaceSnapshot(workspaceId: string, snapshotId: string): Promise<UserSpaceSnapshotTimeline> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}`, {
-      method: 'DELETE',
-    });
+  async deleteUserSpaceSnapshot(
+    workspaceId: string,
+    snapshotId: string,
+  ): Promise<UserSpaceSnapshotTimeline> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/snapshots/${snapshotId}`,
+      {
+        method: 'DELETE',
+      },
+    );
     return handleResponse<UserSpaceSnapshotTimeline>(response);
   },
 
-  async executeWorkspaceComponent(workspaceId: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/execute-component`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async executeWorkspaceComponent(
+    workspaceId: string,
+    request: ExecuteComponentRequest,
+  ): Promise<ExecuteComponentResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/execute-component`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
-  async execWorkspaceCommand(workspaceId: string, command: string, timeoutSeconds = 30, cwd?: string): Promise<Record<string, unknown>> {
+  async execWorkspaceCommand(
+    workspaceId: string,
+    command: string,
+    timeoutSeconds = 30,
+    cwd?: string,
+  ): Promise<Record<string, unknown>> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/exec`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3559,11 +4398,14 @@ export const api = {
     workspaceId?: string,
   ): Promise<import('@/types').RetryTerminalToolResponse> {
     const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/retry-terminal-tool${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/retry-terminal-tool${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<import('@/types').RetryTerminalToolResponse>(response);
   },
 
@@ -3573,11 +4415,14 @@ export const api = {
     workspaceId?: string,
   ): Promise<import('@/types').RetryVisualizationResponse> {
     const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/retry-visualization${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/retry-visualization${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<import('@/types').RetryVisualizationResponse>(response);
   },
 
@@ -3587,11 +4432,14 @@ export const api = {
     workspaceId?: string,
   ): Promise<import('@/types').RefreshLiveVisualizationResponse> {
     const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/visualizations/refresh-live-data${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/visualizations/refresh-live-data${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<import('@/types').RefreshLiveVisualizationResponse>(response);
   },
 
@@ -3601,11 +4449,14 @@ export const api = {
     workspaceId?: string,
   ): Promise<import('@/types').CreateConversationExportResponse> {
     const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/exports${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/exports${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<import('@/types').CreateConversationExportResponse>(response);
   },
 
@@ -3629,9 +4480,12 @@ export const api = {
       event_index: String(request.event_index),
     });
     if (request.message_id) params.set('message_id', request.message_id);
-    if (typeof request.message_index === 'number') params.set('message_index', String(request.message_index));
+    if (typeof request.message_index === 'number')
+      params.set('message_index', String(request.message_index));
     if (workspaceId) params.set('workspace_id', workspaceId);
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/visualizations/branches?${params.toString()}`);
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/visualizations/branches?${params.toString()}`,
+    );
     return handleResponse<import('@/types').ListVisualizationBranchesResponse>(response);
   },
 
@@ -3641,20 +4495,27 @@ export const api = {
     workspaceId?: string,
   ): Promise<import('@/types').SwitchVisualizationBranchResponse> {
     const suffix = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : '';
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/visualizations/branches/switch${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/visualizations/branches/switch${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<import('@/types').SwitchVisualizationBranchResponse>(response);
   },
 
-  async listUserSpaceWorkspaceShareLinks(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkListResponse> {
+  async listUserSpaceWorkspaceShareLinks(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceShareLinkListResponse> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links`);
     return handleResponse<UserSpaceWorkspaceShareLinkListResponse>(response);
   },
 
-  async revokeUserSpaceWorkspaceShareLink(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkStatus> {
+  async revokeUserSpaceWorkspaceShareLink(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceShareLinkStatus> {
     const list = await this.listUserSpaceWorkspaceShareLinks(workspaceId);
     for (const link of list.links) {
       if (link.id) {
@@ -3682,15 +4543,20 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceShareLink>(response);
   },
 
-  async getUserSpaceWorkspaceShareLinkStatus(workspaceId: string): Promise<UserSpaceWorkspaceShareLinkStatus> {
+  async getUserSpaceWorkspaceShareLinkStatus(
+    workspaceId: string,
+  ): Promise<UserSpaceWorkspaceShareLinkStatus> {
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-link`);
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
   async deleteUserSpaceWorkspaceShareLink(workspaceId: string, shareId: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${shareId}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${shareId}`,
+      {
+        method: 'DELETE',
+      },
+    );
     if (!response.ok) {
       await handleResponse<unknown>(response);
     }
@@ -3701,11 +4567,14 @@ export const api = {
     shareId: string,
     request: UpdateWorkspaceShareLinkRequest,
   ): Promise<UserSpaceWorkspaceShareLinkStatus> {
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${shareId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${shareId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
@@ -3727,11 +4596,14 @@ export const api = {
       resolvedShareId = shareIdOrSlug;
       resolvedSlug = slug;
     }
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${resolvedShareId}/slug`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: resolvedSlug }),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${resolvedShareId}/slug`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: resolvedSlug }),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
@@ -3766,21 +4638,28 @@ export const api = {
       resolvedShareId = status.id;
       resolvedRequest = shareIdOrRequest;
     }
-    const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${resolvedShareId}/access`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(resolvedRequest),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${workspaceId}/share-links/${resolvedShareId}/access`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(resolvedRequest),
+      },
+    );
     return handleResponse<UserSpaceWorkspaceShareLinkStatus>(response);
   },
 
-  async listConversationShareLinks(conversationId: string): Promise<ConversationShareLinkListResponse> {
+  async listConversationShareLinks(
+    conversationId: string,
+  ): Promise<ConversationShareLinkListResponse> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links`);
     return handleResponse<ConversationShareLinkListResponse>(response);
   },
 
   // Backward-compat helpers operating on the primary (oldest) share link.
-  async getConversationShareLinkStatus(conversationId: string): Promise<ConversationShareLinkStatus> {
+  async getConversationShareLinkStatus(
+    conversationId: string,
+  ): Promise<ConversationShareLinkStatus> {
     const list = await this.listConversationShareLinks(conversationId);
     if (list.links.length > 0) {
       return list.links[0];
@@ -3827,9 +4706,12 @@ export const api = {
   },
 
   async deleteConversationShareLink(conversationId: string, shareId: string): Promise<void> {
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${shareId}`, {
-      method: 'DELETE',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/share-links/${shareId}`,
+      {
+        method: 'DELETE',
+      },
+    );
     if (!response.ok) {
       await handleResponse<unknown>(response);
     }
@@ -3840,11 +4722,14 @@ export const api = {
     shareId: string,
     request: UpdateConversationShareLinkRequest,
   ): Promise<ConversationShareLinkStatus> {
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${shareId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/share-links/${shareId}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<ConversationShareLinkStatus>(response);
   },
 
@@ -3867,11 +4752,14 @@ export const api = {
       resolvedShareId = shareIdOrSlug;
       resolvedSlug = slug;
     }
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${resolvedShareId}/slug`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: resolvedSlug }),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/share-links/${resolvedShareId}/slug`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: resolvedSlug }),
+      },
+    );
     return handleResponse<ConversationShareLinkStatus>(response);
   },
 
@@ -3906,33 +4794,54 @@ export const api = {
       resolvedShareId = status.id;
       resolvedRequest = shareIdOrRequest;
     }
-    const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/share-links/${resolvedShareId}/access`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(resolvedRequest),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/conversations/${conversationId}/share-links/${resolvedShareId}/access`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(resolvedRequest),
+      },
+    );
     return handleResponse<ConversationShareLinkStatus>(response);
   },
 
   async resolvePublicShareTarget(shareToken: string): Promise<PublicShareTargetResponse> {
-    const response = await apiFetch(`${API_BASE}/public-shares/${encodeURIComponent(shareToken)}/target`);
+    const response = await apiFetch(
+      `${API_BASE}/public-shares/${encodeURIComponent(shareToken)}/target`,
+    );
     return handleResponse<PublicShareTargetResponse>(response);
   },
 
-  async resolvePublicShareTargetBySlug(ownerUsername: string, shareSlug: string): Promise<PublicShareTargetResponse> {
-    const response = await apiFetch(`${API_BASE}/public-shares/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/target`);
+  async resolvePublicShareTargetBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+  ): Promise<PublicShareTargetResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/public-shares/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/target`,
+    );
     return handleResponse<PublicShareTargetResponse>(response);
   },
 
-  async getSharedConversation(shareToken: string, password?: string): Promise<SharedConversationResponse> {
+  async getSharedConversation(
+    shareToken: string,
+    password?: string,
+  ): Promise<SharedConversationResponse> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}${suffix}`);
+    const response = await apiFetch(
+      `${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}${suffix}`,
+    );
     return handleResponse<SharedConversationResponse>(response);
   },
 
-  async getSharedConversationBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<SharedConversationResponse> {
+  async getSharedConversationBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+    password?: string,
+  ): Promise<SharedConversationResponse> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}${suffix}`);
+    const response = await apiFetch(
+      `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}${suffix}`,
+    );
     return handleResponse<SharedConversationResponse>(response);
   },
 
@@ -3941,171 +4850,294 @@ export const api = {
     return `${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/events${suffix}`;
   },
 
-  getSharedConversationEventsUrlBySlug(ownerUsername: string, shareSlug: string, password?: string): string {
+  getSharedConversationEventsUrlBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+    password?: string,
+  ): string {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
     return `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/events${suffix}`;
   },
 
-  async joinSharedConversation(shareToken: string, password?: string): Promise<SharedConversationResponse> {
+  async joinSharedConversation(
+    shareToken: string,
+    password?: string,
+  ): Promise<SharedConversationResponse> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/join${suffix}`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/join${suffix}`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<SharedConversationResponse>(response);
   },
 
-  async joinSharedConversationBySlug(ownerUsername: string, shareSlug: string, password?: string): Promise<SharedConversationResponse> {
+  async joinSharedConversationBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+    password?: string,
+  ): Promise<SharedConversationResponse> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/join${suffix}`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/join${suffix}`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<SharedConversationResponse>(response);
   },
 
-  async sendSharedConversationMessage(shareToken: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }> {
+  async sendSharedConversationMessage(
+    shareToken: string,
+    request: SendMessageRequest,
+    password?: string,
+  ): Promise<{
+    message: ChatMessage;
+    conversation: Conversation;
+    task?: import('@/types').ChatTask | null;
+  }> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withClientClock(request)),
-    });
-    return handleResponse<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }>(response);
+    const response = await apiFetch(
+      `${API_BASE}/shared-conversations/${encodeURIComponent(shareToken)}/messages${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock(request)),
+      },
+    );
+    return handleResponse<{
+      message: ChatMessage;
+      conversation: Conversation;
+      task?: import('@/types').ChatTask | null;
+    }>(response);
   },
 
-  async sendSharedConversationMessageBySlug(ownerUsername: string, shareSlug: string, request: SendMessageRequest, password?: string): Promise<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }> {
+  async sendSharedConversationMessageBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+    request: SendMessageRequest,
+    password?: string,
+  ): Promise<{
+    message: ChatMessage;
+    conversation: Conversation;
+    task?: import('@/types').ChatTask | null;
+  }> {
     const suffix = password ? `?password=${encodeURIComponent(password)}` : '';
-    const response = await apiFetch(`${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/messages${suffix}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withClientClock(request)),
-    });
-    return handleResponse<{ message: ChatMessage; conversation: Conversation; task?: import('@/types').ChatTask | null }>(response);
+    const response = await apiFetch(
+      `${API_BASE}/shared-conversations/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/messages${suffix}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withClientClock(request)),
+      },
+    );
+    return handleResponse<{
+      message: ChatMessage;
+      conversation: Conversation;
+      task?: import('@/types').ChatTask | null;
+    }>(response);
   },
 
-  async executeUserSpaceSharedComponent(shareToken: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async executeUserSpaceSharedComponent(
+    shareToken: string,
+    request: ExecuteComponentRequest,
+  ): Promise<ExecuteComponentResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/execute-component`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
-  async executeUserSpaceSharedComponentBySlug(ownerUsername: string, shareSlug: string, request: ExecuteComponentRequest): Promise<ExecuteComponentResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async executeUserSpaceSharedComponentBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+    request: ExecuteComponentRequest,
+  ): Promise<ExecuteComponentResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/execute-component`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<ExecuteComponentResponse>(response);
   },
 
   async getUserSpaceRuntimeSession(workspaceId: string): Promise<UserSpaceRuntimeSessionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session`,
+    );
     return handleResponse<UserSpaceRuntimeSessionResponse>(response);
   },
 
   async startUserSpaceRuntimeSession(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session/start`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session/start`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<UserSpaceRuntimeActionResponse>(response);
   },
 
   async stopUserSpaceRuntimeSession(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session/stop`, {
-      method: 'POST',
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/session/stop`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<UserSpaceRuntimeActionResponse>(response);
   },
 
-  async getUserSpaceRuntimeDevserverStatus(workspaceId: string): Promise<UserSpaceRuntimeStatusResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/status`);
+  async getUserSpaceRuntimeDevserverStatus(
+    workspaceId: string,
+  ): Promise<UserSpaceRuntimeStatusResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/status`,
+    );
     return handleResponse<UserSpaceRuntimeStatusResponse>(response);
   },
 
-  async getUserSpaceWorkspaceTabState(workspaceId: string, selectedConversationId?: string | null): Promise<UserSpaceWorkspaceTabStateResponse> {
+  async getUserSpaceWorkspaceTabState(
+    workspaceId: string,
+    selectedConversationId?: string | null,
+  ): Promise<UserSpaceWorkspaceTabStateResponse> {
     const selectedQuery = selectedConversationId
       ? `?selected_conversation_id=${encodeURIComponent(selectedConversationId)}`
       : '';
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/tab-state${selectedQuery}`);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/tab-state${selectedQuery}`,
+    );
     return handleResponse<UserSpaceWorkspaceTabStateResponse>(response);
   },
 
-  async restartUserSpaceRuntimeDevserver(workspaceId: string): Promise<UserSpaceRuntimeActionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/restart`, {
-      method: 'POST',
-    });
+  async restartUserSpaceRuntimeDevserver(
+    workspaceId: string,
+  ): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/devserver/restart`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<UserSpaceRuntimeActionResponse>(response);
   },
 
-  async refreshUserSpaceRuntimeMount(workspaceId: string, mountId: string): Promise<UserSpaceRuntimeActionResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/mounts/${mountId}/refresh`, {
-      method: 'POST',
-    });
+  async refreshUserSpaceRuntimeMount(
+    workspaceId: string,
+    mountId: string,
+  ): Promise<UserSpaceRuntimeActionResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/mounts/${mountId}/refresh`,
+      {
+        method: 'POST',
+      },
+    );
     return handleResponse<UserSpaceRuntimeActionResponse>(response);
   },
 
   /**
    * Subscribe to workspace change events via SSE.
-    * Returns an EventSource that emits 'message' events with JSON payload
-    * at minimum { generation: number } and optionally { event_type, runtime }.
+   * Returns an EventSource that emits 'message' events with JSON payload
+   * at minimum { generation: number } and optionally { event_type, runtime }.
    */
   subscribeWorkspaceEvents(workspaceId: string, afterGeneration: number = 0): EventSource {
     const url = `${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/events?after=${afterGeneration}`;
     return new EventSource(url, { withCredentials: true });
   },
 
-  async issueUserSpaceCapabilityToken(workspaceId: string, capabilities: string[], sessionId?: string): Promise<UserSpaceCapabilityTokenResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/capability-token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ capabilities, session_id: sessionId }),
-    });
+  async issueUserSpaceCapabilityToken(
+    workspaceId: string,
+    capabilities: string[],
+    sessionId?: string,
+  ): Promise<UserSpaceCapabilityTokenResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/capability-token`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ capabilities, session_id: sessionId }),
+      },
+    );
     return handleResponse<UserSpaceCapabilityTokenResponse>(response);
   },
 
-  async authorizeUserSpaceBrowserSurfaces(workspaceId: string, surfaces: UserSpaceBrowserSurface[]): Promise<UserSpaceBrowserAuthResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/browser-auth`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ surfaces }),
-    });
+  async authorizeUserSpaceBrowserSurfaces(
+    workspaceId: string,
+    surfaces: UserSpaceBrowserSurface[],
+  ): Promise<UserSpaceBrowserAuthResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/browser-auth`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ surfaces }),
+      },
+    );
     return handleResponse<UserSpaceBrowserAuthResponse>(response);
   },
 
-  async launchUserSpacePreview(workspaceId: string, request: UserSpacePreviewLaunchRequest): Promise<UserSpacePreviewLaunchResponse> {
-    const response = await apiFetch(`${API_BASE}/userspace/runtime/workspaces/${workspaceId}/preview-launch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
+  async launchUserSpacePreview(
+    workspaceId: string,
+    request: UserSpacePreviewLaunchRequest,
+  ): Promise<UserSpacePreviewLaunchResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/preview-launch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },
 
-  async launchUserSpaceSharedPreview(shareToken: string, request: UserSpacePreviewLaunchRequest, password?: string): Promise<UserSpacePreviewLaunchResponse> {
+  async launchUserSpaceSharedPreview(
+    shareToken: string,
+    request: UserSpacePreviewLaunchRequest,
+    password?: string,
+  ): Promise<UserSpacePreviewLaunchResponse> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (password) {
       headers['X-UserSpace-Share-Password'] = password;
     }
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/preview-launch`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/shared/${encodeURIComponent(shareToken)}/preview-launch`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },
 
-  async launchUserSpaceSharedPreviewBySlug(ownerUsername: string, shareSlug: string, request: UserSpacePreviewLaunchRequest, password?: string): Promise<UserSpacePreviewLaunchResponse> {
+  async launchUserSpaceSharedPreviewBySlug(
+    ownerUsername: string,
+    shareSlug: string,
+    request: UserSpacePreviewLaunchRequest,
+    password?: string,
+  ): Promise<UserSpacePreviewLaunchResponse> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (password) {
       headers['X-UserSpace-Share-Password'] = password;
     }
-    const response = await apiFetch(`${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/preview-launch`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(request),
-    });
+    const response = await apiFetch(
+      `${API_BASE}/userspace/shared/${encodeURIComponent(ownerUsername)}/${encodeURIComponent(shareSlug)}/preview-launch`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      },
+    );
     return handleResponse<UserSpacePreviewLaunchResponse>(response);
   },
 
@@ -4120,45 +5152,70 @@ export const api = {
     return `${protocol}//${window.location.host}${API_BASE}/userspace/runtime/workspaces/${encodeURIComponent(workspaceId)}/pty`;
   },
 
-  async createUserSpaceCollabFile(workspaceId: string, filePath: string, content: string = ''): Promise<{ success: boolean; workspace_id: string; file_path: string; version: number }> {
-    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, ['userspace.collab_mutate']);
-    const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/create`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${capability.token}`,
+  async createUserSpaceCollabFile(
+    workspaceId: string,
+    filePath: string,
+    content: string = '',
+  ): Promise<{ success: boolean; workspace_id: string; file_path: string; version: number }> {
+    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, [
+      'userspace.collab_mutate',
+    ]);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/create`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${capability.token}`,
+        },
+        body: JSON.stringify({ file_path: filePath, content }),
       },
-      body: JSON.stringify({ file_path: filePath, content }),
-    });
+    );
     return handleResponse(response);
   },
 
-  async renameUserSpaceCollabFile(workspaceId: string, oldPath: string, newPath: string): Promise<{ old_path: string; new_path: string; success: boolean }> {
-    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, ['userspace.collab_mutate']);
-    const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/rename`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${capability.token}`,
+  async renameUserSpaceCollabFile(
+    workspaceId: string,
+    oldPath: string,
+    newPath: string,
+  ): Promise<{ old_path: string; new_path: string; success: boolean }> {
+    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, [
+      'userspace.collab_mutate',
+    ]);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/rename`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${capability.token}`,
+        },
+        body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
       },
-      body: JSON.stringify({ old_path: oldPath, new_path: newPath }),
-    });
+    );
     return handleResponse(response);
   },
 
-  async deleteUserSpaceCollabFile(workspaceId: string, filePath: string): Promise<{ file_path: string; success: boolean }> {
-    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, ['userspace.collab_mutate']);
-    const response = await apiFetch(`${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/delete`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${capability.token}`,
+  async deleteUserSpaceCollabFile(
+    workspaceId: string,
+    filePath: string,
+  ): Promise<{ file_path: string; success: boolean }> {
+    const capability = await this.issueUserSpaceCapabilityToken(workspaceId, [
+      'userspace.collab_mutate',
+    ]);
+    const response = await apiFetch(
+      `${API_BASE}/userspace/collab/workspaces/${workspaceId}/files/delete`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${capability.token}`,
+        },
+        body: JSON.stringify({ file_path: filePath }),
       },
-      body: JSON.stringify({ file_path: filePath }),
-    });
+    );
     return handleResponse(response);
   },
-
 };
 
 // Docker discovery types

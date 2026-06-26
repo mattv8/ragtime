@@ -178,7 +178,7 @@ body.authenticated-webgl-background-active #root {
   color: var(--color-warning);
 }
 
-[data-theme="light"] .webgl-battery-notice {
+[data-theme='light'] .webgl-battery-notice {
   background: rgba(255, 255, 255, 0.72);
 }
 
@@ -199,18 +199,22 @@ body.authenticated-webgl-background-active #root {
   color: var(--color-text-muted);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    opacity 0.15s ease,
+    border-color 0.15s ease;
   opacity: 0.6;
   backdrop-filter: blur(10px);
 }
 
-.app-shell > .webgl-motion-toggle[data-active="true"] {
+.app-shell > .webgl-motion-toggle[data-active='true'] {
   border-color: transparent;
   background: rgba(15, 23, 42, 0.35);
   color: var(--color-text-muted);
 }
 
-.app-shell > .webgl-motion-toggle[data-active="false"] {
+.app-shell > .webgl-motion-toggle[data-active='false'] {
   border-color: var(--color-warning-border);
   background: rgba(15, 23, 42, 0.75);
   color: var(--color-warning);
@@ -220,12 +224,12 @@ body.authenticated-webgl-background-active #root {
   opacity: 1;
 }
 
-.app-shell > .webgl-motion-toggle[data-active="true"]:hover {
+.app-shell > .webgl-motion-toggle[data-active='true']:hover {
   background: rgba(15, 23, 42, 0.55);
   color: var(--color-text);
 }
 
-.app-shell > .webgl-motion-toggle[data-active="false"]:hover {
+.app-shell > .webgl-motion-toggle[data-active='false']:hover {
   background: rgba(15, 23, 42, 0.85);
 }
 
@@ -235,20 +239,20 @@ body.authenticated-webgl-background-active #root {
   opacity: 1;
 }
 
-[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="true"] {
+[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='true'] {
   background: rgba(255, 255, 255, 0.45);
 }
 
-[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="false"] {
+[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='false'] {
   background: rgba(255, 255, 255, 0.85);
   border-color: var(--color-warning-border);
 }
 
-[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="true"]:hover {
+[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='true']:hover {
   background: rgba(255, 255, 255, 0.75);
 }
 
-[data-theme="light"] .app-shell > .webgl-motion-toggle[data-active="false"]:hover {
+[data-theme='light'] .app-shell > .webgl-motion-toggle[data-active='false']:hover {
   background: rgba(255, 255, 255, 0.95);
 }
 
@@ -823,8 +827,13 @@ body.authenticated-webgl-background-active #root {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* =============================================================================
@@ -1051,7 +1060,6 @@ body.authenticated-webgl-background-active #root {
   flex-direction: column;
 }
 
-
 .tool-card-header-main {
   display: flex;
   justify-content: flex-start;
@@ -1137,16 +1145,27 @@ body.authenticated-webgl-background-active #root {
   animation: heartbeat-pulse 2s ease-in-out infinite;
 }
 
-.heartbeat-indicator.dead { color: var(--color-error); }
+.heartbeat-indicator.dead {
+  color: var(--color-error);
+}
 .heartbeat-indicator.checking {
   color: var(--color-text-muted);
   animation: spin 1s linear infinite;
 }
-.heartbeat-indicator.disabled { color: var(--color-text-muted); }
+.heartbeat-indicator.disabled {
+  color: var(--color-text-muted);
+}
 
 @keyframes heartbeat-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.6; transform: scale(1.1); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
 }
 
 .tool-card-description {
@@ -1802,7 +1821,10 @@ body.authenticated-webgl-background-active #root {
   background: var(--color-bg-primary);
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .cloud-oauth-callback-copy:hover {
@@ -2116,7 +2138,7 @@ body.authenticated-webgl-background-active #root {
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 18% 16%, rgba(100, 116, 139, 0.10), transparent 30%),
+    radial-gradient(circle at 18% 16%, rgba(100, 116, 139, 0.1), transparent 30%),
     radial-gradient(circle at 84% 78%, rgba(59, 130, 146, 0.09), transparent 34%),
     linear-gradient(180deg, transparent 0%, var(--login-gradient-wash) 100%);
 }
@@ -2419,7 +2441,9 @@ body.authenticated-webgl-background-active #root {
   color: var(--color-text-secondary);
   cursor: pointer;
   font-size: 0.8rem;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 
 .users-range-btn.active {
@@ -2567,7 +2591,7 @@ body.authenticated-webgl-background-active #root {
 }
 
 .users-table tbody tr:hover {
-  background: var(--color-surface-hover, rgba(255,255,255,0.03));
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.03));
 }
 
 .users-username {
@@ -2615,7 +2639,7 @@ body.authenticated-webgl-background-active #root {
 }
 
 .users-auth-local {
-  background: var(--color-surface-hover, rgba(255,255,255,0.06));
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.06));
   color: var(--color-text-secondary);
   border: 1px solid var(--color-border);
 }
@@ -2702,19 +2726,19 @@ body.authenticated-webgl-background-active #root {
 }
 
 .users-row-self {
-  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.02));
 }
 
 .jobs-table tbody tr.users-row-self td:last-child {
-  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.02));
 }
 
 .jobs-table tbody tr.users-row-self:hover {
-  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.02));
 }
 
 .jobs-table tbody tr.users-row-self:hover td:last-child {
-  background: var(--color-surface-hover, rgba(255,255,255,0.02));
+  background: var(--color-surface-hover, rgba(255, 255, 255, 0.02));
 }
 
 .users-action-muted {
@@ -2828,7 +2852,9 @@ body.authenticated-webgl-background-active #root {
 
 .users-detail-list-shell .admin-ws-item {
   border: 1px solid transparent;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .users-detail-list-shell .admin-ws-item:hover,

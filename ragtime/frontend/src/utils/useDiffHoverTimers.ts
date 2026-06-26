@@ -61,16 +61,19 @@ export function useDiffHoverTimers(options: UseDiffHoverTimersOptions): DiffHove
     }, dismissDelayMs);
   }, [cancelDismiss, dismissDelayMs]);
 
-  const startHover = useCallback((loadCallback: () => void) => {
-    cancelDismiss();
-    if (hoverTimerRef.current !== null) {
-      window.clearTimeout(hoverTimerRef.current);
-    }
-    hoverTimerRef.current = window.setTimeout(() => {
-      hoverTimerRef.current = null;
-      loadCallback();
-    }, hoverDelayMs);
-  }, [cancelDismiss, hoverDelayMs]);
+  const startHover = useCallback(
+    (loadCallback: () => void) => {
+      cancelDismiss();
+      if (hoverTimerRef.current !== null) {
+        window.clearTimeout(hoverTimerRef.current);
+      }
+      hoverTimerRef.current = window.setTimeout(() => {
+        hoverTimerRef.current = null;
+        loadCallback();
+      }, hoverDelayMs);
+    },
+    [cancelDismiss, hoverDelayMs],
+  );
 
   const endHover = useCallback(() => {
     if (hoverTimerRef.current !== null) {
@@ -95,14 +98,26 @@ export function useDiffHoverTimers(options: UseDiffHoverTimersOptions): DiffHove
     pinnedRef.current = true;
   }, []);
 
-  return useMemo(() => ({
-    startHover,
-    endHover,
-    dismiss,
-    scheduleDismiss,
-    cancelDismiss,
-    overlayMouseEnter,
-    overlayMouseLeave,
-    overlayClick,
-  }), [startHover, endHover, dismiss, scheduleDismiss, cancelDismiss, overlayMouseEnter, overlayMouseLeave, overlayClick]);
+  return useMemo(
+    () => ({
+      startHover,
+      endHover,
+      dismiss,
+      scheduleDismiss,
+      cancelDismiss,
+      overlayMouseEnter,
+      overlayMouseLeave,
+      overlayClick,
+    }),
+    [
+      startHover,
+      endHover,
+      dismiss,
+      scheduleDismiss,
+      cancelDismiss,
+      overlayMouseEnter,
+      overlayMouseLeave,
+      overlayClick,
+    ],
+  );
 }

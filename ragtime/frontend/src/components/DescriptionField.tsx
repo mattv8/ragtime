@@ -60,9 +60,7 @@ export function DescriptionField({
         }}
         disabled={disabled}
       />
-      <small style={{ color: '#888', fontSize: '0.8rem' }}>
-        {helpText}
-      </small>
+      <small style={{ color: '#888', fontSize: '0.8rem' }}>{helpText}</small>
     </div>
   );
 }

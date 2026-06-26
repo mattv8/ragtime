@@ -1,10 +1,38 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Waves } from 'lucide-react';
 import { api, onAuthExpired } from '@/api';
-import { JobsTable, IndexesList, FilesystemIndexPanel, SettingsPanel, ToolsPanel, ChatPage, PublicSharedChatView, UserSpacePanel, LoginPage, OAuthLoginPage, OAuthCallbackError, MemoryStatus, UserMenu, SecurityBanner, ConfigurationBanner, WarningsBanner, UsersPanel } from '@/components';
+import {
+  JobsTable,
+  IndexesList,
+  FilesystemIndexPanel,
+  SettingsPanel,
+  ToolsPanel,
+  ChatPage,
+  PublicSharedChatView,
+  UserSpacePanel,
+  LoginPage,
+  OAuthLoginPage,
+  OAuthCallbackError,
+  MemoryStatus,
+  UserMenu,
+  SecurityBanner,
+  ConfigurationBanner,
+  WarningsBanner,
+  UsersPanel,
+} from '@/components';
 import WebGLGradient from '@/components/WebGLGradient';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
-import type { IndexJob, IndexInfo, User, AuthStatus, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob, ConfigurationWarning, UserSpacePreviewWarning } from '@/types';
+import type {
+  IndexJob,
+  IndexInfo,
+  User,
+  AuthStatus,
+  FilesystemIndexJob,
+  SchemaIndexJob,
+  PdmIndexJob,
+  ConfigurationWarning,
+  UserSpacePreviewWarning,
+} from '@/types';
 import type { OAuthParams } from '@/components';
 import { BrandName } from '@/utils/buildEnvironment';
 import '@/styles/global.css';
@@ -138,19 +166,22 @@ export function App() {
   const [initialConversationId] = useState<string | null>(getInitialConversationId);
   const [highlightToolsSection, setHighlightToolsSection] = useState<string | null>(null);
   const [serverName, setServerName] = useState<string>('Ragtime');
-  const [authenticatedWebglBackgroundEnabled, setAuthenticatedWebglBackgroundEnabled] = useState(true);
+  const [authenticatedWebglBackgroundEnabled, setAuthenticatedWebglBackgroundEnabled] =
+    useState(true);
   const [webglBackgroundPausedForBattery, setWebglBackgroundPausedForBattery] = useState(false);
 
   // Per-user motion background override (stored in localStorage)
-  const [webglBackgroundUserOverride, setWebglBackgroundUserOverride] = useState<boolean | null>(() => {
-    const stored = localStorage.getItem('ragtime-webgl-background');
-    if (stored === 'true') return true;
-    if (stored === 'false') return false;
-    return null;
-  });
+  const [webglBackgroundUserOverride, setWebglBackgroundUserOverride] = useState<boolean | null>(
+    () => {
+      const stored = localStorage.getItem('ragtime-webgl-background');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+      return null;
+    },
+  );
 
   const toggleWebglBackground = useCallback(() => {
-    setWebglBackgroundUserOverride(prev => {
+    setWebglBackgroundUserOverride((prev) => {
       const next = prev === null ? false : !prev;
       if (next === null) {
         localStorage.removeItem('ragtime-webgl-background');
@@ -162,9 +193,10 @@ export function App() {
   }, []);
 
   // User override takes precedence over the global setting
-  const effectiveWebglEnabled = webglBackgroundUserOverride !== null
-    ? webglBackgroundUserOverride
-    : authenticatedWebglBackgroundEnabled;
+  const effectiveWebglEnabled =
+    webglBackgroundUserOverride !== null
+      ? webglBackgroundUserOverride
+      : authenticatedWebglBackgroundEnabled;
 
   useEffect(() => {
     if (!effectiveWebglEnabled) {
@@ -199,7 +231,9 @@ export function App() {
   // Userspace fullscreen state
   const [userspaceFullscreen, setUserspaceFullscreen] = useState(false);
   const [chatFullscreen, setChatFullscreen] = useState(false);
-  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState<WorkspaceOpenRequest | null>(null);
+  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState<WorkspaceOpenRequest | null>(
+    null,
+  );
   const [chatOpenRequest, setChatOpenRequest] = useState<ChatOpenRequest | null>(null);
 
   const handleOpenWorkspaceFromUsers = useCallback((workspaceId: string) => {
@@ -259,7 +293,9 @@ export function App() {
         const resolvedServerName = configuredServerName || 'Ragtime';
         setServerName(resolvedServerName);
         document.title = resolvedServerName;
-        setAuthenticatedWebglBackgroundEnabled(settings.authenticated_webgl_background_enabled ?? true);
+        setAuthenticatedWebglBackgroundEnabled(
+          settings.authenticated_webgl_background_enabled ?? true,
+        );
         // Also load aggregate_search setting
         setAggregateSearch(settings.aggregate_search ?? true);
         // Load embedding dimensions for memory calculation
@@ -282,18 +318,26 @@ export function App() {
 
   const handleChatCompactionThresholdChange = useCallback((threshold: number) => {
     const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
-    setAuthStatus((previous) => (previous ? {
-      ...previous,
-      chat_compaction_threshold_percent: normalizedThreshold,
-    } : previous));
+    setAuthStatus((previous) =>
+      previous
+        ? {
+            ...previous,
+            chat_compaction_threshold_percent: normalizedThreshold,
+          }
+        : previous,
+    );
   }, []);
 
   const handleChatAutoCompactionThresholdChange = useCallback((threshold: number) => {
     const normalizedThreshold = Math.max(1, Math.min(100, Math.round(threshold)));
-    setAuthStatus((previous) => (previous ? {
-      ...previous,
-      chat_auto_compaction_threshold_percent: normalizedThreshold,
-    } : previous));
+    setAuthStatus((previous) =>
+      previous
+        ? {
+            ...previous,
+            chat_auto_compaction_threshold_percent: normalizedThreshold,
+          }
+        : previous,
+    );
   }, []);
 
   // Check authentication status on mount
@@ -307,7 +351,9 @@ export function App() {
           setServerName(authServerName);
           document.title = authServerName;
         }
-        setAuthenticatedWebglBackgroundEnabled(status.authenticated_webgl_background_enabled ?? true);
+        setAuthenticatedWebglBackgroundEnabled(
+          status.authenticated_webgl_background_enabled ?? true,
+        );
 
         // Only try to get current user if we might be authenticated
         // This avoids unnecessary 401 errors in the console
@@ -338,6 +384,7 @@ export function App() {
     };
 
     checkAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- auth check runs on mount/route change; serverName/webgl flags are read but must not retrigger it
   }, [userspaceSharedRoute]);
 
   const handleLoginSuccess = (user: User) => {
@@ -354,7 +401,9 @@ export function App() {
           setServerName(authServerName);
           document.title = authServerName;
         }
-        setAuthenticatedWebglBackgroundEnabled(status.authenticated_webgl_background_enabled ?? true);
+        setAuthenticatedWebglBackgroundEnabled(
+          status.authenticated_webgl_background_enabled ?? true,
+        );
       } catch (err) {
         console.error('Failed to refresh auth status after login:', err);
       }
@@ -464,7 +513,8 @@ export function App() {
     const params = new URLSearchParams(window.location.search);
     const existingConversationId = params.get('conversation');
     // Non-admins should only have user-space or chat views in URL
-    const viewToSync = (!isAdmin && activeView !== 'chat' && activeView !== 'userspace') ? 'userspace' : activeView;
+    const viewToSync =
+      !isAdmin && activeView !== 'chat' && activeView !== 'userspace' ? 'userspace' : activeView;
     params.set('view', viewToSync);
     params.delete('conversation');
     if (viewToSync === 'chat') {
@@ -480,43 +530,6 @@ export function App() {
     const newUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState({}, '', newUrl);
   }, [activeView, highlightSetting, oauthParams, isAdmin, userspaceSharedRoute]);
-
-  if (userspaceSharedRoute) {
-    // Block until the initial auth check has settled so PublicSharedChatView
-    // mounts with a stable currentUser snapshot. Otherwise a null→user
-    // transition during initial auth resolution would be misread as a fresh
-    // sign-in and trigger an unwanted redirect to the authenticated view.
-    if (authLoading) {
-      return (
-        <div className="auth-loading">
-          <div className="spinner"></div>
-          <p>Loading...</p>
-        </div>
-      );
-    }
-    return userspaceSharedRoute.mode === 'token'
-      ? (
-        <PublicSharedChatView
-          shareToken={userspaceSharedRoute.token}
-          currentUser={currentUser}
-          authStatus={authStatus}
-          serverName={serverName}
-          onLoginSuccess={handleLoginSuccess}
-          onLogout={handleLogout}
-        />
-      )
-      : (
-        <PublicSharedChatView
-          ownerUsername={userspaceSharedRoute.ownerUsername}
-          shareSlug={userspaceSharedRoute.shareSlug}
-          currentUser={currentUser}
-          authStatus={authStatus}
-          serverName={serverName}
-          onLoginSuccess={handleLoginSuccess}
-          onLogout={handleLogout}
-        />
-      );
-  }
 
   const loadJobs = useCallback(async () => {
     try {
@@ -550,9 +563,7 @@ export function App() {
   const refreshFilesystemToolIds = useCallback(async (): Promise<string[]> => {
     try {
       const allTools = await api.listToolConfigs();
-      const toolIds = allTools
-        .filter(t => t.tool_type === 'filesystem_indexer')
-        .map(t => t.id);
+      const toolIds = allTools.filter((t) => t.tool_type === 'filesystem_indexer').map((t) => t.id);
       setFilesystemToolIds(toolIds);
       setFilesystemToolIdsLoaded(true);
       return toolIds;
@@ -563,42 +574,50 @@ export function App() {
   }, []);
 
   // Load filesystem tools and their jobs
-  const loadFilesystemJobs = useCallback(async (toolIdsOverride?: string[]) => {
-    try {
-      const toolIds = toolIdsOverride ?? (
-        filesystemToolIdsLoaded ? filesystemToolIds : await refreshFilesystemToolIds()
-      );
+  const loadFilesystemJobs = useCallback(
+    async (toolIdsOverride?: string[]) => {
+      try {
+        const toolIds =
+          toolIdsOverride ??
+          (filesystemToolIdsLoaded ? filesystemToolIds : await refreshFilesystemToolIds());
 
-      if (toolIds.length === 0) {
-        setFilesystemJobs([]);
-        return;
-      }
-
-      // Fetch jobs for all filesystem tools
-      const allJobs: FilesystemIndexJob[] = [];
-      await Promise.all(toolIds.map(async (toolId) => {
-        try {
-          const jobs = await api.getFilesystemJobs(toolId);
-          allJobs.push(...jobs);
-        } catch (err) {
-          console.warn(`Failed to fetch jobs for ${toolId}:`, err);
+        if (toolIds.length === 0) {
+          setFilesystemJobs([]);
+          return;
         }
-      }));
-      setFilesystemJobs(allJobs);
-    } catch (err) {
-      console.warn('Failed to load filesystem jobs:', err);
-    }
-  }, [filesystemToolIds, filesystemToolIdsLoaded, refreshFilesystemToolIds]);
+
+        // Fetch jobs for all filesystem tools
+        const allJobs: FilesystemIndexJob[] = [];
+        await Promise.all(
+          toolIds.map(async (toolId) => {
+            try {
+              const jobs = await api.getFilesystemJobs(toolId);
+              allJobs.push(...jobs);
+            } catch (err) {
+              console.warn(`Failed to fetch jobs for ${toolId}:`, err);
+            }
+          }),
+        );
+        setFilesystemJobs(allJobs);
+      } catch (err) {
+        console.warn('Failed to load filesystem jobs:', err);
+      }
+    },
+    [filesystemToolIds, filesystemToolIdsLoaded, refreshFilesystemToolIds],
+  );
 
   const handleFilesystemToolsChanged = useCallback(async () => {
     const toolIds = await refreshFilesystemToolIds();
     await loadFilesystemJobs(toolIds);
   }, [loadFilesystemJobs, refreshFilesystemToolIds]);
 
-  const handleCancelFilesystemJob = useCallback(async (toolId: string, jobId: string) => {
-    await api.cancelFilesystemJob(toolId, jobId);
-    await loadFilesystemJobs();
-  }, [loadFilesystemJobs]);
+  const handleCancelFilesystemJob = useCallback(
+    async (toolId: string, jobId: string) => {
+      await api.cancelFilesystemJob(toolId, jobId);
+      await loadFilesystemJobs();
+    },
+    [loadFilesystemJobs],
+  );
 
   // Load schema indexing jobs
   const loadSchemaJobs = useCallback(async () => {
@@ -610,10 +629,13 @@ export function App() {
     }
   }, []);
 
-  const handleCancelSchemaJob = useCallback(async (toolId: string, jobId: string) => {
-    await api.cancelSchemaIndexJob(toolId, jobId);
-    await loadSchemaJobs();
-  }, [loadSchemaJobs]);
+  const handleCancelSchemaJob = useCallback(
+    async (toolId: string, jobId: string) => {
+      await api.cancelSchemaIndexJob(toolId, jobId);
+      await loadSchemaJobs();
+    },
+    [loadSchemaJobs],
+  );
 
   // Load PDM indexing jobs
   const loadPdmJobs = useCallback(async () => {
@@ -625,10 +647,13 @@ export function App() {
     }
   }, []);
 
-  const handleCancelPdmJob = useCallback(async (toolId: string, jobId: string) => {
-    await api.cancelPdmIndexJob(toolId, jobId);
-    await loadPdmJobs();
-  }, [loadPdmJobs]);
+  const handleCancelPdmJob = useCallback(
+    async (toolId: string, jobId: string) => {
+      await api.cancelPdmIndexJob(toolId, jobId);
+      await loadPdmJobs();
+    },
+    [loadPdmJobs],
+  );
 
   // Initial load for indexer data: only when indexer view is visible.
   useEffect(() => {
@@ -639,14 +664,23 @@ export function App() {
       loadSchemaJobs();
       loadPdmJobs();
     }
-  }, [currentUser, isAdmin, isIndexerView, loadJobs, loadIndexes, loadFilesystemJobs, loadSchemaJobs, loadPdmJobs]);
+  }, [
+    currentUser,
+    isAdmin,
+    isIndexerView,
+    loadJobs,
+    loadIndexes,
+    loadFilesystemJobs,
+    loadSchemaJobs,
+    loadPdmJobs,
+  ]);
 
   // Auto-refresh only while filesystem jobs are active.
   useEffect(() => {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActiveFilesystemJob = filesystemJobs.some(
-      j => j.status === 'pending' || j.status === 'indexing'
+      (j) => j.status === 'pending' || j.status === 'indexing',
     );
 
     if (!hasActiveFilesystemJob) return;
@@ -663,7 +697,7 @@ export function App() {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
     const hasActiveSchemaJob = schemaJobs.some(
-      j => j.status === 'pending' || j.status === 'indexing'
+      (j) => j.status === 'pending' || j.status === 'indexing',
     );
 
     if (!hasActiveSchemaJob) return;
@@ -679,9 +713,7 @@ export function App() {
   useEffect(() => {
     if (!currentUser || !isAdmin || !isIndexerView) return;
 
-    const hasActivePdmJob = pdmJobs.some(
-      j => j.status === 'pending' || j.status === 'indexing'
-    );
+    const hasActivePdmJob = pdmJobs.some((j) => j.status === 'pending' || j.status === 'indexing');
 
     if (!hasActivePdmJob) return;
 
@@ -707,6 +739,41 @@ export function App() {
 
     return () => clearInterval(interval);
   }, [currentUser, isAdmin, isIndexerView, jobs, loadJobs, loadIndexes]);
+
+  if (userspaceSharedRoute) {
+    // Block until the initial auth check has settled so PublicSharedChatView
+    // mounts with a stable currentUser snapshot. Otherwise a null→user
+    // transition during initial auth resolution would be misread as a fresh
+    // sign-in and trigger an unwanted redirect to the authenticated view.
+    if (authLoading) {
+      return (
+        <div className="auth-loading">
+          <div className="spinner"></div>
+          <p>Loading...</p>
+        </div>
+      );
+    }
+    return userspaceSharedRoute.mode === 'token' ? (
+      <PublicSharedChatView
+        shareToken={userspaceSharedRoute.token}
+        currentUser={currentUser}
+        authStatus={authStatus}
+        serverName={serverName}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+      />
+    ) : (
+      <PublicSharedChatView
+        ownerUsername={userspaceSharedRoute.ownerUsername}
+        shareSlug={userspaceSharedRoute.shareSlug}
+        currentUser={currentUser}
+        authStatus={authStatus}
+        serverName={serverName}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+      />
+    );
+  }
 
   // Show loading state while checking auth
   if (authLoading) {
@@ -741,27 +808,24 @@ export function App() {
       );
     }
     // Not authenticated - show OAuth login page
-    return (
-      <OAuthLoginPage
-        params={oauthParams}
-        serverName={serverName}
-      />
-    );
+    return <OAuthLoginPage params={oauthParams} serverName={serverName} />;
   }
 
   // Show login page if not authenticated
   if (!currentUser) {
     return (
       <LoginPage
-        authStatus={authStatus || {
-          authenticated: false,
-          ldap_configured: false,
-          local_admin_enabled: true,
-          debug_mode: false,
-          api_key_configured: false,
-          session_cookie_secure: false,
-          allowed_origins_open: true,
-        }}
+        authStatus={
+          authStatus || {
+            authenticated: false,
+            ldap_configured: false,
+            local_admin_enabled: true,
+            debug_mode: false,
+            api_key_configured: false,
+            session_cookie_secure: false,
+            allowed_origins_open: true,
+          }
+        }
         onLoginSuccess={handleLoginSuccess}
         serverName={serverName}
       />
@@ -782,7 +846,9 @@ export function App() {
 
   return (
     <AvailableModelsProvider>
-      <div className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}${authenticatedWebglBackgroundEnabled ? ' app-shell-webgl-background' : ''}`}>
+      <div
+        className={`app-shell${lockViewportLayout ? ' app-shell-locked' : ''}${authenticatedWebglBackgroundEnabled ? ' app-shell-webgl-background' : ''}`}
+      >
         {effectiveWebglEnabled ? (
           <WebGLGradient
             className="app-background-gradient"
@@ -791,19 +857,26 @@ export function App() {
             onBatteryStatusChange={setWebglBackgroundPausedForBattery}
           />
         ) : null}
-        {authenticatedWebglBackgroundEnabled && currentUser && !hideChrome && !webglBackgroundPausedForBattery ? (
+        {authenticatedWebglBackgroundEnabled &&
+        currentUser &&
+        !hideChrome &&
+        !webglBackgroundPausedForBattery ? (
           <button
             className="webgl-motion-toggle"
             data-active={effectiveWebglEnabled}
             onClick={toggleWebglBackground}
-            aria-label={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
+            aria-label={
+              effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'
+            }
             title={effectiveWebglEnabled ? 'Pause motion background' : 'Play motion background'}
           >
             <Waves size={14} />
           </button>
         ) : null}
         <nav className="topnav" style={hideChrome ? { display: 'none' } : undefined}>
-          <span className="topnav-brand"><BrandName name={serverName} /></span>
+          <span className="topnav-brand">
+            <BrandName name={serverName} />
+          </span>
           <div className="topnav-links">
             <button
               className={`topnav-link ${activeView === 'chat' ? 'active' : ''}`}
@@ -893,7 +966,6 @@ export function App() {
           hidden={hideChrome || !isAdmin}
         />
         <div className="container">
-
           {activeView === 'userspace' ? (
             <div className="userspace-page-container">
               <UserSpacePanel
@@ -916,7 +988,9 @@ export function App() {
                 debugMode={Boolean(authStatus?.debug_mode)}
                 initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
                 chatCompactionThresholdPercent={authStatus?.chat_compaction_threshold_percent ?? 80}
-                chatAutoCompactionThresholdPercent={authStatus?.chat_auto_compaction_threshold_percent ?? 99}
+                chatAutoCompactionThresholdPercent={
+                  authStatus?.chat_auto_compaction_threshold_percent ?? 99
+                }
                 onFullscreenChange={setChatFullscreen}
               />
             </div>

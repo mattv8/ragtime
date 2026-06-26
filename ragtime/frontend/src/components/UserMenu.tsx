@@ -12,7 +12,9 @@ interface UserMenuProps {
 
 export function UserMenu({ user, onLogout }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(
+    null,
+  );
   const menuRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const isAdmin = user.role === 'admin';
@@ -49,9 +51,9 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node;
       if (
-        menuRef.current
-        && !menuRef.current.contains(target)
-        && !dropdownRef.current?.contains(target)
+        menuRef.current &&
+        !menuRef.current.contains(target) &&
+        !dropdownRef.current?.contains(target)
       ) {
         setIsOpen(false);
       }
@@ -99,7 +101,7 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
   };
 
   const cycleTheme = () => {
-    setTheme(current => {
+    setTheme((current) => {
       if (current === 'dark') return 'light';
       if (current === 'light') return 'system';
       return 'dark';
@@ -117,49 +119,45 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
         <span className="user-menu-avatar">
           <User size={16} />
         </span>
-        <span className="user-menu-name">
-          {user.display_name || user.username}
-        </span>
+        <span className="user-menu-name">{user.display_name || user.username}</span>
         {isAdmin && <span className="admin-badge">Admin</span>}
         <ChevronDown size={14} className={`user-menu-chevron ${isOpen ? 'rotated' : ''}`} />
       </button>
 
-      {isOpen && dropdownPosition && createPortal(
-        <div
-          ref={dropdownRef}
-          className="user-menu-dropdown"
-          style={{ position: 'fixed', top: dropdownPosition.top, right: dropdownPosition.right }}
-        >
-          <div className="user-menu-header">
-            <div className="user-menu-avatar-large">
-              <User size={24} />
+      {isOpen &&
+        dropdownPosition &&
+        createPortal(
+          <div
+            ref={dropdownRef}
+            className="user-menu-dropdown"
+            style={{ position: 'fixed', top: dropdownPosition.top, right: dropdownPosition.right }}
+          >
+            <div className="user-menu-header">
+              <div className="user-menu-avatar-large">
+                <User size={24} />
+              </div>
+              <div className="user-menu-info">
+                <span className="user-menu-display-name">{user.display_name || user.username}</span>
+                <span className="user-menu-role">{isAdmin ? 'Administrator' : 'User'}</span>
+              </div>
             </div>
-            <div className="user-menu-info">
-              <span className="user-menu-display-name">
-                {user.display_name || user.username}
-              </span>
-              <span className="user-menu-role">
-                {isAdmin ? 'Administrator' : 'User'}
-              </span>
-            </div>
-          </div>
 
-          <div className="user-menu-divider" />
+            <div className="user-menu-divider" />
 
-          <button className="user-menu-item" onClick={cycleTheme}>
-            {getThemeIcon()}
-            <span>Theme: {getThemeLabel()}</span>
-          </button>
+            <button className="user-menu-item" onClick={cycleTheme}>
+              {getThemeIcon()}
+              <span>Theme: {getThemeLabel()}</span>
+            </button>
 
-          <div className="user-menu-divider" />
+            <div className="user-menu-divider" />
 
-          <button className="user-menu-item user-menu-logout" onClick={onLogout}>
-            <LogOut size={16} />
-            <span>Logout</span>
-          </button>
-        </div>,
-        document.body,
-      )}
+            <button className="user-menu-item user-menu-logout" onClick={onLogout}>
+              <LogOut size={16} />
+              <span>Logout</span>
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

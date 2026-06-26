@@ -1,5 +1,5 @@
 export interface FragmentShaderUniforms {
-  [key: string]: any;
+  [key: string]: WebGLUniformLocation | null;
 }
 
 export interface ShaderOptions {

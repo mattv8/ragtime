@@ -38,6 +38,22 @@
     }
   },
 
+  // Frontend JS/TS: Prettier owns formatting (matches cmd+shift+f); ESLint lints.
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "prettier.prettierPath": "ragtime/frontend/node_modules/prettier",
+  "eslint.workingDirectories": ["ragtime/frontend"],
+
   // Search/Files
   "search.exclude": {
     "**/.venv/**": true,

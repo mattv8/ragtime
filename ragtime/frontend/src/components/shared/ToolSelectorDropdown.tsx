@@ -75,7 +75,12 @@ export function ToolSelectorDropdown({
   const [showDropdown, setShowDropdown] = useState(false);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{
+    top: number;
+    left: number;
+    minWidth: number;
+    maxHeight: number;
+  } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -110,9 +115,9 @@ export function ToolSelectorDropdown({
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node;
       if (
-        dropdownRef.current
-        && !dropdownRef.current.contains(target)
-        && !menuRef.current?.contains(target)
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target) &&
+        !menuRef.current?.contains(target)
       ) {
         setShowDropdown(false);
         setExpandedGroupId(null);
@@ -172,36 +177,46 @@ export function ToolSelectorDropdown({
 
   const hasGroups = groups.length > 0;
   const builtInSelectedIds = selectedBuiltInToolIds ?? new Set<string>();
-  const builtInSelectedCount = builtInTools.filter((tool) => builtInSelectedIds.has(tool.id)).length;
+  const builtInSelectedCount = builtInTools.filter((tool) =>
+    builtInSelectedIds.has(tool.id),
+  ).length;
   const totalToolCount = getSelectableUserSpaceToolIds(availableTools).length + builtInTools.length;
-  const selection = useMemo<UserSpaceToolSelection>(() => ({
-    mode: normalizeToolSelectionMode(toolSelectionMode),
-    toolIds: Array.from(selectedToolIds),
-    toolGroupIds: Array.from(selectedToolGroupIds ?? new Set<string>()),
-  }), [selectedToolIds, selectedToolGroupIds, toolSelectionMode]);
+  const selection = useMemo<UserSpaceToolSelection>(
+    () => ({
+      mode: normalizeToolSelectionMode(toolSelectionMode),
+      toolIds: Array.from(selectedToolIds),
+      toolGroupIds: Array.from(selectedToolGroupIds ?? new Set<string>()),
+    }),
+    [selectedToolIds, selectedToolGroupIds, toolSelectionMode],
+  );
   const effectiveToolIds = useMemo(
     () => getEffectiveUserSpaceToolIdSet(selection, availableTools),
-    [selection, availableTools]
+    [selection, availableTools],
   );
 
   // Effective selected count: direct + group-expanded
   const effectiveSelectedCount = useMemo(() => {
-    const visibleSelectedCount = availableTools.filter((tool) => isUserSpaceToolAvailable(tool) && effectiveToolIds.has(tool.id)).length;
+    const visibleSelectedCount = availableTools.filter(
+      (tool) => isUserSpaceToolAvailable(tool) && effectiveToolIds.has(tool.id),
+    ).length;
     return visibleSelectedCount + builtInSelectedCount;
   }, [availableTools, builtInSelectedCount, effectiveToolIds]);
 
   const searchNeedle = searchQuery.trim().toLowerCase();
   const isSearching = searchNeedle.length > 0;
-  const toolMatchesSearch = useCallback((tool: ToolSelectorTool) => {
-    if (!searchNeedle) return true;
-    return [tool.name, tool.tool_type, tool.description || '', tool.group_name || '']
-      .join(' ')
-      .toLowerCase()
-      .includes(searchNeedle);
-  }, [searchNeedle]);
+  const toolMatchesSearch = useCallback(
+    (tool: ToolSelectorTool) => {
+      if (!searchNeedle) return true;
+      return [tool.name, tool.tool_type, tool.description || '', tool.group_name || '']
+        .join(' ')
+        .toLowerCase()
+        .includes(searchNeedle);
+    },
+    [searchNeedle],
+  );
   const filteredBuiltInTools = useMemo(
     () => builtInTools.filter(toolMatchesSearch),
-    [builtInTools, toolMatchesSearch]
+    [builtInTools, toolMatchesSearch],
   );
   const filteredGroups = useMemo(() => {
     if (!isSearching) return groups;
@@ -214,13 +229,16 @@ export function ToolSelectorDropdown({
       .filter((group) => group.tools.length > 0);
   }, [groups, isSearching, searchNeedle, toolMatchesSearch]);
   const filteredUngroupedTools = useMemo(
-    () => isSearching ? ungroupedTools.filter(toolMatchesSearch) : ungroupedTools,
-    [isSearching, toolMatchesSearch, ungroupedTools]
+    () => (isSearching ? ungroupedTools.filter(toolMatchesSearch) : ungroupedTools),
+    [isSearching, toolMatchesSearch, ungroupedTools],
   );
-  const visibleAvailableToolIds = useMemo(() => [
-    ...filteredGroups.flatMap((group) => group.tools.map((tool) => tool.id)),
-    ...filteredUngroupedTools.map((tool) => tool.id),
-  ], [filteredGroups, filteredUngroupedTools]);
+  const visibleAvailableToolIds = useMemo(
+    () => [
+      ...filteredGroups.flatMap((group) => group.tools.map((tool) => tool.id)),
+      ...filteredUngroupedTools.map((tool) => tool.id),
+    ],
+    [filteredGroups, filteredUngroupedTools],
+  );
   const visibleSelectableToolIds = useMemo(() => {
     const visibleIds = new Set(visibleAvailableToolIds);
     return availableTools
@@ -229,15 +247,19 @@ export function ToolSelectorDropdown({
   }, [availableTools, visibleAvailableToolIds]);
   const visibleBuiltInToolIds = useMemo(
     () => filteredBuiltInTools.map((tool) => tool.id),
-    [filteredBuiltInTools]
+    [filteredBuiltInTools],
   );
   const allVisibleCount = visibleSelectableToolIds.length + visibleBuiltInToolIds.length;
-  const allVisibleSelected = allVisibleCount > 0
-    && visibleSelectableToolIds.every((toolId) => effectiveToolIds.has(toolId))
-    && visibleBuiltInToolIds.every((toolId) => builtInSelectedIds.has(toolId));
+  const allVisibleSelected =
+    allVisibleCount > 0 &&
+    visibleSelectableToolIds.every((toolId) => effectiveToolIds.has(toolId)) &&
+    visibleBuiltInToolIds.every((toolId) => builtInSelectedIds.has(toolId));
 
   // Group checkbox state
-  const getGroupCheckState = (groupId: string, tools: ToolSelectorTool[]): 'all' | 'some' | 'none' => {
+  const getGroupCheckState = (
+    groupId: string,
+    tools: ToolSelectorTool[],
+  ): 'all' | 'some' | 'none' => {
     return getUserSpaceGroupCheckState(selection, availableTools, groupId, tools);
   };
 
@@ -251,12 +273,14 @@ export function ToolSelectorDropdown({
   const handleBulkToggle = () => {
     if (readOnly || disabled || allVisibleCount === 0) return;
     const nextSelected = !allVisibleSelected;
-    onSelectionChange(setUserSpaceToolSelectionForTools(
-      selection,
-      availableTools,
-      isSearching ? visibleSelectableToolIds : getSelectableUserSpaceToolIds(availableTools),
-      nextSelected,
-    ));
+    onSelectionChange(
+      setUserSpaceToolSelectionForTools(
+        selection,
+        availableTools,
+        isSearching ? visibleSelectableToolIds : getSelectableUserSpaceToolIds(availableTools),
+        nextSelected,
+      ),
+    );
     if (onBulkBuiltInToggle) {
       onBulkBuiltInToggle(nextSelected);
     }
@@ -276,13 +300,16 @@ export function ToolSelectorDropdown({
           type="checkbox"
           checked={checked}
           onChange={() => {
-            if (toolAvailable) onSelectionChange(toggleUserSpaceToolSelection(selection, availableTools, tool.id));
+            if (toolAvailable)
+              onSelectionChange(toggleUserSpaceToolSelection(selection, availableTools, tool.id));
           }}
           disabled={readOnly || disabled || !toolAvailable}
         />
         <span>
           <strong>{tool.name}</strong>
-          <small className="userspace-muted">{toolAvailable ? tool.tool_type : `${tool.tool_type} - Offline`}</small>
+          <small className="userspace-muted">
+            {toolAvailable ? tool.tool_type : `${tool.tool_type} - Offline`}
+          </small>
         </span>
       </label>
     );
@@ -311,147 +338,162 @@ export function ToolSelectorDropdown({
         <Settings size={14} />
         <span className="tool-count-badge">{effectiveSelectedCount}</span>
       </button>
-      {showDropdown && dropdownPosition && createPortal(
-        <div
-          ref={menuRef}
-          className="userspace-tool-dropdown"
-          style={{
-            top: openDirection === 'up' ? undefined : dropdownPosition.top,
-            bottom: openDirection === 'up' ? `calc(100vh - ${dropdownPosition.top}px)` : undefined,
-            left: dropdownPosition.left,
-            minWidth: dropdownPosition.minWidth,
-            maxHeight: dropdownPosition.maxHeight,
-            transform: 'translateX(-100%)',
-          }}
-        >
-          <div className="userspace-tool-dropdown-title">
-            <h4>{title}</h4>
-            <div className="userspace-tool-title-actions">
-              {saving && <span className="userspace-muted userspace-tool-saving">Saving...</span>}
-              <button
-                type="button"
-                className="userspace-tool-bulk-toggle"
-                onClick={handleBulkToggle}
-                disabled={readOnly || disabled || allVisibleCount === 0}
-              >
-                {allVisibleSelected ? (isSearching ? 'Deselect visible' : 'Deselect all') : (isSearching ? 'Select visible' : 'Select all')}
-              </button>
-            </div>
-          </div>
-          {readOnly && <p className="userspace-muted">Read-only access</p>}
-          {(availableTools.length > 1 || builtInTools.length > 1) && (
-            <div className="model-selector-search userspace-tool-search">
-              <input
-                ref={searchInputRef}
-                type="text"
-                className="model-selector-search-input"
-                placeholder="Search tools..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    if (searchQuery) {
-                      setSearchQuery('');
-                    } else {
-                      setShowDropdown(false);
-                    }
-                  }
-                }}
-                aria-label="Filter tools"
-              />
-              {searchQuery && (
+      {showDropdown &&
+        dropdownPosition &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="userspace-tool-dropdown"
+            style={{
+              top: openDirection === 'up' ? undefined : dropdownPosition.top,
+              bottom:
+                openDirection === 'up' ? `calc(100vh - ${dropdownPosition.top}px)` : undefined,
+              left: dropdownPosition.left,
+              minWidth: dropdownPosition.minWidth,
+              maxHeight: dropdownPosition.maxHeight,
+              transform: 'translateX(-100%)',
+            }}
+          >
+            <div className="userspace-tool-dropdown-title">
+              <h4>{title}</h4>
+              <div className="userspace-tool-title-actions">
+                {saving && <span className="userspace-muted userspace-tool-saving">Saving...</span>}
                 <button
                   type="button"
-                  className="model-selector-search-clear"
-                  onClick={() => {
-                    setSearchQuery('');
-                    searchInputRef.current?.focus();
-                  }}
-                  title="Clear search"
-                  aria-label="Clear search"
+                  className="userspace-tool-bulk-toggle"
+                  onClick={handleBulkToggle}
+                  disabled={readOnly || disabled || allVisibleCount === 0}
                 >
-                  <X size={12} />
+                  {allVisibleSelected
+                    ? isSearching
+                      ? 'Deselect visible'
+                      : 'Deselect all'
+                    : isSearching
+                      ? 'Select visible'
+                      : 'Select all'}
                 </button>
-              )}
+              </div>
             </div>
-          )}
-          <div className="userspace-tool-list model-selector-dropdown-inner">
-            {builtInTools.length > 0 && (
-              <div className="userspace-tool-builtins">
-                <div className="userspace-tool-section-label">Built-in</div>
-                {filteredBuiltInTools.map(renderBuiltInToolItem)}
+            {readOnly && <p className="userspace-muted">Read-only access</p>}
+            {(availableTools.length > 1 || builtInTools.length > 1) && (
+              <div className="model-selector-search userspace-tool-search">
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  className="model-selector-search-input"
+                  placeholder="Search tools..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (searchQuery) {
+                        setSearchQuery('');
+                      } else {
+                        setShowDropdown(false);
+                      }
+                    }
+                  }}
+                  aria-label="Filter tools"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    className="model-selector-search-clear"
+                    onClick={() => {
+                      setSearchQuery('');
+                      searchInputRef.current?.focus();
+                    }}
+                    title="Clear search"
+                    aria-label="Clear search"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
               </div>
             )}
-            {builtInTools.length > 0 && availableTools.length > 0 && (
-              <div className="userspace-tool-divider" />
-            )}
-            {hasGroups && filteredGroups.map((group) => {
-              const checkState = getGroupCheckState(group.id, group.tools);
-              const isExpanded = expandedGroupId === group.id;
-              return (
-                <div key={group.id} className="tool-group-section">
-                  <div
-                    className={`tool-group-header ${isExpanded ? 'expanded' : ''}`}
-                    onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        setExpandedGroupId(isExpanded ? null : group.id);
-                      }
-                    }}
-                    aria-expanded={isExpanded}
-                    aria-label={`Tool group: ${group.name}`}
-                  >
+            <div className="userspace-tool-list model-selector-dropdown-inner">
+              {builtInTools.length > 0 && (
+                <div className="userspace-tool-builtins">
+                  <div className="userspace-tool-section-label">Built-in</div>
+                  {filteredBuiltInTools.map(renderBuiltInToolItem)}
+                </div>
+              )}
+              {builtInTools.length > 0 && availableTools.length > 0 && (
+                <div className="userspace-tool-divider" />
+              )}
+              {hasGroups &&
+                filteredGroups.map((group) => {
+                  const checkState = getGroupCheckState(group.id, group.tools);
+                  const isExpanded = expandedGroupId === group.id;
+                  return (
+                    <div key={group.id} className="tool-group-section">
+                      <div
+                        className={`tool-group-header ${isExpanded ? 'expanded' : ''}`}
+                        onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setExpandedGroupId(isExpanded ? null : group.id);
+                          }
+                        }}
+                        aria-expanded={isExpanded}
+                        aria-label={`Tool group: ${group.name}`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="tool-group-checkbox"
+                          checked={checkState === 'all'}
+                          ref={(el) => {
+                            if (el) el.indeterminate = checkState === 'some';
+                          }}
+                          onChange={() => handleGroupToggle(group.id, group.tools)}
+                          disabled={
+                            readOnly || disabled || !group.tools.some(isUserSpaceToolAvailable)
+                          }
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`Select all tools in ${group.name}`}
+                        />
+                        <span className="tool-group-name">{group.name}</span>
+                        <span className="tool-group-count">{group.tools.length}</span>
+                        <ChevronRight
+                          size={14}
+                          className={`tool-group-chevron ${isExpanded ? 'rotated' : ''}`}
+                        />
+                      </div>
+                      {isExpanded && (
+                        <div className="tool-group-submenu">{group.tools.map(renderToolItem)}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              {filteredUngroupedTools.map(renderToolItem)}
+              {filteredBuiltInTools.length === 0 &&
+                filteredGroups.length === 0 &&
+                filteredUngroupedTools.length === 0 && (
+                  <div className="model-selector-empty">No tools match "{searchQuery.trim()}"</div>
+                )}
+            </div>
+            {onToggleToolCalls !== undefined && showToolCalls !== undefined && (
+              <div className="userspace-tool-calls-toggle">
+                <label className="chat-toggle-control" title="Show/hide tool calls in messages">
+                  <span className="chat-toggle-label">Show tool calls</span>
+                  <label className="toggle-switch">
                     <input
                       type="checkbox"
-                      className="tool-group-checkbox"
-                      checked={checkState === 'all'}
-                      ref={(el) => {
-                        if (el) el.indeterminate = checkState === 'some';
-                      }}
-                      onChange={() => handleGroupToggle(group.id, group.tools)}
-                      disabled={readOnly || disabled || !group.tools.some(isUserSpaceToolAvailable)}
-                      onClick={(e) => e.stopPropagation()}
-                      aria-label={`Select all tools in ${group.name}`}
+                      checked={showToolCalls}
+                      onChange={(e) => onToggleToolCalls(e.target.checked)}
                     />
-                    <span className="tool-group-name">{group.name}</span>
-                    <span className="tool-group-count">{group.tools.length}</span>
-                    <ChevronRight size={14} className={`tool-group-chevron ${isExpanded ? 'rotated' : ''}`} />
-                  </div>
-                  {isExpanded && (
-                    <div className="tool-group-submenu">
-                      {group.tools.map(renderToolItem)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {filteredUngroupedTools.map(renderToolItem)}
-            {filteredBuiltInTools.length === 0 && filteredGroups.length === 0 && filteredUngroupedTools.length === 0 && (
-              <div className="model-selector-empty">No tools match "{searchQuery.trim()}"</div>
-            )}
-          </div>
-          {onToggleToolCalls !== undefined && showToolCalls !== undefined && (
-            <div className="userspace-tool-calls-toggle">
-              <label className="chat-toggle-control" title="Show/hide tool calls in messages">
-                <span className="chat-toggle-label">Show tool calls</span>
-                <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={showToolCalls}
-                    onChange={(e) => onToggleToolCalls(e.target.checked)}
-                  />
-                  <span className="toggle-slider"></span>
+                    <span className="toggle-slider"></span>
+                  </label>
                 </label>
-              </label>
-            </div>
-          )}
-        </div>,
-        document.body,
-      )}
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

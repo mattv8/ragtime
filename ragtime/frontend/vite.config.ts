@@ -10,12 +10,13 @@ const sslCertFile = process.env.SSL_CERT_FILE || '/data/ssl/server.crt';
 const sslKeyFile = process.env.SSL_KEY_FILE || '/data/ssl/server.key';
 
 // Configure HTTPS if enabled and certs exist
-const httpsConfig = enableHttps && fs.existsSync(sslCertFile) && fs.existsSync(sslKeyFile)
-  ? {
-      key: fs.readFileSync(sslKeyFile),
-      cert: fs.readFileSync(sslCertFile),
-    }
-  : undefined;
+const httpsConfig =
+  enableHttps && fs.existsSync(sslCertFile) && fs.existsSync(sslKeyFile)
+    ? {
+        key: fs.readFileSync(sslKeyFile),
+        cert: fs.readFileSync(sslCertFile),
+      }
+    : undefined;
 
 const backendProtocol = enableHttps ? 'https' : 'http';
 
@@ -47,27 +48,33 @@ export default defineConfig({
     },
     proxy: {
       // Proxy all API calls to Python backend
-      '^/(indexes|auth|authorize|token|health|docs|redoc|openapi.json|v1|mcp-routes|mcp-debug|mcp)': {
-        target: `${backendProtocol}://127.0.0.1:${backendPort}`,
-        changeOrigin: true,
-        ws: true,
-        secure: false, // Allow self-signed certs
-        configure: (proxy) => {
-          // Suppress noisy WebSocket proxy errors (socket hang up, timeouts)
-          // that occur during normal runtime startup/shutdown cycles
-          proxy.on('error', (err, _req, res) => {
-            const msg = (err as NodeJS.ErrnoException).message || '';
-            if (msg.includes('socket hang up') || msg.includes('ECONNRESET') || msg.includes('ECONNREFUSED')) {
-              return; // Expected during runtime transitions
-            }
-            // For non-WebSocket responses, send a 502 if headers haven't been sent
-            if (res && 'writeHead' in res && !(res as any).headersSent) {
-              (res as any).writeHead(502, { 'Content-Type': 'text/plain' });
-              (res as any).end('Proxy error');
-            }
-          });
+      '^/(indexes|auth|authorize|token|health|docs|redoc|openapi.json|v1|mcp-routes|mcp-debug|mcp)':
+        {
+          target: `${backendProtocol}://127.0.0.1:${backendPort}`,
+          changeOrigin: true,
+          ws: true,
+          secure: false, // Allow self-signed certs
+          configure: (proxy) => {
+            // Suppress noisy WebSocket proxy errors (socket hang up, timeouts)
+            // that occur during normal runtime startup/shutdown cycles
+            proxy.on('error', (err, _req, res) => {
+              const msg = (err as NodeJS.ErrnoException).message || '';
+              if (
+                msg.includes('socket hang up') ||
+                msg.includes('ECONNRESET') ||
+                msg.includes('ECONNREFUSED')
+              ) {
+                return; // Expected during runtime transitions
+              }
+              // For non-WebSocket responses, send a 502 if headers haven't been sent
+              const httpRes = res as import('node:http').ServerResponse;
+              if (res && 'writeHead' in res && !httpRes.headersSent) {
+                httpRes.writeHead(502, { 'Content-Type': 'text/plain' });
+                httpRes.end('Proxy error');
+              }
+            });
+          },
         },
-      },
     },
   },
 });

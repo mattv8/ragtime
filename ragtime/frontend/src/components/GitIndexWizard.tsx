@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/api';
-import type { CommitHistoryInfo, IndexAnalysisResult, IndexJob, IndexInfo, OcrMode, OcrProvider, VectorStoreType } from '@/types';
+import type {
+  CommitHistoryInfo,
+  IndexAnalysisResult,
+  IndexJob,
+  IndexInfo,
+  OcrMode,
+  OcrProvider,
+  VectorStoreType,
+} from '@/types';
 import { AnalysisStats } from './AnalysisStats';
 import { IndexConfigFields } from './IndexConfigFields';
 import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
@@ -28,7 +36,7 @@ function computeCloneTimeout(depth: number): number {
   // depth=1 means shallow clone
   if (depth === 1) return minTimeout;
 
-  const maxDepth = 1001;  // Slider full + sentinel
+  const maxDepth = 1001; // Slider full + sentinel
   const effectiveDepth = Math.min(depth, maxDepth);
   // Use power curve (exponent > 1) for slow-then-fast growth
   const factor = Math.pow(effectiveDepth / maxDepth, 2.5);
@@ -41,10 +49,13 @@ function computeCloneTimeout(depth: number): number {
  * Interpolates a date for a given depth from commit history samples.
  * Returns a human-readable description like "~6 months of history".
  */
-function getDepthDateEstimate(depth: number, commitHistory: CommitHistoryInfo | undefined): string | null {
+function getDepthDateEstimate(
+  depth: number,
+  commitHistory: CommitHistoryInfo | undefined,
+): string | null {
   if (!commitHistory?.samples || commitHistory.samples.length < 2) return null;
-  if (depth === 0) return null;  // Full history - use oldest_date directly
-  if (depth === 1) return null;  // Shallow - no history
+  if (depth === 0) return null; // Full history - use oldest_date directly
+  if (depth === 1) return null; // Shallow - no history
 
   const samples = commitHistory.samples;
   const newest = samples.find((s) => s.depth === 0);
@@ -62,7 +73,8 @@ function getDepthDateEstimate(depth: number, commitHistory: CommitHistoryInfo | 
       const ratio = (depth - lower.depth) / (upper.depth - lower.depth);
       const lowerDate = new Date(lower.date);
       const upperDate = new Date(upper.date);
-      const interpolatedMs = lowerDate.getTime() + ratio * (upperDate.getTime() - lowerDate.getTime());
+      const interpolatedMs =
+        lowerDate.getTime() + ratio * (upperDate.getTime() - lowerDate.getTime());
       estimatedDate = new Date(interpolatedMs);
       break;
     }
@@ -80,7 +92,8 @@ function getDepthDateEstimate(depth: number, commitHistory: CommitHistoryInfo | 
         const ratio = (depth - prev.depth) / (last.depth - prev.depth);
         const prevDate = new Date(prev.date);
         const lastDate = new Date(last.date);
-        const interpolatedMs = prevDate.getTime() + ratio * (lastDate.getTime() - prevDate.getTime());
+        const interpolatedMs =
+          prevDate.getTime() + ratio * (lastDate.getTime() - prevDate.getTime());
         estimatedDate = new Date(interpolatedMs);
       }
     }
@@ -151,7 +164,16 @@ interface GitIndexWizardProps {
 // Default file patterns to include all files
 const DEFAULT_FILE_PATTERNS = '**/*';
 
-export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, editIndex, onConfigSaved, onNavigateToSettings, existingVectorStoreType }: GitIndexWizardProps) {
+export function GitIndexWizard({
+  onJobCreated,
+  onCancel,
+  onAnalysisStart,
+  onAnalysisComplete,
+  editIndex,
+  onConfigSaved,
+  onNavigateToSettings,
+  existingVectorStoreType,
+}: GitIndexWizardProps) {
   const isEditMode = !!editIndex;
 
   const [isLoading, setIsLoading] = useState(false);
@@ -168,7 +190,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   const [gitToken, setGitToken] = useState('');
   const [isPrivateRepo, setIsPrivateRepo] = useState(false);
   const [hasStoredToken, setHasStoredToken] = useState(editIndex?.has_stored_token || false);
-  const [storedTokenValid, setStoredTokenValid] = useState(true);  // Assume valid until proven otherwise
+  const [storedTokenValid, setStoredTokenValid] = useState(true); // Assume valid until proven otherwise
   const [checkingVisibility, setCheckingVisibility] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [selectedBranch, setSelectedBranch] = useState(editIndex?.git_branch || '');
@@ -178,29 +200,45 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
   // Initialize from editIndex config_snapshot if available
   const configSnapshot = editIndex?.config_snapshot;
   const [filePatterns, setFilePatterns] = useState(
-    configSnapshot?.file_patterns?.join(', ') || DEFAULT_FILE_PATTERNS
+    configSnapshot?.file_patterns?.join(', ') || DEFAULT_FILE_PATTERNS,
   );
   const [excludePatterns, setExcludePatterns] = useState(
-    configSnapshot?.exclude_patterns?.join(', ') || ''
+    configSnapshot?.exclude_patterns?.join(', ') || '',
   );
   const [chunkSize, setChunkSize] = useState(configSnapshot?.chunk_size || 1000);
   const [chunkOverlap, setChunkOverlap] = useState(configSnapshot?.chunk_overlap || 200);
   const [maxFileSizeKb, setMaxFileSizeKb] = useState(configSnapshot?.max_file_size_kb || 500);
   const [ocrMode, setOcrMode] = useState<OcrMode>(configSnapshot?.ocr_mode || 'disabled');
-  const [ocrProvider, setOcrProvider] = useState<OcrProvider | null>(configSnapshot?.ocr_provider ?? null);
+  const [ocrProvider, setOcrProvider] = useState<OcrProvider | null>(
+    configSnapshot?.ocr_provider ?? null,
+  );
   const [ocrVisionModel, setOcrVisionModel] = useState(configSnapshot?.ocr_vision_model || '');
-  const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss');
+  const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(
+    existingVectorStoreType ?? editIndex?.vector_store_type ?? 'faiss',
+  );
   const [visionOcrAvailable] = useState(true);
-  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(undefined);
-  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(undefined);
-  const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(configSnapshot?.git_clone_timeout_minutes || 5);
+  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(
+    undefined,
+  );
+  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(
+    undefined,
+  );
+  const [gitCloneTimeoutMinutes, setGitCloneTimeoutMinutes] = useState(
+    configSnapshot?.git_clone_timeout_minutes || 5,
+  );
   const [gitHistoryDepth, setGitHistoryDepth] = useState(configSnapshot?.git_history_depth ?? 1);
-  const [reindexIntervalHours, setReindexIntervalHours] = useState(configSnapshot?.reindex_interval_hours || 0);
-  const [reindexStartMinute, setReindexStartMinute] = useState<number | null>(configSnapshot?.reindex_start_minute ?? null);
-  const [reindexTimezone, setReindexTimezone] = useState<string | null>(configSnapshot?.reindex_timezone ?? null);
-  const [timeoutManuallySet, setTimeoutManuallySet] = useState(false);  // Track if user overrode timeout
+  const [reindexIntervalHours, setReindexIntervalHours] = useState(
+    configSnapshot?.reindex_interval_hours || 0,
+  );
+  const [reindexStartMinute, setReindexStartMinute] = useState<number | null>(
+    configSnapshot?.reindex_start_minute ?? null,
+  );
+  const [reindexTimezone, setReindexTimezone] = useState<string | null>(
+    configSnapshot?.reindex_timezone ?? null,
+  );
+  const [timeoutManuallySet, setTimeoutManuallySet] = useState(false); // Track if user overrode timeout
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
-  const [patternsExpanded, setPatternsExpanded] = useState(isEditMode);  // Expand by default in edit mode
+  const [patternsExpanded, setPatternsExpanded] = useState(isEditMode); // Expand by default in edit mode
   const [description, setDescription] = useState(editIndex?.description || '');
   const [indexName, setIndexName] = useState(editIndex?.display_name || editIndex?.name || '');
 
@@ -220,7 +258,7 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       setSelectedBranch(editIndex.git_branch || '');
       setDescription(editIndex.description || '');
       setHasStoredToken(editIndex.has_stored_token || false);
-      setStoredTokenValid(true);  // Reset to assume valid
+      setStoredTokenValid(true); // Reset to assume valid
       const snapshot = editIndex.config_snapshot;
       if (snapshot) {
         setFilePatterns(snapshot.file_patterns?.join(', ') || DEFAULT_FILE_PATTERNS);
@@ -266,19 +304,22 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
   // Fetch global OCR default settings to show in helptext
   useEffect(() => {
-    api.getSettings().then((response) => {
-      const settings = response.settings;
-      if (settings.default_ocr_provider) {
-        setDefaultOcrProviderLabel(
-          OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider
-        );
-      }
-      if (settings.default_ocr_vision_model) {
-        setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
-      }
-    }).catch(() => {
-      // Silently fail - helptext will fall back to generic message
-    });
+    api
+      .getSettings()
+      .then((response) => {
+        const settings = response.settings;
+        if (settings.default_ocr_provider) {
+          setDefaultOcrProviderLabel(
+            OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider,
+          );
+        }
+        if (settings.default_ocr_vision_model) {
+          setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
+        }
+      })
+      .catch(() => {
+        // Silently fail - helptext will fall back to generic message
+      });
   }, []);
 
   // Check repo visibility in edit mode to detect if repo became private
@@ -348,28 +389,25 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
    * Parse a Git URL to extract the repository name.
    * Used for generating index names and URL validation.
    */
-  const parseGitUrl = useCallback(
-    (url: string): { repo: string } | null => {
-      if (!url || typeof url !== 'string') {
-        return null;
-      }
-
-      // HTTPS format: https://github.com/owner/repo.git
-      const httpsMatch = url.match(/^https?:\/\/[^\/]+\/[^\/]+\/([^\/]+?)(\.git)?$/);
-      if (httpsMatch) {
-        return { repo: httpsMatch[1] };
-      }
-
-      // SSH format: git@github.com:owner/repo.git
-      const sshMatch = url.match(/^git@[^:]+:[^\/]+\/([^\/]+?)(\.git)?$/);
-      if (sshMatch) {
-        return { repo: sshMatch[1] };
-      }
-
+  const parseGitUrl = useCallback((url: string): { repo: string } | null => {
+    if (!url || typeof url !== 'string') {
       return null;
-    },
-    [],
-  );
+    }
+
+    // HTTPS format: https://github.com/owner/repo.git
+    const httpsMatch = url.match(/^https?:\/\/[^/]+\/[^/]+\/([^/]+?)(\.git)?$/);
+    if (httpsMatch) {
+      return { repo: httpsMatch[1] };
+    }
+
+    // SSH format: git@github.com:owner/repo.git
+    const sshMatch = url.match(/^git@[^:]+:[^/]+\/([^/]+?)(\.git)?$/);
+    if (sshMatch) {
+      return { repo: sshMatch[1] };
+    }
+
+    return null;
+  }, []);
 
   const fetchBranches = useCallback(
     async (url: string, token?: string, silent404 = false) => {
@@ -483,7 +521,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         }
       } catch (err) {
         if (!cancelled) {
-          setStatus({ type: 'error', message: `Failed to refresh job: ${err instanceof Error ? err.message : 'Request failed'}` });
+          setStatus({
+            type: 'error',
+            message: `Failed to refresh job: ${err instanceof Error ? err.message : 'Request failed'}`,
+          });
         }
       } finally {
         pollInFlight = false;
@@ -491,7 +532,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     };
 
     void pollJob();
-    const intervalId = window.setInterval(() => { void pollJob(); }, INDEX_JOB_POLL_INTERVAL_MS);
+    const intervalId = window.setInterval(() => {
+      void pollJob();
+    }, INDEX_JOB_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
@@ -522,8 +565,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         git_url: gitUrl,
         git_branch: selectedBranch || 'main',
         git_token: isPrivateRepo ? gitToken : undefined,
-        file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
-        exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
+        file_patterns: filePatterns
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        exclude_patterns: excludePatterns
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
@@ -535,7 +584,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       setWizardStep('review');
       setStatus({ type: null, message: '' });
     } catch (err) {
-      setStatus({ type: 'error', message: `Analysis failed: ${err instanceof Error ? err.message : 'Request failed'}` });
+      setStatus({
+        type: 'error',
+        message: `Analysis failed: ${err instanceof Error ? err.message : 'Request failed'}`,
+      });
       setWizardStep('input');
     } finally {
       setIsLoading(false);
@@ -548,7 +600,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       return;
     }
 
-    const currentExcludes = excludePatterns.split(',').map((s) => s.trim()).filter(Boolean);
+    const currentExcludes = excludePatterns
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const newExcludes = [...new Set([...currentExcludes, ...analysisResult.suggested_exclusions])];
     setExcludePatterns(newExcludes.join(','));
     setExclusionsApplied(true);
@@ -584,8 +639,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         config: {
           name,
           description: '',
-          file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
-          exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
+          file_patterns: filePatterns
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          exclude_patterns: excludePatterns
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
           chunk_size: chunkSize,
           chunk_overlap: chunkOverlap,
           max_file_size_kb: maxFileSizeKb,
@@ -596,8 +657,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           git_clone_timeout_minutes: gitCloneTimeoutMinutes,
           git_history_depth: gitHistoryDepth,
           reindex_interval_hours: reindexIntervalHours,
-          reindex_start_minute: reindexIntervalHours > 0 ? (reindexStartMinute ?? defaultScheduleStartMinute()) : null,
-          reindex_timezone: reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
+          reindex_start_minute:
+            reindexIntervalHours > 0 ? (reindexStartMinute ?? defaultScheduleStartMinute()) : null,
+          reindex_timezone:
+            reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
         },
       });
       // Keep the job in state and poll it so the wizard shows live
@@ -605,7 +668,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       setIndexingJob(job);
       setStatus({ type: 'info', message: 'Cloning repository...' });
     } catch (err) {
-      setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Request failed'}` });
+      setStatus({
+        type: 'error',
+        message: `Error: ${err instanceof Error ? err.message : 'Request failed'}`,
+      });
       setWizardStep('review');
     } finally {
       setIsLoading(false);
@@ -628,11 +694,12 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
     if (isLoading) return;
 
     const parsedForClear = parseGitUrl(gitUrl);
-    const clearTokenIndexName = isEditMode && editIndex && hasStoredToken
-      ? editIndex.name
-      : !isEditMode && analysisResult && isPrivateRepo && gitToken.trim() && parsedForClear
-        ? parsedForClear.repo.toLowerCase().replace(/[^a-z0-9_-]/g, '-')
-        : null;
+    const clearTokenIndexName =
+      isEditMode && editIndex && hasStoredToken
+        ? editIndex.name
+        : !isEditMode && analysisResult && isPrivateRepo && gitToken.trim() && parsedForClear
+          ? parsedForClear.repo.toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+          : null;
 
     setStatus({ type: null, message: '' });
     setWizardStep('input');
@@ -674,7 +741,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         setStatus({ type: 'success', message: 'Fields cleared and stored token removed.' });
         onConfigSaved?.();
       } catch (err) {
-        setStatus({ type: 'error', message: `Fields cleared, but stored token could not be removed: ${err instanceof Error ? err.message : 'Request failed'}` });
+        setStatus({
+          type: 'error',
+          message: `Fields cleared, but stored token could not be removed: ${err instanceof Error ? err.message : 'Request failed'}`,
+        });
       } finally {
         setIsLoading(false);
       }
@@ -719,8 +789,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       const updated = await api.updateIndexConfig(currentName, {
         git_branch: selectedBranch || undefined,
         git_token: trimmedToken || undefined,
-        file_patterns: filePatterns.split(',').map((s) => s.trim()).filter(Boolean),
-        exclude_patterns: excludePatterns.split(',').map((s) => s.trim()).filter(Boolean),
+        file_patterns: filePatterns
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        exclude_patterns: excludePatterns
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
         chunk_size: chunkSize,
         chunk_overlap: chunkOverlap,
         max_file_size_kb: maxFileSizeKb,
@@ -730,8 +806,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         git_clone_timeout_minutes: gitCloneTimeoutMinutes,
         git_history_depth: gitHistoryDepth,
         reindex_interval_hours: reindexIntervalHours,
-        reindex_start_minute: reindexIntervalHours > 0 ? (reindexStartMinute ?? defaultScheduleStartMinute()) : null,
-        reindex_timezone: reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
+        reindex_start_minute:
+          reindexIntervalHours > 0 ? (reindexStartMinute ?? defaultScheduleStartMinute()) : null,
+        reindex_timezone:
+          reindexIntervalHours > 0 ? (reindexTimezone ?? defaultScheduleTimezone()) : null,
       });
       // Reflect saved config locally so the UI shows persisted values
       const snap = updated?.config_snapshot;
@@ -763,7 +841,10 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       }
       onConfigSaved?.();
     } catch (err) {
-      setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Save failed'}` });
+      setStatus({
+        type: 'error',
+        message: `Error: ${err instanceof Error ? err.message : 'Save failed'}`,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -775,19 +856,40 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       <div>
         <h4 style={{ marginBottom: '12px' }}>Edit Index Configuration</h4>
         <p className="field-help" style={{ marginBottom: '16px' }}>
-          Update settings for the next time you click "Pull & Re-index". Changes will not take effect until you re-index.
+          Update settings for the next time you click "Pull & Re-index". Changes will not take
+          effect until you re-index.
         </p>
 
-        <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
-          <div><strong>Source:</strong> {editIndex.source}</div>
+        <div
+          style={{
+            marginBottom: '16px',
+            padding: '12px',
+            background: 'var(--bg-tertiary)',
+            borderRadius: '8px',
+            fontSize: '13px',
+          }}
+        >
+          <div>
+            <strong>Source:</strong> {editIndex.source}
+          </div>
         </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', marginBottom: '16px', alignItems: 'flex-start' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '16px',
+            marginBottom: '16px',
+            alignItems: 'flex-start',
+          }}
+        >
           <div className="form-group" style={{ flex: '1 1 160px', minWidth: '160px', margin: 0 }}>
             <label>
               Branch
               {loadingBranches && (
-                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>(loading...)</span>
+                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>
+                  (loading...)
+                </span>
               )}
             </label>
             {branches.length > 0 ? (
@@ -858,7 +960,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               style={{ flex: '1 1 300px' }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+              {gitHistoryDepth === 0
+                ? 'Full'
+                : gitHistoryDepth === 1
+                  ? '1 (shallow)'
+                  : `${gitHistoryDepth} commits`}
             </span>
           </div>
           <small style={{ color: '#888', fontSize: '0.8rem' }}>
@@ -871,7 +977,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         </div>
 
         <details style={{ marginBottom: '16px' }}>
-          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+            Advanced Options
+          </summary>
           <IndexConfigFields
             isLoading={isLoading}
             filePatterns={filePatterns}
@@ -892,11 +1000,21 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
         <div className="wizard-actions" style={{ marginTop: '16px' }}>
           {onCancel && (
-            <button type="button" className="btn btn-secondary" onClick={handleCancel} disabled={isLoading}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCancel}
+              disabled={isLoading}
+            >
               Cancel
             </button>
           )}
-          <button type="button" className="btn btn-secondary" onClick={handleClearFields} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleClearFields}
+            disabled={isLoading}
+          >
             Clear Fields
           </button>
           <button type="button" className="btn" onClick={handleSaveConfig} disabled={isLoading}>
@@ -923,12 +1041,22 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           />
         </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', marginBottom: '16px', alignItems: 'flex-start' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '16px',
+            marginBottom: '16px',
+            alignItems: 'flex-start',
+          }}
+        >
           <div className="form-group" style={{ flex: '1 1 160px', minWidth: '160px', margin: 0 }}>
             <label>
               Branch
               {loadingBranches && (
-                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>(loading...)</span>
+                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>
+                  (loading...)
+                </span>
               )}
             </label>
             {branches.length > 0 ? (
@@ -954,7 +1082,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               />
             )}
             {branchError && (
-              <small style={{ color: '#f87171', fontSize: '0.85em', display: 'block', marginTop: '0.25rem' }}>
+              <small
+                style={{
+                  color: '#f87171',
+                  fontSize: '0.85em',
+                  display: 'block',
+                  marginTop: '0.25rem',
+                }}
+              >
                 {branchError}
               </small>
             )}
@@ -972,11 +1107,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         </div>
 
         <p className="field-help" style={{ marginBottom: '16px' }}>
-          Index name will be derived from the repository name. Click "Analyze" to preview the index before creating.
+          Index name will be derived from the repository name. Click "Analyze" to preview the index
+          before creating.
         </p>
 
         <div className="form-group" style={{ marginBottom: isPrivateRepo ? '0.5rem' : undefined }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
+          >
             <input
               type="checkbox"
               checked={isPrivateRepo}
@@ -993,23 +1131,49 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               disabled={isLoading || checkingVisibility}
             />
             Private repository (requires authentication)
-            {checkingVisibility && <span style={{ color: '#888', fontSize: '0.85em' }}>(checking...)</span>}
+            {checkingVisibility && (
+              <span style={{ color: '#888', fontSize: '0.85em' }}>(checking...)</span>
+            )}
           </label>
         </div>
 
         {isPrivateRepo && (
           <div
             className="form-group"
-            style={{ marginLeft: '1.5rem', borderLeft: '2px solid #444', paddingLeft: '1rem', marginBottom: '1rem' }}
+            style={{
+              marginLeft: '1.5rem',
+              borderLeft: '2px solid #444',
+              paddingLeft: '1rem',
+              marginBottom: '1rem',
+            }}
           >
             {/* Show stored token status in edit mode */}
             {isEditMode && hasStoredToken && storedTokenValid && (
-              <div style={{ marginBottom: '12px', padding: '12px', background: 'rgba(34, 197, 94, 0.1)', borderRadius: '8px', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
-                <span style={{ color: '#22c55e' }}>Token stored - will use existing credentials.</span>
+              <div
+                style={{
+                  marginBottom: '12px',
+                  padding: '12px',
+                  background: 'rgba(34, 197, 94, 0.1)',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(34, 197, 94, 0.3)',
+                }}
+              >
+                <span style={{ color: '#22c55e' }}>
+                  Token stored - will use existing credentials.
+                </span>
                 <button
                   type="button"
                   onClick={() => setStoredTokenValid(false)}
-                  style={{ marginLeft: '12px', padding: '4px 8px', fontSize: '12px', background: 'transparent', border: '1px solid #666', borderRadius: '4px', color: '#888', cursor: 'pointer' }}
+                  style={{
+                    marginLeft: '12px',
+                    padding: '4px 8px',
+                    fontSize: '12px',
+                    background: 'transparent',
+                    border: '1px solid #666',
+                    borderRadius: '4px',
+                    color: '#888',
+                    cursor: 'pointer',
+                  }}
                 >
                   Update Token
                 </button>
@@ -1018,8 +1182,18 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
             {/* Show warning if stored token is invalid */}
             {isEditMode && hasStoredToken && !storedTokenValid && (
-              <div style={{ marginBottom: '12px', padding: '12px', background: 'rgba(251, 191, 36, 0.1)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.3)' }}>
-                <span style={{ color: '#fbbf24' }}>Stored token no longer works - please provide a new token.</span>
+              <div
+                style={{
+                  marginBottom: '12px',
+                  padding: '12px',
+                  background: 'rgba(251, 191, 36, 0.1)',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(251, 191, 36, 0.3)',
+                }}
+              >
+                <span style={{ color: '#fbbf24' }}>
+                  Stored token no longer works - please provide a new token.
+                </span>
               </div>
             )}
 
@@ -1035,7 +1209,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                   autoComplete="off"
                   disabled={isLoading}
                 />
-                <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '0.25rem' }}>
+                <small
+                  style={{
+                    color: '#888',
+                    fontSize: '0.85em',
+                    display: 'block',
+                    marginTop: '0.25rem',
+                  }}
+                >
                   {isEditMode
                     ? 'Provide a new token to update stored credentials.'
                     : 'Required for private repositories. Token is stored securely for automatic re-indexing.'}
@@ -1078,7 +1259,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               style={{ flex: '1 1 300px' }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+              {gitHistoryDepth === 0
+                ? 'Full'
+                : gitHistoryDepth === 1
+                  ? '1 (shallow)'
+                  : `${gitHistoryDepth} commits`}
             </span>
           </div>
           <small style={{ color: '#888', fontSize: '0.8rem' }}>
@@ -1091,7 +1276,9 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
         </div>
 
         <details style={{ marginBottom: '16px' }}>
-          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+            Advanced Options
+          </summary>
           <IndexConfigFields
             isLoading={isLoading}
             filePatterns={filePatterns}
@@ -1112,14 +1299,29 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
 
         <div className="wizard-actions">
           {onCancel && (
-            <button type="button" className="btn btn-secondary" onClick={handleCancel} disabled={isLoading}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCancel}
+              disabled={isLoading}
+            >
               Cancel
             </button>
           )}
-          <button type="button" className="btn btn-secondary" onClick={handleClearFields} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleClearFields}
+            disabled={isLoading}
+          >
             Clear Fields
           </button>
-          <button type="button" className="btn" onClick={handleAnalyze} disabled={isLoading || !gitUrl}>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleAnalyze}
+            disabled={isLoading || !gitUrl}
+          >
             {isLoading ? 'Analyzing...' : 'Analyze Repository'}
           </button>
         </div>
@@ -1144,7 +1346,13 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
           <div style={{ marginBottom: '16px' }}>
             <h5 style={{ marginBottom: '8px' }}>File Types (by estimated chunks)</h5>
             <div
-              style={{ maxHeight: '200px', overflowY: 'auto', background: 'var(--bg-tertiary)', borderRadius: '8px', padding: '8px' }}
+              style={{
+                maxHeight: '200px',
+                overflowY: 'auto',
+                background: 'var(--bg-tertiary)',
+                borderRadius: '8px',
+                padding: '8px',
+              }}
             >
               <FileTypeStatsTable stats={analysisResult.file_type_stats} maxRows={15} />
             </div>
@@ -1202,7 +1410,11 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               style={{ flex: '1 1 300px' }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+              {gitHistoryDepth === 0
+                ? 'Full'
+                : gitHistoryDepth === 1
+                  ? '1 (shallow)'
+                  : `${gitHistoryDepth} commits`}
             </span>
           </div>
           <small style={{ color: '#888', fontSize: '0.8rem' }}>
@@ -1211,11 +1423,14 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
               : gitHistoryDepth === 1
                 ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
                 : (() => {
-                  const dateEstimate = getDepthDateEstimate(gitHistoryDepth, analysisResult.commit_history);
-                  return dateEstimate
-                    ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
-                    : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
-                })()}
+                    const dateEstimate = getDepthDateEstimate(
+                      gitHistoryDepth,
+                      analysisResult.commit_history,
+                    );
+                    return dateEstimate
+                      ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
+                      : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;
+                  })()}
           </small>
         </div>
 
@@ -1245,21 +1460,42 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
             setTimeoutManuallySet={setTimeoutManuallySet}
           />
 
-          <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading} style={{ marginTop: '8px' }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleReanalyze}
+            disabled={isLoading}
+            style={{ marginTop: '8px' }}
+          >
             {isLoading ? 'Re-analyzing...' : 'Re-analyze'}
           </button>
         </details>
 
         <div className="wizard-actions">
-          <button type="button" className="btn btn-secondary" onClick={handleBack} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleBack}
+            disabled={isLoading}
+          >
             Back
           </button>
           {onCancel && (
-            <button type="button" className="btn btn-secondary" onClick={handleCancel} disabled={isLoading}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCancel}
+              disabled={isLoading}
+            >
               Cancel
             </button>
           )}
-          <button type="button" className="btn btn-secondary" onClick={handleClearFields} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleClearFields}
+            disabled={isLoading}
+          >
             Clear Fields
           </button>
           <button type="button" className="btn" onClick={handleStartIndexing} disabled={isLoading}>
@@ -1285,12 +1521,23 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
       ) : (
         <div style={{ display: 'grid', gap: '16px' }}>
           <div style={{ fontSize: '1.1rem', fontWeight: 600 }}>
-            {jobFailed ? 'Indexing failed' : jobDone ? 'Indexing complete' : formatIndexJobPhase(indexingJob)}
+            {jobFailed
+              ? 'Indexing failed'
+              : jobDone
+                ? 'Indexing complete'
+                : formatIndexJobPhase(indexingJob)}
           </div>
 
           {!jobFailed && (
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '6px' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '0.85rem',
+                  marginBottom: '6px',
+                }}
+              >
                 <span>
                   {indexingJob.phase === 'cloning'
                     ? 'Cloning repository'
@@ -1298,13 +1545,31 @@ export function GitIndexWizard({ onJobCreated, onCancel, onAnalysisStart, onAnal
                 </span>
                 <span style={{ fontFamily: 'var(--font-mono)' }}>{displayPercent}%</span>
               </div>
-              <div style={{ height: 8, borderRadius: 999, background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${displayPercent}%`, background: 'var(--accent, #60a5fa)', transition: 'width 200ms ease' }} />
+              <div
+                style={{
+                  height: 8,
+                  borderRadius: 999,
+                  background: 'var(--bg-tertiary)',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${displayPercent}%`,
+                    background: 'var(--accent, #60a5fa)',
+                    transition: 'width 200ms ease',
+                  }}
+                />
               </div>
               {indexingJob.phase !== 'cloning' && indexingJob.total_files > 0 && (
-                <small style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '6px' }}>
+                <small
+                  style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '6px' }}
+                >
                   {indexingJob.processed_files}/{indexingJob.total_files} files
-                  {indexingJob.total_chunks > 0 ? ` · ${indexingJob.processed_chunks}/${indexingJob.total_chunks} chunks` : ''}
+                  {indexingJob.total_chunks > 0
+                    ? ` · ${indexingJob.processed_chunks}/${indexingJob.total_chunks} chunks`
+                    : ''}
                 </small>
               )}
             </div>

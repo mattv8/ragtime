@@ -47,7 +47,10 @@ export function formatProviderDisplayName(value: string | null | undefined): str
   return toTitleCase(normalized);
 }
 
-export function formatModelDisplayName(value: string | null | undefined, providerHint?: string | null): string {
+export function formatModelDisplayName(
+  value: string | null | undefined,
+  providerHint?: string | null,
+): string {
   const { provider, modelId } = parseScopedModelIdentifier(value);
   const fallback = (modelId || value || '').trim();
   if (!fallback) {
@@ -56,9 +59,10 @@ export function formatModelDisplayName(value: string | null | undefined, provide
 
   const providerHintParsed = parseScopedModelIdentifier(providerHint).provider || providerHint;
   const scopedPrefix = normalizeProviderAlias(provider || providerHintParsed || '') || '';
-  const unscoped = scopedPrefix && fallback.startsWith(`${scopedPrefix}::`)
-    ? fallback.slice(scopedPrefix.length + 2)
-    : fallback;
+  const unscoped =
+    scopedPrefix && fallback.startsWith(`${scopedPrefix}::`)
+      ? fallback.slice(scopedPrefix.length + 2)
+      : fallback;
 
   const normalized = unscoped.toLowerCase();
   if (CHAT_MODEL_DISPLAY_LABELS[normalized]) {

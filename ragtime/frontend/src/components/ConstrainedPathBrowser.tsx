@@ -70,27 +70,31 @@ export function ConstrainedPathBrowser({
   pathDisplayOptions,
 }: ConstrainedPathBrowserProps) {
   const normalizedRootPath = normalizeMountBrowserPath(rootPath || '/');
-  const clampToRootPath = useCallback((value: string): string => {
-    const normalized = normalizeMountBrowserPath(value || normalizedRootPath || '/');
-    if (normalizedRootPath === '/') {
-      return normalized;
-    }
-    if (normalized === normalizedRootPath || normalized.startsWith(`${normalizedRootPath}/`)) {
-      return normalized;
-    }
-    return normalizedRootPath;
-  }, [normalizedRootPath]);
+  const clampToRootPath = useCallback(
+    (value: string): string => {
+      const normalized = normalizeMountBrowserPath(value || normalizedRootPath || '/');
+      if (normalizedRootPath === '/') {
+        return normalized;
+      }
+      if (normalized === normalizedRootPath || normalized.startsWith(`${normalizedRootPath}/`)) {
+        return normalized;
+      }
+      return normalizedRootPath;
+    },
+    [normalizedRootPath],
+  );
 
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [browsePath, setBrowsePath] = useState<string>(
-    clampToRootPath(currentPath || normalizedRootPath || '/')
+    clampToRootPath(currentPath || normalizedRootPath || '/'),
   );
   const [pathInput, setPathInput] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingDirectoryError, setPendingDirectoryError] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(
-    defaultExpanded ?? (!currentPath || normalizeMountBrowserPath(currentPath) === normalizedRootPath)
+    defaultExpanded ??
+      (!currentPath || normalizeMountBrowserPath(currentPath) === normalizedRootPath),
   );
   const onBrowsePathRef = useRef(onBrowsePath);
   const cacheRef = useRef(new Map<string, BrowseResponse>());
@@ -167,7 +171,7 @@ export function ConstrainedPathBrowser({
       }
       cacheRef.current.set(nextPath, result);
       setError(result.error ?? null);
-      setEntries(result.error ? [] : (result.entries || []));
+      setEntries(result.error ? [] : result.entries || []);
     } catch (err) {
       if (requestId !== requestIdRef.current) {
         return;
@@ -208,13 +212,19 @@ export function ConstrainedPathBrowser({
   };
 
   const isSelectableBrowsePath = canSelectPath ? canSelectPath(browsePath) : true;
-  const displayPathFor = useCallback((path: string): string => {
-    return resolveBrowserDisplayPath(path || '/', pathDisplayMap, pathDisplayOptions);
-  }, [pathDisplayMap, pathDisplayOptions]);
+  const displayPathFor = useCallback(
+    (path: string): string => {
+      return resolveBrowserDisplayPath(path || '/', pathDisplayMap, pathDisplayOptions);
+    },
+    [pathDisplayMap, pathDisplayOptions],
+  );
 
-  const displaySegmentFor = useCallback((path: string, fallback: string): string => {
-    return resolveBrowserDisplaySegment(path, fallback, pathDisplayMap, pathDisplayOptions);
-  }, [pathDisplayMap, pathDisplayOptions]);
+  const displaySegmentFor = useCallback(
+    (path: string, fallback: string): string => {
+      return resolveBrowserDisplaySegment(path, fallback, pathDisplayMap, pathDisplayOptions);
+    },
+    [pathDisplayMap, pathDisplayOptions],
+  );
 
   const stagedDirectoryEntries = useMemo<BrowserDirectoryEntry[]>(() => {
     if (normalizedStagedDirectories.length === 0) {
@@ -222,9 +232,7 @@ export function ConstrainedPathBrowser({
     }
 
     const existingPaths = new Set(
-      entries
-        .filter((entry) => entry.is_dir)
-        .map((entry) => normalizeMountBrowserPath(entry.path))
+      entries.filter((entry) => entry.is_dir).map((entry) => normalizeMountBrowserPath(entry.path)),
     );
 
     const nextEntries: BrowserDirectoryEntry[] = [];
@@ -258,10 +266,7 @@ export function ConstrainedPathBrowser({
     return nextEntries;
   }, [entries, stagedDirectoryEntries]);
 
-  const visibleFileEntries = useMemo(
-    () => entries.filter((entry) => !entry.is_dir),
-    [entries]
-  );
+  const visibleFileEntries = useMemo(() => entries.filter((entry) => !entry.is_dir), [entries]);
 
   const filterText = pathInput.split('/')[0];
   const filteredDirectoryEntries = visibleDirectoryEntries.filter((entry) => {
@@ -280,7 +285,7 @@ export function ConstrainedPathBrowser({
     if (value.endsWith('/')) {
       const dirName = value.slice(0, -1);
       const matchingDir = entries.find(
-        (entry) => entry.is_dir && entry.name.toLowerCase() === dirName.toLowerCase()
+        (entry) => entry.is_dir && entry.name.toLowerCase() === dirName.toLowerCase(),
       );
       if (matchingDir) {
         handleNavigate(matchingDir.path);
@@ -290,7 +295,7 @@ export function ConstrainedPathBrowser({
     if (value.includes('/')) {
       const firstSegment = value.split('/')[0];
       const matchingDir = entries.find(
-        (entry) => entry.is_dir && entry.name.toLowerCase() === firstSegment.toLowerCase()
+        (entry) => entry.is_dir && entry.name.toLowerCase() === firstSegment.toLowerCase(),
       );
       if (matchingDir) {
         handleNavigate(matchingDir.path);
@@ -325,15 +330,16 @@ export function ConstrainedPathBrowser({
     }
 
     const nextPath = normalizeMountBrowserPath(
-      browsePath === '/' ? `/${normalizedName}` : `${browsePath}/${normalizedName}`
+      browsePath === '/' ? `/${normalizedName}` : `${browsePath}/${normalizedName}`,
     );
     if (clampToRootPath(nextPath) !== nextPath) {
       setPendingDirectoryError('Folder must stay within the current root');
       return;
     }
 
-    const alreadyExists = visibleDirectoryEntries.some((entry) => normalizeMountBrowserPath(entry.path) === nextPath)
-      || visibleFileEntries.some((entry) => normalizeMountBrowserPath(entry.path) === nextPath);
+    const alreadyExists =
+      visibleDirectoryEntries.some((entry) => normalizeMountBrowserPath(entry.path) === nextPath) ||
+      visibleFileEntries.some((entry) => normalizeMountBrowserPath(entry.path) === nextPath);
     if (alreadyExists) {
       setPendingDirectoryError('That folder already exists');
       return;
@@ -353,9 +359,10 @@ export function ConstrainedPathBrowser({
   const segments = relativeBrowsePath.split('/').filter(Boolean);
   const breadcrumbRootLabel = rootLabel || normalizedRootPath || '/';
   const selectedOrBrowsePath = currentPath || browsePath;
-  const displayPath = selectedOrBrowsePath === normalizedRootPath && rootLabel
-    ? rootLabel
-    : displayPathFor(selectedOrBrowsePath);
+  const displayPath =
+    selectedOrBrowsePath === normalizedRootPath && rootLabel
+      ? rootLabel
+      : displayPathFor(selectedOrBrowsePath);
 
   return (
     <div className="filesystem-browser">
@@ -378,7 +385,8 @@ export function ConstrainedPathBrowser({
                 if (pathSegments.length === 0) return '/';
                 return pathSegments.map((seg, i) => (
                   <span key={i}>
-                    <span className="breadcrumb-sep">/</span>{seg}
+                    <span className="breadcrumb-sep">/</span>
+                    {seg}
                   </span>
                 ));
               })()}
@@ -410,13 +418,16 @@ export function ConstrainedPathBrowser({
                           if (rootSegments.length === 0) return '/';
                           return rootSegments.map((seg, i) => (
                             <span key={i}>
-                              <span className="breadcrumb-sep">/</span>{seg}
+                              <span className="breadcrumb-sep">/</span>
+                              {seg}
                             </span>
                           ));
                         })()}
                       </button>
                     </span>
-                    {segments.length > 0 && !breadcrumbRootLabel.endsWith('/') && <span className="breadcrumb-sep">/</span>}
+                    {segments.length > 0 && !breadcrumbRootLabel.endsWith('/') && (
+                      <span className="breadcrumb-sep">/</span>
+                    )}
                     {segments.map((segment, idx) => {
                       const pathToSegment = isRestrictedToRoot
                         ? `${normalizedRootPath}/${segments.slice(0, idx + 1).join('/')}`
@@ -471,7 +482,9 @@ export function ConstrainedPathBrowser({
               </div>
 
               {error && <div className="browser-error">{error}</div>}
-              {pendingDirectoryError && <div className="browser-error">{pendingDirectoryError}</div>}
+              {pendingDirectoryError && (
+                <div className="browser-error">{pendingDirectoryError}</div>
+              )}
 
               {loading ? (
                 <div className="browser-loading">Loading...</div>
@@ -488,27 +501,36 @@ export function ConstrainedPathBrowser({
                         style={disabledReason ? { opacity: 0.45, cursor: 'default' } : undefined}
                         title={disabledReason || undefined}
                       >
-                        <span className="entry-icon"><Icon name="folder" size={16} /></span>
+                        <span className="entry-icon">
+                          <Icon name="folder" size={16} />
+                        </span>
                         <span className="entry-name">{entry.name}</span>
-                        {disabledReason && <span className="browser-entry-badge" style={{ opacity: 0.7 }}>{disabledReason}</span>}
-                        {!disabledReason && entry.isPending && <span className="browser-entry-badge">New</span>}
+                        {disabledReason && (
+                          <span className="browser-entry-badge" style={{ opacity: 0.7 }}>
+                            {disabledReason}
+                          </span>
+                        )}
+                        {!disabledReason && entry.isPending && (
+                          <span className="browser-entry-badge">New</span>
+                        )}
                       </button>
                     );
                   })}
-                  {showFiles && filteredFileEntries.slice(0, 3).map((entry) => (
-                    <div key={entry.path} className="browser-entry file">
-                      <span className="entry-icon"><Icon name="file" size={16} /></span>
-                      <span className="entry-name">{entry.name}</span>
-                    </div>
-                  ))}
+                  {showFiles &&
+                    filteredFileEntries.slice(0, 3).map((entry) => (
+                      <div key={entry.path} className="browser-entry file">
+                        <span className="entry-icon">
+                          <Icon name="file" size={16} />
+                        </span>
+                        <span className="entry-name">{entry.name}</span>
+                      </div>
+                    ))}
                   {showFiles && filteredFileEntries.length > 3 && (
-                    <div className="browser-more">
-                      +{filteredFileEntries.length - 3} more files
-                    </div>
+                    <div className="browser-more">+{filteredFileEntries.length - 3} more files</div>
                   )}
-                  {filteredDirectoryEntries.length === 0 && (!showFiles || filteredFileEntries.length === 0) && !loading && (
-                    <div className="browser-empty">{emptyMessage}</div>
-                  )}
+                  {filteredDirectoryEntries.length === 0 &&
+                    (!showFiles || filteredFileEntries.length === 0) &&
+                    !loading && <div className="browser-empty">{emptyMessage}</div>}
                 </div>
               )}
             </div>

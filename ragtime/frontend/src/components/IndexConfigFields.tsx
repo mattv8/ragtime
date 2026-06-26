@@ -61,9 +61,8 @@ export function IndexConfigFields({
   gitHistoryDepth,
   setGitHistoryDepth,
   commitHistory,
-  getDepthDateEstimate
+  getDepthDateEstimate,
 }: IndexConfigFieldsProps) {
-
   const handleHistoryChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (setGitHistoryDepth) {
       const sliderVal = parseInt(e.target.value, 10);
@@ -74,7 +73,14 @@ export function IndexConfigFields({
 
   return (
     <>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '16px',
+          marginBottom: '16px',
+        }}
+      >
         <div className="form-group">
           <label>File Patterns (comma-separated)</label>
           <input
@@ -129,7 +135,9 @@ export function IndexConfigFields({
             max={10000}
             disabled={isLoading}
           />
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>Files larger than this are skipped</small>
+          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            Files larger than this are skipped
+          </small>
         </div>
 
         {gitCloneTimeoutMinutes !== undefined && setGitCloneTimeoutMinutes && (
@@ -146,7 +154,9 @@ export function IndexConfigFields({
               max={480}
               disabled={isLoading}
             />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>Auto-scales with history depth</small>
+            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+              Auto-scales with history depth
+            </small>
           </div>
         )}
       </div>
@@ -165,16 +175,22 @@ export function IndexConfigFields({
               style={{ flex: 1 }}
             />
             <span style={{ minWidth: '80px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>
-              {gitHistoryDepth === 0 ? 'Full' : gitHistoryDepth === 1 ? '1 (shallow)' : `${gitHistoryDepth} commits`}
+              {gitHistoryDepth === 0
+                ? 'Full'
+                : gitHistoryDepth === 1
+                  ? '1 (shallow)'
+                  : `${gitHistoryDepth} commits`}
             </span>
           </div>
           <small style={{ color: '#888', fontSize: '0.8rem' }}>
             {gitHistoryDepth === 0
-              ? `Full history: Indexes all commits.${(commitHistory?.total_commits) ? ` (${commitHistory.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
+              ? `Full history: Indexes all commits.${commitHistory?.total_commits ? ` (${commitHistory.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
               : gitHistoryDepth === 1
                 ? 'Shallow clone: Only latest commit. Fastest, but no git history search.'
                 : (() => {
-                    const dateEstimate = getDepthDateEstimate ? getDepthDateEstimate(gitHistoryDepth, commitHistory) : null;
+                    const dateEstimate = getDepthDateEstimate
+                      ? getDepthDateEstimate(gitHistoryDepth, commitHistory)
+                      : null;
                     return dateEstimate
                       ? `Indexes last ${gitHistoryDepth} commits (${dateEstimate}). Clone time scales with depth.`
                       : `Indexes last ${gitHistoryDepth} commits. Clone time scales with depth.`;

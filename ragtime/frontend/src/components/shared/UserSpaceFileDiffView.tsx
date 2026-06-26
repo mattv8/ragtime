@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, memo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { Decoration, type DecorationSet, EditorView, lineNumbers as codeMirrorLineNumbers } from '@codemirror/view';
+import {
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  lineNumbers as codeMirrorLineNumbers,
+} from '@codemirror/view';
 import { StateField, type Extension } from '@codemirror/state';
 import { diffLines } from 'diff';
 import type { UserSpaceSnapshotFileDiff } from '@/types';
@@ -26,7 +31,12 @@ interface DiffLineWindow {
   end: number;
 }
 
-function computeAlignedDiff(before: string, after: string, startingBeforeLine: number = 1, startingAfterLine: number = 1): AlignedDiffResult {
+function computeAlignedDiff(
+  before: string,
+  after: string,
+  startingBeforeLine: number = 1,
+  startingAfterLine: number = 1,
+): AlignedDiffResult {
   const changes = diffLines(before, after);
 
   const beforeArr: string[] = [];
@@ -143,7 +153,10 @@ function windowAlignedDiff(alignedDiff: AlignedDiffResult): AlignedDiffResult {
   ]);
   const windows = buildDiffLineWindows(changedLines, lineCount);
 
-  if (windows.length === 0 || (windows.length === 1 && windows[0].start === 1 && windows[0].end === lineCount)) {
+  if (
+    windows.length === 0 ||
+    (windows.length === 1 && windows[0].start === 1 && windows[0].end === lineCount)
+  ) {
     return alignedDiff;
   }
 
@@ -247,7 +260,10 @@ export function formatDiffStatus(status: 'A' | 'D' | 'M' | 'R'): string {
   }
 }
 
-export function calculateDiffLineCounts(before: string, after: string): { additions: number; deletions: number } {
+export function calculateDiffLineCounts(
+  before: string,
+  after: string,
+): { additions: number; deletions: number } {
   const changes = diffLines(before, after);
   let additions = 0;
   let deletions = 0;
@@ -339,7 +355,14 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     if (diff.is_binary || diff.is_truncated) return null;
     const startingBeforeLine = diff.starting_before_line ?? 1;
     const startingAfterLine = diff.starting_after_line ?? 1;
-    return windowAlignedDiff(computeAlignedDiff(diff.before_content, diff.after_content, startingBeforeLine, startingAfterLine));
+    return windowAlignedDiff(
+      computeAlignedDiff(
+        diff.before_content,
+        diff.after_content,
+        startingBeforeLine,
+        startingAfterLine,
+      ),
+    );
   }, [diff]);
 
   const beforeExtensions = useMemo(() => {
@@ -438,7 +461,9 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
 
   if (!alignedDiff) {
     return (
-      <div className={`userspace-snapshot-diff-empty-state${compact ? ' userspace-snapshot-diff-empty-state-compact' : ''}`}>
+      <div
+        className={`userspace-snapshot-diff-empty-state${compact ? ' userspace-snapshot-diff-empty-state-compact' : ''}`}
+      >
         <p className="userspace-muted">{getDiffFallbackMessage(diff)}</p>
       </div>
     );
@@ -452,15 +477,21 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     const singleContent = isPureAdd ? alignedDiff.afterText : alignedDiff.beforeText;
     const singleLabel = isPureAdd ? afterLabel : beforeLabel;
     const singlePath = isPureAdd ? (diff.after_path ?? diff.path) : (diff.before_path ?? diff.path);
-    const singleLineNumbers = isPureAdd ? alignedDiff.afterLineNumbers : alignedDiff.beforeLineNumbers;
+    const singleLineNumbers = isPureAdd
+      ? alignedDiff.afterLineNumbers
+      : alignedDiff.beforeLineNumbers;
     const singleExtensions = highlightSingleColumnChanges
-      ? (isPureAdd ? afterExtensions : beforeExtensions)
+      ? isPureAdd
+        ? afterExtensions
+        : beforeExtensions
       : [buildDiffLineNumberExtension(singleLineNumbers), ...languageExtensions];
 
     const autoFitHeight = maxLines ? computeAutoFitHeight(singleContent, maxLines) : '100%';
     const wrapStyle = maxLines ? { minHeight: 0, height: autoFitHeight } : undefined;
     return (
-      <div className={`userspace-snapshot-diff-columns userspace-snapshot-diff-columns-single${compact ? ' userspace-snapshot-diff-columns-compact' : ''}${maxLines ? ' userspace-snapshot-diff-columns-autofit' : ''}`}>
+      <div
+        className={`userspace-snapshot-diff-columns userspace-snapshot-diff-columns-single${compact ? ' userspace-snapshot-diff-columns-compact' : ''}${maxLines ? ' userspace-snapshot-diff-columns-autofit' : ''}`}
+      >
         <div className="userspace-snapshot-diff-column userspace-snapshot-diff-column-current">
           <div className="userspace-snapshot-diff-column-header">
             <span>{singleLabel}</span>
@@ -496,7 +527,9 @@ export const UserSpaceFileDiffView = memo(function UserSpaceFileDiffView({
     : '100%';
   const dualWrapStyle = maxLines ? { minHeight: 0, height: dualAutoFitHeight } : undefined;
   return (
-    <div className={`userspace-snapshot-diff-columns${compact ? ' userspace-snapshot-diff-columns-compact' : ''}${maxLines ? ' userspace-snapshot-diff-columns-autofit' : ''}`}>
+    <div
+      className={`userspace-snapshot-diff-columns${compact ? ' userspace-snapshot-diff-columns-compact' : ''}${maxLines ? ' userspace-snapshot-diff-columns-autofit' : ''}`}
+    >
       <div className="userspace-snapshot-diff-column">
         <div className="userspace-snapshot-diff-column-header">
           <span>{beforeLabel}</span>

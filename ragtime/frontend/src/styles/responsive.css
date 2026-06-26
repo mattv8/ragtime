@@ -8,23 +8,33 @@
    ============================================================================= */
 
 @media (min-width: 576px) {
-  :root { --container-max-width: 540px; }
+  :root {
+    --container-max-width: 540px;
+  }
 }
 
 @media (min-width: 768px) {
-  :root { --container-max-width: 720px; }
+  :root {
+    --container-max-width: 720px;
+  }
 }
 
 @media (min-width: 992px) {
-  :root { --container-max-width: 960px; }
+  :root {
+    --container-max-width: 960px;
+  }
 }
 
 @media (min-width: 1200px) {
-  :root { --container-max-width: 1140px; }
+  :root {
+    --container-max-width: 1140px;
+  }
 }
 
 @media (min-width: 1400px) {
-  :root { --container-max-width: 1320px; }
+  :root {
+    --container-max-width: 1320px;
+  }
 }
 
 /* Narrow desktop breakpoint (995px and below) — collapse user-menu to avatar only */
@@ -879,7 +889,8 @@
     max-width: 60px;
     flex-basis: 60px;
   }
-  .chat-panel-workspace .chat-workspace-conversation-trigger:has(.chat-workspace-interrupt-dismiss) {
+  .chat-panel-workspace
+    .chat-workspace-conversation-trigger:has(.chat-workspace-interrupt-dismiss) {
     width: 60px;
     max-width: 60px;
     gap: 4px;
@@ -1078,9 +1089,9 @@
     font-size: var(--text-xs);
   }
 
-  input[type="text"],
-  input[type="number"],
-  input[type="password"],
+  input[type='text'],
+  input[type='number'],
+  input[type='password'],
   select,
   textarea {
     padding: var(--space-sm);
@@ -1219,7 +1230,7 @@
     min-height: 44px;
   }
 
-  .checkbox-label input[type="checkbox"] {
+  .checkbox-label input[type='checkbox'] {
     width: 22px;
     height: 22px;
   }

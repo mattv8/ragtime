@@ -23,7 +23,10 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
   const [overwrite, setOverwrite] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [status, setStatus] = useState<{ type: 'info' | 'success' | 'error'; message: string } | null>(null);
+  const [status, setStatus] = useState<{
+    type: 'info' | 'success' | 'error';
+    message: string;
+  } | null>(null);
   const [result, setResult] = useState<ImportFaissIndexResponse | null>(null);
 
   const reset = useCallback(() => {
@@ -115,7 +118,9 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          <div className="icon"><Upload size={28} /></div>
+          <div className="icon">
+            <Upload size={28} />
+          </div>
           <div>Drag &amp; drop an exported FAISS zip here, or click to browse</div>
           <div style={{ fontSize: '0.85rem', color: '#888', marginTop: 8 }}>
             Produced by the &quot;Download&quot; button on an existing document index
@@ -134,9 +139,9 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
       {file && (
         <>
           <p className="field-help" style={{ marginBottom: '16px' }}>
-            <strong>Import a FAISS index</strong> to instantly re-create an index that was previously exported
-            from this server (or another server). The original description, source, and configuration are
-            restored from <code>metadata.json</code> inside the zip.
+            <strong>Import a FAISS index</strong> to instantly re-create an index that was
+            previously exported from this server (or another server). The original description,
+            source, and configuration are restored from <code>metadata.json</code> inside the zip.
           </p>
 
           <div className="form-group">
@@ -149,8 +154,9 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               disabled={isLoading}
             />
             <small style={{ color: '#888', fontSize: '0.8rem' }}>
-              Defaults to the zip filename. The server will use the name embedded in <code>metadata.json</code>{' '}
-              if you leave this blank or clear it (the name is restored from the original export).
+              Defaults to the zip filename. The server will use the name embedded in{' '}
+              <code>metadata.json</code> if you leave this blank or clear it (the name is restored
+              from the original export).
             </small>
           </div>
 
@@ -165,12 +171,15 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               disabled={isLoading}
             />
             <small style={{ color: '#888', fontSize: '0.8rem' }}>
-              Helps the AI understand when to search this index. Overrides the description from the zip when set.
+              Helps the AI understand when to search this index. Overrides the description from the
+              zip when set.
             </small>
           </div>
 
           <div className="form-group">
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
+            >
               <input
                 type="checkbox"
                 checked={overwrite}
@@ -180,7 +189,9 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               />
               Overwrite existing index with the same name
             </label>
-            <small style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '0.25rem' }}>
+            <small
+              style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '0.25rem' }}
+            >
               When unchecked, the import fails if an index with the same name already exists.
             </small>
           </div>

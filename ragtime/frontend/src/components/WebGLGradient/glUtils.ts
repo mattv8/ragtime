@@ -1,9 +1,4 @@
-export const FULLSCREEN_QUAD_VERTICES = new Float32Array([
-  -1, -1,
-   1, -1,
-  -1,  1,
-   1,  1,
-]);
+export const FULLSCREEN_QUAD_VERTICES = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
 
 interface ProgramLogLabels {
   shaderCompile?: string;

@@ -10,7 +10,15 @@ interface ContextUsagePieProps {
   isCompacting?: boolean;
 }
 
-export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, compactThresholdPercent = 80, loading, onCompact, isCompacting }: ContextUsagePieProps) {
+export function ContextUsagePie({
+  currentTokens,
+  totalTokens,
+  contextLimit,
+  compactThresholdPercent = 80,
+  loading,
+  onCompact,
+  isCompacting,
+}: ContextUsagePieProps) {
   const [optimisticCompacting, setOptimisticCompacting] = useState(false);
   const { percentage, color } = useMemo(() => {
     const pct = contextLimit > 0 ? Math.round((totalTokens / contextLimit) * 100) : 0;
@@ -57,11 +65,7 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
     const loadingGap = circumference - loadingArc;
     const loadingContent = (
       <>
-        <svg
-          width={size}
-          height={size}
-          viewBox={`0 0 ${size} ${size}`}
-        >
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
           <circle
             cx={center}
             cy={center}
@@ -176,7 +180,10 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
           {percentage}%
         </text>
         {canCompact && (
-          <g className="context-usage-pie-compact-icon" transform={`translate(${center - 8}, ${center - 8}) scale(0.666)`}>
+          <g
+            className="context-usage-pie-compact-icon"
+            transform={`translate(${center - 8}, ${center - 8}) scale(0.666)`}
+          >
             <g
               stroke="var(--color-surface-hover)"
               strokeWidth="5"
@@ -214,7 +221,9 @@ export function ContextUsagePie({ currentTokens, totalTokens, contextLimit, comp
         className="context-usage-pie context-usage-pie-button context-usage-pie-compact-mode"
         title={title}
         aria-label="Compact conversation context"
-        onClick={() => { void handleCompactClick(); }}
+        onClick={() => {
+          void handleCompactClick();
+        }}
       >
         {pieContent}
       </button>

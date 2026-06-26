@@ -258,6 +258,33 @@ jobs:
           echo "ref=$SAFE_REF" >> "$GITHUB_OUTPUT"
           echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
+      - name: Frontend format check
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: frontend-format-check
+          push: false
+          cache-from: |
+            type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
+            type=gha,scope=frontend-main
+            type=gha
+          cache-to: |
+            type=gha,mode=max,scope=frontend-${{ steps.cache_key.outputs.ref }}
+
+      - name: Frontend ESLint
+        id: frontend_eslint
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: frontend-lint
+          push: false
+          cache-from: |
+            type=gha,scope=frontend-${{ steps.cache_key.outputs.ref }}
+            type=gha,scope=frontend-main
+            type=gha
+
       - name: Build frontend
         uses: docker/build-push-action@v5
         with:
@@ -279,15 +306,20 @@ jobs:
         if: always()
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'MD'
-          ### Frontend Build
+          ### Frontend Build and Quality
 
-          Builds the Vite frontend through the Docker `frontend-builder` target.
+          - Builds the Vite frontend through the Docker `frontend-builder` target.
+          - Gates JS/TS formatting via the `frontend-format-check` target (Prettier). This is a blocking check.
+          - Gates ESLint via the `frontend-lint` target. This is a blocking check (result: ${{ steps.frontend_eslint.outcome }}).
 
-          Local equivalent:
+          Local equivalents:
 
           ```bash
+          bash tests/check_frontend_format.sh           # format gate (+ reported lint)
+          bash tests/check_frontend_format.sh --write    # auto-fix formatting and lint
+          docker build --target frontend-format-check -f docker/Dockerfile .
           docker build --target frontend-builder -f docker/Dockerfile .
           ```
 
-          If this job failed, inspect the `Build frontend` step for the npm/Vite error.
+          If the format check failed, run `bash tests/check_frontend_format.sh --write` and commit the result.
           MD

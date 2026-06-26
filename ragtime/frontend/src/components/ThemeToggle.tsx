@@ -23,7 +23,7 @@ export function ThemeToggle() {
   }, [theme]);
 
   const cycleTheme = () => {
-    setTheme(current => {
+    setTheme((current) => {
       if (current === 'dark') return 'light';
       if (current === 'light') return 'system';
       return 'dark';
@@ -47,11 +47,7 @@ export function ThemeToggle() {
       aria-label={`Current theme: ${theme}. Click to change.`}
       title={`Theme: ${theme}`}
     >
-      {effectiveTheme === 'dark' ? (
-        <Moon size={18} />
-      ) : (
-        <Sun size={18} />
-      )}
+      {effectiveTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
       {theme === 'system' && <span className="theme-toggle-indicator">auto</span>}
     </button>
   );

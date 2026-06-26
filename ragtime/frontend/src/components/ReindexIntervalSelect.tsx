@@ -1,5 +1,9 @@
 import type React from 'react';
-import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
+import {
+  defaultScheduleStartMinute,
+  defaultScheduleTimezone,
+  ScheduleStartTimeInput,
+} from './ScheduleStartTimeInput';
 
 interface ReindexIntervalSelectProps {
   value: number;

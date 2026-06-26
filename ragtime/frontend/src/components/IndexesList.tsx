@@ -51,12 +51,15 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
       <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
         <div className="modal-header">
           <h3>Search Weight: {index.name}</h3>
-          <button className="modal-close" onClick={onClose}>&times;</button>
+          <button className="modal-close" onClick={onClose}>
+            &times;
+          </button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
             <p style={{ fontSize: '0.9rem', color: '#888', marginBottom: '16px' }}>
-              Search weight influences how the AI prioritizes results from this index relative to others.
+              Search weight influences how the AI prioritizes results from this index relative to
+              others.
             </p>
             <div style={{ marginBottom: '16px' }}>
               <label style={{ display: 'block', marginBottom: '8px' }}>
@@ -72,33 +75,47 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
                 style={{ width: '100%' }}
                 disabled={saving}
               />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#666' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: '0.75rem',
+                  color: '#666',
+                }}
+              >
                 <span>0 (lowest)</span>
                 <span>1 (default)</span>
                 <span>10 (highest)</span>
               </div>
             </div>
-            <div style={{ fontSize: '0.85rem', color: '#888', background: 'rgba(0,0,0,0.2)', padding: '12px', borderRadius: '6px' }}>
-              <div><strong>1.0</strong> = Default/equal weighting</div>
-              <div><strong>&gt;1.0</strong> = Higher priority (preferred by AI)</div>
-              <div><strong>&lt;1.0</strong> = Lower priority</div>
-              <div><strong>0.0</strong> = Deprioritized (still searchable)</div>
+            <div
+              style={{
+                fontSize: '0.85rem',
+                color: '#888',
+                background: 'rgba(0,0,0,0.2)',
+                padding: '12px',
+                borderRadius: '6px',
+              }}
+            >
+              <div>
+                <strong>1.0</strong> = Default/equal weighting
+              </div>
+              <div>
+                <strong>&gt;1.0</strong> = Higher priority (preferred by AI)
+              </div>
+              <div>
+                <strong>&lt;1.0</strong> = Lower priority
+              </div>
+              <div>
+                <strong>0.0</strong> = Deprioritized (still searchable)
+              </div>
             </div>
           </div>
           <div className="modal-footer">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={onClose}
-              disabled={saving}
-            >
+            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={saving}>
               Cancel
             </button>
-            <button
-              type="submit"
-              className="btn"
-              disabled={saving}
-            >
+            <button type="submit" className="btn" disabled={saving}>
               {saving ? 'Saving...' : 'Save'}
             </button>
           </div>
@@ -108,7 +125,19 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
   );
 }
 
-export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onToggle, onDescriptionUpdate, onJobCreated, aggregateSearch = true, embeddingDimensions, onNavigateToSettings }: IndexesListProps) {
+export function IndexesList({
+  indexes,
+  jobs = [],
+  loading,
+  error,
+  onDelete,
+  onToggle,
+  onDescriptionUpdate,
+  onJobCreated,
+  aggregateSearch = true,
+  embeddingDimensions,
+  onNavigateToSettings,
+}: IndexesListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [_toggling, setToggling] = useState<string | null>(null);
   // editingIndex removed in favor of inline editing
@@ -117,13 +146,17 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
   const [archiveMaxFileCount, setArchiveMaxFileCount] = useState<number | null>(null);
 
   useEffect(() => {
-    api.getSettings().then((response) => {
-      const s = response.settings;
-      if (s.archive_max_total_size_bytes != null) setArchiveMaxTotalSizeBytes(s.archive_max_total_size_bytes);
-      if (s.archive_max_file_count != null) setArchiveMaxFileCount(s.archive_max_file_count);
-    }).catch(() => {
-      // Silently fail
-    });
+    api
+      .getSettings()
+      .then((response) => {
+        const s = response.settings;
+        if (s.archive_max_total_size_bytes != null)
+          setArchiveMaxTotalSizeBytes(s.archive_max_total_size_bytes);
+        if (s.archive_max_file_count != null) setArchiveMaxFileCount(s.archive_max_file_count);
+      })
+      .catch(() => {
+        // Silently fail
+      });
   }, []);
 
   // Index memory info from health endpoint
@@ -339,7 +372,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
     try {
       await api.updateIndexWeight(name, weight);
       setWeightEditIndex(null);
-      onToggle?.();  // Refresh index list
+      onToggle?.(); // Refresh index list
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to update weight');
       setTimeout(() => setErrorMessage(null), 5000);
@@ -360,7 +393,11 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Reindex failed';
       // Check if it's a token error
-      if (message.includes('token') || message.includes('401') || message.includes('authentication')) {
+      if (
+        message.includes('token') ||
+        message.includes('401') ||
+        message.includes('authentication')
+      ) {
         setErrorMessage('Authentication failed. Please check your token and try again.');
       } else {
         setErrorMessage(message);
@@ -373,7 +410,9 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
 
   const handleRetryIndex = async (idx: IndexInfo) => {
     // Find the failed job for this index
-    const failedJob = jobs?.find(j => j.name === idx.name && (j.status === 'failed' || j.status === 'interrupted'));
+    const failedJob = jobs?.find(
+      (j) => j.name === idx.name && (j.status === 'failed' || j.status === 'interrupted'),
+    );
     if (!failedJob) {
       setErrorMessage('No failed job found for this index');
       setTimeout(() => setErrorMessage(null), 5000);
@@ -411,7 +450,10 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <h2>Document Indexes</h2>
           {memoryEstimate && indexes.length > 0 && (
-            <span className="memory-badge" title={`${formatSizeMB(memoryEstimate.enabled)} loaded / ${formatSizeMB(memoryEstimate.total)} total`}>
+            <span
+              className="memory-badge"
+              title={`${formatSizeMB(memoryEstimate.enabled)} loaded / ${formatSizeMB(memoryEstimate.total)} total`}
+            >
               {formatSizeMB(memoryEstimate.enabled)}
               {memoryEstimate.enabled !== memoryEstimate.total && (
                 <span className="memory-total"> / {formatSizeMB(memoryEstimate.total)}</span>
@@ -435,8 +477,8 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
       </div>
 
       <p className="section-description">
-        FAISS-based indexes created from uploaded archives or Git repositories.
-        Used for document search and RAG context retrieval.
+        FAISS-based indexes created from uploaded archives or Git repositories. Used for document
+        search and RAG context retrieval.
       </p>
 
       {/* Create Wizard */}
@@ -472,18 +514,38 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
           </div>
 
           {/* Help text explaining the difference */}
-          <p className="field-help" style={{ marginTop: '0.5rem', marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '4px' }}>
+          <p
+            className="field-help"
+            style={{
+              marginTop: '0.5rem',
+              marginBottom: '1rem',
+              padding: '0.75rem',
+              backgroundColor: 'rgba(255,255,255,0.05)',
+              borderRadius: '4px',
+            }}
+          >
             {activeSource === 'git' ? (
               <>
-                <strong>Git Repository:</strong> Clone from GitHub or GitLab. Supports automatic updates via "Pull & Re-index" to keep your index current with the latest changes.
+                <strong>Git Repository:</strong> Clone from GitHub or GitLab. Supports automatic
+                updates via "Pull & Re-index" to keep your index current with the latest changes.
               </>
             ) : activeSource === 'upload' ? (
               <>
-                <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must delete and re-upload. Use Git indexing for content that changes frequently.{archiveMaxTotalSizeBytes != null && archiveMaxFileCount != null && <> Maximum archive size: {formatSizeMB(archiveMaxTotalSizeBytes / (1024 * 1024))}, maximum files: {archiveMaxFileCount.toLocaleString()}.</>}
+                <strong>Upload Archive:</strong> One-time indexing from a file. To update, you must
+                delete and re-upload. Use Git indexing for content that changes frequently.
+                {archiveMaxTotalSizeBytes != null && archiveMaxFileCount != null && (
+                  <>
+                    {' '}
+                    Maximum archive size: {formatSizeMB(archiveMaxTotalSizeBytes / (1024 * 1024))},
+                    maximum files: {archiveMaxFileCount.toLocaleString()}.
+                  </>
+                )}
               </>
             ) : (
               <>
-                <strong>Import FAISS:</strong> Restore a previously exported FAISS index from a zip file (use the <em>Download</em> button on an existing index to get one). The original description, source, and configuration are restored automatically.
+                <strong>Import FAISS:</strong> Restore a previously exported FAISS index from a zip
+                file (use the <em>Download</em> button on an existing index to get one). The
+                original description, source, and configuration are restored automatically.
               </>
             )}
           </p>
@@ -525,9 +587,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
             </div>
           )}
 
-          {loading && indexes.length === 0 && (
-            <div className="empty-state">Loading...</div>
-          )}
+          {loading && indexes.length === 0 && <div className="empty-state">Loading...</div>}
 
           {error && (
             <div className="empty-state" style={{ color: '#f87171' }}>
@@ -540,7 +600,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
           )}
 
           {indexes.map((idx) => {
-            const indexJobs = jobs.filter(j => j.name === idx.name);
+            const indexJobs = jobs.filter((j) => j.name === idx.name);
             const latestJob = indexJobs.reduce((latest, current) => {
               if (!latest) return current;
               return new Date(current.created_at).getTime() > new Date(latest.created_at).getTime()
@@ -549,15 +609,18 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
             }, indexJobs[0]);
 
             // Check if there's an active indexing job for this index
-            const activeJob = indexJobs.find(j => j.status === 'pending' || j.status === 'processing');
+            const activeJob = indexJobs.find(
+              (j) => j.status === 'pending' || j.status === 'processing',
+            );
             // Check if this is an optimistic index (0 documents = not yet indexed or re-index in progress)
             const isOptimistic = idx.document_count === 0;
             // Only show incomplete if the latest job failed/interrupted and no job is active.
             // This prevents stale old failures from marking cards incomplete after a successful run.
             const latestFailedOrInterrupted = latestJob
-              ? (latestJob.status === 'failed' || latestJob.status === 'interrupted')
+              ? latestJob.status === 'failed' || latestJob.status === 'interrupted'
               : false;
-            const isFailedOrInterrupted = !activeJob && (latestFailedOrInterrupted || (isOptimistic && indexJobs.length === 0));
+            const isFailedOrInterrupted =
+              !activeJob && (latestFailedOrInterrupted || (isOptimistic && indexJobs.length === 0));
 
             // Check if this index has a load error
             const loadError = getIndexLoadError(idx.name);
@@ -585,7 +648,10 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                           {formatSizeMB(ramMb)}
                         </span>
                         {showBoth && (
-                          <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
+                          <span
+                            className="meta-pill size"
+                            title={`Size on disk: ${formatSizeMB(diskMb)}`}
+                          >
                             <HardDrive size={12} />
                             {formatSizeMB(diskMb)}
                           </span>
@@ -595,14 +661,20 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   }
                   // Fallback to disk size when RAM info not available
                   return (
-                    <span className="meta-pill size" title={`Size on disk: ${formatSizeMB(diskMb)}`}>
+                    <span
+                      className="meta-pill size"
+                      title={`Size on disk: ${formatSizeMB(diskMb)}`}
+                    >
                       <HardDrive size={12} />
                       {formatSizeMB(diskMb)}
                     </span>
                   );
                 })()}
                 {idx.source_type === 'git' && idx.source && (
-                  <span className="meta-pill git" title={`Git: ${idx.source}${idx.git_branch ? ` (${idx.git_branch})` : ''}`}>
+                  <span
+                    className="meta-pill git"
+                    title={`Git: ${idx.source}${idx.git_branch ? ` (${idx.git_branch})` : ''}`}
+                  >
                     Git
                   </span>
                 )}
@@ -616,7 +688,10 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   </span>
                 )}
                 {idx.last_modified && (
-                  <span className="meta-pill date" title={`Last updated: ${new Date(idx.last_modified).toLocaleString()}`}>
+                  <span
+                    className="meta-pill date"
+                    title={`Last updated: ${new Date(idx.last_modified).toLocaleString()}`}
+                  >
                     {`Updated ${new Date(idx.last_modified).toLocaleString()}`}
                   </span>
                 )}
@@ -626,7 +701,10 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   progressLabelPrefix="Processing"
                 />
                 {isFailedOrInterrupted && (
-                  <span className="meta-pill warning" title="Indexing was interrupted or failed. Click 'Retry' to resume.">
+                  <span
+                    className="meta-pill warning"
+                    title="Indexing was interrupted or failed. Click 'Retry' to resume."
+                  >
                     <AlertTriangle size={12} />
                     Incomplete
                   </span>
@@ -661,13 +739,11 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   >
                     Edit
                   </button>
-                ) : (
-                  // For uploaded indexes, we don't need a separate Edit button anymore as description is inline
-                  // But we might want to keep it if there are other settings?
-                  // Currently uploaded indexes only have description.
-                  // So we can remove the Edit button for non-git indexes.
-                  null
-                )}
+                ) : // For uploaded indexes, we don't need a separate Edit button anymore as description is inline
+                // But we might want to keep it if there are other settings?
+                // Currently uploaded indexes only have description.
+                // So we can remove the Edit button for non-git indexes.
+                null}
                 {/* Only show Download for completed indexes */}
                 {!isFailedOrInterrupted && (
                   <button
@@ -719,7 +795,13 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                 onEditDescription={(newDesc) => handleSaveDescription(idx.name, newDesc)}
                 metaPills={metaPills}
                 actions={actions}
-                toggleTitle={hasError ? `Load error - click to retry: ${loadError}` : (idx.enabled ? 'Enabled for RAG' : 'Disabled from RAG')}
+                toggleTitle={
+                  hasError
+                    ? `Load error - click to retry: ${loadError}`
+                    : idx.enabled
+                      ? 'Enabled for RAG'
+                      : 'Disabled from RAG'
+                }
               />
             );
           })}
@@ -734,49 +816,117 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
           )}
 
           {reindexingIndex && (
-            <div className="modal-overlay" onClick={() => { setReindexingIndex(null); setReindexToken(''); setReindexVisibility(null); }}>
-              <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
+            <div
+              className="modal-overlay"
+              onClick={() => {
+                setReindexingIndex(null);
+                setReindexToken('');
+                setReindexVisibility(null);
+              }}
+            >
+              <div
+                className="modal"
+                onClick={(e) => e.stopPropagation()}
+                style={{ maxWidth: '500px' }}
+              >
                 <div className="modal-header">
                   <h3>Pull &amp; Re-index</h3>
-                  <button className="modal-close" onClick={() => { setReindexingIndex(null); setReindexToken(''); setReindexVisibility(null); }}>&times;</button>
+                  <button
+                    className="modal-close"
+                    onClick={() => {
+                      setReindexingIndex(null);
+                      setReindexToken('');
+                      setReindexVisibility(null);
+                    }}
+                  >
+                    &times;
+                  </button>
                 </div>
                 <div className="modal-body">
                   <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
                     Re-index <strong>{reindexingIndex.name}</strong> from Git repository.
                   </p>
-                  <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
-                    <div style={{ marginBottom: '4px' }}><strong>Source:</strong> {reindexingIndex.source}</div>
+                  <div
+                    style={{
+                      marginBottom: '16px',
+                      padding: '12px',
+                      background: 'var(--bg-tertiary)',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                    }}
+                  >
+                    <div style={{ marginBottom: '4px' }}>
+                      <strong>Source:</strong> {reindexingIndex.source}
+                    </div>
                     {reindexingIndex.git_branch && (
-                      <div><strong>Branch:</strong> {reindexingIndex.git_branch}</div>
+                      <div>
+                        <strong>Branch:</strong> {reindexingIndex.git_branch}
+                      </div>
                     )}
                   </div>
 
                   {/* Show loading state while checking visibility */}
                   {checkingReindexVisibility && (
-                    <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px', color: 'var(--text-secondary)' }}>
+                    <div
+                      style={{
+                        marginBottom: '16px',
+                        padding: '12px',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: '8px',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
                       Checking repository access...
                     </div>
                   )}
 
                   {/* Private repo with valid stored token */}
-                  {!checkingReindexVisibility && reindexVisibility?.visibility === 'private' && !reindexVisibility.needs_token && (
-                    <div style={{ marginBottom: '16px', padding: '12px', background: 'rgba(34, 197, 94, 0.1)', borderRadius: '8px', border: '1px solid rgba(34, 197, 94, 0.3)' }}>
-                      <span style={{ color: '#22c55e' }}>Private repository - will use stored token.</span>
-                    </div>
-                  )}
+                  {!checkingReindexVisibility &&
+                    reindexVisibility?.visibility === 'private' &&
+                    !reindexVisibility.needs_token && (
+                      <div
+                        style={{
+                          marginBottom: '16px',
+                          padding: '12px',
+                          background: 'rgba(34, 197, 94, 0.1)',
+                          borderRadius: '8px',
+                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                        }}
+                      >
+                        <span style={{ color: '#22c55e' }}>
+                          Private repository - will use stored token.
+                        </span>
+                      </div>
+                    )}
 
                   {/* Private repo needing token (no stored token or invalid) */}
                   {!checkingReindexVisibility && reindexVisibility?.needs_token && (
                     <div className="form-group">
                       {reindexVisibility.has_stored_token && (
-                        <div style={{ marginBottom: '12px', padding: '12px', background: 'rgba(251, 191, 36, 0.1)', borderRadius: '8px', border: '1px solid rgba(251, 191, 36, 0.3)' }}>
-                          <span style={{ color: '#fbbf24' }}>{reindexVisibility.message || 'Stored token is no longer valid.'}</span>
+                        <div
+                          style={{
+                            marginBottom: '12px',
+                            padding: '12px',
+                            background: 'rgba(251, 191, 36, 0.1)',
+                            borderRadius: '8px',
+                            border: '1px solid rgba(251, 191, 36, 0.3)',
+                          }}
+                        >
+                          <span style={{ color: '#fbbf24' }}>
+                            {reindexVisibility.message || 'Stored token is no longer valid.'}
+                          </span>
                         </div>
                       )}
                       <label htmlFor="reindex-token">
                         Git Token {reindexVisibility.visibility === 'private' ? '*' : '(optional)'}
                       </label>
-                      <small style={{ display: 'block', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                      <small
+                        style={{
+                          display: 'block',
+                          color: 'var(--text-secondary)',
+                          marginBottom: '8px',
+                        }}
+                      >
                         {reindexVisibility.visibility === 'private'
                           ? 'Required for this private repository. Token will be stored for future re-indexing.'
                           : 'Provide a token if the repository requires authentication.'}
@@ -793,24 +943,30 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   )}
 
                   {/* Error checking visibility - show token input as fallback */}
-                  {!checkingReindexVisibility && reindexVisibility?.visibility === 'error' && !reindexVisibility.has_stored_token && (
-                    <div className="form-group">
-                      <label htmlFor="reindex-token">
-                        Git Token (optional)
-                      </label>
-                      <small style={{ display: 'block', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                        Provide a token if the repository requires authentication.
-                      </small>
-                      <input
-                        id="reindex-token"
-                        type="password"
-                        className="form-input"
-                        value={reindexToken}
-                        onChange={(e) => setReindexToken(e.target.value)}
-                        placeholder="ghp_xxxx... or glpat-xxxx..."
-                      />
-                    </div>
-                  )}
+                  {!checkingReindexVisibility &&
+                    reindexVisibility?.visibility === 'error' &&
+                    !reindexVisibility.has_stored_token && (
+                      <div className="form-group">
+                        <label htmlFor="reindex-token">Git Token (optional)</label>
+                        <small
+                          style={{
+                            display: 'block',
+                            color: 'var(--text-secondary)',
+                            marginBottom: '8px',
+                          }}
+                        >
+                          Provide a token if the repository requires authentication.
+                        </small>
+                        <input
+                          id="reindex-token"
+                          type="password"
+                          className="form-input"
+                          value={reindexToken}
+                          onChange={(e) => setReindexToken(e.target.value)}
+                          placeholder="ghp_xxxx... or glpat-xxxx..."
+                        />
+                      </div>
+                    )}
                 </div>
                 <div className="modal-footer">
                   <button
@@ -827,9 +983,17 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                   <button
                     className="btn btn-primary"
                     onClick={handleReindex}
-                    disabled={reindexing || checkingReindexVisibility || (reindexVisibility?.needs_token && !reindexToken)}
+                    disabled={
+                      reindexing ||
+                      checkingReindexVisibility ||
+                      (reindexVisibility?.needs_token && !reindexToken)
+                    }
                   >
-                    {checkingReindexVisibility ? 'Checking...' : reindexing ? 'Starting...' : 'Re-index'}
+                    {checkingReindexVisibility
+                      ? 'Checking...'
+                      : reindexing
+                        ? 'Starting...'
+                        : 'Re-index'}
                   </button>
                 </div>
               </div>
@@ -838,10 +1002,16 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
 
           {editingGitIndex && (
             <div className="modal-overlay" onClick={() => setEditingGitIndex(null)}>
-              <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '700px' }}>
+              <div
+                className="modal"
+                onClick={(e) => e.stopPropagation()}
+                style={{ maxWidth: '700px' }}
+              >
                 <div className="modal-header">
                   <h3>Edit Index Configuration</h3>
-                  <button className="modal-close" onClick={() => setEditingGitIndex(null)}>&times;</button>
+                  <button className="modal-close" onClick={() => setEditingGitIndex(null)}>
+                    &times;
+                  </button>
                 </div>
                 <div className="modal-body">
                   <GitIndexWizard
@@ -850,7 +1020,7 @@ export function IndexesList({ indexes, jobs = [], loading, error, onDelete, onTo
                     onCancel={() => setEditingGitIndex(null)}
                     onConfigSaved={() => {
                       setEditingGitIndex(null);
-                      onToggle?.();  // Refresh the list to show updated config
+                      onToggle?.(); // Refresh the list to show updated config
                     }}
                     onNavigateToSettings={onNavigateToSettings}
                   />

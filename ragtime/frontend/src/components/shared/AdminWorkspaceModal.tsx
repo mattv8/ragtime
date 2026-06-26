@@ -9,10 +9,7 @@ import type {
   UserSpaceWorkspaceDeleteTask,
   UserSpaceWorkspaceDeleteTaskPhase,
 } from '@/types';
-import {
-  clearInterruptDismiss,
-  resolveWorkspaceInterruptStateFromSummary,
-} from '@/utils';
+import { clearInterruptDismiss, resolveWorkspaceInterruptStateFromSummary } from '@/utils';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
 
@@ -80,11 +77,10 @@ function workspaceMatchesQuery(workspace: UserSpaceWorkspace, query: string): bo
     return true;
   }
 
-  const haystack = [
-    workspace.name,
-    workspace.owner_display_name,
-    workspace.owner_username,
-  ].filter(Boolean).join(' ').toLowerCase();
+  const haystack = [workspace.name, workspace.owner_display_name, workspace.owner_username]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
   return haystack.includes(needle);
 }
 
@@ -132,8 +128,12 @@ export function AdminWorkspaceModal({
   const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [allUsers, setAllUsers] = useState<User[]>([]);
-  const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, { hasLive: boolean; hasInterrupted: boolean }>>({});
-  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const [workspaceChatStates, setWorkspaceChatStates] = useState<
+    Record<string, { hasLive: boolean; hasInterrupted: boolean }>
+  >({});
+  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<
+    Record<string, UserSpaceWorkspaceDeleteTask>
+  >({});
   const deletingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDeleteTask>>({});
   // Track previous raw interrupted state per workspace so we can detect
   // false -> true transitions and clear stale dismiss cookies.
@@ -195,42 +195,49 @@ export function AdminWorkspaceModal({
     };
   }, [isOpen, workspaces, currentUser.id]);
 
-  const loadWorkspaces = useCallback(async (append = false) => {
-    if (append) {
-      setLoadingMore(true);
-    } else {
-      setLoading(true);
-    }
-    try {
-      const offset = append ? workspaces.length : 0;
-      const page = await api.listUserSpaceWorkspaces(offset, 50, true);
+  const loadWorkspaces = useCallback(
+    async (append = false) => {
       if (append) {
-        setWorkspaces((prev) => [...prev, ...page.items]);
+        setLoadingMore(true);
       } else {
-        setWorkspaces(page.items);
+        setLoading(true);
       }
-      setTotal(page.total);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load workspaces');
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, [workspaces.length]);
+      try {
+        const offset = append ? workspaces.length : 0;
+        const page = await api.listUserSpaceWorkspaces(offset, 50, true);
+        if (append) {
+          setWorkspaces((prev) => [...prev, ...page.items]);
+        } else {
+          setWorkspaces(page.items);
+        }
+        setTotal(page.total);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load workspaces');
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [workspaces.length],
+  );
 
   useEffect(() => {
     if (isOpen) {
       setWorkspaceSearchQuery('');
       void loadWorkspaces();
-      void api.listUsers().then(setAllUsers).catch(() => {});
+      void api
+        .listUsers()
+        .then(setAllUsers)
+        .catch(() => {});
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeWorkspaceDeleteTasks = useMemo(
-    () => Object.values(deletingWorkspaceTasks)
-      .filter((task) => !isWorkspaceDeleteTaskTerminal(task.phase))
-      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    () =>
+      Object.values(deletingWorkspaceTasks)
+        .filter((task) => !isWorkspaceDeleteTaskTerminal(task.phase))
+        .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
     [deletingWorkspaceTasks],
   );
 
@@ -246,7 +253,9 @@ export function AdminWorkspaceModal({
   const activeWorkspaceDeleteTaskCount = activeWorkspaceDeleteTasks.length;
 
   const groupedWorkspaces = useMemo<OwnerGroup[]>(() => {
-    const groups = workspaces.reduce<Record<string, { label: string; workspaces: UserSpaceWorkspace[] }>>((acc, ws) => {
+    const groups = workspaces.reduce<
+      Record<string, { label: string; workspaces: UserSpaceWorkspace[] }>
+    >((acc, ws) => {
       const key = ws.owner_username || ws.owner_user_id;
       const label = ws.owner_display_name || ws.owner_username || ws.owner_user_id;
       const existing = acc[key];
@@ -262,7 +271,10 @@ export function AdminWorkspaceModal({
   }, [workspaces]);
 
   const hasWorkspaceSearchQuery = workspaceSearchQuery.trim().length > 0;
-  const workspaceSearchIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  const workspaceSearchIds = useMemo(
+    () => workspaces.map((workspace) => workspace.id),
+    [workspaces],
+  );
   const workspaceChatSearch = useWorkspaceChatSearch({
     workspaceIds: workspaceSearchIds,
     query: workspaceSearchQuery,
@@ -278,27 +290,29 @@ export function AdminWorkspaceModal({
     return groupedWorkspaces
       .map((group) => ({
         ...group,
-        workspaces: group.workspaces.filter((workspace) => (
-          workspaceMatchesQuery(workspace, workspaceSearchQuery)
-          || workspaceChatSearch.matchedWorkspaceIds.has(workspace.id)
-        )),
+        workspaces: group.workspaces.filter(
+          (workspace) =>
+            workspaceMatchesQuery(workspace, workspaceSearchQuery) ||
+            workspaceChatSearch.matchedWorkspaceIds.has(workspace.id),
+        ),
       }))
       .filter((group) => group.workspaces.length > 0);
   }, [groupedWorkspaces, workspaceSearchQuery, workspaceChatSearch.matchedWorkspaceIds]);
 
   const canLoadMoreWorkspaces = workspaces.length < total;
 
-  const renderLoadMoreButton = () => (!canLoadMoreWorkspaces ? null : (
-    <div className="admin-ws-load-more">
-      <button
-        className="btn btn-secondary btn-sm"
-        onClick={() => void loadWorkspaces(true)}
-        disabled={loadingMore}
-      >
-        {loadingMore ? 'Loading...' : `Load more (${workspaces.length} of ${total})`}
-      </button>
-    </div>
-  ));
+  const renderLoadMoreButton = () =>
+    !canLoadMoreWorkspaces ? null : (
+      <div className="admin-ws-load-more">
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={() => void loadWorkspaces(true)}
+          disabled={loadingMore}
+        >
+          {loadingMore ? 'Loading...' : `Load more (${workspaces.length} of ${total})`}
+        </button>
+      </div>
+    );
 
   // Auto-collapse newly discovered groups
   useEffect(() => {
@@ -358,14 +372,20 @@ export function AdminWorkspaceModal({
       pollInFlight = true;
 
       try {
-        const results = await Promise.all(tasks.map(async (task) => {
-          try {
-            const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
-            return { task, status, error: null as Error | null };
-          } catch (pollError) {
-            return { task, status: null as UserSpaceWorkspaceDeleteTask | null, error: pollError as Error };
-          }
-        }));
+        const results = await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
+              return { task, status, error: null as Error | null };
+            } catch (pollError) {
+              return {
+                task,
+                status: null as UserSpaceWorkspaceDeleteTask | null,
+                error: pollError as Error,
+              };
+            }
+          }),
+        );
 
         if (cancelled) {
           return;
@@ -383,7 +403,8 @@ export function AdminWorkspaceModal({
               if (result.status.phase === 'completed') {
                 completedWorkspaceIds.add(result.status.workspace_id);
               } else if (!nextError) {
-                nextError = result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
+                nextError =
+                  result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
               }
             } else {
               updatedTasks[result.status.workspace_id] = result.status;
@@ -414,7 +435,9 @@ export function AdminWorkspaceModal({
         });
 
         if (completedWorkspaceIds.size > 0) {
-          setWorkspaces((current) => current.filter((workspace) => !completedWorkspaceIds.has(workspace.id)));
+          setWorkspaces((current) =>
+            current.filter((workspace) => !completedWorkspaceIds.has(workspace.id)),
+          );
           setTotal((current) => Math.max(0, current - completedWorkspaceIds.size));
           setWorkspaceChatStates((current) => {
             const next = { ...current };
@@ -450,7 +473,9 @@ export function AdminWorkspaceModal({
 
   const handleTransfer = useCallback(async (workspaceId: string, newOwnerId: string) => {
     try {
-      const updated = await api.updateUserSpaceWorkspace(workspaceId, { owner_user_id: newOwnerId });
+      const updated = await api.updateUserSpaceWorkspace(workspaceId, {
+        owner_user_id: newOwnerId,
+      });
       setWorkspaces((prev) => prev.map((ws) => (ws.id === workspaceId ? updated : ws)));
       setError(null);
     } catch (err) {
@@ -459,10 +484,13 @@ export function AdminWorkspaceModal({
     }
   }, []);
 
-  const handleSelect = useCallback((ws: UserSpaceWorkspace) => {
-    onSelectWorkspace(ws);
-    onClose();
-  }, [onSelectWorkspace, onClose]);
+  const handleSelect = useCallback(
+    (ws: UserSpaceWorkspace) => {
+      onSelectWorkspace(ws);
+      onClose();
+    },
+    [onSelectWorkspace, onClose],
+  );
 
   if (!isOpen) return null;
 
@@ -498,15 +526,16 @@ export function AdminWorkspaceModal({
               </button>
             )}
             {workspaceChatSearch.loading && (
-              <span className="chat-conversation-search-spinner" title="Searching workspace chat contents">
+              <span
+                className="chat-conversation-search-spinner"
+                title="Searching workspace chat contents"
+              >
                 <MiniLoadingSpinner variant="icon" size={12} />
               </span>
             )}
           </div>
 
-          {error && (
-            <div className="admin-ws-error">{error}</div>
-          )}
+          {error && <div className="admin-ws-error">{error}</div>}
           {deletingWorkspaceStatus && (
             <div className="admin-ws-loading">
               <MiniLoadingSpinner variant="icon" size={16} />
@@ -519,7 +548,9 @@ export function AdminWorkspaceModal({
               <MiniLoadingSpinner variant="icon" size={20} />
               <span>Loading workspaces...</span>
             </div>
-          ) : hasWorkspaceSearchQuery && filteredGroupedWorkspaces.length === 0 && workspaceChatSearch.loading ? (
+          ) : hasWorkspaceSearchQuery &&
+            filteredGroupedWorkspaces.length === 0 &&
+            workspaceChatSearch.loading ? (
             <div className="admin-ws-loading">
               <MiniLoadingSpinner variant="icon" size={16} />
               <span>Searching workspace chats...</span>
@@ -536,10 +567,15 @@ export function AdminWorkspaceModal({
           ) : (
             <div className="admin-ws-groups">
               {filteredGroupedWorkspaces.map((group) => {
-                const isCollapsed = hasWorkspaceSearchQuery ? false : (collapsedGroups[group.key] ?? true);
+                const isCollapsed = hasWorkspaceSearchQuery
+                  ? false
+                  : (collapsedGroups[group.key] ?? true);
                 return (
                   <div key={group.key} className="admin-ws-group">
-                    <button className="admin-ws-group-header" onClick={() => toggleGroup(group.key)}>
+                    <button
+                      className="admin-ws-group-header"
+                      onClick={() => toggleGroup(group.key)}
+                    >
                       {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                       <span className="admin-ws-group-name">
                         <SearchHighlightedText text={group.label} query={workspaceSearchQuery} />
@@ -559,7 +595,12 @@ export function AdminWorkspaceModal({
                         )}
                         renderSubtext={(ws) => {
                           const snippet = workspaceChatSearch.snippetsByWorkspaceId[ws.id];
-                          if (!snippet || ws.name.toLowerCase().includes(workspaceSearchQuery.trim().toLowerCase())) {
+                          if (
+                            !snippet ||
+                            ws.name
+                              .toLowerCase()
+                              .includes(workspaceSearchQuery.trim().toLowerCase())
+                          ) {
                             return null;
                           }
                           return (
@@ -570,15 +611,25 @@ export function AdminWorkspaceModal({
                         }}
                         renderMeta={(ws) => (
                           <>
-                            {ws.owner_user_id === currentUser.id && <span className="admin-ws-badge-own">You</span>}
+                            {ws.owner_user_id === currentUser.id && (
+                              <span className="admin-ws-badge-own">You</span>
+                            )}
                             {workspaceChatStates[ws.id]?.hasLive && (
-                              <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
+                              <MiniLoadingSpinner
+                                variant="icon"
+                                size={14}
+                                title="Chat in progress"
+                              />
                             )}
-                            {!workspaceChatStates[ws.id]?.hasLive && workspaceChatStates[ws.id]?.hasInterrupted && (
-                              <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
-                                <AlertCircle size={13} />
-                              </span>
-                            )}
+                            {!workspaceChatStates[ws.id]?.hasLive &&
+                              workspaceChatStates[ws.id]?.hasInterrupted && (
+                                <span
+                                  className="userspace-workspace-item-state is-interrupted"
+                                  title="A conversation was interrupted"
+                                >
+                                  <AlertCircle size={13} />
+                                </span>
+                              )}
                             <span className="admin-ws-item-date">
                               {new Date(ws.updated_at).toLocaleDateString()}
                             </span>

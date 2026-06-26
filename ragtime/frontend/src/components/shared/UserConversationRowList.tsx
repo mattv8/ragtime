@@ -30,28 +30,34 @@ export function UserConversationRowList({
   const [actionConversationId, setActionConversationId] = useState<string | null>(null);
   const [actionType, setActionType] = useState<'delete' | 'cancel' | null>(null);
 
-  const handleDelete = useCallback(async (conversationId: string) => {
-    setActionConversationId(conversationId);
-    setActionType('delete');
-    try {
-      await onDelete(conversationId);
-      setDeleteConfirmId(null);
-    } finally {
-      setActionConversationId(null);
-      setActionType(null);
-    }
-  }, [onDelete]);
+  const handleDelete = useCallback(
+    async (conversationId: string) => {
+      setActionConversationId(conversationId);
+      setActionType('delete');
+      try {
+        await onDelete(conversationId);
+        setDeleteConfirmId(null);
+      } finally {
+        setActionConversationId(null);
+        setActionType(null);
+      }
+    },
+    [onDelete],
+  );
 
-  const handleCancelTask = useCallback(async (conversationId: string, taskId: string) => {
-    setActionConversationId(conversationId);
-    setActionType('cancel');
-    try {
-      await onCancelTask(conversationId, taskId);
-    } finally {
-      setActionConversationId(null);
-      setActionType(null);
-    }
-  }, [onCancelTask]);
+  const handleCancelTask = useCallback(
+    async (conversationId: string, taskId: string) => {
+      setActionConversationId(conversationId);
+      setActionType('cancel');
+      try {
+        await onCancelTask(conversationId, taskId);
+      } finally {
+        setActionConversationId(null);
+        setActionType(null);
+      }
+    },
+    [onCancelTask],
+  );
 
   if (loading) {
     return (
@@ -63,7 +69,11 @@ export function UserConversationRowList({
   }
 
   if (conversations.length === 0) {
-    return <p className="muted-text" style={{ margin: 0 }}>{emptyMessage}</p>;
+    return (
+      <p className="muted-text" style={{ margin: 0 }}>
+        {emptyMessage}
+      </p>
+    );
   }
 
   return (
@@ -75,13 +85,18 @@ export function UserConversationRowList({
         const isCancelling = isActionTarget && actionType === 'cancel';
         const rowBusy = disabled || isDeleting || isCancelling;
         const title = conversation.title?.trim() || 'Untitled Chat';
-        const messageCount = 'message_count' in conversation
-          ? conversation.message_count
-          : (conversation.messages?.length ?? 0);
+        const messageCount =
+          'message_count' in conversation
+            ? conversation.message_count
+            : (conversation.messages?.length ?? 0);
         const updatedAt = new Date(conversation.updated_at).toLocaleDateString();
-        const metaContent = renderMeta
-          ? renderMeta(conversation)
-          : <span className="admin-ws-item-date">{messageCount} msg {updatedAt}</span>;
+        const metaContent = renderMeta ? (
+          renderMeta(conversation)
+        ) : (
+          <span className="admin-ws-item-date">
+            {messageCount} msg {updatedAt}
+          </span>
+        );
 
         return (
           <div key={conversation.id} className="admin-ws-item-wrapper">
@@ -109,7 +124,11 @@ export function UserConversationRowList({
                     }}
                     title="Cancel running task"
                   >
-                    {isCancelling ? <MiniLoadingSpinner variant="icon" size={12} /> : <Square size={12} />}
+                    {isCancelling ? (
+                      <MiniLoadingSpinner variant="icon" size={12} />
+                    ) : (
+                      <Square size={12} />
+                    )}
                   </button>
                 )}
 
@@ -125,7 +144,11 @@ export function UserConversationRowList({
                       }}
                       title="Confirm delete"
                     >
-                      {isDeleting ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                      {isDeleting ? (
+                        <MiniLoadingSpinner variant="icon" size={12} />
+                      ) : (
+                        <Check size={12} />
+                      )}
                     </button>
                     <button
                       type="button"

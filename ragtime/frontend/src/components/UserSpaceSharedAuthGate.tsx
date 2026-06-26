@@ -40,10 +40,16 @@ export function UserSpaceSharedAuthGate({
       <div className="userspace-shared-auth-card-stack">
         <div className="userspace-shared-auth-copy">
           <p className="login-subtitle">This workspace preview is protected.</p>
-          <p className="login-info">Sign in with an allowed auth method to continue to the shared preview.</p>
+          <p className="login-info">
+            Sign in with an allowed auth method to continue to the shared preview.
+          </p>
           {detail ? <p className="login-info userspace-shared-auth-detail">{detail}</p> : null}
         </div>
-        <LoginCard authStatus={resolvedAuthStatus} onLoginSuccess={onLoginSuccess} serverName={serverName} />
+        <LoginCard
+          authStatus={resolvedAuthStatus}
+          onLoginSuccess={onLoginSuccess}
+          serverName={serverName}
+        />
       </div>
     </div>
   );

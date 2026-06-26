@@ -62,10 +62,7 @@ export function resolveInterruptDismissTransition(
 
   // Re-open a dismissed interruption after we've observed a running state
   // and then returned to interrupted (active -> interrupted).
-  const shouldClearDismiss = dismissed
-    && rawInterrupted
-    && !hasLive
-    && previousState.hasLive;
+  const shouldClearDismiss = dismissed && rawInterrupted && !hasLive && previousState.hasLive;
   const dismissedAfterTransition = shouldClearDismiss ? false : dismissed;
 
   return {
@@ -84,7 +81,12 @@ export function resolveWorkspaceInterruptStateFromSummary(
   const rawInterrupted = Boolean(summary.has_interrupted_task);
   const hasLive = Boolean(summary.has_live_task);
   const dismissed = isInterruptDismissed(userId, workspaceId);
-  const transition = resolveInterruptDismissTransition(previousState, rawInterrupted, hasLive, dismissed);
+  const transition = resolveInterruptDismissTransition(
+    previousState,
+    rawInterrupted,
+    hasLive,
+    dismissed,
+  );
 
   return {
     workspaceId,

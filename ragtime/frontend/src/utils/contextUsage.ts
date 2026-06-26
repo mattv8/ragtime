@@ -102,9 +102,7 @@ export function calculateConversationContextUsage({
     ? calculateEffectiveConversationTokens(messages)
     : calculateConversationTokens(messages);
   const persistedTokens = Math.max(0, persistedConversationTokens || 0);
-  const currentTokens = persistedTokens > 0
-    ? persistedTokens
-    : estimatedConversationTokens;
+  const currentTokens = persistedTokens > 0 ? persistedTokens : estimatedConversationTokens;
   const streamingTokens = isStreaming
     ? calculateStreamingTokens(streamingEvents, streamingContent)
     : 0;
@@ -112,7 +110,9 @@ export function calculateConversationContextUsage({
   const safeContextLimit = contextLimit > 0 ? contextLimit : 1;
   const contextUsagePercent = Math.round((totalTokens / safeContextLimit) * 100);
   const nextMessageTokens = estimateTokens(inputText.trim());
-  const projectedInputPercent = Math.round(((totalTokens + nextMessageTokens) / safeContextLimit) * 100);
+  const projectedInputPercent = Math.round(
+    ((totalTokens + nextMessageTokens) / safeContextLimit) * 100,
+  );
   const hasHeadroom = totalTokens + nextMessageTokens <= safeContextLimit * 0.9;
 
   return {
@@ -125,7 +125,10 @@ export function calculateConversationContextUsage({
   };
 }
 
-export function calculateStreamingTokens(events: StreamingRenderEvent[], streamingContent: string): number {
+export function calculateStreamingTokens(
+  events: StreamingRenderEvent[],
+  streamingContent: string,
+): number {
   if (events.length > 0) {
     let tokens = 0;
     for (const event of events) {

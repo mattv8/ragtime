@@ -104,23 +104,23 @@ export function UserSpaceEnvVarsModal({
       <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{title}</h3>
-          <button className="modal-close" onClick={onClose}>&times;</button>
+          <button className="modal-close" onClick={onClose}>
+            &times;
+          </button>
         </div>
         <div className="modal-body">
           <p className="userspace-muted" style={{ marginBottom: 12 }}>
             {helperText || (
               <>
                 Variables are encrypted at rest and injected into the devserver at runtime startup.
-                Terminal and PTY sessions only expose redacted <code>printenv</code> and <code>env</code> output for configured keys.
-                Reference them as <code>process.env.KEY</code> (Node.js) or <code>os.environ[&quot;KEY&quot;]</code> (Python).
+                Terminal and PTY sessions only expose redacted <code>printenv</code> and{' '}
+                <code>env</code> output for configured keys. Reference them as{' '}
+                <code>process.env.KEY</code> (Node.js) or <code>os.environ[&quot;KEY&quot;]</code>{' '}
+                (Python).
               </>
             )}
           </p>
-          {extraContent && (
-            <div style={{ marginBottom: 12 }}>
-              {extraContent}
-            </div>
-          )}
+          {extraContent && <div style={{ marginBottom: 12 }}>{extraContent}</div>}
           {loading ? (
             <p className="userspace-muted">Loading...</p>
           ) : (
@@ -196,7 +196,11 @@ export function UserSpaceEnvVarsModal({
                                   disabled={saving}
                                   title="Save"
                                 >
-                                  {saving ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                  {saving ? (
+                                    <MiniLoadingSpinner variant="icon" size={12} />
+                                  ) : (
+                                    <Check size={12} />
+                                  )}
                                 </button>
                                 <button
                                   className="btn btn-secondary btn-sm"
@@ -233,7 +237,11 @@ export function UserSpaceEnvVarsModal({
                                         disabled={deletingEnvKey === envVar.key}
                                         title="Confirm delete"
                                       >
-                                        {deletingEnvKey === envVar.key ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                        {deletingEnvKey === envVar.key ? (
+                                          <MiniLoadingSpinner variant="icon" size={12} />
+                                        ) : (
+                                          <Check size={12} />
+                                        )}
                                       </button>
                                       <button
                                         className="btn btn-secondary btn-sm"
@@ -310,7 +318,11 @@ export function UserSpaceEnvVarsModal({
                                   disabled={saving}
                                   title="Save description"
                                 >
-                                  {saving ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                  {saving ? (
+                                    <MiniLoadingSpinner variant="icon" size={12} />
+                                  ) : (
+                                    <Check size={12} />
+                                  )}
                                 </button>
                                 <button
                                   className="btn btn-secondary btn-sm"
@@ -390,10 +402,16 @@ export function UserSpaceEnvVarsModal({
                   <div className="userspace-env-var-form-actions">
                     <button
                       className="btn btn-primary btn-sm"
-                      onClick={() => { void handleCreate(); }}
+                      onClick={() => {
+                        void handleCreate();
+                      }}
                       disabled={saving || !draftEnvKey.trim()}
                     >
-                      {saving ? <MiniLoadingSpinner variant="icon" size={14} /> : <Check size={14} />}
+                      {saving ? (
+                        <MiniLoadingSpinner variant="icon" size={14} />
+                      ) : (
+                        <Check size={14} />
+                      )}
                       Add
                     </button>
                   </div>

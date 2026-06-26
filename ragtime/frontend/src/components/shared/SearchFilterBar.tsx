@@ -26,7 +26,10 @@ export function normalizeSearchFilterText(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export function searchFilterTextMatchesQuery(text: string | null | undefined, queries: string[]): boolean {
+export function searchFilterTextMatchesQuery(
+  text: string | null | undefined,
+  queries: string[],
+): boolean {
   if (queries.length === 0) {
     return true;
   }
@@ -81,7 +84,9 @@ export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterStat
 
   const queries = useMemo(() => {
     const liveInput = normalizeSearchFilterText(debouncedInput);
-    return [...tags.map(normalizeSearchFilterText), ...(liveInput ? [liveInput] : [])].filter(Boolean);
+    return [...tags.map(normalizeSearchFilterText), ...(liveInput ? [liveInput] : [])].filter(
+      Boolean,
+    );
   }, [tags, debouncedInput]);
 
   return {
@@ -89,7 +94,8 @@ export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterStat
     tags,
     debouncedInput,
     queries,
-    hasActiveFilters: tags.length > 0 || input.trim().length > 0 || debouncedInput.trim().length > 0,
+    hasActiveFilters:
+      tags.length > 0 || input.trim().length > 0 || debouncedInput.trim().length > 0,
     setInput,
     setTags,
     clear: () => {
@@ -99,7 +105,14 @@ export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterStat
   };
 }
 
-export function SearchFilterBar({ state, inputRef, placeholder, ariaLabel, className = '', onClick }: SearchFilterBarProps) {
+export function SearchFilterBar({
+  state,
+  inputRef,
+  placeholder,
+  ariaLabel,
+  className = '',
+  onClick,
+}: SearchFilterBarProps) {
   const addTag = (rawTag: string) => {
     const tag = rawTag.trim();
     if (tag && !state.tags.includes(tag)) {

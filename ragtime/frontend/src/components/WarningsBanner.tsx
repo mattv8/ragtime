@@ -58,11 +58,7 @@ export function WarningsBanner({
         <strong className="warnings-banner-title">{title}</strong>
         {compact ? <span className="warnings-banner-summary">{summary}</span> : null}
         {dismissKey ? (
-          <button
-            type="button"
-            onClick={handleDismiss}
-            className="warnings-banner-dismiss"
-          >
+          <button type="button" onClick={handleDismiss} className="warnings-banner-dismiss">
             Dismiss
           </button>
         ) : null}

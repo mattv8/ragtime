@@ -86,8 +86,10 @@ export function ModelFilterModal({
       if (labelsMatch(family, modelProvider || providerLabel)) {
         family = '';
       }
-      if (!providerGroups[m.provider][modelProvider]) providerGroups[m.provider][modelProvider] = {};
-      if (!providerGroups[m.provider][modelProvider][family]) providerGroups[m.provider][modelProvider][family] = [];
+      if (!providerGroups[m.provider][modelProvider])
+        providerGroups[m.provider][modelProvider] = {};
+      if (!providerGroups[m.provider][modelProvider][family])
+        providerGroups[m.provider][modelProvider][family] = [];
       providerGroups[m.provider][modelProvider][family].push(m);
     });
     return { providerOrder, providerGroups };
@@ -110,7 +112,8 @@ export function ModelFilterModal({
             <p className="muted">Loading available models...</p>
           ) : allModels.length === 0 ? (
             <p className="muted">
-              No models available. Please configure API keys or local providers and save settings first.
+              No models available. Please configure API keys or local providers and save settings
+              first.
             </p>
           ) : (
             <>
@@ -140,68 +143,75 @@ export function ModelFilterModal({
               <div className="model-filter-list">
                 {groupedAllowed.providerOrder.map((provider) => (
                   <div key={provider}>
-                    <div className="family-group-header">
-                      {formatProviderDisplayName(provider)}
-                    </div>
-                    {Object.keys(groupedAllowed.providerGroups[provider]).sort().map((modelProvider) => (
-                      <div key={modelProvider || '__default_provider__'} className="model-group">
-                        {Object.keys(groupedAllowed.providerGroups[provider][modelProvider]).sort().map((groupName) => (
-                          <div key={groupName || '__default_family__'}>
-                            {formatCombinedGroupLabel(modelProvider, groupName) && (
-                              <div className="model-group-header">
-                                {formatCombinedGroupLabel(modelProvider, groupName)}
-                              </div>
-                            )}
-                            {groupedAllowed.providerGroups[provider][modelProvider][groupName].map((model) => (
-                              <label
-                                key={`${model.provider}:${model.id}`}
-                                className="model-filter-item"
-                                style={{
-                                  paddingLeft: '1rem',
-                                  backgroundColor: model.is_latest ? 'rgba(0,0,0,0.03)' : undefined,
-                                  fontWeight: model.is_latest ? 500 : undefined,
-                                }}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={selectedModels.has(`${model.provider}::${model.id}`)}
-                                  onChange={() => toggleModel(model)}
-                                />
-                                <span className="model-filter-name">
-                                  {model.display_name || (model.id !== model.name ? model.id : model.name)}
-                                  <span
+                    <div className="family-group-header">{formatProviderDisplayName(provider)}</div>
+                    {Object.keys(groupedAllowed.providerGroups[provider])
+                      .sort()
+                      .map((modelProvider) => (
+                        <div key={modelProvider || '__default_provider__'} className="model-group">
+                          {Object.keys(groupedAllowed.providerGroups[provider][modelProvider])
+                            .sort()
+                            .map((groupName) => (
+                              <div key={groupName || '__default_family__'}>
+                                {formatCombinedGroupLabel(modelProvider, groupName) && (
+                                  <div className="model-group-header">
+                                    {formatCombinedGroupLabel(modelProvider, groupName)}
+                                  </div>
+                                )}
+                                {groupedAllowed.providerGroups[provider][modelProvider][
+                                  groupName
+                                ].map((model) => (
+                                  <label
+                                    key={`${model.provider}:${model.id}`}
+                                    className="model-filter-item"
                                     style={{
-                                      marginLeft: '6px',
-                                      fontSize: '0.7em',
-                                      padding: '1px 4px',
-                                      borderRadius: '4px',
-                                      background: 'var(--bg-secondary, #2d2d2d)',
-                                      color: 'var(--text-muted, #888)',
+                                      paddingLeft: '1rem',
+                                      backgroundColor: model.is_latest
+                                        ? 'rgba(0,0,0,0.03)'
+                                        : undefined,
+                                      fontWeight: model.is_latest ? 500 : undefined,
                                     }}
                                   >
-                                    via {formatProviderDisplayName(model.provider)}
-                                  </span>
-                                  {model.is_latest && (
-                                    <span
-                                      style={{
-                                        marginLeft: '6px',
-                                        fontSize: '0.7em',
-                                        padding: '1px 4px',
-                                        borderRadius: '4px',
-                                        background: '#e0e0e0',
-                                        color: '#555',
-                                      }}
-                                    >
-                                      LATEST
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedModels.has(`${model.provider}::${model.id}`)}
+                                      onChange={() => toggleModel(model)}
+                                    />
+                                    <span className="model-filter-name">
+                                      {model.display_name ||
+                                        (model.id !== model.name ? model.id : model.name)}
+                                      <span
+                                        style={{
+                                          marginLeft: '6px',
+                                          fontSize: '0.7em',
+                                          padding: '1px 4px',
+                                          borderRadius: '4px',
+                                          background: 'var(--bg-secondary, #2d2d2d)',
+                                          color: 'var(--text-muted, #888)',
+                                        }}
+                                      >
+                                        via {formatProviderDisplayName(model.provider)}
+                                      </span>
+                                      {model.is_latest && (
+                                        <span
+                                          style={{
+                                            marginLeft: '6px',
+                                            fontSize: '0.7em',
+                                            padding: '1px 4px',
+                                            borderRadius: '4px',
+                                            background: '#e0e0e0',
+                                            color: '#555',
+                                          }}
+                                        >
+                                          LATEST
+                                        </span>
+                                      )}
                                     </span>
-                                  )}
-                                </span>
-                              </label>
+                                  </label>
+                                ))}
+                              </div>
                             ))}
-                          </div>
-                        ))}
-                      </div>
-                    ))}
+                        </div>
+                      ))}
                   </div>
                 ))}
               </div>

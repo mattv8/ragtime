@@ -16,7 +16,9 @@ interface ToastLike {
 interface UseUserSpaceToolHealthEventsOptions {
   availableTools: UserSpaceAvailableTool[];
   selectedToolIds: Set<string>;
-  setAvailableTools: (updater: (current: UserSpaceAvailableTool[]) => UserSpaceAvailableTool[]) => void;
+  setAvailableTools: (
+    updater: (current: UserSpaceAvailableTool[]) => UserSpaceAvailableTool[],
+  ) => void;
   toast?: ToastLike;
   enabled?: boolean;
 }
@@ -91,24 +93,34 @@ export function useUserSpaceToolHealthEvents({
         }
       }
 
-      setAvailableTools((current) => current.map((tool) => {
-        const status = statuses[tool.id];
-        if (!status) return tool;
-        const available = statusAvailable(status);
-        const disabledReason = statusReason(status);
-        return {
-          ...tool,
-          available,
-          disabled_reason: available ? null : disabledReason,
-        };
-      }));
+      setAvailableTools((current) =>
+        current.map((tool) => {
+          const status = statuses[tool.id];
+          if (!status) return tool;
+          const available = statusAvailable(status);
+          const disabledReason = statusReason(status);
+          return {
+            ...tool,
+            available,
+            disabled_reason: available ? null : disabledReason,
+          };
+        }),
+      );
 
       if (wentOffline.length === 1) {
-        const toolId = statusEntries.find(([id]) => toolsById.get(id)?.name === wentOffline[0])?.[0];
+        const toolId = statusEntries.find(
+          ([id]) => toolsById.get(id)?.name === wentOffline[0],
+        )?.[0];
         const reason = toolId ? offlineNoticeRef.current.get(toolId) : undefined;
-        toast?.error?.(`Tool disabled: ${wentOffline[0]} failed healthcheck${reason ? ` (${reason})` : ''}.`, 8000);
+        toast?.error?.(
+          `Tool disabled: ${wentOffline[0]} failed healthcheck${reason ? ` (${reason})` : ''}.`,
+          8000,
+        );
       } else if (wentOffline.length > 1) {
-        toast?.error?.(`${wentOffline.length} selected tools were disabled after failing healthchecks.`, 9000);
+        toast?.error?.(
+          `${wentOffline.length} selected tools were disabled after failing healthchecks.`,
+          9000,
+        );
       }
       if (cameOnline.length === 1) {
         toast?.info?.(`Tool available again: ${cameOnline[0]}.`, 4000);

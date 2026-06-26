@@ -65,7 +65,13 @@ export function DataTable<Row, K extends string>({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                     {col.label}
-                    {active && sortConfig && (sortConfig.direction === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+                    {active &&
+                      sortConfig &&
+                      (sortConfig.direction === 'asc' ? (
+                        <ArrowUp size={12} />
+                      ) : (
+                        <ArrowDown size={12} />
+                      ))}
                   </div>
                 </th>
               );
@@ -76,14 +82,14 @@ export function DataTable<Row, K extends string>({
           {renderRow
             ? rows.map((row, idx) => renderRow(row, idx))
             : rows.map((row, idx) => (
-              <tr key={getRowKey ? getRowKey(row, idx) : String(idx)}>
-                {columns.map((col) => (
-                  <td key={col.key} className={col.cellClassName}>
-                    {col.renderCell ? col.renderCell(row, idx) : null}
-                  </td>
-                ))}
-              </tr>
-            ))}
+                <tr key={getRowKey ? getRowKey(row, idx) : String(idx)}>
+                  {columns.map((col) => (
+                    <td key={col.key} className={col.cellClassName}>
+                      {col.renderCell ? col.renderCell(row, idx) : null}
+                    </td>
+                  ))}
+                </tr>
+              ))}
         </tbody>
       </table>
     </div>

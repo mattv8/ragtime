@@ -10,7 +10,12 @@ interface ConfigurationBannerProps {
   onNavigateToSettings?: () => void;
 }
 
-export function ConfigurationBanner({ warnings, isAdmin, hidden, onNavigateToSettings }: ConfigurationBannerProps) {
+export function ConfigurationBanner({
+  warnings,
+  isAdmin,
+  hidden,
+  onNavigateToSettings,
+}: ConfigurationBannerProps) {
   const [dismissed, setDismissed] = useState(false);
 
   // Check sessionStorage on mount
@@ -26,7 +31,7 @@ export function ConfigurationBanner({ warnings, isAdmin, hidden, onNavigateToSet
   if (hidden) return null;
 
   // Filter to only show warnings and errors (not info level)
-  const significantWarnings = warnings.filter(w => w.level === 'warning' || w.level === 'error');
+  const significantWarnings = warnings.filter((w) => w.level === 'warning' || w.level === 'error');
 
   // Don't show banner if no significant warnings or dismissed
   if (significantWarnings.length === 0) return null;
@@ -38,8 +43,10 @@ export function ConfigurationBanner({ warnings, isAdmin, hidden, onNavigateToSet
   };
 
   // Get the most severe warning level
-  const hasError = significantWarnings.some(w => w.level === 'error');
-  const bannerClass = hasError ? 'config-banner config-banner-error' : 'config-banner config-banner-warning';
+  const hasError = significantWarnings.some((w) => w.level === 'error');
+  const bannerClass = hasError
+    ? 'config-banner config-banner-error'
+    : 'config-banner config-banner-warning';
 
   return (
     <div className={bannerClass}>
@@ -58,11 +65,7 @@ export function ConfigurationBanner({ warnings, isAdmin, hidden, onNavigateToSet
         </span>
         <div className="config-banner-actions">
           {isAdmin && onNavigateToSettings && (
-            <button
-              type="button"
-              className="config-banner-link"
-              onClick={onNavigateToSettings}
-            >
+            <button type="button" className="config-banner-link" onClick={onNavigateToSettings}>
               View in Settings
             </button>
           )}

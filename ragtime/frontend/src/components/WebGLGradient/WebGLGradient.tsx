@@ -29,7 +29,8 @@ interface NavigatorWithBattery extends Navigator {
   getBattery?: () => Promise<BatteryManagerLike>;
 }
 
-const isMobileDevice = () => /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+const isMobileDevice = () =>
+  /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
 const WebGLGradient: React.FC<WebGLGradientProps> = ({
   className = '',
@@ -72,7 +73,14 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, zeroTexture);
       gl.texImage2D(
-        gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        1,
+        1,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
         new Uint8Array([0, 0, 0, 0]),
       );
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -90,7 +98,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
   const updateBatteryFluidState = useCallback((disabled: boolean) => {
     fluidDisabledForBatteryRef.current = disabled;
-    setFluidDisabledForBattery((current) => current === disabled ? current : disabled);
+    setFluidDisabledForBattery((current) => (current === disabled ? current : disabled));
     onBatteryStatusChange?.(disabled);
 
     if (disabled) {
@@ -101,6 +109,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
         animationFrameRef.current = null;
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only setup; onBatteryStatusChange is read via closure and must not retrigger this callback
   }, []);
 
   const resolveGradientColors = useCallback(() => {
@@ -116,36 +125,39 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     return resolvedColors.length >= 2 ? resolvedColors : [...FALLBACK_BLUE_COLORS];
   }, [colors, colorVariables]);
 
-  const createGradientTexture = useCallback((gl: WebGLRenderingContext) => {
-    const canvas = document.createElement('canvas');
-    canvas.width = TEXTURE_WIDTH;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
+  const createGradientTexture = useCallback(
+    (gl: WebGLRenderingContext) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = TEXTURE_WIDTH;
+      canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
 
-    const gradientColors = resolveGradientColors();
-    const lastColorIndex = gradientColors.length - 1;
-    const gradient = ctx.createLinearGradient(0, 0, TEXTURE_WIDTH, 0);
+      const gradientColors = resolveGradientColors();
+      const lastColorIndex = gradientColors.length - 1;
+      const gradient = ctx.createLinearGradient(0, 0, TEXTURE_WIDTH, 0);
 
-    gradientColors.forEach((color, index) => {
-      gradient.addColorStop(lastColorIndex === 0 ? 0 : index / lastColorIndex, color);
-    });
+      gradientColors.forEach((color, index) => {
+        gradient.addColorStop(lastColorIndex === 0 ? 0 : index / lastColorIndex, color);
+      });
 
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, TEXTURE_WIDTH, 1);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, TEXTURE_WIDTH, 1);
 
-    const texture = gl.createTexture();
-    if (!texture) return null;
+      const texture = gl.createTexture();
+      if (!texture) return null;
 
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-    return texture;
-  }, [resolveGradientColors]);
+      return texture;
+    },
+    [resolveGradientColors],
+  );
 
   const updateGradientTexture = useCallback(() => {
     const gl = glRef.current;
@@ -176,7 +188,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       depth: false,
       stencil: false,
       preserveDrawingBuffer: false,
-      powerPreference: 'default'
+      powerPreference: 'default',
     }) as WebGLRenderingContext | null;
     if (!gl) {
       console.error('WebGL not supported');
@@ -202,13 +214,16 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     const { shader: fragmentShaderSource } = createFragmentShader({
       blurAmount: isMobile ? 50 : 150,
       blurQuality: isMobile ? 3 : 6,
-      blurExponentRange: [0.8, 1.0]
+      blurExponentRange: [0.8, 1.0],
     });
 
     // If high precision isn't supported, fallback to mediump
     let finalFragmentShaderSource = fragmentShaderSource;
     if (!supportsHighPrecision) {
-      finalFragmentShaderSource = fragmentShaderSource.replace('precision highp float;', 'precision mediump float;');
+      finalFragmentShaderSource = fragmentShaderSource.replace(
+        'precision highp float;',
+        'precision mediump float;',
+      );
     }
 
     const program = createProgram(gl, vertexShaderSource, finalFragmentShaderSource);
@@ -262,10 +277,14 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
     const rect = canvas.getBoundingClientRect();
     const isMobile = isMobileDevice();
-    const devicePixelRatio = isMobile ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
+    const devicePixelRatio = isMobile
+      ? Math.min(window.devicePixelRatio || 1, 1.5)
+      : window.devicePixelRatio || 1;
 
     // Use visual viewport dimensions if available (better for mobile)
-    const viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    const viewportHeight = window.visualViewport
+      ? window.visualViewport.height
+      : window.innerHeight;
     const viewportWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
 
     // Ensure fullscreen backgrounds use visual viewport dimensions. This
@@ -274,11 +293,13 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     let targetWidth = rect.width;
     let targetHeight = rect.height;
 
-    const isFullscreen = fullscreen || (canvas.parentElement &&
-      (canvas.parentElement.classList.contains('h-screen') ||
-       canvas.parentElement.classList.contains('min-h-screen') ||
-       canvas.parentElement.classList.contains('inset-0') ||
-       getComputedStyle(canvas.parentElement).height === '100vh'));
+    const isFullscreen =
+      fullscreen ||
+      (canvas.parentElement &&
+        (canvas.parentElement.classList.contains('h-screen') ||
+          canvas.parentElement.classList.contains('min-h-screen') ||
+          canvas.parentElement.classList.contains('inset-0') ||
+          getComputedStyle(canvas.parentElement).height === '100vh'));
 
     if (isFullscreen) {
       targetHeight = Math.max(rect.height, viewportHeight);
@@ -341,10 +362,7 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
 
       // Ease the fluid contribution in once we have the simulation, so the
       // first frame doesn't pop. Capped well below 1 so motion stays subtle.
-      fluidStrengthRef.current = Math.min(
-        fluidStrengthRef.current + dt * 0.6,
-        0.045,
-      );
+      fluidStrengthRef.current = Math.min(fluidStrengthRef.current + dt * 0.6, 0.045);
       gl.uniform1f(uniformsRef.current.u_fluidStrength, fluidStrengthRef.current);
     } else if (fluidDisabledForBatteryRef.current && fluidStrengthRef.current !== 0) {
       fluidStrengthRef.current = 0;
@@ -407,7 +425,8 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
       updateBatteryFluidState(!battery.charging);
     };
 
-    getBattery.call(navigator)
+    getBattery
+      .call(navigator)
       .then((batteryManager) => {
         if (disposed) return;
         battery = batteryManager;
@@ -468,9 +487,9 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     const pointerPos = (event: PointerEvent) => {
       if (!canvas) return null;
       if (
-        ignorePointerSelector
-        && event.target instanceof Element
-        && event.target.closest(ignorePointerSelector)
+        ignorePointerSelector &&
+        event.target instanceof Element &&
+        event.target.closest(ignorePointerSelector)
       ) {
         return null;
       }

@@ -39,13 +39,13 @@ export function useToast(): [ToastItem[], ToastActions] {
   const add = useCallback((type: ToastType, message: ReactNode, durationMs?: number) => {
     const id = nextId.current++;
     setToasts((prev) => [...prev, { id, type, message }]);
-    const timeout = durationMs ?? (
-      type === 'success'
+    const timeout =
+      durationMs ??
+      (type === 'success'
         ? DEFAULT_SUCCESS_DURATION
         : type === 'info'
           ? DEFAULT_INFO_DURATION
-          : DEFAULT_ERROR_DURATION
-    );
+          : DEFAULT_ERROR_DURATION);
     const timer = setTimeout(() => {
       timers.current.delete(id);
       setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -53,9 +53,18 @@ export function useToast(): [ToastItem[], ToastActions] {
     timers.current.set(id, timer);
   }, []);
 
-  const success = useCallback((message: ReactNode, durationMs?: number) => add('success', message, durationMs), [add]);
-  const error = useCallback((message: ReactNode, durationMs?: number) => add('error', message, durationMs), [add]);
-  const info = useCallback((message: ReactNode, durationMs?: number) => add('info', message, durationMs), [add]);
+  const success = useCallback(
+    (message: ReactNode, durationMs?: number) => add('success', message, durationMs),
+    [add],
+  );
+  const error = useCallback(
+    (message: ReactNode, durationMs?: number) => add('error', message, durationMs),
+    [add],
+  );
+  const info = useCallback(
+    (message: ReactNode, durationMs?: number) => add('info', message, durationMs),
+    [add],
+  );
 
   const clear = useCallback(() => {
     for (const timer of timers.current.values()) clearTimeout(timer);
@@ -71,13 +80,16 @@ export function useToast(): [ToastItem[], ToastActions] {
     };
   }, []);
 
-  const actions = useMemo<ToastActions>(() => ({
-    success,
-    error,
-    info,
-    dismiss,
-    clear,
-  }), [clear, dismiss, error, info, success]);
+  const actions = useMemo<ToastActions>(
+    () => ({
+      success,
+      error,
+      info,
+      dismiss,
+      clear,
+    }),
+    [clear, dismiss, error, info, success],
+  );
 
   return [toasts, actions];
 }

@@ -19,7 +19,14 @@ interface ResizeHandleProps {
   onResizeEnd?: () => void;
 }
 
-export function ResizeHandle({ direction, onResize, className, collapsed, onExpand, onResizeEnd }: ResizeHandleProps) {
+export function ResizeHandle({
+  direction,
+  onResize,
+  className,
+  collapsed,
+  onExpand,
+  onResizeEnd,
+}: ResizeHandleProps) {
   const startPos = useRef(0);
   const isDragging = useRef(false);
   const pendingDelta = useRef(0);
@@ -100,7 +107,7 @@ export function ResizeHandle({ direction, onResize, className, collapsed, onExpa
         if (e.currentTarget.hasPointerCapture(e.pointerId)) {
           e.currentTarget.releasePointerCapture(e.pointerId);
         }
-      } catch (err) {
+      } catch {
         // Ignore capture release errors
       }
 

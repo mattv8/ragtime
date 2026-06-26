@@ -15,7 +15,10 @@ interface MutableTreeNode extends UserSpaceTreeNode {
 }
 
 function normalizePath(path: string): string {
-  return path.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+  return path
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\/+/g, '/');
 }
 
 function isDirectoryEntry(entry: UserSpaceFileInfo): boolean {

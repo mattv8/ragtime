@@ -134,9 +134,7 @@ function resolveLanguageLoader(filePath: string): LanguageLoader | null {
   return null;
 }
 
-export async function loadCodeMirrorLanguageExtension(
-  filePath: string,
-): Promise<Extension | null> {
+export async function loadCodeMirrorLanguageExtension(filePath: string): Promise<Extension | null> {
   const loader = resolveLanguageLoader(filePath);
   if (!loader) {
     return null;
@@ -157,9 +155,7 @@ export async function loadCodeMirrorLanguageExtension(
   return pending;
 }
 
-export function useCodeMirrorLanguageExtension(
-  filePath: string,
-): Extension | null {
+export function useCodeMirrorLanguageExtension(filePath: string): Extension | null {
   const [extension, setExtension] = useState<Extension | null>(null);
 
   useEffect(() => {

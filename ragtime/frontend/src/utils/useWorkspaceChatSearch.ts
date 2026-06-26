@@ -26,7 +26,10 @@ export function useWorkspaceChatSearch({
   debounceMs = 180,
 }: UseWorkspaceChatSearchArgs): UseWorkspaceChatSearchResult {
   const normalizedQuery = query.trim();
-  const workspaceIdsKey = useMemo(() => Array.from(new Set(workspaceIds)).join('\u0000'), [workspaceIds]);
+  const workspaceIdsKey = useMemo(
+    () => Array.from(new Set(workspaceIds)).join('\u0000'),
+    [workspaceIds],
+  );
   const requestIdRef = useRef(0);
   const cacheRef = useRef<Map<string, WorkspaceConversationSearchMatch[]>>(new Map());
   const [loading, setLoading] = useState(false);
@@ -52,7 +55,8 @@ export function useWorkspaceChatSearch({
     setMatches(EMPTY_MATCHES);
     const timer = window.setTimeout(() => {
       setLoading(true);
-      void api.searchWorkspaceConversations(dedupedWorkspaceIds, normalizedQuery)
+      void api
+        .searchWorkspaceConversations(dedupedWorkspaceIds, normalizedQuery)
         .then((response) => {
           if (requestIdRef.current !== requestId) return;
           cacheRef.current.set(cacheKey, response.matches);
@@ -81,7 +85,10 @@ export function useWorkspaceChatSearch({
 
     for (const match of matches) {
       matchedWorkspaceIds.add(match.workspace_id);
-      matchesByWorkspaceId[match.workspace_id] = [...(matchesByWorkspaceId[match.workspace_id] ?? []), match];
+      matchesByWorkspaceId[match.workspace_id] = [
+        ...(matchesByWorkspaceId[match.workspace_id] ?? []),
+        match,
+      ];
       if (!snippetsByWorkspaceId[match.workspace_id] && match.snippet) {
         snippetsByWorkspaceId[match.workspace_id] = match.snippet;
       }

@@ -423,10 +423,10 @@
 }
 
 /* Dark mode adjustments */
-[data-theme="dark"] .attachment-input-area {
+[data-theme='dark'] .attachment-input-area {
   background: var(--bg-tertiary);
 }
 
-[data-theme="dark"] .btn-attach {
+[data-theme='dark'] .btn-attach {
   background: var(--bg-secondary);
 }

@@ -68,7 +68,9 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   return (
     <div className="login-card">
       <div className="login-header">
-        <h1 className="login-title"><BrandName name={serverName} /></h1>
+        <h1 className="login-title">
+          <BrandName name={serverName} />
+        </h1>
       </div>
 
       {authStatus.cookie_warning && (
@@ -92,10 +94,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         <ul className="login-auth-method-list" aria-live="polite">
           {authMethods.map((method) => (
             <li className="login-auth-method-item" key={method.key}>
-              <span
-                className={`login-auth-dot status-${method.status}`}
-                aria-hidden="true"
-              />
+              <span className={`login-auth-dot status-${method.status}`} aria-hidden="true" />
               <span className="login-auth-method-label">{method.label}</span>
             </li>
           ))}

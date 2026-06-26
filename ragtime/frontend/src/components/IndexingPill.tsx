@@ -27,7 +27,11 @@ export function IndexingPill({
   pendingLabel = 'Pending...',
   progressLabelPrefix = 'Indexing',
 }: IndexingPillProps) {
-  const isActive = activeJob && (activeJob.status === 'pending' || activeJob.status === 'processing' || activeJob.status === 'indexing');
+  const isActive =
+    activeJob &&
+    (activeJob.status === 'pending' ||
+      activeJob.status === 'processing' ||
+      activeJob.status === 'indexing');
 
   // Only show indexing pill when there's an active job.
   // An optimistic index (0 docs) without an active job is a failed/incomplete index,
@@ -46,9 +50,10 @@ export function IndexingPill({
     } else {
       title = `${progressLabelPrefix}: ${activeJob.progress_percent.toFixed(0)}%`;
     }
-    label = activeJob.progress_percent > 0
-      ? `Indexing... ${Math.round(activeJob.progress_percent)}%`
-      : 'Indexing...';
+    label =
+      activeJob.progress_percent > 0
+        ? `Indexing... ${Math.round(activeJob.progress_percent)}%`
+        : 'Indexing...';
   }
 
   return (

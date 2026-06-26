@@ -122,9 +122,14 @@ export const PROVIDER_CONNECTIONS = {
   },
 } satisfies Record<string, ProviderConnectionDescriptor>;
 
-export function normalizeProviderAlias<T extends string | null | undefined>(provider: T): T extends string ? string : T {
-  const value = typeof provider === 'string' ? provider.trim().toLowerCase().replace(/-/g, '_') : provider;
-  return (value === 'github_models' ? 'github_copilot' : value === 'or' ? 'openrouter' : value) as T extends string ? string : T;
+export function normalizeProviderAlias<T extends string | null | undefined>(
+  provider: T,
+): T extends string ? string : T {
+  const value =
+    typeof provider === 'string' ? provider.trim().toLowerCase().replace(/-/g, '_') : provider;
+  return (
+    value === 'github_models' ? 'github_copilot' : value === 'or' ? 'openrouter' : value
+  ) as T extends string ? string : T;
 }
 
 export function providersEquivalent(selected?: string | null, actual?: string | null): boolean {
@@ -133,7 +138,10 @@ export function providersEquivalent(selected?: string | null, actual?: string | 
   if (selectedNorm === actualNorm) {
     return true;
   }
-  return ['openai', 'github_copilot'].includes(selectedNorm) && ['openai', 'github_copilot'].includes(actualNorm);
+  return (
+    ['openai', 'github_copilot'].includes(selectedNorm) &&
+    ['openai', 'github_copilot'].includes(actualNorm)
+  );
 }
 
 export function providersSame(selected?: string | null, actual?: string | null): boolean {
@@ -142,7 +150,10 @@ export function providersSame(selected?: string | null, actual?: string | null):
   return Boolean(selectedNorm && actualNorm && selectedNorm === actualNorm);
 }
 
-export function toProviderScopedModelKey(provider: string | null | undefined, modelId: string): string {
+export function toProviderScopedModelKey(
+  provider: string | null | undefined,
+  modelId: string,
+): string {
   const normalizedProvider = normalizeProviderAlias(provider);
   return normalizedProvider ? `${normalizedProvider}::${modelId}` : modelId;
 }
@@ -165,7 +176,9 @@ export interface ResolvedModelSelection<T extends ProviderModelLike> {
   inferredProvider: string | null;
 }
 
-export function parseScopedModelIdentifier(value: string | null | undefined): ParsedModelIdentifier {
+export function parseScopedModelIdentifier(
+  value: string | null | undefined,
+): ParsedModelIdentifier {
   const raw = (value || '').trim();
   if (!raw) {
     return { provider: null, modelId: '' };
@@ -215,9 +228,10 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
       const slashIndex = modelId.indexOf('/');
       inferredProvider = inferProviderFromModelId(modelId);
       const providerModelId = modelId.slice(slashIndex + 1);
-      matchedModel = availableModels.find((model) =>
-        model.id === providerModelId
-        && providersSame(model.provider, explicitProvider || inferredProvider)
+      matchedModel = availableModels.find(
+        (model) =>
+          model.id === providerModelId &&
+          providersSame(model.provider, explicitProvider || inferredProvider),
       );
     }
   }
@@ -230,10 +244,15 @@ export function resolveProviderModelSelection<T extends ProviderModelLike>(
   };
 }
 
-export function resolvedModelSelectionKey<T extends ProviderModelLike>(selection: ResolvedModelSelection<T>): string {
+export function resolvedModelSelectionKey<T extends ProviderModelLike>(
+  selection: ResolvedModelSelection<T>,
+): string {
   return selection.matchedModel
     ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
-    : toProviderScopedModelKey(selection.explicitProvider || selection.inferredProvider, selection.modelId);
+    : toProviderScopedModelKey(
+        selection.explicitProvider || selection.inferredProvider,
+        selection.modelId,
+      );
 }
 
 function modelIdVariants(modelId: string): string[] {
@@ -268,7 +287,10 @@ function modelIdentifierMatches(candidate: string, configuredIdentifier: string)
   return providersEquivalent(candidateProvider, configuredProvider);
 }
 
-export function modelIdentifierInList(identifier: string | null | undefined, identifiers: string[] | null | undefined): boolean {
+export function modelIdentifierInList(
+  identifier: string | null | undefined,
+  identifiers: string[] | null | undefined,
+): boolean {
   if (!identifier || !identifiers?.length) {
     return false;
   }

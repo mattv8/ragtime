@@ -36,33 +36,43 @@ export function WorkspaceRowList({
   const [transferTargetUserId, setTransferTargetUserId] = useState<string | null>(null);
   const [transferSaving, setTransferSaving] = useState(false);
 
-  const handleDelete = useCallback(async (workspaceId: string) => {
-    setDeletingId(workspaceId);
-    try {
-      await onDelete(workspaceId);
-      setDeleteConfirmId(null);
-    } catch {
-      /* parent handles error display */
-    } finally {
-      setDeletingId(null);
-    }
-  }, [onDelete]);
+  const handleDelete = useCallback(
+    async (workspaceId: string) => {
+      setDeletingId(workspaceId);
+      try {
+        await onDelete(workspaceId);
+        setDeleteConfirmId(null);
+      } catch {
+        /* parent handles error display */
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [onDelete],
+  );
 
-  const handleTransfer = useCallback(async (workspaceId: string, newOwnerId: string) => {
-    setTransferSaving(true);
-    try {
-      await onTransfer(workspaceId, newOwnerId);
-      setTransferringId(null);
-      setTransferTargetUserId(null);
-    } catch {
-      /* parent handles error display */
-    } finally {
-      setTransferSaving(false);
-    }
-  }, [onTransfer]);
+  const handleTransfer = useCallback(
+    async (workspaceId: string, newOwnerId: string) => {
+      setTransferSaving(true);
+      try {
+        await onTransfer(workspaceId, newOwnerId);
+        setTransferringId(null);
+        setTransferTargetUserId(null);
+      } catch {
+        /* parent handles error display */
+      } finally {
+        setTransferSaving(false);
+      }
+    },
+    [onTransfer],
+  );
 
   if (workspaces.length === 0) {
-    return <p className="muted-text" style={{ margin: 0 }}>{emptyMessage}</p>;
+    return (
+      <p className="muted-text" style={{ margin: 0 }}>
+        {emptyMessage}
+      </p>
+    );
   }
 
   const busy = disabled || Boolean(deletingId) || transferSaving;
@@ -129,16 +139,26 @@ export function WorkspaceRowList({
                       type="button"
                       className="chat-action-btn confirm-delete"
                       disabled={busy}
-                      onClick={(e) => { e.stopPropagation(); void handleDelete(ws.id); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDelete(ws.id);
+                      }}
                       title="Confirm delete"
                     >
-                      {isDeleting ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                      {isDeleting ? (
+                        <MiniLoadingSpinner variant="icon" size={12} />
+                      ) : (
+                        <Check size={12} />
+                      )}
                     </button>
                     <button
                       type="button"
                       className="chat-action-btn cancel-delete"
                       disabled={busy}
-                      onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(null); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteConfirmId(null);
+                      }}
                       title="Cancel"
                     >
                       <X size={12} />
@@ -149,10 +169,17 @@ export function WorkspaceRowList({
                     type="button"
                     className="chat-action-btn"
                     disabled={busy || isDeleting}
-                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(ws.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteConfirmId(ws.id);
+                    }}
                     title="Delete workspace"
                   >
-                    {isDeleting ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                    {isDeleting ? (
+                      <MiniLoadingSpinner variant="icon" size={12} />
+                    ) : (
+                      <Trash2 size={12} />
+                    )}
                   </button>
                 )}
               </div>
@@ -191,7 +218,11 @@ export function WorkspaceRowList({
                   type="button"
                   className="btn btn-secondary btn-sm"
                   disabled={transferSaving}
-                  onClick={(e) => { e.stopPropagation(); setTransferringId(null); setTransferTargetUserId(null); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTransferringId(null);
+                    setTransferTargetUserId(null);
+                  }}
                 >
                   Cancel
                 </button>

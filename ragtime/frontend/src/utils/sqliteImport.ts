@@ -16,5 +16,7 @@ export function sqliteImportBytesToSlider(bytes: number): number {
 export function sliderToSqliteImportBytes(slider: number): number {
   if (slider >= 100) return SQLITE_IMPORT_MAX_BYTES;
   if (slider <= 0) return SQLITE_IMPORT_MIN_BYTES;
-  return Math.round(SQLITE_IMPORT_MIN_BYTES * Math.exp((slider / 100) * SQLITE_IMPORT_SLIDER_SCALE));
+  return Math.round(
+    SQLITE_IMPORT_MIN_BYTES * Math.exp((slider / 100) * SQLITE_IMPORT_SLIDER_SCALE),
+  );
 }

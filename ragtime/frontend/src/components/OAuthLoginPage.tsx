@@ -102,7 +102,9 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     <div className="login-container">
       <div className="login-card">
         <div className="login-header">
-          <h1 className="login-title"><BrandName name={serverName} /></h1>
+          <h1 className="login-title">
+            <BrandName name={serverName} />
+          </h1>
           <p className="login-subtitle">Sign in to authorize MCP access</p>
         </div>
 
@@ -121,9 +123,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
         />
 
         <div className="login-footer">
-          <p className="login-info">
-            Sign in with your LDAP credentials
-          </p>
+          <p className="login-info">Sign in with your LDAP credentials</p>
         </div>
       </div>
     </div>

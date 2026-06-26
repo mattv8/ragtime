@@ -19,7 +19,7 @@
     {
       "type": "shell",
       "label": "Run All Tests",
-      "command": "bash tests/check_readme_sync.sh --check && docker build --progress=plain --target python-test -f ${workspaceFolder}/docker/Dockerfile ${workspaceFolder} && docker build --progress=plain --target frontend-builder -f ${workspaceFolder}/docker/Dockerfile --build-arg ENVIRONMENT=local --build-arg APP_VERSION=local ${workspaceFolder}",
+      "command": "bash tests/check_readme_sync.sh --check && docker build --progress=plain --target python-test -f ${workspaceFolder}/docker/Dockerfile ${workspaceFolder} && docker build --progress=plain --target frontend-format-check -f ${workspaceFolder}/docker/Dockerfile ${workspaceFolder} && docker build --progress=plain --target frontend-lint -f ${workspaceFolder}/docker/Dockerfile ${workspaceFolder} && docker build --progress=plain --target frontend-builder -f ${workspaceFolder}/docker/Dockerfile --build-arg ENVIRONMENT=local --build-arg APP_VERSION=local ${workspaceFolder}",
       "group": {
         "kind": "test",
         "isDefault": true
@@ -33,7 +33,7 @@
         "reveal": "always",
         "panel": "dedicated"
       },
-      "detail": "Run the README sync check, aggregate Docker python-test target, and frontend-builder target to match backend quality checks and frontend build coverage from CI."
+      "detail": "1:1 CI gate simulation: README sync, Python (compile/Ruff/inline-imports/jscpd/mypy/pyright/pytest), frontend Prettier format check, frontend ESLint, frontend Vite build. Note: docker compose manifest validation is not included (run manually if changing .env.example or compose files)."
     },
     {
       "type": "shell",
@@ -140,6 +140,21 @@
         "focus": true
       },
       "detail": "Full rebuild with cache clear"
+    },
+    {
+      "type": "shell",
+      "label": "Fix All Lint Issues",
+      "command": "export PATH=\"${workspaceFolder}/.venv/bin:${PATH}\"; ruff check --fix . && ruff format . && bash tests/check_frontend_format.sh --write && cd \"${workspaceFolder}\" && ./ragtime/frontend/node_modules/.bin/prettier --config ./ragtime/frontend/.prettierrc.json --write \"ragtime/**/*.ts\" \"ragtime/**/*.tsx\"",
+      "isBackground": false,
+      "problemMatcher": ["$ruff"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "detail": "Python: Ruff lint fix + Ruff format. Frontend: Prettier format + ESLint autofix."
     }
   ]
 }

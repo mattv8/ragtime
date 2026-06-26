@@ -64,7 +64,9 @@ function hostProviderLabel(model: BaseModel): string {
 }
 
 function hostProviderKey(model: BaseModel): string {
-  return normalizeProviderAlias(model.provider || '') || hostProviderLabel(model).trim().toLowerCase();
+  return (
+    normalizeProviderAlias(model.provider || '') || hostProviderLabel(model).trim().toLowerCase()
+  );
 }
 
 function modelDisplayName(model: BaseModel): string {
@@ -85,7 +87,7 @@ function modelTriggerDisplayName(model: BaseModel): string {
   if (familyLabel && !familyLabel.startsWith('Other') && !labelsMatch(familyLabel, providerLabel)) {
     parts.push(familyLabel);
   }
-  if (displayName && !parts.some(part => labelsMatch(part, displayName))) {
+  if (displayName && !parts.some((part) => labelsMatch(part, displayName))) {
     parts.push(displayName);
   }
   return parts.join(' ') || displayName;
@@ -100,7 +102,10 @@ function modelProviderLabel(model: BaseModel): string {
 }
 
 function modelProviderKey(model: BaseModel): string {
-  return normalizeProviderAlias(model.model_provider || '') || modelProviderLabel(model).trim().toLowerCase();
+  return (
+    normalizeProviderAlias(model.model_provider || '') ||
+    modelProviderLabel(model).trim().toLowerCase()
+  );
 }
 
 function sortOtherLast(a: string, b: string): number {
@@ -117,7 +122,10 @@ function modelVariantLabel(model: BaseModel): string {
   return model.model_variant || modelDisplayName(model);
 }
 
-function shouldGroupModelVariants<T extends BaseModel>(groups: Map<string, T[]>, totalModels: number): boolean {
+function shouldGroupModelVariants<T extends BaseModel>(
+  groups: Map<string, T[]>,
+  totalModels: number,
+): boolean {
   if (totalModels < 12) return false;
   return groups.size > 1 && groups.size < totalModels;
 }
@@ -130,7 +138,11 @@ function inferCompactFamilyLabel(model: BaseModel): string | null {
   if (id.includes('claude-haiku-4')) {
     return 'Haiku';
   }
-  if (id.includes('claude-3-5-haiku') || id.includes('claude-3.5-haiku') || id.includes('claude-3-haiku')) {
+  if (
+    id.includes('claude-3-5-haiku') ||
+    id.includes('claude-3.5-haiku') ||
+    id.includes('claude-3-haiku')
+  ) {
     return 'Haiku';
   }
   if (id.includes('claude-sonnet-4')) {
@@ -146,14 +158,15 @@ function inferCompactFamilyLabel(model: BaseModel): string | null {
 }
 
 function inferCompactFamilyLabelFromId(modelId: string): string | null {
-  const scopedId = modelId
-    .toLowerCase()
-    .replace(/^.*::/, '');
+  const scopedId = modelId.toLowerCase().replace(/^.*::/, '');
   const slashIndex = scopedId.indexOf('/');
-  const normalizedId = slashIndex > 0
-    && ['anthropic', 'github_copilot'].includes(normalizeProviderAlias(scopedId.slice(0, slashIndex)) || '')
-    ? scopedId.slice(slashIndex + 1)
-    : scopedId;
+  const normalizedId =
+    slashIndex > 0 &&
+    ['anthropic', 'github_copilot'].includes(
+      normalizeProviderAlias(scopedId.slice(0, slashIndex)) || '',
+    )
+      ? scopedId.slice(slashIndex + 1)
+      : scopedId;
   return inferCompactFamilyLabel({
     id: normalizedId,
     name: modelId,
@@ -182,7 +195,9 @@ export function ModelSelector<T extends BaseModel>({
   const [expandedPath, setExpandedPath] = useState<string[]>([]);
   const [submenuPositions, setSubmenuPositions] = useState<MenuPosition[]>([]);
   const [rootChildSide, setRootChildSide] = useState<MenuSide>('right');
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(
+    null,
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -194,13 +209,19 @@ export function ModelSelector<T extends BaseModel>({
   // Refs to the submenu container elements at each depth (depth = submenu index + 1).
   const submenuRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
-  const selectionKeyFor = useCallback((model: T): string => {
-    return getModelSelectionKey ? getModelSelectionKey(model) : model.id;
-  }, [getModelSelectionKey]);
+  const selectionKeyFor = useCallback(
+    (model: T): string => {
+      return getModelSelectionKey ? getModelSelectionKey(model) : model.id;
+    },
+    [getModelSelectionKey],
+  );
 
-  const isModelSelected = useCallback((model: T): boolean => {
-    return selectedModelId === selectionKeyFor(model);
-  }, [selectedModelId, selectionKeyFor]);
+  const isModelSelected = useCallback(
+    (model: T): boolean => {
+      return selectedModelId === selectionKeyFor(model);
+    },
+    [selectedModelId, selectionKeyFor],
+  );
 
   // Build host → provider → family → models tree. Collapse the host level when
   // exactly one host is in play so the dropdown stays compact.
@@ -232,60 +253,65 @@ export function ModelSelector<T extends BaseModel>({
       providerKey: string,
       familiesByName: Map<string, T[]>,
     ): MenuNode<T>[] => {
-      return [...familiesByName.entries()].map(([family, familyModels]) => {
-        const latestModel = familyModels.find(m => m.is_latest) || familyModels[0];
-        const modelsByVariant = new Map<string, T[]>();
+      return [...familiesByName.entries()]
+        .map(([family, familyModels]) => {
+          const latestModel = familyModels.find((m) => m.is_latest) || familyModels[0];
+          const modelsByVariant = new Map<string, T[]>();
 
-        familyModels.forEach((model) => {
-          const variant = modelVariantLabel(model);
-          if (!modelsByVariant.has(variant)) modelsByVariant.set(variant, []);
-          modelsByVariant.get(variant)!.push(model);
-        });
+          familyModels.forEach((model) => {
+            const variant = modelVariantLabel(model);
+            if (!modelsByVariant.has(variant)) modelsByVariant.set(variant, []);
+            modelsByVariant.get(variant)!.push(model);
+          });
 
-        const children = shouldGroupModelVariants(modelsByVariant, familyModels.length)
-          ? [...modelsByVariant.entries()].map(([variant, variantModels]) => ({
-              key: `${hostKey}::${providerKey}::${family}::${variant.toLowerCase()}`,
-              label: variant,
-              latestModel: variantModels.find(m => m.is_latest) || variantModels[0],
-              models: variantModels,
-            }))
-          : undefined;
+          const children = shouldGroupModelVariants(modelsByVariant, familyModels.length)
+            ? [...modelsByVariant.entries()].map(([variant, variantModels]) => ({
+                key: `${hostKey}::${providerKey}::${family}::${variant.toLowerCase()}`,
+                label: variant,
+                latestModel: variantModels.find((m) => m.is_latest) || variantModels[0],
+                models: variantModels,
+              }))
+            : undefined;
 
-        return {
-          key: `${hostKey}::${providerKey}::${family}`,
-          label: family,
-          latestModel,
-          ...(children ? { children } : { models: familyModels }),
-        };
-      }).sort((a, b) => sortOtherLast(a.label, b.label));
+          return {
+            key: `${hostKey}::${providerKey}::${family}`,
+            label: family,
+            latestModel,
+            ...(children ? { children } : { models: familyModels }),
+          };
+        })
+        .sort((a, b) => sortOtherLast(a.label, b.label));
     };
 
     const buildProviderNodes = (
       hostKey: string,
       providersByKey: Map<string, Map<string, T[]>>,
     ): MenuNode<T>[] => {
-      return [...providersByKey.entries()].map(([providerKey, familiesByName]) => {
-        const children = buildFamilyNodes(hostKey, providerKey, familiesByName);
-        const providerLabel = providerLabels.get(`${hostKey}::${providerKey}`) || providerKey;
-        const onlyChild = children.length === 1 ? children[0] : undefined;
-        if (onlyChild && labelsMatch(providerLabel, onlyChild.label)) {
+      return [...providersByKey.entries()]
+        .map(([providerKey, familiesByName]) => {
+          const children = buildFamilyNodes(hostKey, providerKey, familiesByName);
+          const providerLabel = providerLabels.get(`${hostKey}::${providerKey}`) || providerKey;
+          const onlyChild = children.length === 1 ? children[0] : undefined;
+          if (onlyChild && labelsMatch(providerLabel, onlyChild.label)) {
+            return {
+              ...onlyChild,
+              key: `${hostKey}::${providerKey}`,
+              label: providerLabel,
+            };
+          }
+
+          const latestModel =
+            children.find((c) => c.latestModel.is_latest)?.latestModel ||
+            children[0]?.latestModel ||
+            models[0];
           return {
-            ...onlyChild,
             key: `${hostKey}::${providerKey}`,
             label: providerLabel,
+            latestModel,
+            children,
           };
-        }
-
-        const latestModel = children.find(c => c.latestModel.is_latest)?.latestModel
-          || children[0]?.latestModel
-          || models[0];
-        return {
-          key: `${hostKey}::${providerKey}`,
-          label: providerLabel,
-          latestModel,
-          children,
-        };
-      }).sort((a, b) => sortOtherLast(a.label, b.label));
+        })
+        .sort((a, b) => sortOtherLast(a.label, b.label));
     };
 
     const buildHostChildren = (
@@ -314,16 +340,18 @@ export function ModelSelector<T extends BaseModel>({
       return buildHostChildren(hostKey, providersByKey);
     }
 
-    return hostEntries.map(([hostKey, providersByKey]) => {
-      const children = buildHostChildren(hostKey, providersByKey);
-      const latestModel = children[0]?.latestModel || models[0];
-      return {
-        key: hostKey,
-        label: hostLabels.get(hostKey) || hostKey,
-        latestModel,
-        children,
-      };
-    }).sort((a, b) => sortOtherLast(a.label, b.label));
+    return hostEntries
+      .map(([hostKey, providersByKey]) => {
+        const children = buildHostChildren(hostKey, providersByKey);
+        const latestModel = children[0]?.latestModel || models[0];
+        return {
+          key: hostKey,
+          label: hostLabels.get(hostKey) || hostKey,
+          latestModel,
+          children,
+        };
+      })
+      .sort((a, b) => sortOtherLast(a.label, b.label));
   }, [models]);
 
   // Resolve the chain of nodes corresponding to the current expanded path so
@@ -333,7 +361,7 @@ export function ModelSelector<T extends BaseModel>({
     let level: MenuNode<T>[] | undefined = menuTree;
     for (const key of expandedPath) {
       if (!level) break;
-      const next: MenuNode<T> | undefined = level.find(n => n.key === key);
+      const next: MenuNode<T> | undefined = level.find((n) => n.key === key);
       if (!next) break;
       chain.push(next);
       level = next.children;
@@ -403,7 +431,8 @@ export function ModelSelector<T extends BaseModel>({
     const rect = dropdownEl.getBoundingClientRect();
     const spaceOnRight = window.innerWidth - rect.right;
     const spaceOnLeft = rect.left;
-    const openLeft = spaceOnRight < ESTIMATED_SUBMENU_WIDTH + SUBMENU_GAP && spaceOnLeft > spaceOnRight;
+    const openLeft =
+      spaceOnRight < ESTIMATED_SUBMENU_WIDTH + SUBMENU_GAP && spaceOnLeft > spaceOnRight;
     setRootChildSide(openLeft ? 'left' : 'right');
   }, []);
 
@@ -428,9 +457,9 @@ export function ModelSelector<T extends BaseModel>({
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node;
       if (
-        containerRef.current
-        && !containerRef.current.contains(target)
-        && !dropdownRef.current?.contains(target)
+        containerRef.current &&
+        !containerRef.current.contains(target) &&
+        !dropdownRef.current?.contains(target)
       ) {
         setIsOpen(false);
         setExpandedPath([]);
@@ -479,15 +508,27 @@ export function ModelSelector<T extends BaseModel>({
       const spaceOnRight = window.innerWidth - parentRect.right;
       const spaceOnLeft = parentRect.left;
       let side: MenuSide = preferredSide;
-      if (side === 'right' && spaceOnRight < ESTIMATED_SUBMENU_WIDTH + SUBMENU_GAP && spaceOnLeft > spaceOnRight) {
+      if (
+        side === 'right' &&
+        spaceOnRight < ESTIMATED_SUBMENU_WIDTH + SUBMENU_GAP &&
+        spaceOnLeft > spaceOnRight
+      ) {
         side = 'left';
-      } else if (side === 'left' && spaceOnLeft < ESTIMATED_SUBMENU_WIDTH + SUBMENU_GAP && spaceOnRight > spaceOnLeft) {
+      } else if (
+        side === 'left' &&
+        spaceOnLeft < ESTIMATED_SUBMENU_WIDTH + SUBMENU_GAP &&
+        spaceOnRight > spaceOnLeft
+      ) {
         side = 'right';
       }
       if (side === 'right') {
         return { top: itemRect.top, side: 'right', left: parentRect.right + SUBMENU_GAP };
       }
-      return { top: itemRect.top, side: 'left', right: window.innerWidth - parentRect.left + SUBMENU_GAP };
+      return {
+        top: itemRect.top,
+        side: 'left',
+        right: window.innerWidth - parentRect.left + SUBMENU_GAP,
+      };
     },
     [],
   );
@@ -534,8 +575,8 @@ export function ModelSelector<T extends BaseModel>({
         // Defer collapsing deeper levels so diagonal mouse movement toward a
         // sibling submenu doesn't immediately destroy the open submenu.
         collapseTimeoutRef.current = setTimeout(() => {
-          setExpandedPath(prev => prev.slice(0, level));
-          setSubmenuPositions(prev => prev.slice(0, level));
+          setExpandedPath((prev) => prev.slice(0, level));
+          setSubmenuPositions((prev) => prev.slice(0, level));
         }, 120);
         return;
       }
@@ -543,8 +584,8 @@ export function ModelSelector<T extends BaseModel>({
       expandTimeoutRef.current = setTimeout(() => {
         const preferred = childSideForLevel(level);
         const position = computeSubmenuPosition(level, node.key, preferred);
-        setExpandedPath(prev => [...prev.slice(0, level), node.key]);
-        setSubmenuPositions(prev => {
+        setExpandedPath((prev) => [...prev.slice(0, level), node.key]);
+        setSubmenuPositions((prev) => {
           const next = prev.slice(0, level);
           if (position) next.push(position);
           return next;
@@ -562,17 +603,23 @@ export function ModelSelector<T extends BaseModel>({
     scheduleCollapseAll();
   }, [scheduleCollapseAll]);
 
-  const handleSelectModel = useCallback((modelId: string) => {
-    onModelChange(modelId);
-    setIsOpen(false);
-    setExpandedPath([]);
-    setSubmenuPositions([]);
-    setSearchQuery('');
-  }, [onModelChange]);
+  const handleSelectModel = useCallback(
+    (modelId: string) => {
+      onModelChange(modelId);
+      setIsOpen(false);
+      setExpandedPath([]);
+      setSubmenuPositions([]);
+      setSearchQuery('');
+    },
+    [onModelChange],
+  );
 
-  const handleSelectNode = useCallback((node: MenuNode<T>) => {
-    handleSelectModel(selectionKeyFor(node.latestModel));
-  }, [handleSelectModel, selectionKeyFor]);
+  const handleSelectNode = useCallback(
+    (node: MenuNode<T>) => {
+      handleSelectModel(selectionKeyFor(node.latestModel));
+    },
+    [handleSelectModel, selectionKeyFor],
+  );
 
   const setItemRef = useCallback((level: number, nodeKey: string, el: HTMLDivElement | null) => {
     let levelMap = itemRefs.current.get(level);
@@ -595,29 +642,43 @@ export function ModelSelector<T extends BaseModel>({
     }
   }, []);
 
-  const containsSelectedModel = useCallback((node: MenuNode<T>): boolean => {
-    if (node.models?.some(isModelSelected)) return true;
-    return !!node.children?.some(containsSelectedModel);
-  }, [isModelSelected]);
+  const containsSelectedModel = useCallback(
+    (node: MenuNode<T>): boolean => {
+      if (node.models?.some(isModelSelected)) return true;
+      return !!node.children?.some(containsSelectedModel);
+    },
+    [isModelSelected],
+  );
 
   if (models.length === 0) {
-    const emptyTriggerClassName = variant === 'full'
-      ? 'model-selector-trigger model-selector-trigger-full'
-      : 'model-selector-trigger';
+    const emptyTriggerClassName =
+      variant === 'full'
+        ? 'model-selector-trigger model-selector-trigger-full'
+        : 'model-selector-trigger';
     const emptyTriggerClasses = `${emptyTriggerClassName}${triggerClassName ? ` ${triggerClassName}` : ''}`;
     return (
-      <div className={`model-selector is-disabled ${variant === 'full' ? 'model-selector-full' : ''}`}>
+      <div
+        className={`model-selector is-disabled ${variant === 'full' ? 'model-selector-full' : ''}`}
+      >
         <button
           type="button"
           className={emptyTriggerClasses}
           disabled
           title={loading ? 'Loading models...' : placeholder}
         >
-          {triggerIcon ? <span className="model-selector-icon" aria-hidden="true">{triggerIcon}</span> : null}
+          {triggerIcon ? (
+            <span className="model-selector-icon" aria-hidden="true">
+              {triggerIcon}
+            </span>
+          ) : null}
           <span className="model-selector-text">
-            {loading
-              ? <><MiniLoadingSpinner variant="icon" size={12} title="Loading models..." />{' '}Loading...</>
-              : (selectedModelId || placeholder)}
+            {loading ? (
+              <>
+                <MiniLoadingSpinner variant="icon" size={12} title="Loading models..." /> Loading...
+              </>
+            ) : (
+              selectedModelId || placeholder
+            )}
           </span>
           <span className="model-selector-arrow">▾</span>
         </button>
@@ -625,9 +686,10 @@ export function ModelSelector<T extends BaseModel>({
     );
   }
 
-  const triggerButtonClassName = variant === 'full'
-    ? 'model-selector-trigger model-selector-trigger-full'
-    : 'model-selector-trigger';
+  const triggerButtonClassName =
+    variant === 'full'
+      ? 'model-selector-trigger model-selector-trigger-full'
+      : 'model-selector-trigger';
 
   const triggerClasses = `${triggerButtonClassName}${triggerClassName ? ` ${triggerClassName}` : ''}`;
 
@@ -654,12 +716,12 @@ export function ModelSelector<T extends BaseModel>({
         >
           <span className="model-selector-item-main">
             <span className="model-selector-item-name">{node.label}</span>
-            {node.subtitle && (
-              <span className="model-selector-item-meta">{node.subtitle}</span>
-            )}
+            {node.subtitle && <span className="model-selector-item-meta">{node.subtitle}</span>}
           </span>
           {hasChildren && (
-            <span className="model-selector-expand-indicator" aria-hidden="true">{chevron}</span>
+            <span className="model-selector-expand-indicator" aria-hidden="true">
+              {chevron}
+            </span>
           )}
         </button>
       </div>
@@ -678,164 +740,192 @@ export function ModelSelector<T extends BaseModel>({
         disabled={disabled}
         title={displayText || 'Select model'}
       >
-        {triggerIcon ? <span className="model-selector-icon" aria-hidden="true">{triggerIcon}</span> : null}
+        {triggerIcon ? (
+          <span className="model-selector-icon" aria-hidden="true">
+            {triggerIcon}
+          </span>
+        ) : null}
         <span className="model-selector-text model-selector-text-default">{displayText}</span>
-        <span className="model-selector-text model-selector-text-responsive">{responsiveDisplayText}</span>
+        <span className="model-selector-text model-selector-text-responsive">
+          {responsiveDisplayText}
+        </span>
         <span className="model-selector-arrow">▾</span>
       </button>
 
-      {isOpen && createPortal(
-        <div
-          className="model-selector-dropdown"
-          ref={dropdownRef}
-          style={dropdownPosition ? { top: dropdownPosition.top, left: dropdownPosition.left } : undefined}
-          onMouseEnter={cancelCollapse}
-          onMouseLeave={scheduleCollapseAll}
-        >
-          {/* Inline search filter — only shown when there's something to filter */}
-          {models.length > 1 && (
-            <div className="model-selector-search">
-              <input
-                ref={searchInputRef}
-                type="text"
-                className="model-selector-search-input"
-                placeholder="Search models..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    if (searchQuery) {
-                      setSearchQuery('');
-                    } else {
-                      setIsOpen(false);
+      {isOpen &&
+        createPortal(
+          <div
+            className="model-selector-dropdown"
+            ref={dropdownRef}
+            style={
+              dropdownPosition
+                ? { top: dropdownPosition.top, left: dropdownPosition.left }
+                : undefined
+            }
+            onMouseEnter={cancelCollapse}
+            onMouseLeave={scheduleCollapseAll}
+          >
+            {/* Inline search filter — only shown when there's something to filter */}
+            {models.length > 1 && (
+              <div className="model-selector-search">
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  className="model-selector-search-input"
+                  placeholder="Search models..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (searchQuery) {
+                        setSearchQuery('');
+                      } else {
+                        setIsOpen(false);
+                      }
                     }
-                  }
-                }}
-                aria-label="Filter models"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  className="model-selector-search-clear"
-                  onClick={() => {
-                    setSearchQuery('');
-                    searchInputRef.current?.focus();
                   }}
-                  title="Clear search"
-                  aria-label="Clear search"
-                >
-                  <X size={12} />
-                </button>
+                  aria-label="Filter models"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    className="model-selector-search-clear"
+                    onClick={() => {
+                      setSearchQuery('');
+                      searchInputRef.current?.focus();
+                    }}
+                    title="Clear search"
+                    aria-label="Clear search"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Scrollable inner container for root menu items */}
+            <div className="model-selector-dropdown-inner">
+              {isSearching ? (
+                filteredModels.length === 0 ? (
+                  <div className="model-selector-empty">No models match "{searchQuery.trim()}"</div>
+                ) : (
+                  filteredModels.map((model) => {
+                    const key = selectionKeyFor(model);
+                    const isSelected = isModelSelected(model);
+                    const hostLabel = hostProviderLabel(model);
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`model-selector-item ${isSelected ? 'is-selected' : ''}`}
+                        onClick={() => handleSelectModel(key)}
+                        title={model.id}
+                      >
+                        <span className="model-selector-item-main">
+                          <span className="model-selector-item-name">
+                            {model.selector_label || modelTriggerDisplayName(model)}
+                          </span>
+                        </span>
+                        {hostLabel && !hostLabel.startsWith('Other') && (
+                          <span className="model-selector-expand-indicator" aria-hidden="true">
+                            {hostLabel}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })
+                )
+              ) : (
+                menuTree.map((node) => renderGroupRow(node, 0, 'model-selector-group-item'))
               )}
             </div>
-          )}
 
-          {/* Scrollable inner container for root menu items */}
-          <div className="model-selector-dropdown-inner">
-            {isSearching ? (
-              filteredModels.length === 0 ? (
-                <div className="model-selector-empty">No models match "{searchQuery.trim()}"</div>
-              ) : (
-                filteredModels.map((model) => {
-                  const key = selectionKeyFor(model);
-                  const isSelected = isModelSelected(model);
-                  const hostLabel = hostProviderLabel(model);
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      className={`model-selector-item ${isSelected ? 'is-selected' : ''}`}
-                      onClick={() => handleSelectModel(key)}
-                      title={model.id}
-                    >
-                      <span className="model-selector-item-main">
-                        <span className="model-selector-item-name">{model.selector_label || modelTriggerDisplayName(model)}</span>
-                      </span>
-                      {hostLabel && !hostLabel.startsWith('Other') && (
-                        <span className="model-selector-expand-indicator" aria-hidden="true">
-                          {hostLabel}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })
-              )
-            ) : (
-              menuTree.map((node) => renderGroupRow(node, 0, 'model-selector-group-item'))
-            )}
-          </div>
-
-          {/* One submenu portal per open level. Each shows the children (or
+            {/* One submenu portal per open level. Each shows the children (or
               leaf models) of the corresponding expanded node. */}
-          {!isSearching && expandedNodes.map((node, idx) => {
-            const depth = idx + 1;
-            const position = submenuPositions[idx];
-            if (!position) return null;
-            const childChevronSide = position.side;
-            const chevron = childChevronSide === 'left' ? '‹' : '›';
-            const submenuClass = `model-selector-submenu${position.side === 'left' ? ' opens-left' : ''}`;
-            const isLeaf = !node.children && !!node.models;
-            return (
-              <div
-                key={`${node.key}-${depth}`}
-                ref={(el) => setSubmenuRef(depth, el)}
-                className={submenuClass}
-                style={position.side === 'left'
-                  ? { top: position.top, right: position.right }
-                  : { top: position.top, left: position.left }}
-                onMouseEnter={handleSubmenuMouseEnter}
-                onMouseLeave={handleSubmenuMouseLeave}
-              >
-                <div className="model-selector-submenu-inner">
-                {isLeaf
-                  ? (node.models || []).map((model) => (
-                      <button
-                        key={selectionKeyFor(model)}
-                        type="button"
-                        className={`model-selector-item model-selector-subitem ${
-                          isModelSelected(model) ? 'is-selected' : ''
-                        }`}
-                        onClick={() => handleSelectModel(selectionKeyFor(model))}
-                      >
-                        <span className="model-selector-item-name">{modelDisplayName(model)}</span>
-                        {model.is_latest && <span className="model-selector-latest-badge">Latest</span>}
-                      </button>
-                    ))
-                  : (node.children || []).map((child) => {
-                      const isExpanded = expandedPath[depth] === child.key;
-                      const isSelected = containsSelectedModel(child);
-                      const hasChildren = (child.children?.length || 0) > 0 || (child.models?.length || 0) > 0;
-                      const directionClass = hasChildren ? ` has-${childChevronSide}-submenu` : '';
-                      return (
-                        <div
-                          key={child.key}
-                          ref={(el) => setItemRef(depth, child.key, el)}
-                          className={`model-selector-group ${isExpanded ? 'is-expanded' : ''}${isSelected ? ' is-selected' : ''}`}
-                          onMouseEnter={() => handleItemMouseEnter(depth, child)}
-                        >
-                          <button
-                            type="button"
-                            className={`model-selector-item model-selector-subitem${directionClass} ${
-                              isSelected ? 'is-selected' : ''
-                            }`}
-                            onClick={() => handleSelectNode(child)}
-                          >
-                            <span className="model-selector-item-name">{child.label}</span>
-                            {hasChildren && (
-                              <span className="model-selector-expand-indicator" aria-hidden="true">{chevron}</span>
-                            )}
-                          </button>
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-            );
-          })}
-        </div>,
-        document.body,
-      )}
+            {!isSearching &&
+              expandedNodes.map((node, idx) => {
+                const depth = idx + 1;
+                const position = submenuPositions[idx];
+                if (!position) return null;
+                const childChevronSide = position.side;
+                const chevron = childChevronSide === 'left' ? '‹' : '›';
+                const submenuClass = `model-selector-submenu${position.side === 'left' ? ' opens-left' : ''}`;
+                const isLeaf = !node.children && !!node.models;
+                return (
+                  <div
+                    key={`${node.key}-${depth}`}
+                    ref={(el) => setSubmenuRef(depth, el)}
+                    className={submenuClass}
+                    style={
+                      position.side === 'left'
+                        ? { top: position.top, right: position.right }
+                        : { top: position.top, left: position.left }
+                    }
+                    onMouseEnter={handleSubmenuMouseEnter}
+                    onMouseLeave={handleSubmenuMouseLeave}
+                  >
+                    <div className="model-selector-submenu-inner">
+                      {isLeaf
+                        ? (node.models || []).map((model) => (
+                            <button
+                              key={selectionKeyFor(model)}
+                              type="button"
+                              className={`model-selector-item model-selector-subitem ${
+                                isModelSelected(model) ? 'is-selected' : ''
+                              }`}
+                              onClick={() => handleSelectModel(selectionKeyFor(model))}
+                            >
+                              <span className="model-selector-item-name">
+                                {modelDisplayName(model)}
+                              </span>
+                              {model.is_latest && (
+                                <span className="model-selector-latest-badge">Latest</span>
+                              )}
+                            </button>
+                          ))
+                        : (node.children || []).map((child) => {
+                            const isExpanded = expandedPath[depth] === child.key;
+                            const isSelected = containsSelectedModel(child);
+                            const hasChildren =
+                              (child.children?.length || 0) > 0 || (child.models?.length || 0) > 0;
+                            const directionClass = hasChildren
+                              ? ` has-${childChevronSide}-submenu`
+                              : '';
+                            return (
+                              <div
+                                key={child.key}
+                                ref={(el) => setItemRef(depth, child.key, el)}
+                                className={`model-selector-group ${isExpanded ? 'is-expanded' : ''}${isSelected ? ' is-selected' : ''}`}
+                                onMouseEnter={() => handleItemMouseEnter(depth, child)}
+                              >
+                                <button
+                                  type="button"
+                                  className={`model-selector-item model-selector-subitem${directionClass} ${
+                                    isSelected ? 'is-selected' : ''
+                                  }`}
+                                  onClick={() => handleSelectNode(child)}
+                                >
+                                  <span className="model-selector-item-name">{child.label}</span>
+                                  {hasChildren && (
+                                    <span
+                                      className="model-selector-expand-indicator"
+                                      aria-hidden="true"
+                                    >
+                                      {chevron}
+                                    </span>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

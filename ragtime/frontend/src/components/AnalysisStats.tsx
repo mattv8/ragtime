@@ -78,10 +78,18 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
         <div style={{ display: 'flex', gap: '12px' }}>
           {topRow.map((stat, i) => (
             <div key={i} style={statBoxStyle}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: stat.color || 'var(--accent)' }}>
+              <div
+                style={{
+                  fontSize: '1.5rem',
+                  fontWeight: 'bold',
+                  color: stat.color || 'var(--accent)',
+                }}
+              >
                 {stat.value}
               </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{stat.label}</div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                {stat.label}
+              </div>
             </div>
           ))}
         </div>
@@ -89,10 +97,18 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
           <div style={{ display: 'flex', gap: '12px' }}>
             {bottomRow.map((stat, i) => (
               <div key={i} style={statBoxStyle}>
-                <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: stat.color || 'var(--accent)' }}>
+                <div
+                  style={{
+                    fontSize: '1.5rem',
+                    fontWeight: 'bold',
+                    color: stat.color || 'var(--accent)',
+                  }}
+                >
                   {stat.value}
                 </div>
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{stat.label}</div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                  {stat.label}
+                </div>
               </div>
             ))}
           </div>
@@ -102,8 +118,8 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
       {/* Memory note with dimension info */}
       {result.memory_estimate && (
         <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '8px' }}>
-          RAM estimates based on {result.memory_estimate.embedding_dimension}-dim embeddings.
-          Peak memory occurs during index loading.{' '}
+          RAM estimates based on {result.memory_estimate.embedding_dimension}-dim embeddings. Peak
+          memory occurs during index loading.{' '}
           {onNavigateToSettings ? (
             <a
               href="#settings"

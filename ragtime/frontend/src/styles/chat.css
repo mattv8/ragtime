@@ -565,7 +565,10 @@ textarea.chat-title-input {
   border-radius: var(--radius-sm);
   cursor: pointer;
   opacity: 0;
-  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 .chat-header-title-row:hover .chat-header-title-edit-btn,
 .chat-header-title-row:focus-within .chat-header-title-edit-btn {
@@ -1189,13 +1192,22 @@ textarea.chat-header-title-input {
     z-index: 2;
     box-shadow: 0 2px 4px color-mix(in srgb, var(--color-shadow, #000) 25%, transparent);
   }
-  .chat-panel-workspace .chat-workspace-conversation-trigger > .mini-loading-spinner-icon-wrapper > .userspace-icon-spin,
+  .chat-panel-workspace
+    .chat-workspace-conversation-trigger
+    > .mini-loading-spinner-icon-wrapper
+    > .userspace-icon-spin,
   .chat-panel-workspace .chat-workspace-conversation-trigger > .userspace-icon-spin {
     width: 11px;
     height: 11px;
   }
-  .chat-panel-workspace .chat-workspace-conversation-trigger > .chat-workspace-interrupt-dismiss .alert-icon,
-  .chat-panel-workspace .chat-workspace-conversation-trigger > .chat-workspace-interrupt-dismiss .dismiss-icon {
+  .chat-panel-workspace
+    .chat-workspace-conversation-trigger
+    > .chat-workspace-interrupt-dismiss
+    .alert-icon,
+  .chat-panel-workspace
+    .chat-workspace-conversation-trigger
+    > .chat-workspace-interrupt-dismiss
+    .dismiss-icon {
     width: 11px;
     height: 11px;
     position: absolute;
@@ -1259,7 +1271,9 @@ textarea.chat-header-title-input {
 .chat-context-fill {
   height: 100%;
   background: var(--color-success);
-  transition: width var(--transition-fast), background-color var(--transition-fast);
+  transition:
+    width var(--transition-fast),
+    background-color var(--transition-fast);
 }
 .chat-context-label {
   font-size: var(--text-xs);
@@ -1394,7 +1408,9 @@ textarea.chat-header-title-input {
   display: inline-flex;
   align-items: center;
   border-radius: var(--radius-sm);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 .chat-action-icon-btn:hover {
   color: var(--color-text);
@@ -1446,7 +1462,9 @@ textarea.chat-header-title-input {
   display: inline-flex;
   align-items: center;
   border-radius: var(--radius-xs);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 .chat-branch-nav-btn:hover:not(:disabled) {
   color: var(--color-text);
@@ -1537,7 +1555,9 @@ textarea.chat-header-title-input {
   gap: 4px;
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .viz-version-anchor .live-data-refresh-btn:hover:not(:disabled),
@@ -1574,7 +1594,9 @@ textarea.chat-header-title-input {
   border-radius: var(--radius-sm);
   color: var(--color-text-primary);
   outline: none;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .viz-version-anchor .datatable-search-input::placeholder {
@@ -1720,7 +1742,9 @@ textarea.chat-header-title-input {
   line-height: 1.4;
   color: var(--color-text-muted);
   border-radius: var(--radius-sm);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 .chat-action-text-btn:hover {
   color: var(--color-text);
@@ -1751,12 +1775,26 @@ textarea.chat-header-title-input {
   border-radius: 50%;
   animation: typing-bounce 1.4s infinite ease-in-out;
 }
-.chat-typing-indicator span:nth-child(1) { animation-delay: 0s; }
-.chat-typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-.chat-typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+.chat-typing-indicator span:nth-child(1) {
+  animation-delay: 0s;
+}
+.chat-typing-indicator span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.chat-typing-indicator span:nth-child(3) {
+  animation-delay: 0.4s;
+}
 @keyframes typing-bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
-  40% { transform: translateY(-6px); opacity: 1; }
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  40% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
 }
 /* Error Display */
 .chat-error {
@@ -1809,7 +1847,9 @@ textarea.chat-header-title-input {
 }
 /* Content-driven auto-resize: smooth grow, fast shrink */
 .chat-input-area.auto-resizing {
-  transition: height 150ms ease-in-out, min-height 150ms ease-in-out;
+  transition:
+    height 150ms ease-in-out,
+    min-height 150ms ease-in-out;
 }
 .chat-input-area.auto-resizing.shrinking,
 .chat-input-area.auto-resizing.shrinking .chat-input {
@@ -1903,7 +1943,9 @@ textarea.chat-header-title-input {
   background: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
   border-radius: var(--radius-lg);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
 .chat-input-wrapper:focus-within {
   border-color: var(--color-primary);
@@ -1939,7 +1981,7 @@ textarea.chat-header-title-input {
 .chat-rich-input:focus {
   outline: none;
 }
-.chat-rich-input[contenteditable="false"] {
+.chat-rich-input[contenteditable='false'] {
   opacity: 0.6;
   cursor: not-allowed;
 }
@@ -1965,7 +2007,7 @@ textarea.chat-header-title-input {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 3px;
 }
-[data-theme="dark"] .chat-input-field::-webkit-scrollbar-thumb {
+[data-theme='dark'] .chat-input-field::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
 }
 .chat-input-area.auto-resizing .chat-input {
@@ -1986,10 +2028,10 @@ textarea.chat-header-title-input {
 .chat-input::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.25);
 }
-[data-theme="dark"] .chat-input::-webkit-scrollbar-thumb {
+[data-theme='dark'] .chat-input::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
 }
-[data-theme="dark"] .chat-input::-webkit-scrollbar-thumb:hover {
+[data-theme='dark'] .chat-input::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.25);
 }
 .chat-input:focus {
@@ -2144,8 +2186,13 @@ textarea.chat-header-title-input {
   border-color: var(--color-border);
 }
 @keyframes reasoning-pulse {
-  0%, 100% { border-color: var(--color-primary-border); }
-  50% { border-color: color-mix(in srgb, var(--color-primary) 40%, transparent); }
+  0%,
+  100% {
+    border-color: var(--color-primary-border);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  }
 }
 .reasoning-header {
   display: flex;
@@ -2223,7 +2270,9 @@ textarea.chat-header-title-input {
 }
 .reasoning-content {
   overflow: hidden;
-  transition: max-height 0.35s ease, opacity 0.25s ease;
+  transition:
+    max-height 0.35s ease,
+    opacity 0.25s ease;
 }
 .reasoning-content-expanded {
   max-height: 500px;
@@ -2273,7 +2322,9 @@ textarea.chat-header-title-input {
   color: var(--color-text-tertiary);
   cursor: pointer;
   font-family: inherit;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 .reasoning-copy-btn:hover {
   color: var(--color-text-primary);
@@ -2317,7 +2368,9 @@ textarea.chat-header-title-input {
   overflow: hidden;
   background: transparent;
   padding: 0.2rem;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 .tool-call-chart,
 .tool-call-datatable {
@@ -2653,11 +2706,18 @@ textarea.chat-header-title-input {
   overflow: hidden;
   text-decoration: none;
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 .tool-call-web-query:hover {
   background: var(--color-surface-hover);
-  border-color: color-mix(in srgb, var(--color-link, var(--color-primary)) 35%, var(--color-border));
+  border-color: color-mix(
+    in srgb,
+    var(--color-link, var(--color-primary)) 35%,
+    var(--color-border)
+  );
 }
 .tool-call-web-query:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-link, var(--color-primary)) 45%, transparent);
@@ -3157,12 +3217,16 @@ button.tool-call-userspace-write-path-link:hover {
   background: var(--color-bg-primary);
 }
 
-.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-write-summary {
+.tool-call-userspace-batched-list
+  .tool-call-userspace-batched-entry
+  .tool-call-userspace-write-summary {
   margin-bottom: 0;
   gap: 2px;
 }
 
-.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-write-summary-row {
+.tool-call-userspace-batched-list
+  .tool-call-userspace-batched-entry
+  .tool-call-userspace-write-summary-row {
   gap: 6px;
 }
 
@@ -3209,7 +3273,9 @@ button.tool-call-userspace-write-path-link:hover {
   opacity: 1;
 }
 
-.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-diff-card {
+.tool-call-userspace-batched-list
+  .tool-call-userspace-batched-entry
+  .tool-call-userspace-diff-card {
   /* Cancel the negative-margin "edge-bleed" used by singletons so cards stay
    * neatly inside the bordered batched entry. */
   margin: 6px 0 0;
@@ -3218,11 +3284,15 @@ button.tool-call-userspace-write-path-link:hover {
 
 /* Hide the per-card path/label header inside batched entries — the path is
  * already shown in the summary row directly above the diff. */
-.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .userspace-snapshot-diff-column-header {
+.tool-call-userspace-batched-list
+  .tool-call-userspace-batched-entry
+  .userspace-snapshot-diff-column-header {
   display: none;
 }
 
-.tool-call-userspace-batched-list .tool-call-userspace-batched-entry .tool-call-userspace-write-meta {
+.tool-call-userspace-batched-list
+  .tool-call-userspace-batched-entry
+  .tool-call-userspace-write-meta {
   margin-top: 1px;
 }
 
@@ -3485,7 +3555,7 @@ button.tool-call-userspace-write-path-link:hover {
   background: var(--color-bg-tertiary);
   border-radius: var(--tool-call-radius-sm);
   padding: var(--space-xs);
-  padding-right: 24px;  /* Add end padding to prevent abrupt cutoff on scroll */
+  padding-right: 24px; /* Add end padding to prevent abrupt cutoff on scroll */
 }
 .tool-result-table {
   width: 100%;
@@ -3592,7 +3662,9 @@ button.tool-call-userspace-write-path-link:hover {
   color: var(--color-text-muted);
   cursor: pointer;
   opacity: 0;
-  transition: opacity var(--transition-fast), background var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    background var(--transition-fast);
   z-index: 5;
 }
 .chart-container:hover .chart-resize-btn,
@@ -3616,7 +3688,10 @@ button.tool-call-userspace-write-path-link:hover {
   font-size: var(--text-xs);
   line-height: 1;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
 }
 .live-data-refresh-btn:hover:not(:disabled) {
   background: var(--color-surface-hover);
@@ -3696,7 +3771,9 @@ button.tool-call-userspace-write-path-link:hover {
   font-size: var(--text-xs);
   min-width: 24px;
   height: 24px;
-  transition: background-color 0.15s, border-color 0.15s;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
 }
 .datatable-header .datatable-paging-btn:hover:not(:disabled) {
   background: var(--color-surface-hover);
@@ -3725,7 +3802,9 @@ button.tool-call-userspace-write-path-link:hover {
   color: var(--color-text-muted);
   cursor: pointer;
   padding: 1px 2px;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 .visualization-branch-btn:hover:not(:disabled) {
   background: var(--color-surface-hover);
@@ -3749,7 +3828,7 @@ button.tool-call-userspace-write-path-link:hover {
 .datatable-table-wrapper {
   overflow-x: auto;
   min-height: 50px;
-  padding-right: 24px;  /* Right padding so table doesn't abruptly stop when scrolled */
+  padding-right: 24px; /* Right padding so table doesn't abruptly stop when scrolled */
 }
 .datatable-title {
   margin: 0;
@@ -3830,7 +3909,7 @@ button.tool-call-userspace-write-path-link:hover {
   min-width: 60px;
   cursor: pointer;
 }
-.datatable-container input.dt-input[type="search"] {
+.datatable-container input.dt-input[type='search'] {
   min-width: 140px;
 }
 .datatable-container .dt-input:focus {
@@ -3839,8 +3918,8 @@ button.tool-call-userspace-write-path-link:hover {
 /* Table styling - compact */
 .datatable-container table.dataTable {
   border-collapse: collapse;
-  width: auto !important;  /* Let table size naturally instead of forcing 100% */
-  min-width: 100%;  /* But still fill container when content is small */
+  width: auto !important; /* Let table size naturally instead of forcing 100% */
+  min-width: 100%; /* But still fill container when content is small */
   font-size: var(--text-xs);
   margin: var(--space-xs) 0 !important;
 }
@@ -3906,7 +3985,9 @@ button.tool-call-userspace-write-path-link:hover {
   text-decoration: none;
   line-height: 1.4;
   min-width: 28px;
-  transition: background-color 0.15s, border-color 0.15s;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
 }
 .datatable-container .dt-paging-button:hover:not(.disabled):not(.current) {
   background: var(--color-surface-hover);
@@ -3976,12 +4057,26 @@ button.tool-call-userspace-write-path-link:hover {
   font-weight: 600;
   line-height: 1.35;
 }
-.markdown-content h1 { font-size: 1.35rem; }
-.markdown-content h2 { font-size: 1.2rem; }
-.markdown-content h3 { font-size: 1.1rem; }
-.markdown-content h4 { font-size: 1rem; }
-.markdown-content h5 { font-size: 0.95rem; }
-.markdown-content h6 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.markdown-content h1 {
+  font-size: 1.35rem;
+}
+.markdown-content h2 {
+  font-size: 1.2rem;
+}
+.markdown-content h3 {
+  font-size: 1.1rem;
+}
+.markdown-content h4 {
+  font-size: 1rem;
+}
+.markdown-content h5 {
+  font-size: 0.95rem;
+}
+.markdown-content h6 {
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 .markdown-content h1:first-child,
 .markdown-content h2:first-child,
 .markdown-content h3:first-child {
@@ -4030,7 +4125,7 @@ button.tool-call-userspace-write-path-link:hover {
   background: rgba(0, 0, 0, 0.25);
   overflow: hidden;
 }
-[data-theme="light"] .markdown-codeblock {
+[data-theme='light'] .markdown-codeblock {
   background: rgba(0, 0, 0, 0.03);
   border-color: rgba(0, 0, 0, 0.06);
 }
@@ -4042,7 +4137,7 @@ button.tool-call-userspace-write-path-link:hover {
   background: rgba(0, 0, 0, 0.15);
   border-bottom: 1px solid var(--color-border);
 }
-[data-theme="light"] .markdown-codeblock-header {
+[data-theme='light'] .markdown-codeblock-header {
   background: rgba(0, 0, 0, 0.04);
 }
 .markdown-codeblock-lang {
@@ -4063,13 +4158,15 @@ button.tool-call-userspace-write-path-link:hover {
   color: var(--color-text-muted);
   cursor: pointer;
   font-size: 11px;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 .markdown-codeblock-copy:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--color-text-primary);
 }
-[data-theme="light"] .markdown-codeblock-copy:hover {
+[data-theme='light'] .markdown-codeblock-copy:hover {
   background: rgba(0, 0, 0, 0.06);
 }
 .markdown-codeblock-copy.is-copied {
@@ -4251,7 +4348,9 @@ button.tool-call-userspace-write-path-link:hover {
   line-height: 1.4;
   color: var(--color-text-primary);
   min-width: 0;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 .chat-conversation-search-input:focus {
   outline: none;
@@ -4355,8 +4454,10 @@ button.tool-call-userspace-write-path-link:hover {
   -webkit-line-clamp: 4;
   line-clamp: 4;
 }
-.chat-conversation-item.branch-search-result .chat-conversation-snippet:not(.chat-conversation-branch-snippet),
-.chat-workspace-conversation-item.branch-search-result .chat-conversation-snippet:not(.chat-conversation-branch-snippet) {
+.chat-conversation-item.branch-search-result
+  .chat-conversation-snippet:not(.chat-conversation-branch-snippet),
+.chat-workspace-conversation-item.branch-search-result
+  .chat-conversation-snippet:not(.chat-conversation-branch-snippet) {
   opacity: 0.55;
 }
 .chat-branch-search-snippet-label {
@@ -4399,7 +4500,9 @@ button.tool-call-userspace-write-path-link:hover {
   font-size: 12px;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
 }
 .chat-show-older-btn:hover {
   background: var(--color-bg-tertiary, var(--color-bg-primary));
@@ -4607,7 +4710,8 @@ mark.chat-in-chat-search-match.chat-in-chat-search-match-active {
   height: 0;
   border-style: solid;
   border-width: 0 0 10px 10px;
-  border-color: transparent transparent color-mix(in srgb, var(--color-text-muted) 65%, transparent) transparent;
+  border-color: transparent transparent color-mix(in srgb, var(--color-text-muted) 65%, transparent)
+    transparent;
   cursor: nwse-resize;
   opacity: 0.9;
   z-index: 3;

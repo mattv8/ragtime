@@ -5,7 +5,8 @@ const rawVersion = (import.meta.env.VITE_RAGTIME_VERSION || '').trim();
 const versionLabel = rawVersion || '';
 
 export const ragtimeBuildEnvironment = buildEnvironment;
-export const isMainEnvironment = normalizedBuildEnvironment === 'main' || normalizedBuildEnvironment === 'production';
+export const isMainEnvironment =
+  normalizedBuildEnvironment === 'main' || normalizedBuildEnvironment === 'production';
 export const environmentBadgeLabel = isMainEnvironment ? '' : buildEnvironment;
 
 interface BrandNameProps {

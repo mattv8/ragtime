@@ -2,11 +2,7 @@ import { simplex_noise } from './utils/simplexNoise';
 import type { CreateFragmentShader, FragmentShaderUniforms } from './types';
 
 const createFragmentShader: CreateFragmentShader = (options) => {
-  const {
-    blurAmount = 345,
-    blurQuality = 7,
-    blurExponentRange = [0.9, 1.2],
-  } = options;
+  const { blurAmount = 345, blurQuality = 7, blurExponentRange = [0.9, 1.2] } = options;
 
   const uniforms: FragmentShaderUniforms = {};
 

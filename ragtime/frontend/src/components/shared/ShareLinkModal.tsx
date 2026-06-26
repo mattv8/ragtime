@@ -141,9 +141,10 @@ export function ShareLinkModal({
   const [deleteConfirmShareId, setDeleteConfirmShareId] = useState<string | null>(null);
   const [shareLabelDraft, setShareLabelDraft] = useState('');
 
-  const availableShareLinks = shareLinks.length > 0
-    ? shareLinks
-    : (shareStatus?.id ? [shareStatus] : []);
+  const availableShareLinks = useMemo(
+    () => (shareLinks.length > 0 ? shareLinks : shareStatus?.id ? [shareStatus] : []),
+    [shareLinks, shareStatus],
+  );
 
   const selectedShare = useMemo(() => {
     if (!selectedShareId) {
@@ -166,7 +167,10 @@ export function ShareLinkModal({
       setEditingShareId(null);
       setShareLabelDraft('');
     }
-    if (deleteConfirmShareId && !availableShareLinks.some((link) => link.id === deleteConfirmShareId)) {
+    if (
+      deleteConfirmShareId &&
+      !availableShareLinks.some((link) => link.id === deleteConfirmShareId)
+    ) {
       setDeleteConfirmShareId(null);
     }
   }, [availableShareLinks, deleteConfirmShareId, editingShareId]);
@@ -179,22 +183,30 @@ export function ShareLinkModal({
   const selectedShareIndex = selectedShare?.id
     ? availableShareLinks.findIndex((link) => link.id === selectedShare.id)
     : -1;
-  const selectedShareDisplayLabel = selectedShareLabel
-    || (selectedShareIndex >= 0 ? `Untitled link ${selectedShareIndex + 1}` : 'Untitled link');
-  const selectedShareScopeSummary = selectedShare && 'scope_anchor_message_idx' in selectedShare
-    && typeof selectedShare.scope_anchor_message_idx === 'number'
-    ? selectedShare.scope_direction === 'backward'
-      ? `Shared up to message #${selectedShare.scope_anchor_message_idx + 1}`
-      : `Shared from message #${selectedShare.scope_anchor_message_idx + 1}`
-    : null;
+  const selectedShareDisplayLabel =
+    selectedShareLabel ||
+    (selectedShareIndex >= 0 ? `Untitled link ${selectedShareIndex + 1}` : 'Untitled link');
+  const selectedShareScopeSummary =
+    selectedShare &&
+    'scope_anchor_message_idx' in selectedShare &&
+    typeof selectedShare.scope_anchor_message_idx === 'number'
+      ? selectedShare.scope_direction === 'backward'
+        ? `Shared up to message #${selectedShare.scope_anchor_message_idx + 1}`
+        : `Shared from message #${selectedShare.scope_anchor_message_idx + 1}`
+      : null;
   const revokeActionLabel = availableShareLinks.length > 1 ? 'Revoke All' : 'Revoke Link';
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content modal-small userspace-share-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content modal-small userspace-share-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <h3>{title}</h3>
-          <button className="modal-close" onClick={onClose}>&times;</button>
+          <button className="modal-close" onClick={onClose}>
+            &times;
+          </button>
         </div>
         <div className="modal-body">
           {loadingShareStatus ? (
@@ -203,7 +215,9 @@ export function ShareLinkModal({
             <>
               <div className="userspace-share-link-pane">
                 <div className="userspace-share-access-row">
-                  <label htmlFor="userspace-share-link-trigger" className="userspace-share-label">Share links</label>
+                  <label htmlFor="userspace-share-link-trigger" className="userspace-share-label">
+                    Share links
+                  </label>
                   <div className="model-selector model-selector-full userspace-share-link-picker">
                     <button
                       id="userspace-share-link-trigger"
@@ -212,7 +226,9 @@ export function ShareLinkModal({
                       onClick={() => setIsShareMenuOpen((open) => !open)}
                       aria-haspopup="listbox"
                       aria-expanded={isShareMenuOpen}
-                      disabled={creatingShareLink || updatingShareLabel || deletingSelectedShareLink}
+                      disabled={
+                        creatingShareLink || updatingShareLabel || deletingSelectedShareLink
+                      }
                     >
                       <span className="model-selector-text">
                         {selectedShare?.id ? selectedShareDisplayLabel : 'No links yet'}
@@ -222,7 +238,11 @@ export function ShareLinkModal({
 
                     {isShareMenuOpen && (
                       <div className="model-selector-dropdown userspace-share-link-dropdown">
-                        <div className="model-selector-dropdown-inner" role="listbox" aria-label="Share links">
+                        <div
+                          className="model-selector-dropdown-inner"
+                          role="listbox"
+                          aria-label="Share links"
+                        >
                           {availableShareLinks.length === 0 ? (
                             <div className="userspace-share-link-empty">No links yet</div>
                           ) : (
@@ -301,7 +321,9 @@ export function ShareLinkModal({
                                       <>
                                         <button
                                           className="chat-action-btn confirm-delete"
-                                          onClick={() => onSaveShareLabel?.(shareLabelDraft.trim() || '')}
+                                          onClick={() =>
+                                            onSaveShareLabel?.(shareLabelDraft.trim() || '')
+                                          }
                                           title="Save label"
                                           disabled={updatingShareLabel}
                                           type="button"
@@ -362,7 +384,9 @@ export function ShareLinkModal({
                             setIsShareMenuOpen(false);
                             onCreateShareLink?.();
                           }}
-                          disabled={creatingShareLink || updatingShareLabel || deletingSelectedShareLink}
+                          disabled={
+                            creatingShareLink || updatingShareLabel || deletingSelectedShareLink
+                          }
                           type="button"
                         >
                           <Plus size={12} />
@@ -375,7 +399,9 @@ export function ShareLinkModal({
 
                 {(!allowSubdomainOption || shareLinkType !== 'subdomain') && (
                   <>
-                    <label htmlFor="userspace-share-slug" className="userspace-share-label">Custom slug</label>
+                    <label htmlFor="userspace-share-slug" className="userspace-share-label">
+                      Custom slug
+                    </label>
                     <div className="userspace-share-slug-row">
                       <input
                         id="userspace-share-slug"
@@ -386,7 +412,9 @@ export function ShareLinkModal({
                       />
                     </div>
                     {shareSlugAvailable !== null && (
-                      <div className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}>
+                      <div
+                        className={`userspace-share-meta ${shareSlugAvailable ? '' : 'userspace-error'}`}
+                      >
                         {shareSlugAvailable ? 'Slug is available' : 'Slug is unavailable'}
                       </div>
                     )}
@@ -431,20 +459,26 @@ export function ShareLinkModal({
                   </div>
                 )}
 
-                {shareStatus?.has_share_link && allowSubdomainOption && !shareSubdomainEnabled && shareSubdomainDisabledReason && (
-                  <div className="userspace-share-meta">
-                    {shareSubdomainDisabledReason}
-                  </div>
-                )}
+                {shareStatus?.has_share_link &&
+                  allowSubdomainOption &&
+                  !shareSubdomainEnabled &&
+                  shareSubdomainDisabledReason && (
+                    <div className="userspace-share-meta">{shareSubdomainDisabledReason}</div>
+                  )}
 
-                {showProtectedSubdomainNotice && (                  <div className="userspace-share-warning-banner" role="alert">
-                    Warning: if this workspace has already been unlocked in this browser, opening the subdomain link again may not prompt you to login. Protection is still enforced for new sessions and other browsers.
+                {showProtectedSubdomainNotice && (
+                  <div className="userspace-share-warning-banner" role="alert">
+                    Warning: if this workspace has already been unlocked in this browser, opening
+                    the subdomain link again may not prompt you to login. Protection is still
+                    enforced for new sessions and other browsers.
                   </div>
                 )}
 
                 {shareStatus?.has_share_link && effectiveShareUrl ? (
                   <>
-                    <label htmlFor="userspace-share-url" className="userspace-share-label">Active share URL</label>
+                    <label htmlFor="userspace-share-url" className="userspace-share-label">
+                      Active share URL
+                    </label>
                     <div className="userspace-share-url-copy-wrap">
                       <input id="userspace-share-url" value={effectiveShareUrl} readOnly />
                       <InlineCopyButton
@@ -459,27 +493,29 @@ export function ShareLinkModal({
                         onCopyError={onShareUrlInlineCopyError}
                       />
                     </div>
-                    <div className="userspace-share-meta">
-                      {activeShareCreatedLabel}
-                    </div>
+                    <div className="userspace-share-meta">{activeShareCreatedLabel}</div>
                     {selectedShareScopeSummary && (
-                      <div className="userspace-share-meta">
-                        {selectedShareScopeSummary}
-                      </div>
+                      <div className="userspace-share-meta">{selectedShareScopeSummary}</div>
                     )}
                   </>
                 ) : (
-                  <p className="userspace-muted">No active share link for this {shareTargetLabel}.</p>
+                  <p className="userspace-muted">
+                    No active share link for this {shareTargetLabel}.
+                  </p>
                 )}
               </div>
 
               <div className="userspace-share-controls">
                 <div className="userspace-share-access-row">
-                  <label htmlFor="userspace-share-access-mode" className="userspace-share-label">Access mode</label>
+                  <label htmlFor="userspace-share-access-mode" className="userspace-share-label">
+                    Access mode
+                  </label>
                   <select
                     id="userspace-share-access-mode"
                     value={shareAccessMode}
-                    onChange={(event) => onShareAccessModeChange(event.target.value as ShareAccessMode)}
+                    onChange={(event) =>
+                      onShareAccessModeChange(event.target.value as ShareAccessMode)
+                    }
                     disabled={savingShareAccess || sharingWorkspace || revokingShareLink}
                   >
                     <option value="token">Tokenized public link</option>
@@ -500,7 +536,11 @@ export function ShareLinkModal({
                       type="password"
                       value={sharePasswordDraft}
                       onChange={(event) => onSharePasswordDraftChange(event.target.value)}
-                      placeholder={shareStatus?.has_password ? 'Enter new password to update' : 'Enter password'}
+                      placeholder={
+                        shareStatus?.has_password
+                          ? 'Enter new password to update'
+                          : 'Enter password'
+                      }
                       autoComplete="new-password"
                     />
                   </div>
@@ -543,14 +583,24 @@ export function ShareLinkModal({
                           autoComplete="off"
                         />
                       )}
-                      <button className="btn btn-secondary" onClick={onAddShareLdapGroup} type="button">Add Group</button>
+                      <button
+                        className="btn btn-secondary"
+                        onClick={onAddShareLdapGroup}
+                        type="button"
+                      >
+                        Add Group
+                      </button>
                     </div>
                     {loadingLdapGroups ? (
                       <p className="userspace-share-meta">Loading LDAP groups…</p>
                     ) : ldapDiscoveredGroups.length > 0 ? (
-                      <p className="userspace-share-meta">Groups are discovered from the configured LDAP base domain.</p>
+                      <p className="userspace-share-meta">
+                        Groups are discovered from the configured LDAP base domain.
+                      </p>
                     ) : (
-                      <p className="userspace-share-meta">Could not auto-discover LDAP groups. Enter group DN manually.</p>
+                      <p className="userspace-share-meta">
+                        Could not auto-discover LDAP groups. Enter group DN manually.
+                      </p>
                     )}
                     {shareSelectedLdapGroupsDraft.length > 0 && (
                       <div className="userspace-share-group-list">
@@ -582,11 +632,11 @@ export function ShareLinkModal({
               className="btn btn-secondary"
               onClick={onSaveShareAccess}
               disabled={
-                savingShareAccess
-                || sharingWorkspace
-                || revokingShareLink
-                || checkingShareSlug
-                || (Boolean(shareStatus?.has_share_link) && !shareHasUnsavedChanges)
+                savingShareAccess ||
+                sharingWorkspace ||
+                revokingShareLink ||
+                checkingShareSlug ||
+                (Boolean(shareStatus?.has_share_link) && !shareHasUnsavedChanges)
               }
             >
               {savingShareAccess ? 'Saving Access...' : 'Save Access'}
@@ -596,28 +646,48 @@ export function ShareLinkModal({
             <button
               className="btn btn-secondary"
               onClick={onCopyShareLink}
-              disabled={sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess || shareHasUnsavedChanges}
+              disabled={
+                sharingWorkspace ||
+                revokingShareLink ||
+                checkingShareSlug ||
+                savingShareAccess ||
+                shareHasUnsavedChanges
+              }
             >
               {shareCopied ? 'Copied' : 'Copy Link'}
             </button>
             <button
               className="btn btn-secondary"
               onClick={onOpenFullPreview}
-              disabled={sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess || shareHasUnsavedChanges}
+              disabled={
+                sharingWorkspace ||
+                revokingShareLink ||
+                checkingShareSlug ||
+                savingShareAccess ||
+                shareHasUnsavedChanges
+              }
             >
               {openActionLabel}
             </button>
             <button
               className="btn btn-secondary"
               onClick={onRotateShareLink}
-              disabled={sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess}
+              disabled={
+                sharingWorkspace || revokingShareLink || checkingShareSlug || savingShareAccess
+              }
             >
               {rotatingShareLink ? 'Rotating...' : 'Rotate Link'}
             </button>
             <button
               className="btn btn-secondary"
               onClick={onRevokeShareLink}
-              disabled={revokingShareLink || sharingWorkspace || checkingShareSlug || savingShareAccess || !shareStatus?.has_share_link}
+              disabled={
+                revokingShareLink ||
+                sharingWorkspace ||
+                checkingShareSlug ||
+                savingShareAccess ||
+                !shareStatus?.has_share_link
+              }
             >
               {revokingShareLink ? 'Revoking...' : revokeActionLabel}
             </button>

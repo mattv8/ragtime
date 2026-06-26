@@ -15,8 +15,12 @@
   var CHART_ORIGIN = 'https://cdn.jsdelivr.net';
   var JQUERY_ORIGIN = 'https://code.jquery.com';
   var DATATABLES_ORIGIN = 'https://cdn.datatables.net';
-  var scriptLoadPromises = window.__ragtime_script_load_promises || (window.__ragtime_script_load_promises = Object.create(null));
-  var preconnectedOrigins = window.__ragtime_preconnected_origins || (window.__ragtime_preconnected_origins = Object.create(null));
+  var scriptLoadPromises =
+    window.__ragtime_script_load_promises ||
+    (window.__ragtime_script_load_promises = Object.create(null));
+  var preconnectedOrigins =
+    window.__ragtime_preconnected_origins ||
+    (window.__ragtime_preconnected_origins = Object.create(null));
   var reportedSandboxBlocks = Object.create(null);
   var pendingNetworkRequests = 0;
 
@@ -27,9 +31,8 @@
 
   function getParentOrigin() {
     var config = getBridgeConfig();
-    var origin = config && typeof config.parent_origin === 'string'
-      ? config.parent_origin.trim()
-      : '';
+    var origin =
+      config && typeof config.parent_origin === 'string' ? config.parent_origin.trim() : '';
     return origin || '*';
   }
 
@@ -80,17 +83,30 @@
     var promise = new Promise(function (resolve, reject) {
       var existing = document.querySelector('script[src="' + src + '"]');
       if (existing) {
-        var alreadyLoaded = existing.getAttribute('data-ragtime-loaded') === '1'
-          || (src === CHART_URL && !!window.Chart)
-          || (src === JQUERY_URL && !!window.jQuery)
-          || (src === DATATABLES_JS_URL && hasDataTables());
+        var alreadyLoaded =
+          existing.getAttribute('data-ragtime-loaded') === '1' ||
+          (src === CHART_URL && !!window.Chart) ||
+          (src === JQUERY_URL && !!window.jQuery) ||
+          (src === DATATABLES_JS_URL && hasDataTables());
         if (alreadyLoaded) {
           existing.setAttribute('data-ragtime-loaded', '1');
           resolve();
           return;
         }
-        existing.addEventListener('load', function () { resolve(); }, { once: true });
-        existing.addEventListener('error', function () { reject(new Error('Failed to load ' + src)); }, { once: true });
+        existing.addEventListener(
+          'load',
+          function () {
+            resolve();
+          },
+          { once: true },
+        );
+        existing.addEventListener(
+          'error',
+          function () {
+            reject(new Error('Failed to load ' + src));
+          },
+          { once: true },
+        );
         return;
       }
       var script = document.createElement('script');
@@ -100,7 +116,9 @@
         script.setAttribute('data-ragtime-loaded', '1');
         resolve();
       };
-      script.onerror = function () { reject(new Error('Failed to load ' + src)); };
+      script.onerror = function () {
+        reject(new Error('Failed to load ' + src));
+      };
       document.head.appendChild(script);
     }).catch(function (error) {
       delete scriptLoadPromises[src];
@@ -133,12 +151,11 @@
         })
       : Promise.resolve();
 
-    window.__ragtime_viz_bootstrap_promise = Promise.all([
-      chartPromise,
-      dataTablesPromise,
-    ]).catch(function (error) {
-      console.warn('[ragtime bridge] visualization bootstrap failed:', error);
-    });
+    window.__ragtime_viz_bootstrap_promise = Promise.all([chartPromise, dataTablesPromise]).catch(
+      function (error) {
+        console.warn('[ragtime bridge] visualization bootstrap failed:', error);
+      },
+    );
     return window.__ragtime_viz_bootstrap_promise;
   }
 
@@ -149,7 +166,10 @@
     try {
       var frame = window.frameElement;
       if (frame && frame.sandbox) {
-        if (typeof frame.sandbox.contains === 'function' && typeof frame.sandbox.length === 'number') {
+        if (
+          typeof frame.sandbox.contains === 'function' &&
+          typeof frame.sandbox.length === 'number'
+        ) {
           return Array.prototype.slice.call(frame.sandbox);
         }
         if (typeof frame.getAttribute === 'function') {
@@ -174,7 +194,12 @@
   }
 
   function reportSandboxBlocked(action, flag) {
-    var message = 'Preview sandbox blocked ' + action + '. Enable ' + flag + ' in Settings > User Space Preview Sandbox if this workspace needs it.';
+    var message =
+      'Preview sandbox blocked ' +
+      action +
+      '. Enable ' +
+      flag +
+      ' in Settings > User Space Preview Sandbox if this workspace needs it.';
     if (reportedSandboxBlocks[message]) {
       return;
     }
@@ -184,7 +209,7 @@
       if (window.parent && window.parent !== window) {
         window.parent.postMessage(
           { bridge: B, type: S, action: action, flag: flag, message: message },
-          getParentOrigin()
+          getParentOrigin(),
         );
       }
     } catch (error) {
@@ -197,7 +222,7 @@
       if (window.parent && window.parent !== window) {
         window.parent.postMessage(
           { bridge: B, type: N, pending: pendingNetworkRequests },
-          getParentOrigin()
+          getParentOrigin(),
         );
       }
     } catch (error) {
@@ -220,8 +245,9 @@
   function isLiveDataTimeoutPayload(payload) {
     if (!payload || typeof payload !== 'object') return false;
     var error = typeof payload.error === 'string' ? payload.error : '';
-    return payload.error_kind === 'timeout'
-      || /(?:timed out|timeout|statement timeout)/i.test(error);
+    return (
+      payload.error_kind === 'timeout' || /(?:timed out|timeout|statement timeout)/i.test(error)
+    );
   }
 
   function showLiveDataError(message) {
@@ -242,7 +268,8 @@
     box.style.borderRadius = '8px';
     box.style.background = '#fff1f1';
     box.style.color = '#8a1f1f';
-    box.style.font = '13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    box.style.font =
+      '13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     box.style.boxShadow = '0 8px 30px rgba(0, 0, 0, 0.16)';
     box.style.whiteSpace = 'pre-wrap';
     box.style.wordBreak = 'break-word';
@@ -272,7 +299,7 @@
             error_kind: payload.error_kind || null,
             timeout_seconds: payload.timeout_seconds || null,
           },
-          getParentOrigin()
+          getParentOrigin(),
         );
       }
     } catch (error) {
@@ -283,7 +310,7 @@
   function resolveLiveDataResult(componentId, resolve, payload) {
     var result = payload || { rows: [], columns: [], row_count: 0 };
     if (isLiveDataTimeoutPayload(result)) {
-      showLiveDataError(result.error || ('Live data execution timed out after ' + T_LABEL));
+      showLiveDataError(result.error || 'Live data execution timed out after ' + T_LABEL);
       reportLiveDataExecutionError(componentId, result);
     } else {
       clearLiveDataError();
@@ -344,7 +371,12 @@
     if (window.HTMLAnchorElement && window.HTMLAnchorElement.prototype) {
       overrideMethod(window.HTMLAnchorElement.prototype, 'click', function (original) {
         return function () {
-          if (this && this.hasAttribute && this.hasAttribute('download') && !hasSandboxFlag('allow-downloads')) {
+          if (
+            this &&
+            this.hasAttribute &&
+            this.hasAttribute('download') &&
+            !hasSandboxFlag('allow-downloads')
+          ) {
             reportSandboxBlocked('download link activation', 'allow-downloads');
             return;
           }
@@ -353,7 +385,11 @@
       });
     }
 
-    if (!hasSandboxFlag('allow-forms') && window.HTMLFormElement && window.HTMLFormElement.prototype) {
+    if (
+      !hasSandboxFlag('allow-forms') &&
+      window.HTMLFormElement &&
+      window.HTMLFormElement.prototype
+    ) {
       overrideMethod(window.HTMLFormElement.prototype, 'submit', function () {
         return function () {
           reportSandboxBlocked('HTMLFormElement.submit()', 'allow-forms');
@@ -386,13 +422,22 @@
     if (!hasSandboxFlag('allow-storage-access-by-user-activation') && document) {
       overrideMethod(document, 'requestStorageAccess', function () {
         return function () {
-          reportSandboxBlocked('document.requestStorageAccess()', 'allow-storage-access-by-user-activation');
-          return Promise.reject(new Error('Preview sandbox blocked document.requestStorageAccess()'));
+          reportSandboxBlocked(
+            'document.requestStorageAccess()',
+            'allow-storage-access-by-user-activation',
+          );
+          return Promise.reject(
+            new Error('Preview sandbox blocked document.requestStorageAccess()'),
+          );
         };
       });
     }
 
-    if (!hasSandboxFlag('allow-presentation') && window.PresentationRequest && window.PresentationRequest.prototype) {
+    if (
+      !hasSandboxFlag('allow-presentation') &&
+      window.PresentationRequest &&
+      window.PresentationRequest.prototype
+    ) {
       overrideMethod(window.PresentationRequest.prototype, 'start', function () {
         return function () {
           reportSandboxBlocked('PresentationRequest.start()', 'allow-presentation');
@@ -430,7 +475,7 @@
           function (error) {
             updatePendingNetworkRequests(-1);
             throw error;
-          }
+          },
         );
       };
     });
@@ -466,31 +511,40 @@
     }
 
     if (document && typeof document.addEventListener === 'function') {
-      document.addEventListener('click', function (event) {
-        var target = event && event.target;
-        while (target && target !== document) {
-          if (target.tagName && String(target.tagName).toLowerCase() === 'a') {
-            var href = typeof target.getAttribute === 'function' ? target.getAttribute('href') : '';
-            if (href && href.charAt(0) !== '#') {
-              setTimeout(function () {
-                if (!event.defaultPrevented) {
-                  startNavigationActivity();
-                }
-              }, 0);
+      document.addEventListener(
+        'click',
+        function (event) {
+          var target = event && event.target;
+          while (target && target !== document) {
+            if (target.tagName && String(target.tagName).toLowerCase() === 'a') {
+              var href =
+                typeof target.getAttribute === 'function' ? target.getAttribute('href') : '';
+              if (href && href.charAt(0) !== '#') {
+                setTimeout(function () {
+                  if (!event.defaultPrevented) {
+                    startNavigationActivity();
+                  }
+                }, 0);
+              }
+              return;
             }
-            return;
+            target = target.parentNode;
           }
-          target = target.parentNode;
-        }
-      }, true);
+        },
+        true,
+      );
 
-      document.addEventListener('submit', function (event) {
-        setTimeout(function () {
-          if (!event.defaultPrevented) {
-            startNavigationActivity();
-          }
-        }, 0);
-      }, true);
+      document.addEventListener(
+        'submit',
+        function (event) {
+          setTimeout(function () {
+            if (!event.defaultPrevented) {
+              startNavigationActivity();
+            }
+          }, 0);
+        },
+        true,
+      );
     }
   }
 
@@ -503,15 +557,18 @@
 
   function getDirectExecuteUrl() {
     var config = getBridgeConfig();
-    return config && typeof config.execute_url === 'string'
-      ? config.execute_url
-      : null;
+    return config && typeof config.execute_url === 'string' ? config.execute_url : null;
   }
 
   function executeDirect(componentId, request, resolve) {
     var executeUrl = getDirectExecuteUrl();
     if (!executeUrl) {
-      resolveLiveDataResult(componentId, resolve, { rows: [], columns: [], row_count: 0, error: 'Live data host unavailable in this context' });
+      resolveLiveDataResult(componentId, resolve, {
+        rows: [],
+        columns: [],
+        row_count: 0,
+        error: 'Live data host unavailable in this context',
+      });
       return;
     }
 
@@ -521,7 +578,11 @@
       if (typeof AbortController === 'function') {
         controller = new AbortController();
         abortTimer = setTimeout(function () {
-          try { controller.abort(); } catch (_e) { /* noop */ }
+          try {
+            controller.abort();
+          } catch (_e) {
+            /* noop */
+          }
         }, T);
       }
     } catch (_e) {
@@ -542,24 +603,40 @@
       .then(function (response) {
         return response
           .json()
-          .catch(function () { return {}; })
-          .then(function (payload) { return { status: response.status, ok: response.ok, payload: payload }; });
+          .catch(function () {
+            return {};
+          })
+          .then(function (payload) {
+            return { status: response.status, ok: response.ok, payload: payload };
+          });
       })
       .then(function (result) {
-        if (abortTimer) { clearTimeout(abortTimer); abortTimer = null; }
+        if (abortTimer) {
+          clearTimeout(abortTimer);
+          abortTimer = null;
+        }
 
         if (result.status === 401) {
           try {
-            window.parent.postMessage({
-              bridge: B,
-              type: 'ragtime-preview-session-expired',
-              error: result.payload && (result.payload.detail || result.payload.error)
-            }, '*');
-          } catch (_e) { /* ignore */ }
+            window.parent.postMessage(
+              {
+                bridge: B,
+                type: 'ragtime-preview-session-expired',
+                error: result.payload && (result.payload.detail || result.payload.error),
+              },
+              '*',
+            );
+          } catch (_e) {
+            /* ignore */
+          }
         }
 
         if (result.ok) {
-          resolveLiveDataResult(componentId, resolve, result.payload || { rows: [], columns: [], row_count: 0 });
+          resolveLiveDataResult(
+            componentId,
+            resolve,
+            result.payload || { rows: [], columns: [], row_count: 0 },
+          );
           return;
         }
         var detail = result.payload && (result.payload.detail || result.payload.error);
@@ -571,15 +648,20 @@
         });
       })
       .catch(function (error) {
-        if (abortTimer) { clearTimeout(abortTimer); abortTimer = null; }
+        if (abortTimer) {
+          clearTimeout(abortTimer);
+          abortTimer = null;
+        }
         var isAbort = error && (error.name === 'AbortError' || error.code === 20);
         resolveLiveDataResult(componentId, resolve, {
           rows: [],
           columns: [],
           row_count: 0,
           error: isAbort
-            ? ('Live data execution timed out after ' + T_LABEL)
-            : (error && error.message ? error.message : String(error)),
+            ? 'Live data execution timed out after ' + T_LABEL
+            : error && error.message
+              ? error.message
+              : String(error),
         });
       });
   }
@@ -611,7 +693,8 @@
         function handler(event) {
           if (completed) return;
           if (event.source !== window.parent) return;
-          if (expectedParentOrigin && normalizeOrigin(event.origin) !== expectedParentOrigin) return;
+          if (expectedParentOrigin && normalizeOrigin(event.origin) !== expectedParentOrigin)
+            return;
           if (
             event.data &&
             event.data.bridge === B &&
@@ -621,14 +704,24 @@
             completed = true;
             window.removeEventListener('message', handler);
             clearTimeout(timer);
-            resolveLiveDataResult(componentId, resolve, event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' });
+            resolveLiveDataResult(
+              componentId,
+              resolve,
+              event.data.result || { rows: [], columns: [], row_count: 0, error: 'Empty response' },
+            );
           }
         }
         window.addEventListener('message', handler);
         try {
           window.parent.postMessage(
-            { bridge: B, type: E, callId: callId, component_id: componentId, request: request || {} },
-            parentOrigin
+            {
+              bridge: B,
+              type: E,
+              callId: callId,
+              component_id: componentId,
+              request: request || {},
+            },
+            parentOrigin,
           );
         } catch (error) {
           if (completed) return;
@@ -641,21 +734,29 @@
     };
   }
 
-  var componentsProxy = new Proxy({}, {
-    get: function (_, prop) {
-      if (typeof prop !== 'string') return undefined;
-      return Object.freeze({ component_id: prop, execute: makeExecute(prop) });
+  var componentsProxy = new Proxy(
+    {},
+    {
+      get: function (_, prop) {
+        if (typeof prop !== 'string') return undefined;
+        return Object.freeze({ component_id: prop, execute: makeExecute(prop) });
+      },
+      has: function () {
+        return true;
+      },
     },
-    has: function () { return true; },
-  });
-  var session = window.__ragtime_session && typeof window.__ragtime_session === 'object'
-    ? window.__ragtime_session
-    : null;
+  );
+  var session =
+    window.__ragtime_session && typeof window.__ragtime_session === 'object'
+      ? window.__ragtime_session
+      : null;
 
   window.__ragtime_context = Object.freeze({
     components: Object.freeze(componentsProxy),
     session: session,
     auth: session && session.auth ? session.auth : null,
   });
-  if (!window.context) { window.context = window.__ragtime_context; }
+  if (!window.context) {
+    window.context = window.__ragtime_context;
+  }
 })();

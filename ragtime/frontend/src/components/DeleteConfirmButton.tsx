@@ -13,11 +13,11 @@ interface DeleteConfirmButtonProps {
 export function DeleteConfirmButton({
   onDelete,
   disabled = false,
-  className = "btn btn-sm btn-danger",
+  className = 'btn btn-sm btn-danger',
   style,
-  title = "Delete",
-  buttonText = "Delete",
-  deleting = false
+  title = 'Delete',
+  buttonText = 'Delete',
+  deleting = false,
 }: DeleteConfirmButtonProps) {
   const [confirming, setConfirming] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -57,7 +57,7 @@ export function DeleteConfirmButton({
       onClick={handleClick}
       // Don't disable during countdown so we keep focus (and can detect onBlur)
       disabled={disabled || deleting}
-      title={confirming ? "Click to confirm deletion" : title}
+      title={confirming ? 'Click to confirm deletion' : title}
       style={{
         minWidth: confirming ? '100px' : undefined,
         ...(confirming && countdown > 0 ? { opacity: 0.65, cursor: 'not-allowed' } : {}),
@@ -69,11 +69,11 @@ export function DeleteConfirmButton({
     >
       {deleting
         ? 'Deleting...'
-        : (confirming
-            ? (countdown > 0 ? `Confirm? (${countdown})` : 'Confirm?')
-            : buttonText
-          )
-      }
+        : confirming
+          ? countdown > 0
+            ? `Confirm? (${countdown})`
+            : 'Confirm?'
+          : buttonText}
     </button>
   );
 }

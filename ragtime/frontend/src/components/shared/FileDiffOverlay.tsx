@@ -71,10 +71,7 @@ export function FileDiffOverlay({
   const resolvedAfterLabel = activeDiff?.is_snapshot_own_diff ? 'Snapshot' : afterLabel;
 
   return (
-    <div
-      className="userspace-snapshot-diff-backdrop"
-      onClick={onDismiss}
-    >
+    <div className="userspace-snapshot-diff-backdrop" onClick={onDismiss}>
       <div
         className={`userspace-snapshot-diff-overlay${isBatched ? ' userspace-snapshot-diff-overlay-batched' : ''}`}
         onClick={(event) => {
@@ -94,7 +91,9 @@ export function FileDiffOverlay({
               <div className="userspace-snapshot-diff-overlay-subtitle">
                 <span>{activeDiff.path}</span>
                 <span>{formatDiffStatus(activeDiff.status)}</span>
-                <span>+{activeDiff.additions} -{activeDiff.deletions}</span>
+                <span>
+                  +{activeDiff.additions} -{activeDiff.deletions}
+                </span>
               </div>
             )}
             {!activeDiff && activeEntry && (
@@ -104,7 +103,9 @@ export function FileDiffOverlay({
               </div>
             )}
           </div>
-          <button type="button" className="modal-close" onClick={onDismiss}>&times;</button>
+          <button type="button" className="modal-close" onClick={onDismiss}>
+            &times;
+          </button>
         </div>
 
         <div className="userspace-snapshot-diff-overlay-content">
@@ -114,7 +115,9 @@ export function FileDiffOverlay({
                 const isActive = index === selectedIndex;
                 const adds = entry.diff?.additions ?? 0;
                 const dels = entry.diff?.deletions ?? 0;
-                const status = entry.diff?.status ?? (entry.op === 'delete' ? 'D' : entry.op === 'move' ? 'R' : 'M');
+                const status =
+                  entry.diff?.status ??
+                  (entry.op === 'delete' ? 'D' : entry.op === 'move' ? 'R' : 'M');
                 return (
                   <button
                     key={entry.key}
@@ -123,10 +126,16 @@ export function FileDiffOverlay({
                     onClick={() => setSelectedIndex(index)}
                     title={entry.path}
                   >
-                    <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${String(status).toLowerCase()}`}>{status}</span>
+                    <span
+                      className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${String(status).toLowerCase()}`}
+                    >
+                      {status}
+                    </span>
                     <span className="userspace-snapshot-diff-overlay-nav-path">{entry.path}</span>
                     {(adds > 0 || dels > 0) && (
-                      <span className="userspace-snapshot-diff-overlay-nav-meta">+{adds} -{dels}</span>
+                      <span className="userspace-snapshot-diff-overlay-nav-meta">
+                        +{adds} -{dels}
+                      </span>
                     )}
                   </button>
                 );

@@ -27,7 +27,14 @@ interface ChatPageProps {
   onFullscreenChange?: (isFullscreen: boolean) => void;
 }
 
-export function ChatPage({ currentUser, debugMode = false, initialConversationId, chatCompactionThresholdPercent = 80, chatAutoCompactionThresholdPercent = 99, onFullscreenChange }: ChatPageProps) {
+export function ChatPage({
+  currentUser,
+  debugMode = false,
+  initialConversationId,
+  chatCompactionThresholdPercent = 80,
+  chatAutoCompactionThresholdPercent = 99,
+  onFullscreenChange,
+}: ChatPageProps) {
   const [toasts, toastActions] = useToast();
   const showSuccessToast = toastActions.success;
   const showErrorToast = toastActions.error;
@@ -62,14 +69,17 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
   const [shareScopeDirection, setShareScopeDirection] = useState<'forward' | 'backward'>('forward');
   const shareSlugCheckRequestRef = useRef(0);
 
-  const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
-    const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
-    const displayName = user?.display_name?.trim();
-    if (displayName && displayName !== username) {
-      return `${displayName} (@${username})`;
-    }
-    return `@${username}`;
-  }, []);
+  const formatUserLabel = useCallback(
+    (user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
+      const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
+      const displayName = user?.display_name?.trim();
+      if (displayName && displayName !== username) {
+        return `${displayName} (@${username})`;
+      }
+      return `@${username}`;
+    },
+    [],
+  );
 
   const applyShareStatus = useCallback((status: ConversationShareLinkStatus) => {
     setShareStatus(status);
@@ -86,61 +96,69 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     setShareLinkType(status.active_share_style ?? 'named');
   }, []);
 
-  const syncShareSelection = useCallback((
-    conversationId: string,
-    links: ConversationShareLinkStatus[],
-    ownerUsername: string,
-    preferredShareId?: string | null,
-  ) => {
-    const nextSelected = (
-      (preferredShareId ? links.find((candidate) => candidate.id === preferredShareId) : null)
-      || (selectedShareId ? links.find((candidate) => candidate.id === selectedShareId) : null)
-      || links[0]
-      || null
-    );
+  const syncShareSelection = useCallback(
+    (
+      conversationId: string,
+      links: ConversationShareLinkStatus[],
+      ownerUsername: string,
+      preferredShareId?: string | null,
+    ) => {
+      const nextSelected =
+        (preferredShareId ? links.find((candidate) => candidate.id === preferredShareId) : null) ||
+        (selectedShareId ? links.find((candidate) => candidate.id === selectedShareId) : null) ||
+        links[0] ||
+        null;
 
-    setShareLinks(links);
-    setSelectedShareId(nextSelected?.id ?? null);
+      setShareLinks(links);
+      setSelectedShareId(nextSelected?.id ?? null);
 
-    applyShareStatus(nextSelected ?? {
-      id: '',
-      conversation_id: conversationId,
-      has_share_link: false,
-      owner_username: ownerUsername,
-      label: null,
-      share_slug: null,
-      share_token: null,
-      share_url: null,
-      anonymous_share_url: null,
-      created_at: null,
-      share_access_mode: 'token',
-      selected_user_ids: [],
-      selected_ldap_groups: [],
-      has_password: false,
-      granted_role: 'viewer',
-      scope_anchor_message_idx: null,
-      scope_direction: null,
-      active_share_style: 'named',
-    });
-  }, [applyShareStatus, selectedShareId]);
-
-  const loadShareStatus = useCallback(async (conversationId: string, preferredShareId?: string | null) => {
-    setLoadingShareStatus(true);
-    try {
-      const response = await api.listConversationShareLinks(conversationId);
-      syncShareSelection(
-        conversationId,
-        response.links,
-        response.owner_username,
-        preferredShareId,
+      applyShareStatus(
+        nextSelected ?? {
+          id: '',
+          conversation_id: conversationId,
+          has_share_link: false,
+          owner_username: ownerUsername,
+          label: null,
+          share_slug: null,
+          share_token: null,
+          share_url: null,
+          anonymous_share_url: null,
+          created_at: null,
+          share_access_mode: 'token',
+          selected_user_ids: [],
+          selected_ldap_groups: [],
+          has_password: false,
+          granted_role: 'viewer',
+          scope_anchor_message_idx: null,
+          scope_direction: null,
+          active_share_style: 'named',
+        },
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load conversation share settings';
-      showErrorToast(message);
-    } finally {
-      setLoadingShareStatus(false);
-    }
-  }, [showErrorToast, syncShareSelection]);
+    },
+    [applyShareStatus, selectedShareId],
+  );
+
+  const loadShareStatus = useCallback(
+    async (conversationId: string, preferredShareId?: string | null) => {
+      setLoadingShareStatus(true);
+      try {
+        const response = await api.listConversationShareLinks(conversationId);
+        syncShareSelection(
+          conversationId,
+          response.links,
+          response.owner_username,
+          preferredShareId,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to load conversation share settings';
+        showErrorToast(message);
+      } finally {
+        setLoadingShareStatus(false);
+      }
+    },
+    [showErrorToast, syncShareSelection],
+  );
 
   useEffect(() => {
     if (!shareModalOpen || !activeConversationId) {
@@ -192,26 +210,30 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     shareSlugCheckRequestRef.current = requestId;
     const handle = window.setTimeout(() => {
       setCheckingShareSlug(true);
-      void api.checkConversationShareSlugAvailability(
-        activeConversationId,
-        normalizedSlug,
-        shareStatus?.id || undefined,
-      ).then((availability) => {
-        if (shareSlugCheckRequestRef.current !== requestId) {
-          return;
-        }
-        setShareSlugAvailable(availability.available);
-      }).catch(() => {
-        if (shareSlugCheckRequestRef.current !== requestId) {
-          return;
-        }
-        setShareSlugAvailable(null);
-      }).finally(() => {
-        if (shareSlugCheckRequestRef.current !== requestId) {
-          return;
-        }
-        setCheckingShareSlug(false);
-      });
+      void api
+        .checkConversationShareSlugAvailability(
+          activeConversationId,
+          normalizedSlug,
+          shareStatus?.id || undefined,
+        )
+        .then((availability) => {
+          if (shareSlugCheckRequestRef.current !== requestId) {
+            return;
+          }
+          setShareSlugAvailable(availability.available);
+        })
+        .catch(() => {
+          if (shareSlugCheckRequestRef.current !== requestId) {
+            return;
+          }
+          setShareSlugAvailable(null);
+        })
+        .finally(() => {
+          if (shareSlugCheckRequestRef.current !== requestId) {
+            return;
+          }
+          setCheckingShareSlug(false);
+        });
     }, 250);
     return () => window.clearTimeout(handle);
   }, [activeConversationId, shareModalOpen, shareSlugDraft, shareSlugEdited, shareStatus?.id]);
@@ -250,25 +272,28 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       shareSelectedLdapGroupsDraft,
       shareStatus.selected_ldap_groups || [],
     );
-    const scopeAnchorChanged = shareAnchorMessageIdx !== (shareStatus.scope_anchor_message_idx ?? null);
-    const scopeDirectionChanged = shareAnchorMessageIdx !== null
-      && shareScopeDirection !== (shareStatus.scope_direction ?? 'forward');
-    const styleChanged = shareStatus.has_share_link
-      && shareLinkType !== (shareStatus.active_share_style ?? 'named');
-    return normalizedDraftSlug !== normalizedStatusSlug
-      || shareAccessMode !== shareStatus.share_access_mode
-      || grantedRoleDraft !== shareStatus.granted_role
-      || selectedUsersChanged
-      || selectedGroupsChanged
-      || scopeAnchorChanged
-      || scopeDirectionChanged
-      || styleChanged
-      || (shareAccessMode === 'password' && sharePasswordDraft.trim().length > 0);
+    const scopeAnchorChanged =
+      shareAnchorMessageIdx !== (shareStatus.scope_anchor_message_idx ?? null);
+    const scopeDirectionChanged =
+      shareAnchorMessageIdx !== null &&
+      shareScopeDirection !== (shareStatus.scope_direction ?? 'forward');
+    const styleChanged =
+      shareStatus.has_share_link && shareLinkType !== (shareStatus.active_share_style ?? 'named');
+    return (
+      normalizedDraftSlug !== normalizedStatusSlug ||
+      shareAccessMode !== shareStatus.share_access_mode ||
+      grantedRoleDraft !== shareStatus.granted_role ||
+      selectedUsersChanged ||
+      selectedGroupsChanged ||
+      scopeAnchorChanged ||
+      scopeDirectionChanged ||
+      styleChanged ||
+      (shareAccessMode === 'password' && sharePasswordDraft.trim().length > 0)
+    );
   }, [
     grantedRoleDraft,
     shareAccessMode,
     shareAnchorMessageIdx,
-    shareLdapGroupDraft,
     shareLinkType,
     sharePasswordDraft,
     shareScopeDirection,
@@ -292,60 +317,71 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
     setShareModalOpen(true);
   }, [activeConversationId]);
 
-  const handleSelectShare = useCallback((shareId: string) => {
-    const selected = shareLinks.find((candidate) => candidate.id === shareId);
-    if (!selected) {
-      return;
-    }
-    setSelectedShareId(shareId);
-    applyShareStatus(selected);
-  }, [applyShareStatus, shareLinks]);
-
-  const handleShareConversationAtMessage = useCallback(async (messageIdx: number) => {
-    if (!activeConversationId) {
-      return;
-    }
-    setSharingConversation(true);
-    try {
-      // Create a new scoped share link bound to this anchor on the server. The
-      // scope is enforced by the API (no URL params can override it).
-      const link = await api.createConversationShareLink(activeConversationId, {
-        scope_anchor_message_idx: messageIdx,
-        scope_direction: 'forward',
-        label: `Up to message ${messageIdx + 1}`,
-      });
-      setAutoCreateShareLinkAttempted(true);
-      await loadShareStatus(activeConversationId, link.id);
-      setShareModalOpen(true);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create scoped share link';
-      showErrorToast(message);
-    } finally {
-      setSharingConversation(false);
-    }
-  }, [activeConversationId, loadShareStatus, showErrorToast]);
-
-  const ensureShareLink = useCallback(async (rotateToken = false) => {
-    if (!activeConversationId) {
-      return null;
-    }
-    setSharingConversation(true);
-    try {
-      if (rotateToken) {
-        // Legacy "rotate token" semantics: revoke existing primary then create a fresh one.
-        await api.revokeConversationShareLink(activeConversationId);
+  const handleSelectShare = useCallback(
+    (shareId: string) => {
+      const selected = shareLinks.find((candidate) => candidate.id === shareId);
+      if (!selected) {
+        return;
       }
-      const link = await api.createConversationShareLink(activeConversationId, {});
-      await loadShareStatus(activeConversationId, link.id);
-      return link;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create conversation share link';
-      showErrorToast(message);
-      return null;
-    } finally {
-      setSharingConversation(false);
-    }
-  }, [activeConversationId, loadShareStatus, showErrorToast]);
+      setSelectedShareId(shareId);
+      applyShareStatus(selected);
+    },
+    [applyShareStatus, shareLinks],
+  );
+
+  const handleShareConversationAtMessage = useCallback(
+    async (messageIdx: number) => {
+      if (!activeConversationId) {
+        return;
+      }
+      setSharingConversation(true);
+      try {
+        // Create a new scoped share link bound to this anchor on the server. The
+        // scope is enforced by the API (no URL params can override it).
+        const link = await api.createConversationShareLink(activeConversationId, {
+          scope_anchor_message_idx: messageIdx,
+          scope_direction: 'forward',
+          label: `Up to message ${messageIdx + 1}`,
+        });
+        setAutoCreateShareLinkAttempted(true);
+        await loadShareStatus(activeConversationId, link.id);
+        setShareModalOpen(true);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to create scoped share link';
+        showErrorToast(message);
+      } finally {
+        setSharingConversation(false);
+      }
+    },
+    [activeConversationId, loadShareStatus, showErrorToast],
+  );
+
+  const ensureShareLink = useCallback(
+    async (rotateToken = false) => {
+      if (!activeConversationId) {
+        return null;
+      }
+      setSharingConversation(true);
+      try {
+        if (rotateToken) {
+          // Legacy "rotate token" semantics: revoke existing primary then create a fresh one.
+          await api.revokeConversationShareLink(activeConversationId);
+        }
+        const link = await api.createConversationShareLink(activeConversationId, {});
+        await loadShareStatus(activeConversationId, link.id);
+        return link;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to create conversation share link';
+        showErrorToast(message);
+        return null;
+      } finally {
+        setSharingConversation(false);
+      }
+    },
+    [activeConversationId, loadShareStatus, showErrorToast],
+  );
 
   useEffect(() => {
     if (!shareModalOpen || !activeConversationId) {
@@ -383,14 +419,18 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       }
 
       const normalizedSlug = normalizeShareSlugInput(shareSlugDraft);
-      if (normalizedSlug && normalizedSlug !== normalizeShareSlugInput(shareStatus?.share_slug || '')) {
+      if (
+        normalizedSlug &&
+        normalizedSlug !== normalizeShareSlugInput(shareStatus?.share_slug || '')
+      ) {
         await api.updateConversationShareSlug(activeConversationId, currentShareId, normalizedSlug);
       }
 
       const scopeAnchor = shareAnchorMessageIdx;
       const scopeDirection = scopeAnchor !== null ? shareScopeDirection : null;
-      const scopeChanged = scopeAnchor !== (shareStatus?.scope_anchor_message_idx ?? null)
-        || scopeDirection !== (shareStatus?.scope_direction ?? null);
+      const scopeChanged =
+        scopeAnchor !== (shareStatus?.scope_anchor_message_idx ?? null) ||
+        scopeDirection !== (shareStatus?.scope_direction ?? null);
       if (scopeChanged) {
         await api.updateConversationShareLinkMetadata(activeConversationId, currentShareId, {
           label: shareStatus?.label ?? null,
@@ -403,12 +443,15 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
       const styleChanged = shareLinkType !== (shareStatus?.active_share_style ?? 'named');
       const hasAccessChanges =
-        shareAccessMode !== (shareStatus?.share_access_mode ?? 'token')
-        || grantedRoleDraft !== (shareStatus?.granted_role ?? 'viewer')
-        || !areSameNormalizedStringArrays(selectedUserIds, shareStatus?.selected_user_ids || [])
-        || !areSameNormalizedStringArrays(selectedLdapGroups, shareStatus?.selected_ldap_groups || [])
-        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()))
-        || styleChanged;
+        shareAccessMode !== (shareStatus?.share_access_mode ?? 'token') ||
+        grantedRoleDraft !== (shareStatus?.granted_role ?? 'viewer') ||
+        !areSameNormalizedStringArrays(selectedUserIds, shareStatus?.selected_user_ids || []) ||
+        !areSameNormalizedStringArrays(
+          selectedLdapGroups,
+          shareStatus?.selected_ldap_groups || [],
+        ) ||
+        (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim())) ||
+        styleChanged;
 
       if (hasAccessChanges) {
         await api.updateConversationShareAccess(activeConversationId, currentShareId, {
@@ -425,7 +468,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       setSharePasswordDraft('');
       showSuccessToast('Conversation sharing updated');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update conversation sharing';
+      const message =
+        error instanceof Error ? error.message : 'Failed to update conversation sharing';
       showErrorToast(message);
     } finally {
       setSavingShareAccess(false);
@@ -458,50 +502,59 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       await loadShareStatus(activeConversationId, link.id);
       showSuccessToast('Conversation share link created');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create conversation share link';
+      const message =
+        error instanceof Error ? error.message : 'Failed to create conversation share link';
       showErrorToast(message);
     } finally {
       setSharingConversation(false);
     }
   }, [activeConversationId, loadShareStatus, showErrorToast, showSuccessToast]);
 
-  const handleSaveShareLabel = useCallback(async (label: string) => {
-    if (!activeConversationId || !shareStatus?.id) {
-      return;
-    }
-    setSavingShareLabel(true);
-    try {
-      await api.updateConversationShareLinkMetadata(activeConversationId, shareStatus.id, {
-        label,
-        scope_anchor_message_idx: shareStatus.scope_anchor_message_idx ?? null,
-        scope_direction: shareStatus.scope_direction ?? null,
-      });
-      await loadShareStatus(activeConversationId, shareStatus.id);
-      showSuccessToast('Conversation share label updated');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update conversation share label';
-      showErrorToast(message);
-    } finally {
-      setSavingShareLabel(false);
-    }
-  }, [activeConversationId, loadShareStatus, shareStatus, showErrorToast, showSuccessToast]);
+  const handleSaveShareLabel = useCallback(
+    async (label: string) => {
+      if (!activeConversationId || !shareStatus?.id) {
+        return;
+      }
+      setSavingShareLabel(true);
+      try {
+        await api.updateConversationShareLinkMetadata(activeConversationId, shareStatus.id, {
+          label,
+          scope_anchor_message_idx: shareStatus.scope_anchor_message_idx ?? null,
+          scope_direction: shareStatus.scope_direction ?? null,
+        });
+        await loadShareStatus(activeConversationId, shareStatus.id);
+        showSuccessToast('Conversation share label updated');
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to update conversation share label';
+        showErrorToast(message);
+      } finally {
+        setSavingShareLabel(false);
+      }
+    },
+    [activeConversationId, loadShareStatus, shareStatus, showErrorToast, showSuccessToast],
+  );
 
-  const handleDeleteSelectedShareLink = useCallback(async (shareId: string) => {
-    if (!activeConversationId || !shareId) {
-      return;
-    }
-    setDeletingSelectedShareLink(true);
-    try {
-      await api.deleteConversationShareLink(activeConversationId, shareId);
-      await loadShareStatus(activeConversationId);
-      showSuccessToast('Conversation share link deleted');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete conversation share link';
-      showErrorToast(message);
-    } finally {
-      setDeletingSelectedShareLink(false);
-    }
-  }, [activeConversationId, loadShareStatus, showErrorToast, showSuccessToast]);
+  const handleDeleteSelectedShareLink = useCallback(
+    async (shareId: string) => {
+      if (!activeConversationId || !shareId) {
+        return;
+      }
+      setDeletingSelectedShareLink(true);
+      try {
+        await api.deleteConversationShareLink(activeConversationId, shareId);
+        await loadShareStatus(activeConversationId);
+        showSuccessToast('Conversation share link deleted');
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Failed to delete conversation share link';
+        showErrorToast(message);
+      } finally {
+        setDeletingSelectedShareLink(false);
+      }
+    },
+    [activeConversationId, loadShareStatus, showErrorToast, showSuccessToast],
+  );
 
   const handleCopyShareLink = useCallback(async () => {
     let targetUrl = effectiveShareUrl;
@@ -510,9 +563,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       if (!link) {
         return;
       }
-      targetUrl = shareLinkType === 'anonymous'
-        ? (link.anonymous_share_url || link.share_url)
-        : link.share_url;
+      targetUrl =
+        shareLinkType === 'anonymous' ? link.anonymous_share_url || link.share_url : link.share_url;
     }
     try {
       await navigator.clipboard.writeText(targetUrl);
@@ -530,9 +582,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       if (!link) {
         return;
       }
-      targetUrl = shareLinkType === 'anonymous'
-        ? (link.anonymous_share_url || link.share_url)
-        : link.share_url;
+      targetUrl =
+        shareLinkType === 'anonymous' ? link.anonymous_share_url || link.share_url : link.share_url;
     }
     try {
       // Force the preview to load through the current browser origin so that in
@@ -575,7 +626,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
       await loadShareStatus(activeConversationId);
       showSuccessToast('Conversation share link revoked');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to revoke conversation share link';
+      const message =
+        error instanceof Error ? error.message : 'Failed to revoke conversation share link';
       showErrorToast(message);
     } finally {
       setRevokingShareLink(false);
@@ -585,7 +637,9 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
   const extraAccessControls = (
     <>
       <div className="userspace-share-access-row">
-        <label htmlFor="conversation-share-role" className="userspace-share-label">Chat access</label>
+        <label htmlFor="conversation-share-role" className="userspace-share-label">
+          Chat access
+        </label>
         <select
           id="conversation-share-role"
           value={grantedRoleDraft}
@@ -604,7 +658,9 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
             <select
               id="conversation-share-scope"
               value={shareScopeDirection}
-              onChange={(event) => setShareScopeDirection(event.target.value as 'forward' | 'backward')}
+              onChange={(event) =>
+                setShareScopeDirection(event.target.value as 'forward' | 'backward')
+              }
             >
               <option value="forward">From this message onwards</option>
               <option value="backward">Up to and including this message</option>
@@ -619,7 +675,8 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
             </button>
           </div>
           <p className="userspace-share-meta">
-            This share link is bound to the selected scope, so recipients only see the selected portion of this conversation.
+            This share link is bound to the selected scope, so recipients only see the selected
+            portion of this conversation.
           </p>
         </div>
       )}
@@ -679,23 +736,31 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
         extraAccessControls={extraAccessControls}
         onClose={() => setShareModalOpen(false)}
         onSelectShare={handleSelectShare}
-        onCreateShareLink={() => { void handleCreateShareLink(); }}
-        onSaveShareLabel={(label) => { void handleSaveShareLabel(label); }}
-        onDeleteSelectedShareLink={(shareId) => { void handleDeleteSelectedShareLink(shareId); }}
+        onCreateShareLink={() => {
+          void handleCreateShareLink();
+        }}
+        onSaveShareLabel={(label) => {
+          void handleSaveShareLabel(label);
+        }}
+        onDeleteSelectedShareLink={(shareId) => {
+          void handleDeleteSelectedShareLink(shareId);
+        }}
         onShareSlugChange={(value) => {
           setShareSlugEdited(true);
           setShareSlugAvailable(null);
           setShareSlugDraft(normalizeShareSlugInput(value));
         }}
         onShareLinkTypeChange={setShareLinkType}
-        onShareAccessModeChange={(value) => setShareAccessMode(value as ConversationShareAccessMode)}
+        onShareAccessModeChange={(value) =>
+          setShareAccessMode(value as ConversationShareAccessMode)
+        }
         onSharePasswordDraftChange={setSharePasswordDraft}
         onToggleShareSelectedUser={(userId) => {
-          setShareSelectedUserIdsDraft((previous) => (
+          setShareSelectedUserIdsDraft((previous) =>
             previous.includes(userId)
               ? previous.filter((candidate) => candidate !== userId)
-              : [...previous, userId]
-          ));
+              : [...previous, userId],
+          );
         }}
         onShareLdapGroupDraftChange={setShareLdapGroupDraft}
         onAddShareLdapGroup={() => {
@@ -703,17 +768,29 @@ export function ChatPage({ currentUser, debugMode = false, initialConversationId
           if (!normalizedGroup) {
             return;
           }
-          setShareSelectedLdapGroupsDraft((previous) => normalizeUniqueStrings([...previous, normalizedGroup]));
+          setShareSelectedLdapGroupsDraft((previous) =>
+            normalizeUniqueStrings([...previous, normalizedGroup]),
+          );
           setShareLdapGroupDraft('');
         }}
         onRemoveShareLdapGroup={(groupDn) => {
-          setShareSelectedLdapGroupsDraft((previous) => previous.filter((candidate) => candidate !== groupDn));
+          setShareSelectedLdapGroupsDraft((previous) =>
+            previous.filter((candidate) => candidate !== groupDn),
+          );
         }}
         onSaveShareAccess={handleSaveShareAccess}
-        onCopyShareLink={() => { void handleCopyShareLink(); }}
-        onOpenFullPreview={() => { void handleOpenShareLink(); }}
-        onRotateShareLink={() => { void handleRotateShareLink(); }}
-        onRevokeShareLink={() => { void handleRevokeShareLink(); }}
+        onCopyShareLink={() => {
+          void handleCopyShareLink();
+        }}
+        onOpenFullPreview={() => {
+          void handleOpenShareLink();
+        }}
+        onRotateShareLink={() => {
+          void handleRotateShareLink();
+        }}
+        onRevokeShareLink={() => {
+          void handleRevokeShareLink();
+        }}
         onShareUrlInlineCopySuccess={resetCopiedState}
         onShareUrlInlineCopyError={(error) => showErrorToast(error.message)}
         formatUserLabel={formatUserLabel}

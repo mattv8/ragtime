@@ -93,10 +93,7 @@ export function CheckboxDropdown({
     if (!open) return;
     function handleDown(e: MouseEvent) {
       const target = e.target as Node;
-      if (
-        !wrapRef.current?.contains(target)
-        && !panelRef.current?.contains(target)
-      ) {
+      if (!wrapRef.current?.contains(target) && !panelRef.current?.contains(target)) {
         setOpen(false);
       }
     }
@@ -117,9 +114,7 @@ export function CheckboxDropdown({
   }
 
   const checkedLabels = options.filter(isOptionChecked).map((o) => o.label);
-  const triggerLabel = checkedLabels.length === 0
-    ? placeholder
-    : checkedLabels.join(', ');
+  const triggerLabel = checkedLabels.length === 0 ? placeholder : checkedLabels.join(', ');
 
   return (
     <div className="chk-dropdown-wrap" ref={wrapRef}>
@@ -135,75 +130,90 @@ export function CheckboxDropdown({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className="chk-dropdown-trigger-label" title={triggerLabel}>{triggerLabel}</span>
+        <span className="chk-dropdown-trigger-label" title={triggerLabel}>
+          {triggerLabel}
+        </span>
         <ChevronDown size={14} className={`chk-dropdown-chevron${open ? ' rotated' : ''}`} />
       </button>
 
-      {open && panelStyle && createPortal(
-        <div
-          ref={panelRef}
-          className="chk-dropdown-panel model-selector-dropdown-inner"
-          style={panelStyle}
-        >
-          {options.length > 5 && (
-            <div className="model-selector-search">
-              <input
-                ref={searchRef}
-                type="text"
-                placeholder={searchPlaceholder}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="model-selector-search-input"
-                aria-label="Filter groups"
-              />
-              {search && (
-                <button
-                  type="button"
-                  className="model-selector-search-clear"
-                  onClick={() => {
-                    setSearch('');
-                    searchRef.current?.focus();
-                  }}
-                  title="Clear search"
-                  aria-label="Clear search"
-                >
-                  <X size={12} />
-                </button>
+      {open &&
+        panelStyle &&
+        createPortal(
+          <div
+            ref={panelRef}
+            className="chk-dropdown-panel model-selector-dropdown-inner"
+            style={panelStyle}
+          >
+            {options.length > 5 && (
+              <div className="model-selector-search">
+                <input
+                  ref={searchRef}
+                  type="text"
+                  placeholder={searchPlaceholder}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="model-selector-search-input"
+                  aria-label="Filter groups"
+                />
+                {search && (
+                  <button
+                    type="button"
+                    className="model-selector-search-clear"
+                    onClick={() => {
+                      setSearch('');
+                      searchRef.current?.focus();
+                    }}
+                    title="Clear search"
+                    aria-label="Clear search"
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="chk-dropdown-list">
+              {filtered.length === 0 ? (
+                <span className="chk-dropdown-empty">No matches</span>
+              ) : (
+                filtered.map((opt) => {
+                  const checked = isOptionChecked(opt);
+                  return (
+                    <label
+                      key={opt.id}
+                      className={`checkbox-label chk-dropdown-item${opt.disabled ? ' chk-dropdown-item-disabled' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(opt)}
+                        disabled={disabled || opt.disabled}
+                      />
+                      <span className="chk-dropdown-option-text">
+                        <span className="chk-dropdown-option-main">
+                          <span className="chk-dropdown-option-label">{opt.label}</span>
+                          {opt.badge &&
+                            (Array.isArray(opt.badge) ? (
+                              opt.badge.map((b) => (
+                                <span key={b} className="chk-dropdown-option-badge">
+                                  {b}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="chk-dropdown-option-badge">{opt.badge}</span>
+                            ))}
+                        </span>
+                        {opt.description && (
+                          <span className="chk-dropdown-option-description">{opt.description}</span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })
               )}
             </div>
-          )}
-          <div className="chk-dropdown-list">
-            {filtered.length === 0 ? (
-              <span className="chk-dropdown-empty">No matches</span>
-            ) : (
-              filtered.map((opt) => {
-                const checked = isOptionChecked(opt);
-                return (
-                <label key={opt.id} className={`checkbox-label chk-dropdown-item${opt.disabled ? ' chk-dropdown-item-disabled' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggle(opt)}
-                    disabled={disabled || opt.disabled}
-                  />
-                  <span className="chk-dropdown-option-text">
-                    <span className="chk-dropdown-option-main">
-                      <span className="chk-dropdown-option-label">{opt.label}</span>
-                      {opt.badge && (Array.isArray(opt.badge)
-                        ? opt.badge.map((b) => <span key={b} className="chk-dropdown-option-badge">{b}</span>)
-                        : <span className="chk-dropdown-option-badge">{opt.badge}</span>
-                      )}
-                    </span>
-                    {opt.description && <span className="chk-dropdown-option-description">{opt.description}</span>}
-                  </span>
-                </label>
-                );
-              })
-            )}
-          </div>
-        </div>,
-        document.body,
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

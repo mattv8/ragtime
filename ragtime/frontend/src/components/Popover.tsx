@@ -1,4 +1,14 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, type CSSProperties, type FocusEvent, type ReactNode } from 'react';
+import {
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useMemo,
+  type CSSProperties,
+  type FocusEvent,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 
 const POPOVER_GAP = 8; // px between trigger edge and popover
@@ -128,15 +138,16 @@ function computePopoverPos(
   }
 
   if (placement === 'top' || placement === 'bottom') {
-    const unclampedLeft = rect.left + (rect.width / 2) - (popoverRect.width / 2);
+    const unclampedLeft = rect.left + rect.width / 2 - popoverRect.width / 2;
     const left = clamp(
       unclampedLeft,
       VIEWPORT_PADDING,
       viewportWidth - VIEWPORT_PADDING - popoverRect.width,
     );
-    const unclampedTop = placement === 'bottom'
-      ? rect.bottom + POPOVER_GAP
-      : rect.top - POPOVER_GAP - popoverRect.height;
+    const unclampedTop =
+      placement === 'bottom'
+        ? rect.bottom + POPOVER_GAP
+        : rect.top - POPOVER_GAP - popoverRect.height;
     const top = clamp(
       unclampedTop,
       VIEWPORT_PADDING,
@@ -148,19 +159,22 @@ function computePopoverPos(
       left,
       placement,
       visibility: 'visible',
-      arrowLeft: clamp(rect.left + (rect.width / 2) - left, ARROW_INSET, popoverRect.width - ARROW_INSET),
+      arrowLeft: clamp(
+        rect.left + rect.width / 2 - left,
+        ARROW_INSET,
+        popoverRect.width - ARROW_INSET,
+      ),
     };
   }
 
-  const unclampedLeft = placement === 'right'
-    ? rect.right + POPOVER_GAP
-    : rect.left - POPOVER_GAP - popoverRect.width;
+  const unclampedLeft =
+    placement === 'right' ? rect.right + POPOVER_GAP : rect.left - POPOVER_GAP - popoverRect.width;
   const left = clamp(
     unclampedLeft,
     VIEWPORT_PADDING,
     viewportWidth - VIEWPORT_PADDING - popoverRect.width,
   );
-  const unclampedTop = rect.top + (rect.height / 2) - (popoverRect.height / 2);
+  const unclampedTop = rect.top + rect.height / 2 - popoverRect.height / 2;
   const top = clamp(
     unclampedTop,
     VIEWPORT_PADDING,
@@ -172,7 +186,11 @@ function computePopoverPos(
     left,
     placement,
     visibility: 'visible',
-    arrowTop: clamp(rect.top + (rect.height / 2) - top, ARROW_INSET, popoverRect.height - ARROW_INSET),
+    arrowTop: clamp(
+      rect.top + rect.height / 2 - top,
+      ARROW_INSET,
+      popoverRect.height - ARROW_INSET,
+    ),
   };
 }
 
@@ -253,12 +271,15 @@ export function Popover({
 
   // Callback ref on the popover element: remeasures synchronously once the portal mounts,
   // transitioning from the hidden-fallback pass to the measured visible pass.
-  const setPopoverRef = useCallback((node: HTMLDivElement | null) => {
-    popoverRef.current = node;
-    if (node && triggerRef.current) {
-      recomputePos();
-    }
-  }, [recomputePos]);
+  const setPopoverRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      popoverRef.current = node;
+      if (node && triggerRef.current) {
+        recomputePos();
+      }
+    },
+    [recomputePos],
+  );
 
   // Compute position synchronously when visibility/position changes
   useLayoutEffect(() => {
@@ -327,11 +348,8 @@ export function Popover({
     }
     const nextTarget = event.relatedTarget;
     if (
-      nextTarget instanceof Node
-      && (
-        triggerRef.current?.contains(nextTarget)
-        || popoverRef.current?.contains(nextTarget)
-      )
+      nextTarget instanceof Node &&
+      (triggerRef.current?.contains(nextTarget) || popoverRef.current?.contains(nextTarget))
     ) {
       return;
     }

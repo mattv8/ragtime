@@ -1,4 +1,16 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue, memo, isValidElement, type ReactNode, type CSSProperties } from 'react';
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  useDeferredValue,
+  memo,
+  isValidElement,
+  type ReactNode,
+  type CSSProperties,
+} from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -8,14 +20,90 @@ import 'katex/dist/katex.min.css';
 import { diffLines } from 'diff';
 import Chart from 'chart.js/auto';
 import type { Chart as ChartInstance, ChartConfiguration } from 'chart.js';
-import { Copy, Check, Pencil, Slash, Trash2, Maximize2, Minimize2, X, AlertCircle, RefreshCw, Play, FileText, Bug, ChevronDown, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight, ChevronUp, Bot, MessageSquare, MessageSquarePlus, BrainCircuit, Clock, Diff, Wrench, Database, Search, Terminal, BarChart3, Globe, Code, FolderSearch, Image as ImageIcon, Link, Share2, GitBranch, Download } from 'lucide-react';
-import { api } from '@/api';
-import type { Conversation, ChatContextReference, ChatMessage, ChatTask, User, UserDirectoryEntry, ContentPart, ConversationMember, UserSpaceAvailableTool, ProviderPromptDebugRecord, MessageEvent, WorkspaceChatStateResponse, LlmProviderWire, UserSpaceFile, UserSpaceSnapshotFileDiff, ConversationBranchKind, ConversationBranchPointInfo, ConversationBranchSummary, ConversationBranchSearchMatch, AvailableModel, RetryVisualizationRequest, ToolConnectionRef, RefreshLiveVisualizationResponse, SwitchVisualizationBranchResponse, VisualizationBranchSummary } from '@/types';
-import { FileAttachment, attachmentsToContentParts, formatAttachmentSize, resizeAttachmentImageDataUrl, type AttachmentFile } from './FileAttachment';
+import {
+  Copy,
+  Check,
+  Pencil,
+  Slash,
+  Trash2,
+  Maximize2,
+  Minimize2,
+  X,
+  AlertCircle,
+  RefreshCw,
+  Play,
+  FileText,
+  Bug,
+  ChevronDown,
+  ChevronRight,
+  ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
+  ChevronUp,
+  Bot,
+  MessageSquare,
+  MessageSquarePlus,
+  BrainCircuit,
+  Clock,
+  Diff,
+  Wrench,
+  Database,
+  Search,
+  Terminal,
+  BarChart3,
+  Globe,
+  Code,
+  FolderSearch,
+  Image as ImageIcon,
+  Link,
+  Share2,
+  GitBranch,
+  Download,
+} from 'lucide-react';
+import { api, type ChatTaskStreamEvent } from '@/api';
+import type {
+  Conversation,
+  ChatContextReference,
+  ChatMessage,
+  ChatTask,
+  User,
+  UserDirectoryEntry,
+  ContentPart,
+  ConversationMember,
+  UserSpaceAvailableTool,
+  ProviderPromptDebugRecord,
+  MessageEvent,
+  WorkspaceChatStateResponse,
+  LlmProviderWire,
+  UserSpaceFile,
+  UserSpaceSnapshotFileDiff,
+  ConversationBranchKind,
+  ConversationBranchPointInfo,
+  ConversationBranchSummary,
+  ConversationBranchSearchMatch,
+  AvailableModel,
+  RetryVisualizationRequest,
+  ToolConnectionRef,
+  ToolMcpMetadata,
+  RefreshLiveVisualizationResponse,
+  SwitchVisualizationBranchResponse,
+  VisualizationBranchSummary,
+} from '@/types';
+import {
+  FileAttachment,
+  attachmentsToContentParts,
+  formatAttachmentSize,
+  resizeAttachmentImageDataUrl,
+  type AttachmentFile,
+} from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage } from '@/utils/contextUsage';
-import { fetchUserSpaceToolCatalog, resolveDefaultSelectedToolIds, type UserSpaceToolSelection } from '@/utils/userSpaceTools';
+import {
+  fetchUserSpaceToolCatalog,
+  resolveDefaultSelectedToolIds,
+  type UserSpaceToolSelection,
+} from '@/utils/userSpaceTools';
 import { useUserSpaceToolHealthEvents } from '@/utils/useUserSpaceToolHealthEvents';
 import {
   KNOWN_PROVIDER_KEYS,
@@ -113,9 +201,15 @@ interface CompactionReviewMarker {
   timestamp?: string;
 }
 const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_read_pdf', 'web_browse']);
-const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id));
-const VISIBLE_CHAT_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) => tool.id !== WEB_READ_PDF_TOOL_ID);
-const VISIBLE_WORKSPACE_BUILT_IN_TOOLS = WORKSPACE_BUILT_IN_TOOLS.filter((tool) => tool.id !== WEB_READ_PDF_TOOL_ID);
+const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) =>
+  WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id),
+);
+const VISIBLE_CHAT_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter(
+  (tool) => tool.id !== WEB_READ_PDF_TOOL_ID,
+);
+const VISIBLE_WORKSPACE_BUILT_IN_TOOLS = WORKSPACE_BUILT_IN_TOOLS.filter(
+  (tool) => tool.id !== WEB_READ_PDF_TOOL_ID,
+);
 
 function getToolVisualName(toolId: string): string {
   return toolId === WEB_READ_PDF_TOOL_ID ? WEB_BROWSE_TOOL_ID : toolId;
@@ -126,9 +220,7 @@ function maskHiddenToolNames(text: string): string {
 }
 
 function normalizeDisabledBuiltInToolIds(disabledToolIds: string[]): string[] {
-  const normalized = new Set(
-    disabledToolIds.filter((id) => CHAT_BUILT_IN_TOOL_ID_SET.has(id)),
-  );
+  const normalized = new Set(disabledToolIds.filter((id) => CHAT_BUILT_IN_TOOL_ID_SET.has(id)));
 
   // Keep read_pdf as an internal implementation detail of web_browse when browse is enabled.
   if (!normalized.has(WEB_BROWSE_TOOL_ID)) {
@@ -314,7 +406,11 @@ function buildInChatSearchRegex(query: string, options: InChatSearchOptions): Re
   }
 }
 
-function textMatchesInChatSearchQuery(text: string, query: string, options: InChatSearchOptions): boolean {
+function textMatchesInChatSearchQuery(
+  text: string,
+  query: string,
+  options: InChatSearchOptions,
+): boolean {
   if (!text || !query) return false;
   const regex = buildInChatSearchRegex(query, options);
   if (!regex) return false;
@@ -362,9 +458,7 @@ function applyInChatSearchActiveHighlight(target: InChatSearchMatchTarget | null
 function getRangeParentElement(range: Range | null): HTMLElement | null {
   if (!range) return null;
   const node = range.commonAncestorContainer;
-  return node.nodeType === Node.ELEMENT_NODE
-    ? (node as HTMLElement)
-    : (node.parentElement ?? null);
+  return node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : (node.parentElement ?? null);
 }
 
 function shouldYieldInChatSearchChunk(chunkStartedAt: number): boolean {
@@ -596,7 +690,12 @@ function CodeBlock({ className, children }: CodeBlockProps) {
 
   const isLatexBlock = useMemo(() => {
     const normalized = language.toLowerCase();
-    return normalized === 'latex' || normalized === 'tex' || normalized === 'katex' || normalized === 'math';
+    return (
+      normalized === 'latex' ||
+      normalized === 'tex' ||
+      normalized === 'katex' ||
+      normalized === 'math'
+    );
   }, [language]);
 
   const renderedLatex = useMemo(() => {
@@ -653,11 +752,18 @@ function CodeBlock({ className, children }: CodeBlockProps) {
             <span>{copied ? 'Copied' : 'Copy'}</span>
           </button>
         </div>
-        <div className="markdown-latex-render" dangerouslySetInnerHTML={{ __html: renderedLatex.html }} />
+        <div
+          className="markdown-latex-render"
+          dangerouslySetInnerHTML={{ __html: renderedLatex.html }}
+        />
         {renderedLatex.error && (
           <div className="markdown-latex-error">
-            <p className="markdown-latex-error-message">Rendered with LaTeX parse warning: {renderedLatex.error}</p>
-            <pre className="markdown-latex-source"><code>{codeText}</code></pre>
+            <p className="markdown-latex-error-message">
+              Rendered with LaTeX parse warning: {renderedLatex.error}
+            </p>
+            <pre className="markdown-latex-source">
+              <code>{codeText}</code>
+            </pre>
           </div>
         )}
       </div>
@@ -685,8 +791,14 @@ function CodeBlock({ className, children }: CodeBlockProps) {
   );
 }
 
-const PreBlock = ({ children, ...rest }: React.HTMLAttributes<HTMLPreElement> & { children?: ReactNode }) => {
-  if (isValidElement<{ className?: string; children?: ReactNode }>(children) && children.type === 'code') {
+const PreBlock = ({
+  children,
+  ...rest
+}: React.HTMLAttributes<HTMLPreElement> & { children?: ReactNode }) => {
+  if (
+    isValidElement<{ className?: string; children?: ReactNode }>(children) &&
+    children.type === 'code'
+  ) {
     return <CodeBlock {...children.props} />;
   }
   return <pre {...rest}>{children}</pre>;
@@ -701,12 +813,18 @@ function normalizeMarkdownTableCell(value: string | null | undefined): string {
   return (value || '').replace(/\s+/g, ' ').trim();
 }
 
-function extractMarkdownTableSnapshot(tableElement: HTMLTableElement | null): MarkdownTableSnapshot | null {
+function extractMarkdownTableSnapshot(
+  tableElement: HTMLTableElement | null,
+): MarkdownTableSnapshot | null {
   if (!tableElement) return null;
 
   const headerCells = Array.from(tableElement.querySelectorAll('thead tr:first-child th'));
   const bodyRows = Array.from(tableElement.querySelectorAll('tbody tr'));
-  const rows = bodyRows.map((row) => Array.from(row.querySelectorAll('td, th')).map((cell) => normalizeMarkdownTableCell(cell.textContent)));
+  const rows = bodyRows.map((row) =>
+    Array.from(row.querySelectorAll('td, th')).map((cell) =>
+      normalizeMarkdownTableCell(cell.textContent),
+    ),
+  );
 
   let columns = headerCells.map((cell) => normalizeMarkdownTableCell(cell.textContent));
   if (columns.length === 0 && rows.length > 0) {
@@ -716,7 +834,8 @@ function extractMarkdownTableSnapshot(tableElement: HTMLTableElement | null): Ma
 
   const width = columns.length;
   const normalizedRows = rows.map((row) => {
-    if (row.length < width) return [...row, ...Array.from({ length: width - row.length }, () => '')];
+    if (row.length < width)
+      return [...row, ...Array.from({ length: width - row.length }, () => '')];
     return row.slice(0, width);
   });
   return { columns, rows: normalizedRows };
@@ -748,7 +867,11 @@ const MarkdownTable = memo(function MarkdownTable({
   const handleDownloadMarkdownTableCsv = useCallback(() => {
     const snapshot = getSnapshot();
     if (!snapshot) return;
-    downloadCsv(snapshot.columns, snapshot.rows, sanitizeDownloadFilename(exportFilenameBase, 'csv'));
+    downloadCsv(
+      snapshot.columns,
+      snapshot.rows,
+      sanitizeDownloadFilename(exportFilenameBase, 'csv'),
+    );
   }, [getSnapshot]);
 
   const handleDownloadMarkdownTableXlsx = useCallback(async () => {
@@ -818,7 +941,9 @@ const MarkdownTable = memo(function MarkdownTable({
     <div className="markdown-table-export-wrapper">
       {exportControls}
       <div className="markdown-table-scroll">
-        <table {...tableProps} ref={tableRef}>{children}</table>
+        <table {...tableProps} ref={tableRef}>
+          {children}
+        </table>
       </div>
     </div>
   );
@@ -868,18 +993,21 @@ export const MemoizedMarkdown = memo(function MemoizedMarkdown({
   enableTableExports?: boolean;
 }) {
   const normalized = useMemo(() => normalizeMarkdownMathFences(content), [content]);
-  const components = useMemo<Components>(() => ({
-    ...markdownComponents,
-    table: ({ node, ...props }) => (
-      <MarkdownTable
-        {...props}
-        node={node}
-        conversationId={conversationId}
-        workspaceId={workspaceId}
-        enableExport={enableTableExports}
-      />
-    ),
-  }), [conversationId, enableTableExports, workspaceId]);
+  const components = useMemo<Components>(
+    () => ({
+      ...markdownComponents,
+      table: ({ node, ...props }) => (
+        <MarkdownTable
+          {...props}
+          node={node}
+          conversationId={conversationId}
+          workspaceId={workspaceId}
+          enableExport={enableTableExports}
+        />
+      ),
+    }),
+    [conversationId, enableTableExports, workspaceId],
+  );
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
@@ -907,6 +1035,7 @@ export interface ActiveToolCall {
     tool_type?: string;
     connection_mode?: string;
   };
+  mcp?: ToolMcpMetadata;
   status: 'running' | 'complete';
   generating_lines?: number;
 }
@@ -988,11 +1117,12 @@ function getReasoningEventContent(event: ReasoningEventLike): string {
 }
 
 function getReasoningEventDurationSeconds(event: ReasoningEventLike): number | undefined {
-  const value = typeof event.durationSeconds === 'number'
-    ? event.durationSeconds
-    : typeof event.duration_seconds === 'number'
-      ? event.duration_seconds
-      : undefined;
+  const value =
+    typeof event.durationSeconds === 'number'
+      ? event.durationSeconds
+      : typeof event.duration_seconds === 'number'
+        ? event.duration_seconds
+        : undefined;
   return Number.isFinite(value) ? value : undefined;
 }
 
@@ -1004,10 +1134,16 @@ function isVisualizationToolCall(toolCall?: Pick<ActiveToolCall, 'tool'>): boole
   return isVisualizationToolName(toolCall?.tool);
 }
 
+// `event` is a dynamically-shaped streaming JSON payload from the SSE backend;
+// every field access below is defensively optional-chained.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
-  const nestedToolCall = event?.toolCall && typeof event.toolCall === 'object' ? event.toolCall : undefined;
-  const hasTopLevelOutput = event && typeof event === 'object' && Object.prototype.hasOwnProperty.call(event, 'output');
-  const hasNestedOutput = nestedToolCall && Object.prototype.hasOwnProperty.call(nestedToolCall, 'output');
+  const nestedToolCall =
+    event?.toolCall && typeof event.toolCall === 'object' ? event.toolCall : undefined;
+  const hasTopLevelOutput =
+    event && typeof event === 'object' && Object.prototype.hasOwnProperty.call(event, 'output');
+  const hasNestedOutput =
+    nestedToolCall && Object.prototype.hasOwnProperty.call(nestedToolCall, 'output');
   const outputValue = hasTopLevelOutput ? event?.output : nestedToolCall?.output;
 
   return {
@@ -1019,6 +1155,7 @@ function normalizeStreamingToolEvent(event: any): StreamingRenderEvent {
       output: normalizeToolOutputValue(outputValue),
       presentation: event?.presentation ?? nestedToolCall?.presentation,
       connection: event?.connection ?? nestedToolCall?.connection,
+      mcp: event?.mcp ?? nestedToolCall?.mcp,
       status: hasTopLevelOutput || hasNestedOutput ? 'complete' : 'running',
       generating_lines: event?.generating_lines ?? nestedToolCall?.generating_lines,
     },
@@ -1060,7 +1197,9 @@ function truncateRetryContextOutput(output: string | undefined): string | undefi
   return `${output.slice(0, RETRY_CONTEXT_OUTPUT_LIMIT)}\n...[truncated ${output.length - RETRY_CONTEXT_OUTPUT_LIMIT} chars]`;
 }
 
-function buildVisualizationRetryContextEvents(siblingEvents?: VisualizationRetrySiblingEvent[]): RetryVisualizationRequest['context_events'] {
+function buildVisualizationRetryContextEvents(
+  siblingEvents?: VisualizationRetrySiblingEvent[],
+): RetryVisualizationRequest['context_events'] {
   if (!siblingEvents) return [];
   return siblingEvents
     .filter((event) => event.type === 'tool')
@@ -1107,7 +1246,10 @@ function parseTableMetadata(output: string): { tableData: TableData | null; disp
     const displayText = output.slice(contentStart);
     return { tableData, displayText };
   } catch {
-    return { tableData: null, displayText: output.slice(endIdx + endMarker.length).replace(/^\r?\n/, '') };
+    return {
+      tableData: null,
+      displayText: output.slice(endIdx + endMarker.length).replace(/^\r?\n/, ''),
+    };
   }
 }
 
@@ -1130,7 +1272,8 @@ interface ChartConfig {
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
 
-const MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE = 'Selected model has been removed from Chat Models. Select another model to continue.';
+const MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE =
+  'Selected model has been removed from Chat Models. Select another model to continue.';
 
 function branchStartsGeneration(branchKind: ConversationBranchKind): boolean {
   return branchKind === 'edit' || branchKind === 'replay';
@@ -1156,22 +1299,21 @@ function mergeConversationFromWorkspaceSnapshot(
     return {
       ...current,
       ...incoming,
-      model: incomingIsNewer ? (incoming.model || current.model) : (current.model || incoming.model),
+      model: incomingIsNewer ? incoming.model || current.model : current.model || incoming.model,
       messages: current.messages,
     };
   }
-  const shouldUseIncomingMessages = incomingIsNewer
-    || incoming.messages.length > current.messages.length
-    || (incoming.messages.length === current.messages.length && incomingUpdatedAt >= currentUpdatedAt);
+  const shouldUseIncomingMessages =
+    incomingIsNewer ||
+    incoming.messages.length > current.messages.length ||
+    (incoming.messages.length === current.messages.length && incomingUpdatedAt >= currentUpdatedAt);
 
   return {
     ...current,
     ...incoming,
-    model: incomingIsNewer ? (incoming.model || current.model) : (current.model || incoming.model),
+    model: incomingIsNewer ? incoming.model || current.model : current.model || incoming.model,
     // Preserve optimistic local messages when the workspace snapshot has the same timestamp.
-    messages: shouldUseIncomingMessages
-      ? incoming.messages
-      : current.messages,
+    messages: shouldUseIncomingMessages ? incoming.messages : current.messages,
   };
 }
 
@@ -1238,7 +1380,7 @@ interface DataTableConfig {
   ordering?: boolean;
   paging?: boolean;
   info?: boolean;
-  [key: string]: unknown;  // Allow additional DataTables options
+  [key: string]: unknown; // Allow additional DataTables options
 }
 
 interface DataTableData {
@@ -1254,7 +1396,9 @@ function hasRefreshableVisualizationConnection(
   toolType: 'chart' | 'datatable',
 ): boolean {
   if (!dataConnection) return false;
-  const componentId = String(dataConnection.component_id || dataConnection.source_tool_config_id || '').trim();
+  const componentId = String(
+    dataConnection.component_id || dataConnection.source_tool_config_id || '',
+  ).trim();
   const requestPayload = dataConnection.request ?? dataConnection.source_input;
   if (!componentId || requestPayload == null) return false;
   if (toolType === 'chart') {
@@ -1313,7 +1457,7 @@ function parseDataTableData(output: string): DataTableData | null {
     if (parsed && parsed.__datatable__ === true && parsed.config) {
       return parsed as DataTableData;
     }
-  } catch (e) {
+  } catch {
     // Failed to parse JSON as datatable data
   }
   return null;
@@ -1322,11 +1466,14 @@ function parseDataTableData(output: string): DataTableData | null {
 function sanitizeDownloadFilename(filename: string, extension: string): string {
   const safeExtension = extension.replace(/[^a-z0-9]+/gi, '').toLowerCase() || 'txt';
   const raw = (filename || 'export').trim().replace(/[\\/]+/g, '_');
-  const safe = raw
-    .replace(/[\x00-\x1f\x7f]/g, '')
-    .replace(/\s+/g, '_')
-    .replace(/[^A-Za-z0-9._ -]/g, '_')
-    .replace(/^[. _-]+|[. _-]+$/g, '') || 'export';
+  const safe =
+    raw
+      // Intentionally strip ASCII control characters from user-supplied filenames.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x1f\x7f]/g, '')
+      .replace(/\s+/g, '_')
+      .replace(/[^A-Za-z0-9._ -]/g, '_')
+      .replace(/^[. _-]+|[. _-]+$/g, '') || 'export';
   const withoutExtension = safe.replace(/\.[A-Za-z0-9]+$/, '');
   return `${withoutExtension || 'export'}.${safeExtension}`;
 }
@@ -1342,9 +1489,7 @@ function serializeCsv(columns: unknown[], rows: unknown[][]): string {
     const text = spreadsheetSafeValue(value);
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  return [columns, ...rows]
-    .map((row) => row.map(escapeCell).join(','))
-    .join('\r\n') + '\r\n';
+  return [columns, ...rows].map((row) => row.map(escapeCell).join(',')).join('\r\n') + '\r\n';
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
@@ -1374,11 +1519,18 @@ function getDataTableColumns(tableData: DataTableData): string[] {
 
 function getChartTable(chartData: ChartData): { columns: string[]; rows: unknown[][] } {
   const labels = Array.isArray(chartData.config.data.labels) ? chartData.config.data.labels : [];
-  const datasets = Array.isArray(chartData.config.data.datasets) ? chartData.config.data.datasets : [];
-  const columns = ['Label', ...datasets.map((dataset, index) => dataset.label || `Dataset ${index + 1}`)];
+  const datasets = Array.isArray(chartData.config.data.datasets)
+    ? chartData.config.data.datasets
+    : [];
+  const columns = [
+    'Label',
+    ...datasets.map((dataset, index) => dataset.label || `Dataset ${index + 1}`),
+  ];
   const rows = labels.map((label, rowIndex) => [
     label,
-    ...datasets.map((dataset) => Array.isArray(dataset.data) ? dataset.data[rowIndex] ?? '' : ''),
+    ...datasets.map((dataset) =>
+      Array.isArray(dataset.data) ? (dataset.data[rowIndex] ?? '') : '',
+    ),
   ]);
   return { columns, rows };
 }
@@ -1410,8 +1562,13 @@ function validateDataTableData(tableData: DataTableData): string | null {
 
 function normalizeDataTableErrorMessage(message: string): string {
   const trimmed = message.trim();
-  const withoutPrefix = trimmed.replace(/^DataTables warning:\s*table id=[^-]+-\s*/i, 'Table render failed: ');
-  return withoutPrefix.replace(/\s*For more information about this error, please see.*$/i, '').trim();
+  const withoutPrefix = trimmed.replace(
+    /^DataTables warning:\s*table id=[^-]+-\s*/i,
+    'Table render failed: ',
+  );
+  return withoutPrefix
+    .replace(/\s*For more information about this error, please see.*$/i, '')
+    .trim();
 }
 
 // Component to render a simple data table (for SQL results with table metadata)
@@ -1444,7 +1601,9 @@ const DataTable = memo(function DataTable({ data }: { data: TableData }) {
           ))}
         </tbody>
       </table>
-      <div className="tool-result-row-count">({data.rows.length} row{data.rows.length !== 1 ? 's' : ''})</div>
+      <div className="tool-result-row-count">
+        ({data.rows.length} row{data.rows.length !== 1 ? 's' : ''})
+      </div>
     </div>
   );
 });
@@ -1475,7 +1634,10 @@ const VisualizationBranchControls = memo(function VisualizationBranchControls({
   onSelectBranch?: (branchId: string) => void;
 }) {
   if (!branches || branches.length < 2 || !onSelectBranch) return null;
-  const activeIndex = Math.max(0, branches.findIndex(branch => branch.id === activeBranchId));
+  const activeIndex = Math.max(
+    0,
+    branches.findIndex((branch) => branch.id === activeBranchId),
+  );
   const activeBranch = branches[activeIndex] || branches[0];
   const previousBranch = branches[activeIndex - 1];
   const nextBranch = branches[activeIndex + 1];
@@ -1493,7 +1655,13 @@ const VisualizationBranchControls = memo(function VisualizationBranchControls({
       <span className="visualization-branch-label">
         Version {activeIndex + 1} of {branches.length}
         {activeBranch?.created_at && (
-          <> &middot; <span title={activeBranch.created_at}>{formatChatTimestamp(activeBranch.created_at)}</span></>
+          <>
+            {' '}
+            &middot;{' '}
+            <span title={activeBranch.created_at}>
+              {formatChatTimestamp(activeBranch.created_at)}
+            </span>
+          </>
         )}
       </span>
       <button
@@ -1535,7 +1703,7 @@ const VisualizationVersionAnchor = memo(function VisualizationVersionAnchor({
           className="live-data-refresh-btn"
           onClick={onRefresh}
           disabled={isRefreshing || isRefreshDisabled}
-          title={refreshDisabledReason || "Refresh live data"}
+          title={refreshDisabledReason || 'Refresh live data'}
         >
           {isRefreshing ? <MiniLoadingSpinner variant="icon" size={12} /> : <RefreshCw size={12} />}
           <span>Refresh live data</span>
@@ -1616,16 +1784,22 @@ const VisualizationExportControls = memo(function VisualizationExportControls({
     setIsMenuOpen((current) => !current);
   }, [clearCloseTimer, clearHoverTimer, disabled]);
 
-  const handleOptionClick = useCallback((handler?: () => void) => {
-    if (!handler || disabled) return;
-    handler();
-    closeMenu();
-  }, [closeMenu, disabled]);
+  const handleOptionClick = useCallback(
+    (handler?: () => void) => {
+      if (!handler || disabled) return;
+      handler();
+      closeMenu();
+    },
+    [closeMenu, disabled],
+  );
 
-  useEffect(() => () => {
-    clearHoverTimer();
-    clearCloseTimer();
-  }, [clearCloseTimer, clearHoverTimer]);
+  useEffect(
+    () => () => {
+      clearHoverTimer();
+      clearCloseTimer();
+    },
+    [clearCloseTimer, clearHoverTimer],
+  );
 
   if (!onCsv && !onXlsx && !onPng) return null;
   return (
@@ -1831,10 +2005,13 @@ const ChartDisplay = memo(function ChartDisplay({
 
   return (
     <div className={`chart-with-anchor${isExpanded ? ' chart-with-anchor-expanded' : ''}`}>
-      <div className={`chart-container${isExpanded ? ' chart-container-expanded' : ''}`} ref={containerRef}>
+      <div
+        className={`chart-container${isExpanded ? ' chart-container-expanded' : ''}`}
+        ref={containerRef}
+      >
         <button
           className="chart-resize-btn"
-          onClick={() => setIsExpanded(e => !e)}
+          onClick={() => setIsExpanded((e) => !e)}
           title={isExpanded ? 'Collapse chart' : 'Expand chart'}
         >
           {isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
@@ -1857,12 +2034,12 @@ const ChartDisplay = memo(function ChartDisplay({
         activeBranchId={activeBranchId}
         isSwitchingBranch={isSwitchingBranch}
         onSelectBranch={onSelectBranch}
-        extraControls={(
+        extraControls={
           <VisualizationExportControls
             onCsv={handleDownloadChartCsv}
             onPng={handleDownloadChartPng}
           />
-        )}
+        }
       />
     </div>
   );
@@ -1903,7 +2080,7 @@ const DataTableControls = memo(function DataTableControls({
           type="search"
           placeholder="Search…"
           value={searchQuery}
-          onChange={e => onSearchChange(e.target.value)}
+          onChange={(e) => onSearchChange(e.target.value)}
           aria-label="Search table"
         />
       )}
@@ -1973,9 +2150,40 @@ const DataTableDisplay = memo(function DataTableDisplay({
   isSwitchingBranch = false,
   onSelectBranch,
   onDisplayError,
-}: { tableData: DataTableData; conversationId?: string; workspaceId?: string; onDisplayError?: (message: string) => void } & LiveRefreshControlsProps) {
+}: {
+  tableData: DataTableData;
+  conversationId?: string;
+  workspaceId?: string;
+  onDisplayError?: (message: string) => void;
+} & LiveRefreshControlsProps) {
+  // Minimal structural types for the untyped DataTables (jQuery plugin) API
+  // surface that this component actually uses.
+  interface DataTablePageInfoRaw {
+    page: number;
+    pages: number;
+    recordsDisplay: number;
+  }
+  interface DataTableApi {
+    page: {
+      (page: number): DataTableApi;
+      info(): DataTablePageInfoRaw;
+    };
+    draw(mode?: string): DataTableApi;
+    search(query: string): DataTableApi;
+    destroy(remove?: boolean): void;
+  }
+  interface DataTableConfigExtras {
+    pageLength?: number;
+    searching?: boolean;
+    columnDefs?: unknown[];
+  }
+  interface DataTableColumn {
+    render?: unknown;
+    [key: string]: unknown;
+  }
+
   const containerRef = useRef<HTMLDivElement>(null);
-  const tableInstanceRef = useRef<unknown>(null);
+  const tableInstanceRef = useRef<DataTableApi | null>(null);
   const lastNotifiedErrorRef = useRef<string | null>(null);
   // Persist page index across re-inits (e.g. visualization branch switches).
   // The DataTables instance is destroyed when tableData changes, which would
@@ -1984,39 +2192,53 @@ const DataTableDisplay = memo(function DataTableDisplay({
   const persistedPageRef = useRef<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [pageInfo, setPageInfo] = useState<DataTablePageInfo>({ page: 0, pages: 1, recordsDisplay: 0 });
+  const [pageInfo, setPageInfo] = useState<DataTablePageInfo>({
+    page: 0,
+    pages: 1,
+    recordsDisplay: 0,
+  });
   const [isExportingXlsx, setIsExportingXlsx] = useState(false);
 
   const rowCount = Array.isArray(tableData.config.data) ? tableData.config.data.length : 0;
-  const configuredPageLength = Number((tableData.config as any).pageLength);
-  const effectivePageLength = Number.isFinite(configuredPageLength) && configuredPageLength > 0
-    ? configuredPageLength
-    : rowCount > 10
-      ? 10
-      : Math.max(rowCount, 1);
-  const searchingEnabled = (tableData.config as any).searching !== false;
+  const configuredPageLength = Number((tableData.config as DataTableConfigExtras).pageLength);
+  const effectivePageLength =
+    Number.isFinite(configuredPageLength) && configuredPageLength > 0
+      ? configuredPageLength
+      : rowCount > 10
+        ? 10
+        : Math.max(rowCount, 1);
+  const searchingEnabled = (tableData.config as DataTableConfigExtras).searching !== false;
   const pagingEnabled = rowCount > effectivePageLength;
 
-  const reportDisplayError = useCallback((message: string) => {
-    const normalizedMessage = normalizeDataTableErrorMessage(message);
-    setError(normalizedMessage);
-    if (lastNotifiedErrorRef.current !== normalizedMessage) {
-      lastNotifiedErrorRef.current = normalizedMessage;
-      onDisplayError?.(normalizedMessage);
-    }
-  }, [onDisplayError]);
+  const reportDisplayError = useCallback(
+    (message: string) => {
+      const normalizedMessage = normalizeDataTableErrorMessage(message);
+      setError(normalizedMessage);
+      if (lastNotifiedErrorRef.current !== normalizedMessage) {
+        lastNotifiedErrorRef.current = normalizedMessage;
+        onDisplayError?.(normalizedMessage);
+      }
+    },
+    [onDisplayError],
+  );
 
   const handlePage = useCallback((page: number) => {
     persistedPageRef.current = page;
     if (!tableInstanceRef.current) return;
     try {
-      (tableInstanceRef.current as any).page(page).draw('page');
-    } catch { /* ignore */ }
+      tableInstanceRef.current.page(page).draw('page');
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const exportFilenameBase = tableData.title?.trim() || 'table-data';
   const handleDownloadDataTableCsv = useCallback(() => {
-    downloadCsv(getDataTableColumns(tableData), tableData.config.data || [], sanitizeDownloadFilename(exportFilenameBase, 'csv'));
+    downloadCsv(
+      getDataTableColumns(tableData),
+      tableData.config.data || [],
+      sanitizeDownloadFilename(exportFilenameBase, 'csv'),
+    );
   }, [exportFilenameBase, tableData]);
 
   const handleDownloadDataTableXlsx = useCallback(async () => {
@@ -2085,11 +2307,13 @@ const DataTableDisplay = memo(function DataTableDisplay({
           // after re-init (e.g. when switching visualization branches).
           if (tableInstanceRef.current) {
             try {
-              const info = (tableInstanceRef.current as any).page.info();
+              const info = tableInstanceRef.current.page.info();
               if (info && typeof info.page === 'number') {
                 persistedPageRef.current = info.page;
               }
-            } catch { /* ignore */ }
+            } catch {
+              /* ignore */
+            }
             try {
               // Pass `true` to fully remove the table element from the DOM.
               // Without this, DataTables leaves the previous <thead>/<tbody>
@@ -2113,35 +2337,45 @@ const DataTableDisplay = memo(function DataTableDisplay({
 
           // Prepare columns with linkification support
           const existingColumns = tableData.config.columns || [];
-          const preparedColumns = existingColumns.map((col: any) => {
+          const preparedColumns = existingColumns.map((col: DataTableColumn) => {
             const existingRender = col.render;
             return {
               ...col,
-              render: (data: any, type: string, row: any, meta: any) => {
+              render: (data: unknown, type: string, row: unknown, meta: unknown) => {
                 let val = data;
                 // Call existing renderer if it exists
                 if (typeof existingRender === 'function') {
                   val = existingRender(data, type, row, meta);
-                } else if (typeof existingRender === 'string' && (window as any).$.fn.dataTable.render[existingRender]) {
+                } else if (
+                  typeof existingRender === 'string' &&
+                  $.fn.dataTable.render[existingRender]
+                ) {
                   // Handle built-in renderers if they are passed as strings (rare but possible)
-                  val = (window as any).$.fn.dataTable.render[existingRender]()(data, type, row, meta);
+                  val = $.fn.dataTable.render[existingRender]()(data, type, row, meta);
                 }
 
                 if (type === 'display' && typeof val === 'string' && val.match(URL_PATTERN)) {
                   // Replace URLs with clickable <a> tags
-                  return val.replace(URL_PATTERN, '<a href="$1" target="_blank" rel="noopener noreferrer" class="chat-link">$1</a>');
+                  return val.replace(
+                    URL_PATTERN,
+                    '<a href="$1" target="_blank" rel="noopener noreferrer" class="chat-link">$1</a>',
+                  );
                 }
                 return val;
-              }
+              },
             };
           });
 
           // Initialize DataTable — disable all built-in layout rows; we render search + paging in React.
-          const dataTableNamespace = ($.fn as any).dataTable;
+          const dataTableNamespace = $.fn.dataTable;
           const previousErrMode = dataTableNamespace?.ext?.errMode;
           let dataTablesError: string | null = null;
           if (dataTableNamespace?.ext) {
-            dataTableNamespace.ext.errMode = (_settings: unknown, _techNote: unknown, message: string) => {
+            dataTableNamespace.ext.errMode = (
+              _settings: unknown,
+              _techNote: unknown,
+              message: string,
+            ) => {
               dataTablesError = message || 'DataTables render failed';
             };
           }
@@ -2153,7 +2387,9 @@ const DataTableDisplay = memo(function DataTableDisplay({
               columns: preparedColumns,
               destroy: true, // Allow re-initialization
               columnDefs: [
-                ...(Array.isArray((tableData.config as any).columnDefs) ? (tableData.config as any).columnDefs : [])
+                ...(Array.isArray((tableData.config as DataTableConfigExtras).columnDefs)
+                  ? ((tableData.config as DataTableConfigExtras).columnDefs as unknown[])
+                  : []),
               ],
               layout: {
                 ...(tableData.config.layout || {}),
@@ -2175,30 +2411,40 @@ const DataTableDisplay = memo(function DataTableDisplay({
           // Sync page state with DataTables draws
           const syncPageInfo = () => {
             try {
-              const info = (tableInstanceRef.current as any).page.info();
-              setPageInfo({ page: info.page, pages: info.pages, recordsDisplay: info.recordsDisplay });
-            } catch { /* ignore */ }
+              const info = tableInstanceRef.current!.page.info();
+              setPageInfo({
+                page: info.page,
+                pages: info.pages,
+                recordsDisplay: info.recordsDisplay,
+              });
+            } catch {
+              /* ignore */
+            }
           };
           $(tableEl).off('draw.dt.pageInfo').on('draw.dt.pageInfo', syncPageInfo);
 
           // Restore persisted page (clamped to the new page count) before the
           // first sync so the user stays on the same page across branch swaps.
           try {
-            const info = (tableInstanceRef.current as any).page.info();
+            const info = tableInstanceRef.current!.page.info();
             const totalPages = Math.max(1, info?.pages ?? 1);
             const targetPage = Math.min(persistedPageRef.current, totalPages - 1);
             if (targetPage > 0) {
-              (tableInstanceRef.current as any).page(targetPage).draw('page');
+              tableInstanceRef.current!.page(targetPage).draw('page');
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
 
           syncPageInfo();
 
           // Re-apply any active search query after (re-)init
           if (searchQuery) {
             try {
-              (tableInstanceRef.current as any).search(searchQuery).draw();
-            } catch { /* ignore */ }
+              tableInstanceRef.current!.search(searchQuery).draw();
+            } catch {
+              /* ignore */
+            }
           }
         }
       } catch (err) {
@@ -2218,14 +2464,17 @@ const DataTableDisplay = memo(function DataTableDisplay({
         tableInstanceRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- table re-init is driven by tableData only; paging/search are applied by dedicated effects below
   }, [reportDisplayError, tableData]);
 
   // Wire custom search input to DataTable instance
   useEffect(() => {
     if (!tableInstanceRef.current) return;
     try {
-      (tableInstanceRef.current as any).search(searchQuery).draw();
-    } catch { /* ignore */ }
+      tableInstanceRef.current.search(searchQuery).draw();
+    } catch {
+      /* ignore */
+    }
   }, [searchQuery]);
 
   if (error) {
@@ -2235,7 +2484,7 @@ const DataTableDisplay = memo(function DataTableDisplay({
       : [];
     const fallbackColumnCount = Math.max(
       fallbackColumns.length,
-      ...fallbackRows.map(row => row.length),
+      ...fallbackRows.map((row) => row.length),
       1,
     );
     // Fallback to simple table if DataTables fails
@@ -2254,7 +2503,9 @@ const DataTableDisplay = memo(function DataTableDisplay({
                   {Array.from({ length: fallbackColumnCount }, (_, i) => {
                     const col = fallbackColumns[i];
                     return (
-                      <th key={i}>{typeof col === 'string' ? col : col?.title || `Column ${i + 1}`}</th>
+                      <th key={i}>
+                        {typeof col === 'string' ? col : col?.title || `Column ${i + 1}`}
+                      </th>
                     );
                   })}
                 </tr>
@@ -2262,17 +2513,19 @@ const DataTableDisplay = memo(function DataTableDisplay({
               <tbody>
                 {fallbackRows.map((row, rowIdx) => (
                   <tr key={rowIdx}>
-                    {Array.from({ length: fallbackColumnCount }, (_, cellIdx) => row[cellIdx]).map((cell, cellIdx) => (
-                      <td key={cellIdx}>
-                        {cell === null ? (
-                          'NULL'
-                        ) : typeof cell === 'string' ? (
-                          <LinkifiedText text={cell} />
-                        ) : (
-                          String(cell)
-                        )}
-                      </td>
-                    ))}
+                    {Array.from({ length: fallbackColumnCount }, (_, cellIdx) => row[cellIdx]).map(
+                      (cell, cellIdx) => (
+                        <td key={cellIdx}>
+                          {cell === null ? (
+                            'NULL'
+                          ) : typeof cell === 'string' ? (
+                            <LinkifiedText text={cell} />
+                          ) : (
+                            String(cell)
+                          )}
+                        </td>
+                      ),
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -2310,7 +2563,12 @@ const DataTableDisplay = memo(function DataTableDisplay({
     </>
   );
   const hasMultiplePages = pagingEnabled && pageInfo.pages > 1;
-  const headerHasAnchor = searchingEnabled || hasMultiplePages || !!(canRefresh && onRefresh) || !!(branches && branches.length >= 2 && onSelectBranch) || !!refreshError;
+  const headerHasAnchor =
+    searchingEnabled ||
+    hasMultiplePages ||
+    !!(canRefresh && onRefresh) ||
+    !!(branches && branches.length >= 2 && onSelectBranch) ||
+    !!refreshError;
 
   return (
     <>
@@ -2338,9 +2596,7 @@ const DataTableDisplay = memo(function DataTableDisplay({
               avoid stale <thead>/<tbody> leaking between (re-)inits, which
               causes DataTables "mData undefined" on branch switches. */}
         </div>
-        {tableData.description && (
-          <p className="datatable-description">{tableData.description}</p>
-        )}
+        {tableData.description && <p className="datatable-description">{tableData.description}</p>}
       </div>
       <VisualizationVersionAnchor
         canRefresh={canRefresh}
@@ -2360,7 +2616,11 @@ const DataTableDisplay = memo(function DataTableDisplay({
 });
 
 interface ParsedUserSpaceWriteResult {
-  toolName: 'upsert_userspace_file' | 'patch_userspace_file' | 'move_userspace_file' | 'delete_userspace_file';
+  toolName:
+    | 'upsert_userspace_file'
+    | 'patch_userspace_file'
+    | 'move_userspace_file'
+    | 'delete_userspace_file';
   op: 'upsert' | 'patch' | 'move' | 'delete';
   status: string;
   path: string;
@@ -2377,7 +2637,11 @@ interface ParsedUserSpaceWriteResult {
 }
 
 interface ParsedUserSpaceWriteBatch {
-  toolName: 'upsert_userspace_file' | 'patch_userspace_file' | 'move_userspace_file' | 'delete_userspace_file';
+  toolName:
+    | 'upsert_userspace_file'
+    | 'patch_userspace_file'
+    | 'move_userspace_file'
+    | 'delete_userspace_file';
   isBatch: boolean;
   // The "primary" entry, used for legacy single-file rendering paths.
   // For a batched payload this is just the first entry; for a single-file
@@ -2492,7 +2756,10 @@ function findValueStart(source: string, key: string, fromIndex = 0): number {
   return colonIndex === -1 ? -1 : colonIndex + 1;
 }
 
-function readJsonStringLiteral(source: string, fromIndex: number): { value: string; nextIndex: number } | null {
+function readJsonStringLiteral(
+  source: string,
+  fromIndex: number,
+): { value: string; nextIndex: number } | null {
   const quoteIndex = source.indexOf('"', fromIndex);
   if (quoteIndex === -1) return null;
 
@@ -2504,13 +2771,27 @@ function readJsonStringLiteral(source: string, fromIndex: number): { value: stri
 
     if (escaped) {
       switch (ch) {
-        case 'n': value += '\n'; break;
-        case 'r': value += '\r'; break;
-        case 't': value += '\t'; break;
-        case 'b': value += '\b'; break;
-        case 'f': value += '\f'; break;
-        case '"': value += '"'; break;
-        case '\\': value += '\\'; break;
+        case 'n':
+          value += '\n';
+          break;
+        case 'r':
+          value += '\r';
+          break;
+        case 't':
+          value += '\t';
+          break;
+        case 'b':
+          value += '\b';
+          break;
+        case 'f':
+          value += '\f';
+          break;
+        case '"':
+          value += '"';
+          break;
+        case '\\':
+          value += '\\';
+          break;
         case 'u': {
           const hex = source.slice(index + 1, index + 5);
           if (/^[0-9a-fA-F]{4}$/.test(hex)) {
@@ -2542,7 +2823,10 @@ function readJsonStringLiteral(source: string, fromIndex: number): { value: stri
   return { value, nextIndex: source.length };
 }
 
-function readJsonLiteral(source: string, fromIndex: number): { value: string; nextIndex: number } | null {
+function readJsonLiteral(
+  source: string,
+  fromIndex: number,
+): { value: string; nextIndex: number } | null {
   let index = fromIndex;
   while (index < source.length && /\s/.test(source[index])) index += 1;
   if (index >= source.length) return null;
@@ -2729,13 +3013,14 @@ function readJsonObjectArrayField(source: string, key: string): string[] {
 }
 
 function isLikelyTruncatedToolOutput(source: string): boolean {
-  return /\.\.\. \[[\d,]+ characters omitted\] \.\.\./.test(source)
-    || source.includes('... (truncated)');
+  return (
+    /\.\.\. \[[\d,]+ characters omitted\] \.\.\./.test(source) || source.includes('... (truncated)')
+  );
 }
 
 function asJsonRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : null;
 }
 
@@ -2763,7 +3048,9 @@ function parseJsonRecordValue(output: string): Record<string, unknown> | null {
   return asJsonRecord(firstParse);
 }
 
-function parseNestedJsonRecordValue(output: string | undefined | null): Record<string, unknown> | null {
+function parseNestedJsonRecordValue(
+  output: string | undefined | null,
+): Record<string, unknown> | null {
   if (!output) return null;
   try {
     return parseJsonRecordValue(output);
@@ -2772,7 +3059,10 @@ function parseNestedJsonRecordValue(output: string | undefined | null): Record<s
   }
 }
 
-function parseUserspaceStructuredJsonToolResult(toolName: string, output?: string | null): ParsedUserSpaceStructuredJsonResult | null {
+function parseUserspaceStructuredJsonToolResult(
+  toolName: string,
+  output?: string | null,
+): ParsedUserSpaceStructuredJsonResult | null {
   if (!USERSPACE_STRUCTURED_JSON_TOOL_NAMES.has(toolName) || !output) return null;
 
   const parsed = parseNestedJsonRecordValue(output);
@@ -2791,14 +3081,30 @@ function parseUserspaceStructuredJsonToolResult(toolName: string, output?: strin
     const session = asJsonRecord(parsed.session);
     const auth = asJsonRecord(session?.auth);
     const capabilityFlags = capabilities
-      ? Object.entries(capabilities).filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
+      ? Object.entries(capabilities).filter(
+          ([key, value]) => key.startsWith('can_') && typeof value === 'boolean',
+        )
       : [];
     const enabledCapabilities = capabilityFlags.filter(([, value]) => value === true).length;
     const endpoints = asJsonRecord(capabilities?.endpoints);
-    const objectBuckets = Array.isArray(capabilities?.object_buckets) ? capabilities.object_buckets.length : null;
+    const objectBuckets = Array.isArray(capabilities?.object_buckets)
+      ? capabilities.object_buckets.length
+      : null;
     pushRow('Workspace', parsed.workspace_id);
-    pushRow('Session', parsed.include_session === true ? 'included' : parsed.include_session === false ? 'not included' : null);
-    pushRow('Capabilities', capabilityFlags.length > 0 ? `${enabledCapabilities}/${capabilityFlags.length} enabled` : null);
+    pushRow(
+      'Session',
+      parsed.include_session === true
+        ? 'included'
+        : parsed.include_session === false
+          ? 'not included'
+          : null,
+    );
+    pushRow(
+      'Capabilities',
+      capabilityFlags.length > 0
+        ? `${enabledCapabilities}/${capabilityFlags.length} enabled`
+        : null,
+    );
     pushRow('Endpoints', endpoints ? Object.keys(endpoints).length : null);
     pushRow('Object buckets', objectBuckets);
     pushRow('Auth methods', Array.isArray(auth?.methods) ? auth.methods.length : null);
@@ -2809,9 +3115,23 @@ function parseUserspaceStructuredJsonToolResult(toolName: string, output?: strin
     const diagnostics = asJsonRecord(parsed.diagnostics);
     const totalFiles = summary?.total_files ?? diagnostics?.total_files;
     const inspectedFiles = summary?.inspected_file_count ?? diagnostics?.inspected_file_count;
-    pushRow('Files', typeof inspectedFiles === 'number' && typeof totalFiles === 'number' ? `${inspectedFiles}/${totalFiles} inspected` : totalFiles);
-    pushRow('Dashboard', summary?.has_dashboard_entry === true || diagnostics?.has_dashboard_entry === true ? 'found' : 'missing');
-    pushRow('Entrypoint', structure?.authoritative_entrypoint || (structure?.has_runtime_entrypoint ? 'configured' : 'missing'));
+    pushRow(
+      'Files',
+      typeof inspectedFiles === 'number' && typeof totalFiles === 'number'
+        ? `${inspectedFiles}/${totalFiles} inspected`
+        : totalFiles,
+    );
+    pushRow(
+      'Dashboard',
+      summary?.has_dashboard_entry === true || diagnostics?.has_dashboard_entry === true
+        ? 'found'
+        : 'missing',
+    );
+    pushRow(
+      'Entrypoint',
+      structure?.authoritative_entrypoint ||
+        (structure?.has_runtime_entrypoint ? 'configured' : 'missing'),
+    );
     pushRow('Live data', workspace?.live_data_contract ? 'available' : null);
   }
 
@@ -2830,16 +3150,20 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
 
   const parsed = parseNestedJsonRecordValue(output);
   if (parsed) {
-
-    const file = parsed.file && typeof parsed.file === 'object' ? parsed.file as Record<string, unknown> : null;
-    const diagnostics = parsed.diagnostics && typeof parsed.diagnostics === 'object'
-      ? parsed.diagnostics as Record<string, unknown>
-      : null;
-    const path = typeof parsed.path === 'string' && parsed.path.trim()
-      ? parsed.path.trim()
-      : typeof file?.path === 'string' && file.path.trim()
-        ? file.path.trim()
-        : '';
+    const file =
+      parsed.file && typeof parsed.file === 'object'
+        ? (parsed.file as Record<string, unknown>)
+        : null;
+    const diagnostics =
+      parsed.diagnostics && typeof parsed.diagnostics === 'object'
+        ? (parsed.diagnostics as Record<string, unknown>)
+        : null;
+    const path =
+      typeof parsed.path === 'string' && parsed.path.trim()
+        ? parsed.path.trim()
+        : typeof file?.path === 'string' && file.path.trim()
+          ? file.path.trim()
+          : '';
 
     return {
       toolName: typeof parsed.tool === 'string' ? parsed.tool : '',
@@ -2853,12 +3177,14 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
       retryable: parsed.retryable !== false,
       failureClass: typeof parsed.failure_class === 'string' ? parsed.failure_class : '',
       nextBestTool: typeof parsed.next_best_tool === 'string' ? parsed.next_best_tool : '',
-      actionRequired: typeof parsed.action_required === 'string' && parsed.action_required.trim()
-        ? parsed.action_required.trim()
-        : null,
-      writeSignature: typeof parsed.write_signature === 'string' && parsed.write_signature.trim()
-        ? parsed.write_signature.trim()
-        : null,
+      actionRequired:
+        typeof parsed.action_required === 'string' && parsed.action_required.trim()
+          ? parsed.action_required.trim()
+          : null,
+      writeSignature:
+        typeof parsed.write_signature === 'string' && parsed.write_signature.trim()
+          ? parsed.write_signature.trim()
+          : null,
       filePath: typeof file?.path === 'string' && file.path.trim() ? file.path.trim() : null,
       fileContent: typeof file?.content === 'string' ? file.content : null,
       startLine: typeof diagnostics?.start_line === 'number' ? diagnostics.start_line : null,
@@ -2866,10 +3192,14 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
       totalLines: typeof diagnostics?.total_lines === 'number' ? diagnostics.total_lines : null,
       details: [
         ...(Array.isArray(parsed.contract_violations)
-          ? parsed.contract_violations.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          ? parsed.contract_violations.filter(
+              (item): item is string => typeof item === 'string' && item.trim().length > 0,
+            )
           : []),
         ...(Array.isArray(parsed.warnings)
-          ? parsed.warnings.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          ? parsed.warnings.filter(
+              (item): item is string => typeof item === 'string' && item.trim().length > 0,
+            )
           : []),
       ],
     };
@@ -2880,7 +3210,10 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
   const parsedFile = extractJsonObjectSource(output, 'file');
   const parsedDiagnostics = extractJsonObjectSource(output, 'diagnostics');
 
-  const path = readJsonStringField(output, 'path') || (parsedFile ? readJsonStringField(parsedFile, 'path') : null) || '';
+  const path =
+    readJsonStringField(output, 'path') ||
+    (parsedFile ? readJsonStringField(parsedFile, 'path') : null) ||
+    '';
   if (!path) return null;
 
   return {
@@ -2909,7 +3242,10 @@ function parseUserspaceToolPayload(output?: string | null): ParsedUserspaceToolP
   };
 }
 
-function parseUserspaceListToolResult(toolName: string, output?: string | null): ParsedUserSpaceListResult | null {
+function parseUserspaceListToolResult(
+  toolName: string,
+  output?: string | null,
+): ParsedUserSpaceListResult | null {
   if (toolName !== 'list_userspace_files') return null;
   if (!output) return null;
 
@@ -2965,9 +3301,10 @@ function parseUserspaceListToolResult(toolName: string, output?: string | null):
       if (!path) continue;
       const rawType = typeof rec.entry_type === 'string' ? rec.entry_type : 'file';
       const entryType: 'file' | 'directory' = rawType === 'directory' ? 'directory' : 'file';
-      const sizeBytes = typeof rec.size_bytes === 'number' && Number.isFinite(rec.size_bytes)
-        ? Math.max(0, rec.size_bytes as number)
-        : 0;
+      const sizeBytes =
+        typeof rec.size_bytes === 'number' && Number.isFinite(rec.size_bytes)
+          ? Math.max(0, rec.size_bytes as number)
+          : 0;
       const updatedAt = typeof rec.updated_at === 'string' ? rec.updated_at : null;
       entries.push({ path, entryType, sizeBytes, updatedAt });
     }
@@ -3003,7 +3340,10 @@ function parseUserspaceListToolResult(toolName: string, output?: string | null):
   return buildResult(entries, message, status, count, truncated);
 }
 
-function parseUserspaceReadToolResult(toolName: string, output?: string | null): ParsedUserSpaceReadResult | null {
+function parseUserspaceReadToolResult(
+  toolName: string,
+  output?: string | null,
+): ParsedUserSpaceReadResult | null {
   if (toolName !== 'read_userspace_file') return null;
   const parsed = parseUserspaceToolPayload(output);
   if (!parsed) return null;
@@ -3024,13 +3364,18 @@ function parseUserspaceReadToolResult(toolName: string, output?: string | null):
   };
 }
 
-function parseUserspaceReadBatch(toolName: string, output?: string | null): ParsedUserSpaceReadBatch | null {
+function parseUserspaceReadBatch(
+  toolName: string,
+  output?: string | null,
+): ParsedUserSpaceReadBatch | null {
   if (toolName !== 'read_userspace_file') return null;
   if (!output) return null;
 
   const parsedJson = parseNestedJsonRecordValue(output);
 
-  const isBatch = Boolean(parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files));
+  const isBatch = Boolean(
+    parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files),
+  );
 
   if (!isBatch) {
     const single = parseUserspaceReadToolResult(toolName, output);
@@ -3054,32 +3399,42 @@ function parseUserspaceReadBatch(toolName: string, output?: string | null): Pars
   for (const item of filesRaw) {
     if (!item || typeof item !== 'object') continue;
     const e = item as Record<string, unknown>;
-    const fileObj = e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
+    const fileObj =
+      e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
     const entryPath =
-      (typeof e.path === 'string' && (e.path as string).trim()) ? (e.path as string).trim()
-        : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
+      typeof e.path === 'string' && (e.path as string).trim()
+        ? (e.path as string).trim()
+        : typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()
+          ? (fileObj!.path as string).trim()
           : '';
     if (!entryPath) continue;
     const status = typeof e.status === 'string' ? e.status : '';
-    const fileContent = fileObj && typeof fileObj.content === 'string' ? (fileObj.content as string) : null;
-    const diagnostics = e.diagnostics && typeof e.diagnostics === 'object' ? (e.diagnostics as Record<string, unknown>) : null;
+    const fileContent =
+      fileObj && typeof fileObj.content === 'string' ? (fileObj.content as string) : null;
+    const diagnostics =
+      e.diagnostics && typeof e.diagnostics === 'object'
+        ? (e.diagnostics as Record<string, unknown>)
+        : null;
     entries.push({
       path: entryPath,
       message: typeof e.message === 'string' ? (e.message as string).trim() : '',
       content: fileContent,
       isRejected: e.rejected === true || status.includes('rejected'),
       status,
-      startLine: typeof diagnostics?.start_line === 'number' ? (diagnostics.start_line as number) : null,
+      startLine:
+        typeof diagnostics?.start_line === 'number' ? (diagnostics.start_line as number) : null,
       endLine: typeof diagnostics?.end_line === 'number' ? (diagnostics.end_line as number) : null,
-      totalLines: typeof diagnostics?.total_lines === 'number' ? (diagnostics.total_lines as number) : null,
+      totalLines:
+        typeof diagnostics?.total_lines === 'number' ? (diagnostics.total_lines as number) : null,
     });
   }
 
   if (entries.length === 0) return null;
 
-  const summarySrc = parsedJson!.summary && typeof parsedJson!.summary === 'object'
-    ? (parsedJson!.summary as Record<string, unknown>)
-    : {};
+  const summarySrc =
+    parsedJson!.summary && typeof parsedJson!.summary === 'object'
+      ? (parsedJson!.summary as Record<string, unknown>)
+      : {};
   const numericOrCount = (key: string, fallback: () => number): number => {
     const v = summarySrc[key];
     return typeof v === 'number' ? v : fallback();
@@ -3091,8 +3446,10 @@ function parseUserspaceReadBatch(toolName: string, output?: string | null): Pars
     rejected: numericOrCount('rejected', () => entries.filter((e) => e.isRejected).length),
   };
 
-  const aggregateMessage = typeof parsedJson!.message === 'string' ? (parsedJson!.message as string) : '';
-  const aggregateStatus = typeof parsedJson!.status === 'string' ? (parsedJson!.status as string) : '';
+  const aggregateMessage =
+    typeof parsedJson!.message === 'string' ? (parsedJson!.message as string) : '';
+  const aggregateStatus =
+    typeof parsedJson!.status === 'string' ? (parsedJson!.status as string) : '';
 
   return {
     isBatch: true,
@@ -3128,7 +3485,10 @@ function trimUserspaceWriteDiffCache(): void {
   }
 }
 
-function parseUserspaceWriteToolResult(toolName: string, output?: string | null): ParsedUserSpaceWriteResult | null {
+function parseUserspaceWriteToolResult(
+  toolName: string,
+  output?: string | null,
+): ParsedUserSpaceWriteResult | null {
   if (!USERSPACE_WRITE_TOOL_NAMES.has(toolName)) {
     return null;
   }
@@ -3139,20 +3499,24 @@ function parseUserspaceWriteToolResult(toolName: string, output?: string | null)
   }
 
   const status = parsed.status;
-  const file = parsed.fileContent != null
-    ? {
-      path: parsed.filePath || parsed.path,
-      content: parsed.fileContent,
-      updated_at: parsed.writeSignature || '',
-    } as UserSpaceFile
-    : null;
+  const file =
+    parsed.fileContent != null
+      ? ({
+          path: parsed.filePath || parsed.path,
+          content: parsed.fileContent,
+          updated_at: parsed.writeSignature || '',
+        } as UserSpaceFile)
+      : null;
   const path = parsed.path;
   if (!path) return null;
 
   const op: 'upsert' | 'patch' | 'move' | 'delete' =
-    toolName === 'upsert_userspace_file' ? 'upsert'
-      : toolName === 'patch_userspace_file' ? 'patch'
-        : toolName === 'move_userspace_file' ? 'move'
+    toolName === 'upsert_userspace_file'
+      ? 'upsert'
+      : toolName === 'patch_userspace_file'
+        ? 'patch'
+        : toolName === 'move_userspace_file'
+          ? 'move'
           : 'delete';
 
   return {
@@ -3178,20 +3542,28 @@ function entryStringList(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
-function parseUserspaceWriteBatch(toolName: string, output?: string | null): ParsedUserSpaceWriteBatch | null {
+function parseUserspaceWriteBatch(
+  toolName: string,
+  output?: string | null,
+): ParsedUserSpaceWriteBatch | null {
   if (!USERSPACE_WRITE_TOOL_NAMES.has(toolName)) return null;
   if (!output) return null;
 
   const opForTool: 'upsert' | 'patch' | 'move' | 'delete' =
-    toolName === 'upsert_userspace_file' ? 'upsert'
-      : toolName === 'patch_userspace_file' ? 'patch'
-        : toolName === 'move_userspace_file' ? 'move'
+    toolName === 'upsert_userspace_file'
+      ? 'upsert'
+      : toolName === 'patch_userspace_file'
+        ? 'patch'
+        : toolName === 'move_userspace_file'
+          ? 'move'
           : 'delete';
 
   // Try tolerant JSON parse first to detect a batched `files` collection.
   const parsedJson = parseNestedJsonRecordValue(output);
 
-  const isBatch = Boolean(parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files));
+  const isBatch = Boolean(
+    parsedJson && parsedJson.batch === true && Array.isArray(parsedJson.files),
+  );
 
   if (!isBatch) {
     const single = parseUserspaceWriteToolResult(toolName, output);
@@ -3220,56 +3592,80 @@ function parseUserspaceWriteBatch(toolName: string, output?: string | null): Par
     const e = item as Record<string, unknown>;
     const entryOpRaw = typeof e.op === 'string' ? e.op : opForTool;
     const entryOp: 'upsert' | 'patch' | 'move' | 'delete' =
-      entryOpRaw === 'upsert' || entryOpRaw === 'patch' || entryOpRaw === 'move' || entryOpRaw === 'delete'
+      entryOpRaw === 'upsert' ||
+      entryOpRaw === 'patch' ||
+      entryOpRaw === 'move' ||
+      entryOpRaw === 'delete'
         ? entryOpRaw
         : opForTool;
     const entryStatus = typeof e.status === 'string' ? e.status : '';
-    const fileObj = e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
+    const fileObj =
+      e.file && typeof e.file === 'object' ? (e.file as Record<string, unknown>) : null;
     const entryPath =
-      (typeof e.new_path === 'string' && e.new_path.trim()) ? (e.new_path as string).trim()
-        : (typeof e.path === 'string' && e.path.trim()) ? (e.path as string).trim()
-          : (typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()) ? (fileObj!.path as string).trim()
+      typeof e.new_path === 'string' && e.new_path.trim()
+        ? (e.new_path as string).trim()
+        : typeof e.path === 'string' && e.path.trim()
+          ? (e.path as string).trim()
+          : typeof fileObj?.path === 'string' && (fileObj!.path as string).trim()
+            ? (fileObj!.path as string).trim()
             : '';
     if (!entryPath) continue;
-    const writeSig = typeof e.write_signature === 'string' && e.write_signature.trim() ? e.write_signature.trim() : null;
-    const fileForEntry: UserSpaceFile | null = fileObj && typeof fileObj.content === 'string'
-      ? {
-        path: typeof fileObj.path === 'string' && fileObj.path.trim() ? (fileObj.path as string).trim() : entryPath,
-        content: fileObj.content as string,
-        updated_at: writeSig || '',
-      } as UserSpaceFile
-      : null;
+    const writeSig =
+      typeof e.write_signature === 'string' && e.write_signature.trim()
+        ? e.write_signature.trim()
+        : null;
+    const fileForEntry: UserSpaceFile | null =
+      fileObj && typeof fileObj.content === 'string'
+        ? ({
+            path:
+              typeof fileObj.path === 'string' && fileObj.path.trim()
+                ? (fileObj.path as string).trim()
+                : entryPath,
+            content: fileObj.content as string,
+            updated_at: writeSig || '',
+          } as UserSpaceFile)
+        : null;
     const entryToolName: ParsedUserSpaceWriteResult['toolName'] =
-      entryOp === 'upsert' ? 'upsert_userspace_file'
-        : entryOp === 'patch' ? 'patch_userspace_file'
-          : entryOp === 'move' ? 'move_userspace_file'
+      entryOp === 'upsert'
+        ? 'upsert_userspace_file'
+        : entryOp === 'patch'
+          ? 'patch_userspace_file'
+          : entryOp === 'move'
+            ? 'move_userspace_file'
             : 'delete_userspace_file';
     entries.push({
       toolName: entryToolName,
       op: entryOp,
       status: entryStatus,
       path: entryPath,
-      oldPath: typeof e.old_path === 'string' && (e.old_path as string).trim() ? (e.old_path as string).trim() : null,
+      oldPath:
+        typeof e.old_path === 'string' && (e.old_path as string).trim()
+          ? (e.old_path as string).trim()
+          : null,
       message: typeof e.message === 'string' ? (e.message as string).trim() : '',
-      error: typeof e.error === 'string' && (e.error as string).trim() ? (e.error as string).trim() : null,
-      actionRequired: typeof e.action_required === 'string' && (e.action_required as string).trim() ? (e.action_required as string).trim() : null,
+      error:
+        typeof e.error === 'string' && (e.error as string).trim()
+          ? (e.error as string).trim()
+          : null,
+      actionRequired:
+        typeof e.action_required === 'string' && (e.action_required as string).trim()
+          ? (e.action_required as string).trim()
+          : null,
       writeSignature: writeSig,
       persisted: e.persisted === true || entryStatus.startsWith('persisted'),
       rejected: e.rejected === true || entryStatus.includes('rejected'),
       noChanges: entryStatus === 'no_changes',
       file: fileForEntry,
-      details: [
-        ...entryStringList(e.contract_violations),
-        ...entryStringList(e.warnings),
-      ],
+      details: [...entryStringList(e.contract_violations), ...entryStringList(e.warnings)],
     });
   }
 
   if (entries.length === 0) return null;
 
-  const summarySrc = parsedJson!.summary && typeof parsedJson!.summary === 'object'
-    ? (parsedJson!.summary as Record<string, unknown>)
-    : {};
+  const summarySrc =
+    parsedJson!.summary && typeof parsedJson!.summary === 'object'
+      ? (parsedJson!.summary as Record<string, unknown>)
+      : {};
   const numericOrCount = (key: string, fallback: () => number): number => {
     const v = summarySrc[key];
     return typeof v === 'number' ? v : fallback();
@@ -3280,11 +3676,16 @@ function parseUserspaceWriteBatch(toolName: string, output?: string | null): Par
     persisted: numericOrCount('persisted', () => entries.filter((e) => e.persisted).length),
     rejected: numericOrCount('rejected', () => entries.filter((e) => e.rejected).length),
     noChanges: numericOrCount('no_changes', () => entries.filter((e) => e.noChanges).length),
-    withViolations: numericOrCount('with_violations', () => entries.filter((e) => e.status === 'persisted_with_violations').length),
+    withViolations: numericOrCount(
+      'with_violations',
+      () => entries.filter((e) => e.status === 'persisted_with_violations').length,
+    ),
   };
 
-  const aggregateMessage = typeof parsedJson!.message === 'string' ? (parsedJson!.message as string) : '';
-  const aggregateStatus = typeof parsedJson!.status === 'string' ? (parsedJson!.status as string) : '';
+  const aggregateMessage =
+    typeof parsedJson!.message === 'string' ? (parsedJson!.message as string) : '';
+  const aggregateStatus =
+    typeof parsedJson!.status === 'string' ? (parsedJson!.status as string) : '';
 
   return {
     toolName: toolName as ParsedUserSpaceWriteBatch['toolName'],
@@ -3311,11 +3712,17 @@ function formatUserspaceWriteSummary(result: ParsedUserSpaceWriteResult): string
   return lines.filter(Boolean).join('\n');
 }
 
-function buildUserspaceToolDiffCacheKey(snapshotId: string, result: ParsedUserSpaceWriteResult): string {
+function buildUserspaceToolDiffCacheKey(
+  snapshotId: string,
+  result: ParsedUserSpaceWriteResult,
+): string {
   return `${snapshotId}:${result.path}:${result.writeSignature || result.file?.updated_at || result.status}`;
 }
 
-function calculateUserspaceDiffLineCounts(before: string, after: string): { additions: number; deletions: number } {
+function calculateUserspaceDiffLineCounts(
+  before: string,
+  after: string,
+): { additions: number; deletions: number } {
   const changes = diffLines(before, after);
   let additions = 0;
   let deletions = 0;
@@ -3339,7 +3746,10 @@ function mergeUserspaceWriteDiff(
 ): UserSpaceSnapshotFileDiff {
   const nextAfterContent = result.file?.content ?? baselineDiff.after_content;
   const nextAfterPath = result.file?.path ?? baselineDiff.after_path ?? result.path;
-  const { additions, deletions } = calculateUserspaceDiffLineCounts(baselineDiff.before_content, nextAfterContent);
+  const { additions, deletions } = calculateUserspaceDiffLineCounts(
+    baselineDiff.before_content,
+    nextAfterContent,
+  );
 
   return {
     ...baselineDiff,
@@ -3366,7 +3776,9 @@ interface ToolCallDisplayProps {
   messageIndex?: number;
   eventIndex?: number;
   onRetrySuccess?: (newOutput: string) => void;
-  onLiveVisualizationRefreshSuccess?: (response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse) => void;
+  onLiveVisualizationRefreshSuccess?: (
+    response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse,
+  ) => void;
   onVisualizationDisplayError?: (message: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
   inChatSearchQuery?: string;
@@ -3375,6 +3787,7 @@ interface ToolCallDisplayProps {
 
 interface ScreenshotToolOutput {
   preview_image_url?: string;
+  mcp?: ToolMcpMetadata;
   render?: {
     width?: number;
     height?: number;
@@ -3388,6 +3801,12 @@ interface ScreenshotToolOutput {
       effective_wait_after_load_ms?: number;
     };
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 interface ParsedTerminalOutput {
@@ -3430,8 +3849,8 @@ function isTerminalToolCall(toolCall: ActiveToolCall): boolean {
   const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
   const connectionMode = normalizedPresentationValue(toolCall.connection?.connection_mode);
   return Boolean(
-    (toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
-    || (toolType === 'odoo_shell' && connectionMode === 'ssh')
+    (toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType)) ||
+    (toolType === 'odoo_shell' && connectionMode === 'ssh'),
   );
 }
 
@@ -3448,12 +3867,10 @@ function isConversationToolRerunnable(toolCall: ActiveToolCall): boolean {
   const toolType = toolCall.connection?.tool_type?.trim().toLowerCase();
   const connectionMode = normalizedPresentationValue(toolCall.connection?.connection_mode);
   return Boolean(
-    toolCall.connection?.tool_config_id
-    && (
-      (toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType))
-      || (toolType === 'odoo_shell' && connectionMode === 'ssh')
-      || (toolType && SQL_TOOL_CONNECTION_TYPES.has(toolType))
-    )
+    toolCall.connection?.tool_config_id &&
+    ((toolType && TERMINAL_TOOL_CONNECTION_TYPES.has(toolType)) ||
+      (toolType === 'odoo_shell' && connectionMode === 'ssh') ||
+      (toolType && SQL_TOOL_CONNECTION_TYPES.has(toolType))),
   );
 }
 
@@ -3570,12 +3987,12 @@ function parseTerminalOutput(output: string | undefined | null): ParsedTerminalO
     const parsed = JSON.parse(output) as Record<string, unknown>;
     const exitCodeRaw = parsed.exit_code;
     const hasTerminalText =
-      typeof parsed.stdout === 'string'
-      || typeof parsed.stderr === 'string'
-      || typeof parsed.error === 'string';
+      typeof parsed.stdout === 'string' ||
+      typeof parsed.stderr === 'string' ||
+      typeof parsed.error === 'string';
     const hasValidExitCode =
-      typeof exitCodeRaw === 'number'
-      || (typeof exitCodeRaw === 'string' && /^-?\d+$/.test(exitCodeRaw));
+      typeof exitCodeRaw === 'number' ||
+      (typeof exitCodeRaw === 'string' && /^-?\d+$/.test(exitCodeRaw));
 
     if (!hasTerminalText || !hasValidExitCode) return null;
 
@@ -3673,9 +4090,7 @@ function parseWebSearchOutput(output: string | undefined | null): ParsedWebSearc
     provider: typeof parsed.provider === 'string' ? parsed.provider : '',
     answer: typeof parsed.answer === 'string' ? parsed.answer : '',
     results,
-    resultCount: typeof parsed.result_count === 'number'
-      ? parsed.result_count
-      : results.length,
+    resultCount: typeof parsed.result_count === 'number' ? parsed.result_count : results.length,
     engineUrl: typeof parsed.engine_url === 'string' ? parsed.engine_url : '',
     durationMs: typeof parsed.duration_ms === 'number' ? parsed.duration_ms : undefined,
   };
@@ -3863,9 +4278,8 @@ function normalizeKnowledgeSearchPayload(
     const name = typeof record.name === 'string' ? record.name : '';
     if (!name) continue;
     const resultCountRaw = record.result_count;
-    const resultCount = typeof resultCountRaw === 'number' && Number.isFinite(resultCountRaw)
-      ? resultCountRaw
-      : 0;
+    const resultCount =
+      typeof resultCountRaw === 'number' && Number.isFinite(resultCountRaw) ? resultCountRaw : 0;
     indexesSearched.push({ name, resultCount, ok: record.ok !== false });
   }
 
@@ -3888,14 +4302,16 @@ function normalizeKnowledgeSearchPayload(
     });
   }
 
-  const derivedIndexes = indexesSearched.length > 0
-    ? indexesSearched
-    : buildKnowledgeSearchIndexSummaries(results, errorDetails);
+  const derivedIndexes =
+    indexesSearched.length > 0
+      ? indexesSearched
+      : buildKnowledgeSearchIndexSummaries(results, errorDetails);
 
   const totalResultsRaw = parsed.total_results;
-  const totalResults = typeof totalResultsRaw === 'number' && Number.isFinite(totalResultsRaw)
-    ? totalResultsRaw
-    : results.length;
+  const totalResults =
+    typeof totalResultsRaw === 'number' && Number.isFinite(totalResultsRaw)
+      ? totalResultsRaw
+      : results.length;
 
   return {
     tool: parsedTool,
@@ -3904,27 +4320,36 @@ function normalizeKnowledgeSearchPayload(
     query: typeof parsed.query === 'string' ? parsed.query : '',
     indexName: typeof parsed.index_name === 'string' ? parsed.index_name : '',
     k: typeof parsed.k === 'number' && Number.isFinite(parsed.k) ? parsed.k : 0,
-    maxCharsPerResult: typeof parsed.max_chars_per_result === 'number' && Number.isFinite(parsed.max_chars_per_result)
-      ? parsed.max_chars_per_result
-      : 0,
+    maxCharsPerResult:
+      typeof parsed.max_chars_per_result === 'number' &&
+      Number.isFinite(parsed.max_chars_per_result)
+        ? parsed.max_chars_per_result
+        : 0,
     indexesSearched: derivedIndexes,
     totalResults,
     results,
     errors,
     errorDetails,
     message: typeof parsed.message === 'string' ? parsed.message : '',
-    durationMs: typeof parsed.duration_ms === 'number' && Number.isFinite(parsed.duration_ms)
-      ? parsed.duration_ms
-      : undefined,
+    durationMs:
+      typeof parsed.duration_ms === 'number' && Number.isFinite(parsed.duration_ms)
+        ? parsed.duration_ms
+        : undefined,
     declaredTotalResults: totalResults,
   };
 }
 
-function parseLegacyKnowledgeSearchOutput(output: string, toolName: string): ParsedKnowledgeSearchOutput | null {
+function parseLegacyKnowledgeSearchOutput(
+  output: string,
+  toolName: string,
+): ParsedKnowledgeSearchOutput | null {
   const normalized = output.trim();
   if (!normalized) return null;
 
-  if (/^No relevant documentation found/i.test(normalized) || /^No relevant documents found/i.test(normalized)) {
+  if (
+    /^No relevant documentation found/i.test(normalized) ||
+    /^No relevant documents found/i.test(normalized)
+  ) {
     return {
       tool: toolName,
       status: 'no_results',
@@ -3943,7 +4368,10 @@ function parseLegacyKnowledgeSearchOutput(output: string, toolName: string): Par
   }
 
   if (/^(Search failed:|Error:)/i.test(normalized)) {
-    const messageLines = normalized.split('\n').map((line) => line.trim()).filter(Boolean);
+    const messageLines = normalized
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
     const errorMessage = messageLines.join(' ');
     return {
       tool: toolName,
@@ -3968,30 +4396,36 @@ function parseLegacyKnowledgeSearchOutput(output: string, toolName: string): Par
   const totalResults = Number.parseInt(foundMatch[1] || '0', 10) || 0;
   const firstBlankLine = normalized.indexOf('\n\n');
   const body = firstBlankLine >= 0 ? normalized.slice(firstBlankLine + 2) : '';
-  const rawBlocks = body.split(/\n\n---\n\n/g).map((block) => block.trim()).filter(Boolean);
-  const results: ParsedKnowledgeSearchResult[] = rawBlocks.map((block) => {
-    const newlineIndex = block.indexOf('\n');
-    const header = newlineIndex >= 0 ? block.slice(0, newlineIndex).trim() : block.trim();
-    const content = newlineIndex >= 0 ? block.slice(newlineIndex + 1).trim() : '';
-    const headerMatch = header.match(/^\[([^\]]+)\]\s+(.*?):\s*$/s);
-    const indexName = headerMatch?.[1]?.trim() || '';
-    const source = headerMatch?.[2]?.trim() || header.replace(/:\s*$/, '');
-    return {
-      indexName,
-      source,
-      content,
-      truncated: /\.\.\. \(truncated\)\s*$/m.test(content),
-    };
-  }).filter((entry) => entry.source || entry.content);
+  const rawBlocks = body
+    .split(/\n\n---\n\n/g)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  const results: ParsedKnowledgeSearchResult[] = rawBlocks
+    .map((block) => {
+      const newlineIndex = block.indexOf('\n');
+      const header = newlineIndex >= 0 ? block.slice(0, newlineIndex).trim() : block.trim();
+      const content = newlineIndex >= 0 ? block.slice(newlineIndex + 1).trim() : '';
+      const headerMatch = header.match(/^\[([^\]]+)\]\s+(.*?):\s*$/s);
+      const indexName = headerMatch?.[1]?.trim() || '';
+      const source = headerMatch?.[2]?.trim() || header.replace(/:\s*$/, '');
+      return {
+        indexName,
+        source,
+        content,
+        truncated: /\.\.\. \(truncated\)\s*$/m.test(content),
+      };
+    })
+    .filter((entry) => entry.source || entry.content);
 
   return {
     tool: toolName,
     status: results.length > 0 ? 'completed' : 'no_results',
     ok: results.length > 0,
     query: '',
-    indexName: results.length > 0 && results.every((entry) => entry.indexName === results[0].indexName)
-      ? (results[0].indexName || '')
-      : '',
+    indexName:
+      results.length > 0 && results.every((entry) => entry.indexName === results[0].indexName)
+        ? results[0].indexName || ''
+        : '',
     k: 0,
     maxCharsPerResult: 0,
     indexesSearched: buildKnowledgeSearchIndexSummaries(results),
@@ -4131,7 +4565,12 @@ function parseSchemaSearchOutput(
       }
     }
 
-    if (!result.objectKind && !result.description && !result.estimatedRows && result.columns.length === 0) {
+    if (
+      !result.objectKind &&
+      !result.description &&
+      !result.estimatedRows &&
+      result.columns.length === 0
+    ) {
       continue;
     }
 
@@ -4173,7 +4612,8 @@ interface ParsedWebReadPdfOutput {
 function parsePartialWebReadPdfOutput(output: string): ParsedWebReadPdfOutput | null {
   const mode = readJsonStringField(output, 'mode');
   const tool = readJsonStringField(output, 'tool');
-  if (mode !== 'pdf_read' && tool !== WEB_READ_PDF_TOOL_ID && tool !== WEB_BROWSE_TOOL_ID) return null;
+  if (mode !== 'pdf_read' && tool !== WEB_READ_PDF_TOOL_ID && tool !== WEB_BROWSE_TOOL_ID)
+    return null;
 
   const text = readJsonStringField(output, 'text') ?? '';
   const textLength = readJsonNumberField(output, 'text_length');
@@ -4200,7 +4640,10 @@ function parseWebReadPdfOutput(output: string | undefined | null): ParsedWebRead
   if (!output) return null;
   const parsed = parseNestedJsonRecordValue(output);
   if (!parsed) return parsePartialWebReadPdfOutput(output);
-  if (parsed.tool !== WEB_READ_PDF_TOOL_ID && !(parsed.tool === WEB_BROWSE_TOOL_ID && parsed.mode === 'pdf_read')) {
+  if (
+    parsed.tool !== WEB_READ_PDF_TOOL_ID &&
+    !(parsed.tool === WEB_BROWSE_TOOL_ID && parsed.mode === 'pdf_read')
+  ) {
     return parsePartialWebReadPdfOutput(output);
   }
 
@@ -4212,8 +4655,10 @@ function parseWebReadPdfOutput(output: string | undefined | null): ParsedWebRead
     const text = typeof record.text === 'string' ? record.text : '';
     const matchStartRaw = record.match_start_char;
     const matchEndRaw = record.match_end_char;
-    const matchStart = typeof matchStartRaw === 'number' && Number.isFinite(matchStartRaw) ? matchStartRaw : null;
-    const matchEnd = typeof matchEndRaw === 'number' && Number.isFinite(matchEndRaw) ? matchEndRaw : null;
+    const matchStart =
+      typeof matchStartRaw === 'number' && Number.isFinite(matchStartRaw) ? matchStartRaw : null;
+    const matchEnd =
+      typeof matchEndRaw === 'number' && Number.isFinite(matchEndRaw) ? matchEndRaw : null;
     if (!text && matchStart == null && matchEnd == null) continue;
     matches.push({ text, matchStart, matchEnd });
   }
@@ -4230,8 +4675,12 @@ function parseWebReadPdfOutput(output: string | undefined | null): ParsedWebRead
     requestedUrl: typeof parsed.requested_url === 'string' ? parsed.requested_url : '',
     query: typeof parsed.query === 'string' ? parsed.query : '',
     text,
-    textLength: typeof textLengthRaw === 'number' && Number.isFinite(textLengthRaw) ? textLengthRaw : text.length,
-    textStartChar: typeof textStartRaw === 'number' && Number.isFinite(textStartRaw) ? textStartRaw : null,
+    textLength:
+      typeof textLengthRaw === 'number' && Number.isFinite(textLengthRaw)
+        ? textLengthRaw
+        : text.length,
+    textStartChar:
+      typeof textStartRaw === 'number' && Number.isFinite(textStartRaw) ? textStartRaw : null,
     textEndChar: typeof textEndRaw === 'number' && Number.isFinite(textEndRaw) ? textEndRaw : null,
     truncated: parsed.truncated === true,
     matches,
@@ -4265,8 +4714,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [retryProgressText, setRetryProgressText] = useState<string | null>(null);
   const [isRefreshingLiveData, setIsRefreshingLiveData] = useState(false);
   const [liveDataRefreshError, setLiveDataRefreshError] = useState<string | null>(null);
-  const [visualizationBranches, setVisualizationBranches] = useState<VisualizationBranchSummary[]>([]);
-  const [activeVisualizationBranchId, setActiveVisualizationBranchId] = useState<string | null>(null);
+  const [visualizationBranches, setVisualizationBranches] = useState<VisualizationBranchSummary[]>(
+    [],
+  );
+  const [activeVisualizationBranchId, setActiveVisualizationBranchId] = useState<string | null>(
+    null,
+  );
   const [isSwitchingVisualizationBranch, setIsSwitchingVisualizationBranch] = useState(false);
   const retryProgressTimers = useRef<number[]>([]);
   const visualToolName = useMemo(() => getToolVisualName(toolCall.tool), [toolCall.tool]);
@@ -4275,13 +4728,21 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
   // tool call can load each file's diff independently and a partial failure
   // does not blank the entire card.
-  const [userspaceDiffMap, setUserspaceDiffMap] = useState<Map<string, UserSpaceSnapshotFileDiff>>(() => new Map());
-  const [userspaceDiffLoadingMap, setUserspaceDiffLoadingMap] = useState<Map<string, boolean>>(() => new Map());
-  const [userspaceDiffErrorMap, setUserspaceDiffErrorMap] = useState<Map<string, string>>(() => new Map());
+  const [userspaceDiffMap, setUserspaceDiffMap] = useState<Map<string, UserSpaceSnapshotFileDiff>>(
+    () => new Map(),
+  );
+  const [userspaceDiffLoadingMap, setUserspaceDiffLoadingMap] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
+  const [userspaceDiffErrorMap, setUserspaceDiffErrorMap] = useState<Map<string, string>>(
+    () => new Map(),
+  );
   const [userspaceCurrentSnapshotId, setUserspaceCurrentSnapshotId] = useState<string | null>(null);
   const [showUserspaceDiffOverlay, setShowUserspaceDiffOverlay] = useState(false);
   const [userspaceOverlayActiveIndex, setUserspaceOverlayActiveIndex] = useState<number>(0);
-  const [hydratedUserspaceListEntries, setHydratedUserspaceListEntries] = useState<ParsedUserSpaceListEntry[] | null>(null);
+  const [hydratedUserspaceListEntries, setHydratedUserspaceListEntries] = useState<
+    ParsedUserSpaceListEntry[] | null
+  >(null);
   const [isHydratingUserspaceList, setIsHydratingUserspaceList] = useState(false);
   const [hydratedUserspaceListError, setHydratedUserspaceListError] = useState<string | null>(null);
   const latestOutput = retryOutput || toolCall.output;
@@ -4289,18 +4750,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const parsedTerminalOutput = useMemo(() => parseTerminalOutput(latestOutput), [latestOutput]);
 
   // Check if this is a visualization tool that can be retried
-  const isVisualizationTool = toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
+  const isVisualizationTool =
+    toolCall.tool === 'create_chart' || toolCall.tool === 'create_datatable';
   const isTerminalCommand = isTerminalToolCall(toolCall) || Boolean(parsedTerminalOutput);
   const isSqlTool = isSqlToolCall(toolCall);
   const rerunKind = getTerminalRerunKind(toolCall);
   const canRerun = allowRerun && canRerunToolCall(toolCall);
-  const hasRerunContext = rerunKind === USERSPACE_EXEC_RERUN_KIND
-    ? Boolean(workspaceId)
-    : rerunKind === CONVERSATION_TOOL_RERUN_KIND
-      ? Boolean(conversationId && toolCall.connection?.tool_config_id)
-      : rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND
-        ? Boolean(conversationId)
-        : false;
+  const hasRerunContext =
+    rerunKind === USERSPACE_EXEC_RERUN_KIND
+      ? Boolean(workspaceId)
+      : rerunKind === CONVERSATION_TOOL_RERUN_KIND
+        ? Boolean(conversationId && toolCall.connection?.tool_config_id)
+        : rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND
+          ? Boolean(conversationId)
+          : false;
   const activeTerminalOutput = activeOutput;
 
   // Parse terminal output for terminal-style rendering
@@ -4322,7 +4785,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         if (parsed.ok === false) return true;
         if (typeof parsed.status === 'string') {
           const status = parsed.status.toLowerCase();
-          if (status.includes('failed') || status.includes('error') || status.includes('rejected')) {
+          if (
+            status.includes('failed') ||
+            status.includes('error') ||
+            status.includes('rejected')
+          ) {
             return true;
           }
         }
@@ -4335,7 +4802,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
     const outputLower = output.toLowerCase();
     return (
-      /(^|\n)\s*error\s*[:\-]/i.test(output) ||
+      /(^|\n)\s*error\s*[:-]/i.test(output) ||
       outputLower.includes('validation error') ||
       outputLower.includes('exception') ||
       outputLower.includes('traceback') ||
@@ -4362,7 +4829,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       inputText,
       effectiveOutput,
       retryError ?? '',
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }, [
     effectiveOutput,
     inChatSearchQuery,
@@ -4375,7 +4844,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   ]);
   const inChatSearchForcesExpanded = useMemo(() => {
     if (!inChatSearchableText) return false;
-    return textMatchesInChatSearchQuery(inChatSearchableText, inChatSearchQuery, inChatSearchOptions);
+    return textMatchesInChatSearchQuery(
+      inChatSearchableText,
+      inChatSearchQuery,
+      inChatSearchOptions,
+    );
   }, [inChatSearchableText, inChatSearchOptions, inChatSearchQuery]);
 
   const expanded = manuallyExpanded || inChatSearchForcesExpanded;
@@ -4397,10 +4870,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (!userspaceWriteBatch || !workspaceId) return [];
     return userspaceWriteBatch.entries.filter(
       (entry) =>
-        USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName)
-        && entry.persisted
-        && !entry.rejected
-        && !entry.noChanges,
+        USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName) &&
+        entry.persisted &&
+        !entry.rejected &&
+        !entry.noChanges,
     );
   }, [userspaceWriteBatch, workspaceId]);
 
@@ -4421,10 +4894,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
       let finalDiff: UserSpaceSnapshotFileDiff;
       try {
-        const baselineDiff = await api.getUserSpaceSnapshotFileDiff(workspaceId, snapshotId, entry.path);
-        finalDiff = entry.file?.content != null
-          ? mergeUserspaceWriteDiff(baselineDiff, entry)
-          : baselineDiff;
+        const baselineDiff = await api.getUserSpaceSnapshotFileDiff(
+          workspaceId,
+          snapshotId,
+          entry.path,
+        );
+        finalDiff =
+          entry.file?.content != null ? mergeUserspaceWriteDiff(baselineDiff, entry) : baselineDiff;
       } catch {
         const currentFile = await api.getUserSpaceFile(workspaceId, entry.path);
         const afterContent = entry.file?.content ?? currentFile.content ?? '';
@@ -4577,7 +5053,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         const mapped = files
           .map((file) => ({
             path: file.path,
-            entryType: file.entry_type === 'directory' ? 'directory' as const : 'file' as const,
+            entryType: file.entry_type === 'directory' ? ('directory' as const) : ('file' as const),
             sizeBytes: Number.isFinite(file.size_bytes) ? Math.max(0, file.size_bytes) : 0,
             updatedAt: file.updated_at || null,
           }))
@@ -4586,7 +5062,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         setHydratedUserspaceListEntries(mapped);
       } catch (err) {
         if (cancelled) return;
-        const message = err instanceof Error ? err.message : 'Failed to load full workspace file list.';
+        const message =
+          err instanceof Error ? err.message : 'Failed to load full workspace file list.';
         setHydratedUserspaceListError(message);
         setHydratedUserspaceListEntries(null);
       } finally {
@@ -4606,7 +5083,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const userspaceReadResult = userspaceReadBatch?.primary ?? null;
 
   const userspaceReadDiff = useMemo((): UserSpaceSnapshotFileDiff | null => {
-    if (!userspaceReadResult || userspaceReadResult.isRejected || userspaceReadResult.content == null) return null;
+    if (
+      !userspaceReadResult ||
+      userspaceReadResult.isRejected ||
+      userspaceReadResult.content == null
+    )
+      return null;
     const normalizedContent = normalizeUserspaceSnippetContent(userspaceReadResult.content);
     const lines = normalizedContent.split('\n').length;
     return {
@@ -4625,19 +5107,24 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   }, [userspaceReadResult]);
 
   const screenshotPreview = useMemo(() => {
-    if (toolCall.tool !== 'capture_userspace_screenshot' || !effectiveOutput) {
+    if (toolCall.tool !== 'capture_userspace_screenshot' || (!effectiveOutput && !toolCall.mcp)) {
       return null;
     }
     try {
-      const parsed = JSON.parse(effectiveOutput) as ScreenshotToolOutput;
-      const nested = parsed.screenshot && typeof parsed.screenshot === 'object'
-        ? parsed.screenshot
-        : null;
-      const url = typeof parsed.preview_image_url === 'string'
-        ? parsed.preview_image_url.trim()
-        : typeof nested?.preview_image_url === 'string'
-          ? nested.preview_image_url.trim()
-          : '';
+      const parsed = effectiveOutput
+        ? (JSON.parse(effectiveOutput) as ScreenshotToolOutput)
+        : ({} as ScreenshotToolOutput);
+      const nested =
+        parsed.screenshot && typeof parsed.screenshot === 'object' ? parsed.screenshot : null;
+      const mcpResponse = asRecord(parsed.mcp?.response) ?? asRecord(toolCall.mcp?.response);
+      const url =
+        typeof parsed.preview_image_url === 'string'
+          ? parsed.preview_image_url.trim()
+          : typeof nested?.preview_image_url === 'string'
+            ? nested.preview_image_url.trim()
+            : typeof mcpResponse?.preview_image_url === 'string'
+              ? mcpResponse.preview_image_url.trim()
+              : '';
       if (!url) return null;
       const render = parsed.render ?? nested?.render;
       const width = Number(render?.width || 0);
@@ -4652,7 +5139,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     } catch {
       return null;
     }
-  }, [effectiveOutput, toolCall.tool]);
+  }, [effectiveOutput, toolCall.mcp, toolCall.tool]);
 
   // Check if this is a chart tool
   const chartData = useMemo(() => {
@@ -4697,49 +5184,69 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     return null;
   }, [toolCall.tool, effectiveOutput, hasErrorInOutput]);
 
-  const visualizationToolType: 'chart' | 'datatable' | null = toolCall.tool === 'create_chart'
-    ? 'chart'
-    : toolCall.tool === 'create_datatable'
-      ? 'datatable'
-      : null;
+  const visualizationToolType: 'chart' | 'datatable' | null =
+    toolCall.tool === 'create_chart'
+      ? 'chart'
+      : toolCall.tool === 'create_datatable'
+        ? 'datatable'
+        : null;
   const visualizationDataConnection = chartData?.data_connection ?? datatableData?.data_connection;
   const hasRefreshableLiveVisualization = Boolean(
-    visualizationToolType && hasRefreshableVisualizationConnection(visualizationDataConnection, visualizationToolType),
+    visualizationToolType &&
+    hasRefreshableVisualizationConnection(visualizationDataConnection, visualizationToolType),
   );
-  const hasPersistedVisualizationContext = Boolean(conversationId) && typeof eventIndex === 'number';
-  const refreshDisabledReason = hasRefreshableLiveVisualization && !hasPersistedVisualizationContext
-    ? 'Refresh available when response finishes'
-    : null;
+  const hasPersistedVisualizationContext =
+    Boolean(conversationId) && typeof eventIndex === 'number';
+  const refreshDisabledReason =
+    hasRefreshableLiveVisualization && !hasPersistedVisualizationContext
+      ? 'Refresh available when response finishes'
+      : null;
 
   useEffect(() => {
     let cancelled = false;
-    if (!conversationId || !visualizationToolType || typeof eventIndex !== 'number' || !hasRefreshableLiveVisualization) {
+    if (
+      !conversationId ||
+      !visualizationToolType ||
+      typeof eventIndex !== 'number' ||
+      !hasRefreshableLiveVisualization
+    ) {
       setVisualizationBranches([]);
       setActiveVisualizationBranchId(null);
       return;
     }
-    void api.listVisualizationBranches(
-      conversationId,
-      {
-        tool_type: visualizationToolType,
-        ...(messageId ? { message_id: messageId } : {}),
-        ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
-        event_index: eventIndex,
-      },
-      workspaceId,
-    ).then(result => {
-      if (cancelled) return;
-      setVisualizationBranches(result.branches || []);
-      setActiveVisualizationBranchId(result.active_branch_id || null);
-    }).catch(() => {
-      if (cancelled) return;
-      setVisualizationBranches([]);
-      setActiveVisualizationBranchId(null);
-    });
+    void api
+      .listVisualizationBranches(
+        conversationId,
+        {
+          tool_type: visualizationToolType,
+          ...(messageId ? { message_id: messageId } : {}),
+          ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+          event_index: eventIndex,
+        },
+        workspaceId,
+      )
+      .then((result) => {
+        if (cancelled) return;
+        setVisualizationBranches(result.branches || []);
+        setActiveVisualizationBranchId(result.active_branch_id || null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setVisualizationBranches([]);
+        setActiveVisualizationBranchId(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [conversationId, eventIndex, hasRefreshableLiveVisualization, messageId, messageIndex, visualizationToolType, workspaceId]);
+  }, [
+    conversationId,
+    eventIndex,
+    hasRefreshableLiveVisualization,
+    messageId,
+    messageIndex,
+    visualizationToolType,
+    workspaceId,
+  ]);
 
   // Determine if this visualization tool call actually failed
   // (either error in output OR parsing failed for visualization tools)
@@ -4751,7 +5258,15 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       if (toolCall.tool === 'create_datatable' && !datatableData) return true;
     }
     return false;
-  }, [hasErrorInOutput, isVisualizationTool, toolCall.output, toolCall.status, toolCall.tool, chartData, datatableData]);
+  }, [
+    hasErrorInOutput,
+    isVisualizationTool,
+    toolCall.output,
+    toolCall.status,
+    toolCall.tool,
+    chartData,
+    datatableData,
+  ]);
 
   // Parse table metadata from output if present (for SQL results)
   const { tableData, displayText } = useMemo(() => {
@@ -4760,11 +5275,14 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   }, [effectiveOutput]);
   const handleDownloadResultTableCsv = useCallback(() => {
     if (!tableData) return;
-    downloadCsv(tableData.columns, tableData.rows, sanitizeDownloadFilename(`${toolCall.tool || 'results'}-results`, 'csv'));
+    downloadCsv(
+      tableData.columns,
+      tableData.rows,
+      sanitizeDownloadFilename(`${toolCall.tool || 'results'}-results`, 'csv'),
+    );
   }, [tableData, toolCall.tool]);
-  const visibleDisplayText = toolCall.tool === WEB_READ_PDF_TOOL_ID
-    ? maskHiddenToolNames(displayText)
-    : displayText;
+  const visibleDisplayText =
+    toolCall.tool === WEB_READ_PDF_TOOL_ID ? maskHiddenToolNames(displayText) : displayText;
 
   // Memoize formatted input to avoid recalculating on every render
   const inputDisplay = useMemo(() => {
@@ -4780,31 +5298,48 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     return JSON.stringify(toolCall.input, null, 2);
   }, [toolCall.input]);
 
-  const copyToClipboard = useCallback(async (text: string, type: 'query' | 'result', buttonId = 'default') => {
-    try {
-      await navigator.clipboard.writeText(text);
-      const key = `${type}:${buttonId}`;
-      setCopiedButtonKey(key);
-      if (copyFeedbackTimer.current != null) {
-        window.clearTimeout(copyFeedbackTimer.current);
+  const mcpDisplay = useMemo(() => {
+    if (!toolCall.mcp) return null;
+    const serverLabel = toolCall.mcp.server_name || toolCall.mcp.server_id || 'MCP server';
+    const toolName = toolCall.mcp.tool_name || toolCall.tool;
+    return {
+      title: `${serverLabel} / ${toolName}`,
+      request: JSON.stringify(toolCall.mcp.request ?? {}, null, 2),
+      response: JSON.stringify(toolCall.mcp.response ?? {}, null, 2),
+    };
+  }, [toolCall.mcp, toolCall.tool]);
+
+  const copyToClipboard = useCallback(
+    async (text: string, type: 'query' | 'result', buttonId = 'default') => {
+      try {
+        await navigator.clipboard.writeText(text);
+        const key = `${type}:${buttonId}`;
+        setCopiedButtonKey(key);
+        if (copyFeedbackTimer.current != null) {
+          window.clearTimeout(copyFeedbackTimer.current);
+        }
+        copyFeedbackTimer.current = window.setTimeout(() => {
+          setCopiedButtonKey((current) => (current === key ? null : current));
+        }, 2000);
+      } catch (err) {
+        console.error('Failed to copy:', err);
       }
-      copyFeedbackTimer.current = window.setTimeout(() => {
-        setCopiedButtonKey((current) => (current === key ? null : current));
-      }, 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const isCopiedButton = useCallback(
     (type: 'query' | 'result', buttonId: string) => copiedButtonKey === `${type}:${buttonId}`,
     [copiedButtonKey],
   );
-  useEffect(() => () => {
-    if (copyFeedbackTimer.current != null) {
-      window.clearTimeout(copyFeedbackTimer.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (copyFeedbackTimer.current != null) {
+        window.clearTimeout(copyFeedbackTimer.current);
+      }
+    },
+    [],
+  );
 
   const clearRetryProgressTimers = useCallback(() => {
     retryProgressTimers.current.forEach((timerId) => window.clearTimeout(timerId));
@@ -4814,221 +5349,297 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   useEffect(() => () => clearRetryProgressTimers(), [clearRetryProgressTimers]);
 
   // Handle retry for visualization tools
-  const handleRetry = useCallback(async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleRetry = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
 
-    if (!conversationId) {
-      setRetryError('Cannot retry: missing conversation context');
-      return;
-    }
-
-    // Find deterministic source data from nearby tool calls when available.
-    let sourceData: { columns: string[]; rows: unknown[][] } | null = null;
-
-    if (siblingEvents) {
-      for (const event of [...siblingEvents].reverse()) {
-        if (event.type === 'tool' && event.output) {
-          const metadata = parseTableMetadata(event.output);
-          if (metadata.tableData) {
-            sourceData = {
-              columns: metadata.tableData.columns,
-              rows: metadata.tableData.rows
-            };
-            break;
-          }
-        }
-      }
-    }
-
-    setIsRetrying(true);
-    setRetryError(null);
-    setRetryProgressText('Checking source data...');
-    clearRetryProgressTimers();
-    retryProgressTimers.current = [
-      window.setTimeout(() => setRetryProgressText('Re-running source query if needed...'), 1000),
-      window.setTimeout(() => setRetryProgressText('Repairing visualization data...'), 2500),
-      window.setTimeout(() => setRetryProgressText('Validating repaired output...'), 5000),
-    ];
-
-    try {
-      const toolType = toolCall.tool === 'create_chart' ? 'chart' : 'datatable';
-      const request: RetryVisualizationRequest = {
-        tool_type: toolType,
-        ...(sourceData ? { source_data: sourceData } : {}),
-        title: toolType === 'chart' ? 'Chart' : 'Data',
-        allow_ai_repair: true,
-        allow_source_rerun: true,
-        failed_tool_input: toolCall.input,
-        failed_tool_output: toolCall.output,
-        context_events: buildVisualizationRetryContextEvents(siblingEvents),
-        ...(messageId ? { message_id: messageId } : {}),
-        ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
-        ...(typeof eventIndex === 'number' ? { event_index: eventIndex } : {}),
-      };
-
-      const result = await api.retryVisualization(conversationId, request, workspaceId);
-
-      if (result.success && result.output) {
-        setRetryOutput(result.output);
-        onRetrySuccess?.(result.output);
-      } else {
-        setRetryError(result.error || 'Unknown error');
-        setManuallyExpanded(true);
-      }
-    } catch (err) {
-      setRetryError(err instanceof Error ? err.message : 'Request failed');
-      setManuallyExpanded(true);
-    } finally {
-      clearRetryProgressTimers();
-      setRetryProgressText(null);
-      setIsRetrying(false);
-    }
-  }, [clearRetryProgressTimers, conversationId, eventIndex, messageId, messageIndex, siblingEvents, toolCall.input, toolCall.output, toolCall.tool, onRetrySuccess, workspaceId]);
-
-  const handleLiveDataRefresh = useCallback(async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!conversationId) {
-      setLiveDataRefreshError('Cannot refresh: missing conversation context');
-      return;
-    }
-    if (typeof eventIndex !== 'number') {
-      setLiveDataRefreshError('Cannot refresh: missing visualization event context');
-      return;
-    }
-
-    if (!visualizationToolType) {
-      setLiveDataRefreshError('Cannot refresh: unsupported visualization tool');
-      return;
-    }
-    setIsRefreshingLiveData(true);
-    setLiveDataRefreshError(null);
-    try {
-      const result = await api.refreshLiveVisualization(
-        conversationId,
-        {
-          tool_type: visualizationToolType,
-          ...(messageId ? { message_id: messageId } : {}),
-          ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
-          event_index: eventIndex,
-        },
-        workspaceId,
-      );
-      if (!result.success || !result.output) {
-        throw new Error(result.error || 'Live data refresh failed');
-      }
-      setRetryOutput(result.output);
-      setVisualizationBranches(result.branches || []);
-      setActiveVisualizationBranchId(result.active_branch_id || null);
-      onLiveVisualizationRefreshSuccess?.(result);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Live data refresh failed';
-      setLiveDataRefreshError(errorMsg);
-    } finally {
-      setIsRefreshingLiveData(false);
-    }
-  }, [conversationId, eventIndex, messageId, messageIndex, onLiveVisualizationRefreshSuccess, visualizationToolType, workspaceId]);
-
-  const handleVisualizationBranchSelect = useCallback(async (branchId: string) => {
-    if (!conversationId || !branchId || branchId === activeVisualizationBranchId) return;
-    setIsSwitchingVisualizationBranch(true);
-    setLiveDataRefreshError(null);
-    try {
-      const result = await api.switchVisualizationBranch(
-        conversationId,
-        { branch_id: branchId },
-        workspaceId,
-      );
-      if (!result.success || !result.output) {
-        throw new Error(result.error || 'Visualization version switch failed');
-      }
-      setRetryOutput(result.output);
-      setVisualizationBranches(result.branches || []);
-      setActiveVisualizationBranchId(result.active_branch_id || branchId);
-      onLiveVisualizationRefreshSuccess?.(result);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Visualization version switch failed';
-      setLiveDataRefreshError(errorMsg);
-    } finally {
-      setIsSwitchingVisualizationBranch(false);
-    }
-  }, [activeVisualizationBranchId, conversationId, onLiveVisualizationRefreshSuccess, workspaceId]);
-
-  // Handle re-run for terminal commands
-  const handleRerunCommand = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!canRerun || !rerunKind || isRerunning || !inputDisplay) return;
-    setIsRerunning(true);
-    setRetryOutput(null);
-    setRetryError(null);
-    try {
-      if (rerunKind === USERSPACE_EXEC_RERUN_KIND) {
-        if (!workspaceId) return;
-        const result = await api.execWorkspaceCommand(
-          workspaceId,
-          inputDisplay,
-          toolCall.input?.timeout_seconds as number || 30,
-          (toolCall.input?.cwd as string) || undefined,
-        );
-        const payload = {
-          tool: 'run_terminal_command',
-          status: result.timed_out ? 'command_timed_out' : (result.exit_code !== 0 ? 'command_failed' : 'completed'),
-          cwd: result.cwd ?? (toolCall.input?.cwd as string) ?? '.',
-          exit_code: result.exit_code ?? 0,
-          ...(result.stdout ? { stdout: result.stdout } : {}),
-          ...(result.stderr ? { stderr: result.stderr } : {}),
-          ...(result.timed_out ? { timed_out: true } : {}),
-          ...(result.truncated ? { truncated: true } : {}),
-        };
-        setRetryOutput(JSON.stringify(payload, null, 2));
+      if (!conversationId) {
+        setRetryError('Cannot retry: missing conversation context');
         return;
       }
 
-      if (rerunKind === CONVERSATION_TOOL_RERUN_KIND || rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND) {
-        if (!conversationId) return;
-        const toolConfigId = toolCall.connection?.tool_config_id;
-        if (rerunKind === CONVERSATION_TOOL_RERUN_KIND && !toolConfigId) return;
-        const result = await api.retryTerminalToolCall(
+      // Find deterministic source data from nearby tool calls when available.
+      let sourceData: { columns: string[]; rows: unknown[][] } | null = null;
+
+      if (siblingEvents) {
+        for (const event of [...siblingEvents].reverse()) {
+          if (event.type === 'tool' && event.output) {
+            const metadata = parseTableMetadata(event.output);
+            if (metadata.tableData) {
+              sourceData = {
+                columns: metadata.tableData.columns,
+                rows: metadata.tableData.rows,
+              };
+              break;
+            }
+          }
+        }
+      }
+
+      setIsRetrying(true);
+      setRetryError(null);
+      setRetryProgressText('Checking source data...');
+      clearRetryProgressTimers();
+      retryProgressTimers.current = [
+        window.setTimeout(() => setRetryProgressText('Re-running source query if needed...'), 1000),
+        window.setTimeout(() => setRetryProgressText('Repairing visualization data...'), 2500),
+        window.setTimeout(() => setRetryProgressText('Validating repaired output...'), 5000),
+      ];
+
+      try {
+        const toolType = toolCall.tool === 'create_chart' ? 'chart' : 'datatable';
+        const request: RetryVisualizationRequest = {
+          tool_type: toolType,
+          ...(sourceData ? { source_data: sourceData } : {}),
+          title: toolType === 'chart' ? 'Chart' : 'Data',
+          allow_ai_repair: true,
+          allow_source_rerun: true,
+          failed_tool_input: toolCall.input,
+          failed_tool_output: toolCall.output,
+          context_events: buildVisualizationRetryContextEvents(siblingEvents),
+          ...(messageId ? { message_id: messageId } : {}),
+          ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+          ...(typeof eventIndex === 'number' ? { event_index: eventIndex } : {}),
+        };
+
+        const result = await api.retryVisualization(conversationId, request, workspaceId);
+
+        if (result.success && result.output) {
+          setRetryOutput(result.output);
+          onRetrySuccess?.(result.output);
+        } else {
+          setRetryError(result.error || 'Unknown error');
+          setManuallyExpanded(true);
+        }
+      } catch (err) {
+        setRetryError(err instanceof Error ? err.message : 'Request failed');
+        setManuallyExpanded(true);
+      } finally {
+        clearRetryProgressTimers();
+        setRetryProgressText(null);
+        setIsRetrying(false);
+      }
+    },
+    [
+      clearRetryProgressTimers,
+      conversationId,
+      eventIndex,
+      messageId,
+      messageIndex,
+      siblingEvents,
+      toolCall.input,
+      toolCall.output,
+      toolCall.tool,
+      onRetrySuccess,
+      workspaceId,
+    ],
+  );
+
+  const handleLiveDataRefresh = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!conversationId) {
+        setLiveDataRefreshError('Cannot refresh: missing conversation context');
+        return;
+      }
+      if (typeof eventIndex !== 'number') {
+        setLiveDataRefreshError('Cannot refresh: missing visualization event context');
+        return;
+      }
+
+      if (!visualizationToolType) {
+        setLiveDataRefreshError('Cannot refresh: unsupported visualization tool');
+        return;
+      }
+      setIsRefreshingLiveData(true);
+      setLiveDataRefreshError(null);
+      try {
+        const result = await api.refreshLiveVisualization(
           conversationId,
-          rerunKind === CONVERSATION_TOOL_RERUN_KIND ? {
-            tool_config_id: toolConfigId,
-            input: toolCall.input || {},
-          } : {
-            builtin_tool_id: CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
-            input: toolCall.input || {},
+          {
+            tool_type: visualizationToolType,
+            ...(messageId ? { message_id: messageId } : {}),
+            ...(typeof messageIndex === 'number' ? { message_index: messageIndex } : {}),
+            event_index: eventIndex,
           },
           workspaceId,
         );
-        if (result.output) {
-          setRetryOutput(result.output);
+        if (!result.success || !result.output) {
+          throw new Error(result.error || 'Live data refresh failed');
+        }
+        setRetryOutput(result.output);
+        setVisualizationBranches(result.branches || []);
+        setActiveVisualizationBranchId(result.active_branch_id || null);
+        onLiveVisualizationRefreshSuccess?.(result);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Live data refresh failed';
+        setLiveDataRefreshError(errorMsg);
+      } finally {
+        setIsRefreshingLiveData(false);
+      }
+    },
+    [
+      conversationId,
+      eventIndex,
+      messageId,
+      messageIndex,
+      onLiveVisualizationRefreshSuccess,
+      visualizationToolType,
+      workspaceId,
+    ],
+  );
+
+  const handleVisualizationBranchSelect = useCallback(
+    async (branchId: string) => {
+      if (!conversationId || !branchId || branchId === activeVisualizationBranchId) return;
+      setIsSwitchingVisualizationBranch(true);
+      setLiveDataRefreshError(null);
+      try {
+        const result = await api.switchVisualizationBranch(
+          conversationId,
+          { branch_id: branchId },
+          workspaceId,
+        );
+        if (!result.success || !result.output) {
+          throw new Error(result.error || 'Visualization version switch failed');
+        }
+        setRetryOutput(result.output);
+        setVisualizationBranches(result.branches || []);
+        setActiveVisualizationBranchId(result.active_branch_id || branchId);
+        onLiveVisualizationRefreshSuccess?.(result);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Visualization version switch failed';
+        setLiveDataRefreshError(errorMsg);
+      } finally {
+        setIsSwitchingVisualizationBranch(false);
+      }
+    },
+    [activeVisualizationBranchId, conversationId, onLiveVisualizationRefreshSuccess, workspaceId],
+  );
+
+  // Handle re-run for terminal commands
+  const handleRerunCommand = useCallback(
+    async (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!canRerun || !rerunKind || isRerunning || !inputDisplay) return;
+      setIsRerunning(true);
+      setRetryOutput(null);
+      setRetryError(null);
+      try {
+        if (rerunKind === USERSPACE_EXEC_RERUN_KIND) {
+          if (!workspaceId) return;
+          const result = await api.execWorkspaceCommand(
+            workspaceId,
+            inputDisplay,
+            (toolCall.input?.timeout_seconds as number) || 30,
+            (toolCall.input?.cwd as string) || undefined,
+          );
+          const payload = {
+            tool: 'run_terminal_command',
+            status: result.timed_out
+              ? 'command_timed_out'
+              : result.exit_code !== 0
+                ? 'command_failed'
+                : 'completed',
+            cwd: result.cwd ?? (toolCall.input?.cwd as string) ?? '.',
+            exit_code: result.exit_code ?? 0,
+            ...(result.stdout ? { stdout: result.stdout } : {}),
+            ...(result.stderr ? { stderr: result.stderr } : {}),
+            ...(result.timed_out ? { timed_out: true } : {}),
+            ...(result.truncated ? { truncated: true } : {}),
+          };
+          setRetryOutput(JSON.stringify(payload, null, 2));
           return;
         }
-        if (!result.success) {
-          throw new Error(result.error || 'Re-run failed');
+
+        if (
+          rerunKind === CONVERSATION_TOOL_RERUN_KIND ||
+          rerunKind === CHAT_DIAGNOSTIC_RERUN_KIND
+        ) {
+          if (!conversationId) return;
+          const toolConfigId = toolCall.connection?.tool_config_id;
+          if (rerunKind === CONVERSATION_TOOL_RERUN_KIND && !toolConfigId) return;
+          const result = await api.retryTerminalToolCall(
+            conversationId,
+            rerunKind === CONVERSATION_TOOL_RERUN_KIND
+              ? {
+                  tool_config_id: toolConfigId,
+                  input: toolCall.input || {},
+                }
+              : {
+                  builtin_tool_id: CHAT_DIAGNOSTIC_COMMAND_TOOL_ID,
+                  input: toolCall.input || {},
+                },
+            workspaceId,
+          );
+          if (result.output) {
+            setRetryOutput(result.output);
+            return;
+          }
+          if (!result.success) {
+            throw new Error(result.error || 'Re-run failed');
+          }
+          throw new Error('Re-run produced no output');
         }
-        throw new Error('Re-run produced no output');
+      } catch (err) {
+        setRetryError(err instanceof Error ? err.message : 'Re-run failed');
+      } finally {
+        setIsRerunning(false);
       }
-    } catch (err) {
-      setRetryError(err instanceof Error ? err.message : 'Re-run failed');
-    } finally {
-      setIsRerunning(false);
-    }
-  }, [canRerun, rerunKind, isRerunning, inputDisplay, workspaceId, conversationId, toolCall.connection, toolCall.input]);
+    },
+    [
+      canRerun,
+      rerunKind,
+      isRerunning,
+      inputDisplay,
+      workspaceId,
+      conversationId,
+      toolCall.connection,
+      toolCall.input,
+    ],
+  );
 
   // Determine the tool-type icon (always visible)
   const getToolIcon = () => {
     if (toolCall.tool === WEB_READ_PDF_TOOL_ID) return <FileText size={14} />;
     const name = visualToolName.toLowerCase();
-    if (name.includes('sql') || name.includes('database') || name.includes('db')) return <Database size={14} />;
-    if (name.includes('search') || name.includes('retrieval') || name.includes('index')) return <Search size={14} />;
-    if (name.includes('chart') || name.includes('datatable') || name.includes('visuali')) return <BarChart3 size={14} />;
-    if (name.includes('shell') || name.includes('command') || name.includes('ssh') || name.includes('terminal') || name.includes('exec')) return <Terminal size={14} />;
-    if (name.includes('screenshot') || name.includes('image') || name.includes('preview')) return <ImageIcon size={14} />;
-    if (name.includes('file') || name.includes('read') || name.includes('write') || name.includes('userspace')) return <FileText size={14} />;
-    if (name.includes('web') || name.includes('http') || name.includes('url') || name.includes('fetch') || name.includes('browse')) return <Globe size={14} />;
-    if (name.includes('code') || name.includes('odoo') || name.includes('python')) return <Code size={14} />;
-    if (name.includes('schema') || name.includes('pdm') || name.includes('metadata')) return <FolderSearch size={14} />;
+    if (name.includes('sql') || name.includes('database') || name.includes('db'))
+      return <Database size={14} />;
+    if (name.includes('search') || name.includes('retrieval') || name.includes('index'))
+      return <Search size={14} />;
+    if (name.includes('chart') || name.includes('datatable') || name.includes('visuali'))
+      return <BarChart3 size={14} />;
+    if (
+      name.includes('shell') ||
+      name.includes('command') ||
+      name.includes('ssh') ||
+      name.includes('terminal') ||
+      name.includes('exec')
+    )
+      return <Terminal size={14} />;
+    if (name.includes('screenshot') || name.includes('image') || name.includes('preview'))
+      return <ImageIcon size={14} />;
+    if (
+      name.includes('file') ||
+      name.includes('read') ||
+      name.includes('write') ||
+      name.includes('userspace')
+    )
+      return <FileText size={14} />;
+    if (
+      name.includes('web') ||
+      name.includes('http') ||
+      name.includes('url') ||
+      name.includes('fetch') ||
+      name.includes('browse')
+    )
+      return <Globe size={14} />;
+    if (name.includes('code') || name.includes('odoo') || name.includes('python'))
+      return <Code size={14} />;
+    if (name.includes('schema') || name.includes('pdm') || name.includes('metadata'))
+      return <FolderSearch size={14} />;
     return <Wrench size={14} />;
   };
 
@@ -5048,7 +5659,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   const statusIcon = getStatusIcon();
   const toolIcon = getToolIcon();
-  const userspaceWriteSummary = userspaceWriteResult ? formatUserspaceWriteSummary(userspaceWriteResult) : '';
+  const userspaceWriteSummary = userspaceWriteResult
+    ? formatUserspaceWriteSummary(userspaceWriteResult)
+    : '';
 
   // Helper to look up an entry's diff/loading/error from the per-entry maps.
   const getEntryDiffState = (entry: ParsedUserSpaceWriteResult) => {
@@ -5065,7 +5678,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       cacheKey,
       diff: userspaceDiffMap.get(cacheKey) ?? null,
       loading: Boolean(userspaceDiffLoadingMap.get(cacheKey)),
-      error: userspaceDiffErrorMap.get(cacheKey) ?? userspaceDiffErrorMap.get(`__error__:${entry.path}`) ?? null,
+      error:
+        userspaceDiffErrorMap.get(cacheKey) ??
+        userspaceDiffErrorMap.get(`__error__:${entry.path}`) ??
+        null,
     };
   };
 
@@ -5086,7 +5702,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userspaceWriteBatch, userspaceDiffMap, userspaceDiffLoadingMap, userspaceDiffErrorMap, userspaceCurrentSnapshotId]);
+  }, [
+    userspaceWriteBatch,
+    userspaceDiffMap,
+    userspaceDiffLoadingMap,
+    userspaceDiffErrorMap,
+    userspaceCurrentSnapshotId,
+  ]);
 
   // Special rendering for chart tool - show chart inline without collapsible.
   // Keep these returns after every hook in this component so tool-call output
@@ -5096,8 +5718,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   }
 
   if (chartData) {
-    const canRefreshChart = hasRefreshableVisualizationConnection(chartData.data_connection, 'chart')
-      && Boolean(conversationId);
+    const canRefreshChart =
+      hasRefreshableVisualizationConnection(chartData.data_connection, 'chart') &&
+      Boolean(conversationId);
     return (
       <div className="tool-call tool-call-chart tool-call-complete">
         <ChartDisplay
@@ -5119,8 +5742,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   // Special rendering for datatable tool - show table inline without collapsible
   if (datatableData) {
-    const canRefreshTable = hasRefreshableVisualizationConnection(datatableData.data_connection, 'datatable')
-      && Boolean(conversationId);
+    const canRefreshTable =
+      hasRefreshableVisualizationConnection(datatableData.data_connection, 'datatable') &&
+      Boolean(conversationId);
     return (
       <div className="tool-call tool-call-datatable tool-call-complete">
         <DataTableDisplay
@@ -5154,32 +5778,45 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     options: { showSummaryFallback: boolean; batched?: boolean },
   ): ReactNode => {
     const { diff, loading, error } = getEntryDiffState(entry);
-    const isDiffable = USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName) || entry.op === 'upsert' || entry.op === 'patch';
+    const isDiffable =
+      USERSPACE_DIFFABLE_TOOL_NAMES.has(entry.toolName) ||
+      entry.op === 'upsert' ||
+      entry.op === 'patch';
     const showDiffCard = isDiffable && !loading && Boolean(diff);
     const fallbackText = entry.error
       ? entry.error
       : entry.message
         ? entry.message
-        : (options.showSummaryFallback ? (userspaceWriteSummary || displayText || (toolCall.output ?? '')) : '');
-    const statusGlyph = entry.op === 'delete'
-      ? 'D'
-      : entry.op === 'move'
-        ? 'R'
-        : (diff?.status ?? (entry.rejected ? 'X' : 'M'));
-    const opLabel = entry.op === 'upsert'
-      ? 'Upsert'
-      : entry.op === 'patch'
-        ? 'Patch'
+        : options.showSummaryFallback
+          ? userspaceWriteSummary || displayText || (toolCall.output ?? '')
+          : '';
+    const statusGlyph =
+      entry.op === 'delete'
+        ? 'D'
         : entry.op === 'move'
-          ? 'Move'
-          : 'Delete';
+          ? 'R'
+          : (diff?.status ?? (entry.rejected ? 'X' : 'M'));
+    const opLabel =
+      entry.op === 'upsert'
+        ? 'Upsert'
+        : entry.op === 'patch'
+          ? 'Patch'
+          : entry.op === 'move'
+            ? 'Move'
+            : 'Delete';
     const batched = Boolean(options.batched);
     const sectionClass = batched
       ? 'tool-call-section tool-call-userspace-batched-entry'
       : 'tool-call-section';
     const metaText = batched
-      ? (entry.rejected ? (entry.error || entry.message || 'Rejected') : entry.noChanges ? 'No changes' : '')
-      : ((diff ? formatDiffStatus(diff.status) : null) || entry.message || (entry.rejected ? 'Rejected' : entry.noChanges ? 'No changes' : 'Updated'));
+      ? entry.rejected
+        ? entry.error || entry.message || 'Rejected'
+        : entry.noChanges
+          ? 'No changes'
+          : ''
+      : (diff ? formatDiffStatus(diff.status) : null) ||
+        entry.message ||
+        (entry.rejected ? 'Rejected' : entry.noChanges ? 'No changes' : 'Updated');
     const diffCounts = diff ? `+${diff.additions} -${diff.deletions}` : '';
 
     return (
@@ -5200,10 +5837,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             ) : (
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(fallbackText || entry.path, 'result', `userspace-write-${index}`)}
+                onClick={() =>
+                  copyToClipboard(fallbackText || entry.path, 'result', `userspace-write-${index}`)
+                }
                 title="Copy result"
               >
-                {isCopiedButton('result', `userspace-write-${index}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `userspace-write-${index}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             )}
           </div>
@@ -5211,7 +5854,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         <div className="tool-call-userspace-write-summary">
           <div className="tool-call-userspace-write-summary-row">
             {batched && (
-              <span className="tool-call-userspace-batched-op" title={opLabel}>{opLabel}</span>
+              <span className="tool-call-userspace-batched-op" title={opLabel}>
+                {opLabel}
+              </span>
             )}
             {onOpenWorkspaceFile ? (
               <button
@@ -5232,7 +5877,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             {batched && diffCounts && (
               <span className="tool-call-userspace-batched-counts">{diffCounts}</span>
             )}
-            <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${String(statusGlyph).toLowerCase()}`}>
+            <span
+              className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${String(statusGlyph).toLowerCase()}`}
+            >
               {statusGlyph}
             </span>
             {batched && showDiffCard && (
@@ -5262,9 +5909,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         {!loading && !diff && fallbackText && !batched && (
           <pre className="tool-call-code">{fallbackText}</pre>
         )}
-        {error && (
-          <div className="tool-call-userspace-diff-error">{error}</div>
-        )}
+        {error && <div className="tool-call-userspace-diff-error">{error}</div>}
         {showDiffCard && diff && (
           <div className="tool-call-userspace-diff-card">
             <UserSpaceFileDiffView
@@ -5283,9 +5928,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const renderUserspaceResultBody = (): ReactNode => {
     if (isKnowledgeSearchToolName(toolCall.tool) && knowledgeSearchOutput) {
       const search = knowledgeSearchOutput;
-      const toolTitle = toolCall.tool === KNOWLEDGE_SEARCH_TOOL_NAME
-        ? 'Knowledge search'
-        : `Index search (${search.indexName || toolCall.tool})`;
+      const toolTitle =
+        toolCall.tool === KNOWLEDGE_SEARCH_TOOL_NAME
+          ? 'Knowledge search'
+          : `Index search (${search.indexName || toolCall.tool})`;
       const isErrorState = !search.ok || search.status === 'error' || search.errors.length > 0;
       const queryText = search.query || (toolCall.input?.query as string) || '';
       const visibleResultCount = search.results.length;
@@ -5296,7 +5942,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       if (search.indexName) {
         metaParts.push(`index: ${search.indexName}`);
       } else if (search.indexesSearched.length > 0) {
-        metaParts.push(`${search.indexesSearched.length} index${search.indexesSearched.length === 1 ? '' : 'es'}`);
+        metaParts.push(
+          `${search.indexesSearched.length} index${search.indexesSearched.length === 1 ? '' : 'es'}`,
+        );
       }
       metaParts.push(
         hasTruncatedResultSet
@@ -5311,19 +5959,25 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       const indexSummary = search.indexesSearched
         .filter((idx) => idx.name)
         .map((idx) => {
-          const displayCount = hasTruncatedResultSet ? `${idx.resultCount}+` : String(idx.resultCount);
+          const displayCount = hasTruncatedResultSet
+            ? `${idx.resultCount}+`
+            : String(idx.resultCount);
           return (
             <span
               className={`tool-call-knowledge-index-chip ${idx.ok ? 'tool-call-knowledge-index-chip-ok' : 'tool-call-knowledge-index-chip-error'}`}
               key={idx.name}
-              title={idx.ok
-                ? (hasTruncatedResultSet
-                  ? `At least ${idx.resultCount} visible result${idx.resultCount === 1 ? '' : 's'} for ${idx.name}; full output was truncated`
-                  : `${idx.resultCount} result${idx.resultCount === 1 ? '' : 's'}`)
-                : 'Search failed'}
+              title={
+                idx.ok
+                  ? hasTruncatedResultSet
+                    ? `At least ${idx.resultCount} visible result${idx.resultCount === 1 ? '' : 's'} for ${idx.name}; full output was truncated`
+                    : `${idx.resultCount} result${idx.resultCount === 1 ? '' : 's'}`
+                  : 'Search failed'
+              }
             >
               <span className="tool-call-knowledge-index-chip-name">{idx.name}</span>
-              <span className="tool-call-knowledge-index-chip-count">{idx.ok ? displayCount : 'error'}</span>
+              <span className="tool-call-knowledge-index-chip-count">
+                {idx.ok ? displayCount : 'error'}
+              </span>
             </span>
           );
         });
@@ -5338,10 +5992,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             <div className="tool-call-terminal-header-actions">
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(effectiveOutput, 'result', `knowledge-search-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(effectiveOutput, 'result', `knowledge-search-${toolCall.tool}`)
+                }
                 title="Copy JSON"
               >
-                {isCopiedButton('result', `knowledge-search-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `knowledge-search-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             </div>
           </div>
@@ -5351,10 +6011,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <span>{queryText}</span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(queryText, 'query', `knowledge-search-query-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(queryText, 'query', `knowledge-search-query-${toolCall.tool}`)
+                }
                 title="Copy query"
               >
-                {isCopiedButton('query', `knowledge-search-query-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('query', `knowledge-search-query-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             </div>
           )}
@@ -5362,12 +6028,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           {indexSummary.length > 0 && (
             <div className="tool-call-knowledge-index-chips">{indexSummary}</div>
           )}
-          {search.message && (
-            <div className="tool-call-knowledge-message">{search.message}</div>
-          )}
+          {search.message && <div className="tool-call-knowledge-message">{search.message}</div>}
           {hasTruncatedResultSet && (
             <div className="tool-call-knowledge-result-truncated">
-              Only {visibleResultCount} of {declaredResultCount} results were available in this stored output; the original tool output was truncated.
+              Only {visibleResultCount} of {declaredResultCount} results were available in this
+              stored output; the original tool output was truncated.
             </div>
           )}
           {isErrorState && search.errors.length > 0 && (
@@ -5379,10 +6044,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           {search.results.length > 0 ? (
             <ol className="tool-call-knowledge-results">
               {search.results.map((result, idx) => (
-                <li className="tool-call-knowledge-result" key={`${result.indexName || 'idx'}:${result.source}:${idx}`}>
+                <li
+                  className="tool-call-knowledge-result"
+                  key={`${result.indexName || 'idx'}:${result.source}:${idx}`}
+                >
                   <div className="tool-call-knowledge-result-head">
                     {result.indexName && (
-                      <span className="tool-call-knowledge-result-index" title={`Index: ${result.indexName}`}>
+                      <span
+                        className="tool-call-knowledge-result-index"
+                        title={`Index: ${result.indexName}`}
+                      >
                         {result.indexName}
                       </span>
                     )}
@@ -5390,23 +6061,42 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       {result.source}
                     </span>
                     {typeof result.score === 'number' && Number.isFinite(result.score) && (
-                      <span className="tool-call-knowledge-index-chip tool-call-knowledge-index-chip-ok" title="Similarity score">
+                      <span
+                        className="tool-call-knowledge-index-chip tool-call-knowledge-index-chip-ok"
+                        title="Similarity score"
+                      >
                         <span className="tool-call-knowledge-index-chip-name">score</span>
-                        <span className="tool-call-knowledge-index-chip-count">{result.score.toFixed(3)}</span>
+                        <span className="tool-call-knowledge-index-chip-count">
+                          {result.score.toFixed(3)}
+                        </span>
                       </span>
                     )}
                     <button
                       className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(result.source, 'result', `knowledge-search-source-${toolCall.tool}-${idx}`)}
+                      onClick={() =>
+                        copyToClipboard(
+                          result.source,
+                          'result',
+                          `knowledge-search-source-${toolCall.tool}-${idx}`,
+                        )
+                      }
                       title="Copy source path"
                     >
-                      {isCopiedButton('result', `knowledge-search-source-${toolCall.tool}-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                      {isCopiedButton(
+                        'result',
+                        `knowledge-search-source-${toolCall.tool}-${idx}`,
+                      ) ? (
+                        <Check size={12} />
+                      ) : (
+                        <Copy size={12} />
+                      )}
                     </button>
                   </div>
                   <pre className="tool-call-knowledge-result-content">{result.content}</pre>
                   {result.truncated && (
                     <div className="tool-call-knowledge-result-truncated">
-                      truncated at {search.maxCharsPerResult} chars; retry with a higher max_chars_per_result for the full chunk
+                      truncated at {search.maxCharsPerResult} chars; retry with a higher
+                      max_chars_per_result for the full chunk
                     </div>
                   )}
                 </li>
@@ -5431,10 +6121,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             {effectiveOutput && (
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(effectiveOutput, 'result', `knowledge-search-fallback-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(
+                    effectiveOutput,
+                    'result',
+                    `knowledge-search-fallback-${toolCall.tool}`,
+                  )
+                }
                 title="Copy raw output"
               >
-                {isCopiedButton('result', `knowledge-search-fallback-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `knowledge-search-fallback-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             )}
           </div>
@@ -5455,10 +6155,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             <div className="tool-call-terminal-header-actions">
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(effectiveOutput, 'result', `schema-search-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(effectiveOutput, 'result', `schema-search-${toolCall.tool}`)
+                }
                 title="Copy result"
               >
-                {isCopiedButton('result', `schema-search-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `schema-search-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             </div>
           </div>
@@ -5468,10 +6174,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <span>{queryText}</span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(queryText, 'query', `schema-search-query-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(queryText, 'query', `schema-search-query-${toolCall.tool}`)
+                }
                 title="Copy query"
               >
-                {isCopiedButton('query', `schema-search-query-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('query', `schema-search-query-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             </div>
           )}
@@ -5481,7 +6193,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <li className="tool-call-knowledge-result" key={`${result.qualifiedName}:${idx}`}>
                 <div className="tool-call-knowledge-result-head">
                   {result.schemaName && (
-                    <span className="tool-call-knowledge-result-index" title={`Schema: ${result.schemaName}`}>
+                    <span
+                      className="tool-call-knowledge-result-index"
+                      title={`Schema: ${result.schemaName}`}
+                    >
                       {result.schemaName}
                     </span>
                   )}
@@ -5489,14 +6204,25 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     {result.qualifiedName}
                   </span>
                   {result.similarity != null && (
-                    <span className="tool-call-knowledge-index-chip tool-call-knowledge-index-chip-ok" title="Similarity score">
+                    <span
+                      className="tool-call-knowledge-index-chip tool-call-knowledge-index-chip-ok"
+                      title="Similarity score"
+                    >
                       <span className="tool-call-knowledge-index-chip-name">score</span>
-                      <span className="tool-call-knowledge-index-chip-count">{result.similarity.toFixed(3)}</span>
+                      <span className="tool-call-knowledge-index-chip-count">
+                        {result.similarity.toFixed(3)}
+                      </span>
                     </span>
                   )}
                 </div>
                 <div className="tool-call-web-meta">
-                  {[result.objectKind, result.description, result.estimatedRows ? `rows ${result.estimatedRows}` : ''].filter(Boolean).join(' · ')}
+                  {[
+                    result.objectKind,
+                    result.description,
+                    result.estimatedRows ? `rows ${result.estimatedRows}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </div>
                 {result.columns.length > 0 && (
                   <div className="tool-call-userspace-json-group">
@@ -5515,7 +6241,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <div className="tool-call-userspace-json-group">
                     <div className="tool-call-userspace-json-group-title">Primary key</div>
                     <div className="tool-call-userspace-json-path-list">
-                      {result.primaryKeys.map((item) => <span key={`${result.qualifiedName}:pk:${item}`}>{item}</span>)}
+                      {result.primaryKeys.map((item) => (
+                        <span key={`${result.qualifiedName}:pk:${item}`}>{item}</span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -5564,10 +6292,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             {effectiveOutput && (
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(effectiveOutput, 'result', `schema-search-fallback-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(
+                    effectiveOutput,
+                    'result',
+                    `schema-search-fallback-${toolCall.tool}`,
+                  )
+                }
                 title="Copy raw output"
               >
-                {isCopiedButton('result', `schema-search-fallback-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `schema-search-fallback-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             )}
           </div>
@@ -5594,18 +6332,34 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Batched result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result', 'userspace-write-batch-summary')}
+                  onClick={() =>
+                    copyToClipboard(
+                      aggregateMessage || displayText || (toolCall.output ?? ''),
+                      'result',
+                      'userspace-write-batch-summary',
+                    )
+                  }
                   title="Copy summary"
                 >
-                  {isCopiedButton('result', 'userspace-write-batch-summary') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'userspace-write-batch-summary') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
               <div className="tool-call-userspace-write-meta">
-                {aggregateMessage || `Batched ${userspaceWriteBatch.toolName} across ${summary.total} file(s).`}
+                {aggregateMessage ||
+                  `Batched ${userspaceWriteBatch.toolName} across ${summary.total} file(s).`}
               </div>
             </div>
             <div className="tool-call-userspace-batched-list">
-              {entries.map((entry, index) => renderUserspaceWriteEntry(entry, index, { showSummaryFallback: false, batched: true }))}
+              {entries.map((entry, index) =>
+                renderUserspaceWriteEntry(entry, index, {
+                  showSummaryFallback: false,
+                  batched: true,
+                }),
+              )}
             </div>
           </>
         );
@@ -5615,41 +6369,48 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         if (!userspaceReadBatch) return null;
         const { entries, isBatch, summary, aggregateMessage } = userspaceReadBatch;
 
-        const renderReadEntry = (entry: ParsedUserSpaceReadResult, idx: number, opts: { batched?: boolean } = {}): ReactNode => {
+        const renderReadEntry = (
+          entry: ParsedUserSpaceReadResult,
+          idx: number,
+          opts: { batched?: boolean } = {},
+        ): ReactNode => {
           const batched = Boolean(opts.batched);
-          const normalizedContent = entry.content != null
-            ? normalizeUserspaceSnippetContent(entry.content)
-            : null;
+          const normalizedContent =
+            entry.content != null ? normalizeUserspaceSnippetContent(entry.content) : null;
           const lineCount = normalizedContent ? normalizedContent.split('\n').length : 0;
-          const entryDiff: UserSpaceSnapshotFileDiff | null = (!entry.isRejected && normalizedContent != null)
-            ? {
-              workspace_id: '',
-              snapshot_id: '',
-              path: entry.path,
-              status: 'R',
-              before_content: '',
-              after_content: normalizedContent,
-              additions: lineCount,
-              deletions: 0,
-              is_binary: false,
-              is_deleted_in_current: false,
-              is_untracked_in_current: false,
-              starting_before_line: undefined,
-              starting_after_line: entry.startLine ?? undefined,
-            }
-            : null;
-          const range = (entry.startLine != null && entry.endLine != null)
-            ? (entry.totalLines != null
-              ? `Lines ${entry.startLine}-${entry.endLine} of ${entry.totalLines}`
-              : `Lines ${entry.startLine}-${entry.endLine}`)
-            : null;
+          const entryDiff: UserSpaceSnapshotFileDiff | null =
+            !entry.isRejected && normalizedContent != null
+              ? {
+                  workspace_id: '',
+                  snapshot_id: '',
+                  path: entry.path,
+                  status: 'R',
+                  before_content: '',
+                  after_content: normalizedContent,
+                  additions: lineCount,
+                  deletions: 0,
+                  is_binary: false,
+                  is_deleted_in_current: false,
+                  is_untracked_in_current: false,
+                  starting_before_line: undefined,
+                  starting_after_line: entry.startLine ?? undefined,
+                }
+              : null;
+          const range =
+            entry.startLine != null && entry.endLine != null
+              ? entry.totalLines != null
+                ? `Lines ${entry.startLine}-${entry.endLine} of ${entry.totalLines}`
+                : `Lines ${entry.startLine}-${entry.endLine}`
+              : null;
           const statusGlyph = entry.isRejected ? 'X' : 'R';
           const sectionClass = batched
             ? 'tool-call-section tool-call-userspace-batched-entry'
             : 'tool-call-section';
           const metaText = batched
-            ? (entry.isRejected ? (entry.message || 'Rejected') : '')
-            : (entry.message || (entry.isRejected ? 'Rejected' : 'Read'));
+            ? entry.isRejected
+              ? entry.message || 'Rejected'
+              : ''
+            : entry.message || (entry.isRejected ? 'Rejected' : 'Read');
           return (
             <div className={sectionClass} key={`read:${entry.path}:${idx}`}>
               {!batched && (
@@ -5657,18 +6418,26 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <span className="tool-call-section-label">Read:</span>
                   <button
                     className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result', `userspace-read-${idx}`)}
+                    onClick={() =>
+                      copyToClipboard(
+                        entry.content ?? entry.message ?? entry.path,
+                        'result',
+                        `userspace-read-${idx}`,
+                      )
+                    }
                     title="Copy result"
                   >
-                    {isCopiedButton('result', `userspace-read-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('result', `userspace-read-${idx}`) ? (
+                      <Check size={12} />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                   </button>
                 </div>
               )}
               <div className="tool-call-userspace-write-summary">
                 <div className="tool-call-userspace-write-summary-row">
-                  {batched && (
-                    <span className="tool-call-userspace-batched-op">Read</span>
-                  )}
+                  {batched && <span className="tool-call-userspace-batched-op">Read</span>}
                   {onOpenWorkspaceFile ? (
                     <button
                       className="tool-call-userspace-write-path tool-call-userspace-write-path-link"
@@ -5678,22 +6447,36 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       {entry.path}
                     </button>
                   ) : (
-                    <span className="tool-call-userspace-write-path" title={entry.path}>{entry.path}</span>
+                    <span className="tool-call-userspace-write-path" title={entry.path}>
+                      {entry.path}
+                    </span>
                   )}
                   {batched && range && (
                     <span className="tool-call-userspace-batched-counts">{range}</span>
                   )}
-                  <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${statusGlyph.toLowerCase()}`}>
+                  <span
+                    className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${statusGlyph.toLowerCase()}`}
+                  >
                     {statusGlyph}
                   </span>
                   {batched && (
                     <button
                       type="button"
                       className="tool-call-userspace-batched-action"
-                      onClick={() => copyToClipboard(entry.content ?? entry.message ?? entry.path, 'result', `userspace-read-batch-${idx}`)}
+                      onClick={() =>
+                        copyToClipboard(
+                          entry.content ?? entry.message ?? entry.path,
+                          'result',
+                          `userspace-read-batch-${idx}`,
+                        )
+                      }
                       title="Copy snippet"
                     >
-                      {isCopiedButton('result', `userspace-read-batch-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                      {isCopiedButton('result', `userspace-read-batch-${idx}`) ? (
+                        <Check size={12} />
+                      ) : (
+                        <Copy size={12} />
+                      )}
                     </button>
                   )}
                 </div>
@@ -5733,10 +6516,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Batched read:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(aggregateMessage || displayText || (toolCall.output ?? ''), 'result', 'userspace-read-batch-summary')}
+                  onClick={() =>
+                    copyToClipboard(
+                      aggregateMessage || displayText || (toolCall.output ?? ''),
+                      'result',
+                      'userspace-read-batch-summary',
+                    )
+                  }
                   title="Copy summary"
                 >
-                  {isCopiedButton('result', 'userspace-read-batch-summary') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'userspace-read-batch-summary') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
               <div className="tool-call-userspace-write-meta">
@@ -5752,7 +6545,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
       case 'list_userspace_files': {
         if (!userspaceListResult) return null;
-        const { entries, count, fileCount, totalSizeBytes, message, truncated } = userspaceListResult;
+        const { entries, count, fileCount, totalSizeBytes, message, truncated } =
+          userspaceListResult;
         const parsedFileEntries = entries.filter((entry) => entry.entryType === 'file');
         const visibleEntries = hydratedUserspaceListEntries ?? parsedFileEntries;
         const isHydrated = hydratedUserspaceListEntries != null;
@@ -5781,9 +6575,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         const summaryParts: string[] = [];
         if (fileCount > 0) summaryParts.push(`${fileCount} file${fileCount === 1 ? '' : 's'}`);
         if (fileCount > 0) summaryParts.push(formatSize(totalSizeBytes));
-        const summaryText = summaryParts.length > 0
-          ? summaryParts.join(' \u00b7 ')
-          : (message || 'Empty workspace');
+        const summaryText =
+          summaryParts.length > 0 ? summaryParts.join(' \u00b7 ') : message || 'Empty workspace';
 
         const copyAllPaths = visibleEntries.map((e) => e.path).join('\n');
 
@@ -5793,10 +6586,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               <span className="tool-call-section-label">Workspace files:</span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(copyAllPaths || (toolCall.output ?? ''), 'result', 'userspace-list-paths')}
+                onClick={() =>
+                  copyToClipboard(
+                    copyAllPaths || (toolCall.output ?? ''),
+                    'result',
+                    'userspace-list-paths',
+                  )
+                }
                 title="Copy all paths"
               >
-                {isCopiedButton('result', 'userspace-list-paths') ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', 'userspace-list-paths') ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             </div>
             <div className="tool-call-userspace-list-summary">{summaryText}</div>
@@ -5838,11 +6641,17 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                           {entry.path}
                         </span>
                       )}
-                      <span className="tool-call-userspace-list-size" title={`${entry.sizeBytes} bytes`}>
+                      <span
+                        className="tool-call-userspace-list-size"
+                        title={`${entry.sizeBytes} bytes`}
+                      >
                         {formatSize(entry.sizeBytes)}
                       </span>
                       {updated && (
-                        <span className="tool-call-userspace-list-updated" title={entry.updatedAt ?? ''}>
+                        <span
+                          className="tool-call-userspace-list-updated"
+                          title={entry.updatedAt ?? ''}
+                        >
                           {updated}
                         </span>
                       )}
@@ -5862,7 +6671,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
       case 'assay_userspace_code':
       case 'discover_userspace_primitives': {
-        const title = toolCall.tool === 'discover_userspace_primitives' ? 'Primitive discovery' : 'Code assay';
+        const title =
+          toolCall.tool === 'discover_userspace_primitives' ? 'Primitive discovery' : 'Code assay';
         if (!userspaceStructuredJsonResult) {
           const fallbackMessage = effectiveOutput
             ? 'Tool output was not valid JSON, so it could not be formatted.'
@@ -5876,10 +6686,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 {effectiveOutput && (
                   <button
                     className="tool-call-copy-btn"
-                    onClick={() => copyToClipboard(effectiveOutput, 'result', `userspace-json-fallback-${toolCall.tool}`)}
+                    onClick={() =>
+                      copyToClipboard(
+                        effectiveOutput,
+                        'result',
+                        `userspace-json-fallback-${toolCall.tool}`,
+                      )
+                    }
                     title="Copy raw output"
                   >
-                    {isCopiedButton('result', `userspace-json-fallback-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('result', `userspace-json-fallback-${toolCall.tool}`) ? (
+                      <Check size={12} />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                   </button>
                 )}
               </div>
@@ -5891,38 +6711,62 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         const capabilities = asJsonRecord(payload.capabilities);
         const endpoints = asJsonRecord(capabilities?.endpoints);
         const objectBuckets = Array.isArray(capabilities?.object_buckets)
-          ? capabilities.object_buckets.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          ? capabilities.object_buckets.filter(
+              (item): item is string => typeof item === 'string' && item.trim().length > 0,
+            )
           : [];
         const capabilityFlags = capabilities
           ? Object.entries(capabilities)
-            .filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
-            .map(([key, value]) => ({ label: key.replace(/^can_/, '').split('_').join(' '), enabled: value === true }))
+              .filter(([key, value]) => key.startsWith('can_') && typeof value === 'boolean')
+              .map(([key, value]) => ({
+                label: key.replace(/^can_/, '').split('_').join(' '),
+                enabled: value === true,
+              }))
           : [];
         const workspacePayload = asJsonRecord(payload.workspace);
         const assaySummary = asJsonRecord(workspacePayload?.summary);
         const assayStructure = asJsonRecord(workspacePayload?.structure);
         const inspectedFiles = Array.isArray(workspacePayload?.inspected_files)
-          ? workspacePayload.inspected_files.map(asJsonRecord).filter((item): item is Record<string, unknown> => Boolean(item))
+          ? workspacePayload.inspected_files
+              .map(asJsonRecord)
+              .filter((item): item is Record<string, unknown> => Boolean(item))
           : [];
         return (
           <div className="tool-call-section tool-call-userspace-json-section">
             <div className="tool-call-section-header">
-              <span className="tool-call-section-label">{userspaceStructuredJsonResult.title}:</span>
+              <span className="tool-call-section-label">
+                {userspaceStructuredJsonResult.title}:
+              </span>
               <button
                 className="tool-call-copy-btn"
-                onClick={() => copyToClipboard(userspaceStructuredJsonResult.formattedJson, 'result', `userspace-json-${toolCall.tool}`)}
+                onClick={() =>
+                  copyToClipboard(
+                    userspaceStructuredJsonResult.formattedJson,
+                    'result',
+                    `userspace-json-${toolCall.tool}`,
+                  )
+                }
                 title="Copy JSON"
               >
-                {isCopiedButton('result', `userspace-json-${toolCall.tool}`) ? <Check size={12} /> : <Copy size={12} />}
+                {isCopiedButton('result', `userspace-json-${toolCall.tool}`) ? (
+                  <Check size={12} />
+                ) : (
+                  <Copy size={12} />
+                )}
               </button>
             </div>
             {userspaceStructuredJsonResult.message && (
-              <div className="tool-call-userspace-json-message">{userspaceStructuredJsonResult.message}</div>
+              <div className="tool-call-userspace-json-message">
+                {userspaceStructuredJsonResult.message}
+              </div>
             )}
             {userspaceStructuredJsonResult.summaryRows.length > 0 && (
               <dl className="tool-call-userspace-json-summary">
                 {userspaceStructuredJsonResult.summaryRows.map((row) => (
-                  <div className="tool-call-userspace-json-summary-item" key={`${row.label}:${row.value}`}>
+                  <div
+                    className="tool-call-userspace-json-summary-item"
+                    key={`${row.label}:${row.value}`}
+                  >
                     <dt>{row.label}</dt>
                     <dd>{row.value}</dd>
                   </div>
@@ -5950,7 +6794,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <div className="tool-call-userspace-json-group">
                     <div className="tool-call-userspace-json-group-title">Object buckets</div>
                     <div className="tool-call-userspace-json-path-list">
-                      {objectBuckets.map((bucket) => <span key={bucket}>{bucket}</span>)}
+                      {objectBuckets.map((bucket) => (
+                        <span key={bucket}>{bucket}</span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -5975,12 +6821,13 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <div className="tool-call-userspace-json-group">
                     <div className="tool-call-userspace-json-group-title">Workspace structure</div>
                     <ul className="tool-call-userspace-json-list">
-                      {assayStructure && Object.entries(assayStructure).map(([name, value]) => (
-                        <li key={name}>
-                          <span>{name.split('_').join(' ')}</span>
-                          <code>{formatStructuredSummaryValue(value) || String(value)}</code>
-                        </li>
-                      ))}
+                      {assayStructure &&
+                        Object.entries(assayStructure).map(([name, value]) => (
+                          <li key={name}>
+                            <span>{name.split('_').join(' ')}</span>
+                            <code>{formatStructuredSummaryValue(value) || String(value)}</code>
+                          </li>
+                        ))}
                     </ul>
                   </div>
                 )}
@@ -5990,8 +6837,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     <ul className="tool-call-userspace-json-list">
                       {inspectedFiles.map((file, idx) => {
                         const path = typeof file.path === 'string' ? file.path : `file-${idx + 1}`;
-                        const chars = typeof file.content_chars === 'number' ? `${file.content_chars} chars` : '';
-                        const lines = typeof file.line_count === 'number' ? `${file.line_count} lines` : '';
+                        const chars =
+                          typeof file.content_chars === 'number'
+                            ? `${file.content_chars} chars`
+                            : '';
+                        const lines =
+                          typeof file.line_count === 'number' ? `${file.line_count} lines` : '';
                         return (
                           <li key={`${path}:${idx}`}>
                             {onOpenWorkspaceFile ? (
@@ -6027,10 +6878,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result', 'web-search-fallback')}
+                  onClick={() =>
+                    copyToClipboard(displayText || effectiveOutput, 'result', 'web-search-fallback')
+                  }
                   title="Copy result"
                 >
-                  {isCopiedButton('result', 'web-search-fallback') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'web-search-fallback') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
               <pre className="tool-call-code">{displayText}</pre>
@@ -6055,8 +6912,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <Search size={12} />
                 <span>Web search</span>
               </span>
-              <div className="tool-call-terminal-header-actions">
-              </div>
+              <div className="tool-call-terminal-header-actions"></div>
             </div>
             {queryText && (
               <div className="tool-call-web-query" title={queryText}>
@@ -6067,7 +6923,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   onClick={() => copyToClipboard(queryText, 'query', 'web-search-query')}
                   title="Copy query"
                 >
-                  {isCopiedButton('query', 'web-search-query') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('query', 'web-search-query') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
             )}
@@ -6075,7 +6935,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             {isErrorState && (
               <div className="tool-call-web-error">
                 <AlertCircle size={12} />
-                <span>{search.error || (search.blocked ? 'Search was blocked.' : 'Search failed.')}</span>
+                <span>
+                  {search.error || (search.blocked ? 'Search was blocked.' : 'Search failed.')}
+                </span>
               </div>
             )}
             {search.answer && (
@@ -6095,10 +6957,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                           alt=""
                           className="tool-call-web-result-favicon"
                           loading="lazy"
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
                         />
                       ) : (
-                        <Globe size={12} className="tool-call-web-result-favicon-fallback" aria-hidden="true" />
+                        <Globe
+                          size={12}
+                          className="tool-call-web-result-favicon-fallback"
+                          aria-hidden="true"
+                        />
                       )}
                       <a
                         className="tool-call-web-result-title"
@@ -6111,10 +6979,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       </a>
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(result.url, 'result', `web-search-result-url-${idx}`)}
+                        onClick={() =>
+                          copyToClipboard(result.url, 'result', `web-search-result-url-${idx}`)
+                        }
                         title="Copy result URL"
                       >
-                        {isCopiedButton('result', `web-search-result-url-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                        {isCopiedButton('result', `web-search-result-url-${idx}`) ? (
+                          <Check size={12} />
+                        ) : (
+                          <Copy size={12} />
+                        )}
                       </button>
                     </div>
                     <a
@@ -6150,10 +7024,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(displayText || effectiveOutput, 'result', 'web-browse-fallback')}
+                  onClick={() =>
+                    copyToClipboard(displayText || effectiveOutput, 'result', 'web-browse-fallback')
+                  }
                   title="Copy result"
                 >
-                  {isCopiedButton('result', 'web-browse-fallback') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'web-browse-fallback') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
               <pre className="tool-call-code">{displayText}</pre>
@@ -6197,7 +7077,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     onClick={() => copyToClipboard(browse.text, 'result', 'web-browse-page-text')}
                     title="Copy page text"
                   >
-                    {isCopiedButton('result', 'web-browse-page-text') ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('result', 'web-browse-page-text') ? (
+                      <Check size={12} />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                   </button>
                 )}
               </div>
@@ -6219,7 +7103,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   onClick={() => copyToClipboard(requestedUrl, 'query', 'web-browse-requested-url')}
                   title="Copy URL"
                 >
-                  {isCopiedButton('query', 'web-browse-requested-url') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('query', 'web-browse-requested-url') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
             )}
@@ -6257,24 +7145,30 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             )}
             {browse.links.length > 0 && (
               <details className="tool-call-web-links">
-                <summary>{browse.links.length} link{browse.links.length === 1 ? '' : 's'}</summary>
+                <summary>
+                  {browse.links.length} link{browse.links.length === 1 ? '' : 's'}
+                </summary>
                 <ul className="tool-call-web-links-list">
                   {browse.links.map((link, idx) => (
-                    <li key={`${link.url}-${idx}`} className="tool-call-web-link-item tool-call-web-link-row">
-                      <a
-                        href={link.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={link.url}
-                      >
+                    <li
+                      key={`${link.url}-${idx}`}
+                      className="tool-call-web-link-item tool-call-web-link-row"
+                    >
+                      <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>
                         {link.text || link.url}
                       </a>
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(link.url, 'result', `web-browse-link-${idx}`)}
+                        onClick={() =>
+                          copyToClipboard(link.url, 'result', `web-browse-link-${idx}`)
+                        }
                         title="Copy link URL"
                       >
-                        {isCopiedButton('result', `web-browse-link-${idx}`) ? <Check size={12} /> : <Copy size={12} />}
+                        {isCopiedButton('result', `web-browse-link-${idx}`) ? (
+                          <Check size={12} />
+                        ) : (
+                          <Copy size={12} />
+                        )}
                       </button>
                     </li>
                   ))}
@@ -6283,7 +7177,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             )}
             {browse.consoleErrors.length > 0 && (
               <details className="tool-call-web-console-errors">
-                <summary>{browse.consoleErrors.length} console error{browse.consoleErrors.length === 1 ? '' : 's'}</summary>
+                <summary>
+                  {browse.consoleErrors.length} console error
+                  {browse.consoleErrors.length === 1 ? '' : 's'}
+                </summary>
                 <ul>
                   {browse.consoleErrors.map((err, idx) => (
                     <li key={idx}>{err}</li>
@@ -6303,10 +7200,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span className="tool-call-section-label">Result:</span>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'web-read-pdf-fallback')}
+                  onClick={() =>
+                    copyToClipboard(
+                      visibleDisplayText || maskHiddenToolNames(effectiveOutput),
+                      'result',
+                      'web-read-pdf-fallback',
+                    )
+                  }
                   title="Copy result"
                 >
-                  {isCopiedButton('result', 'web-read-pdf-fallback') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'web-read-pdf-fallback') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
               <pre className="tool-call-code">{visibleDisplayText}</pre>
@@ -6360,7 +7267,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     onClick={() => copyToClipboard(pdf.text, 'result', 'web-read-pdf-text')}
                     title="Copy page text"
                   >
-                    {isCopiedButton('result', 'web-read-pdf-text') ? <Check size={12} /> : <Copy size={12} />}
+                    {isCopiedButton('result', 'web-read-pdf-text') ? (
+                      <Check size={12} />
+                    ) : (
+                      <Copy size={12} />
+                    )}
                   </button>
                 )}
               </div>
@@ -6379,10 +7290,16 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 </a>
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(requestedUrl, 'query', 'web-read-pdf-requested-url')}
+                  onClick={() =>
+                    copyToClipboard(requestedUrl, 'query', 'web-read-pdf-requested-url')
+                  }
                   title="Copy URL"
                 >
-                  {isCopiedButton('query', 'web-read-pdf-requested-url') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('query', 'web-read-pdf-requested-url') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
             )}
@@ -6430,14 +7347,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                       {match.matchStart != null && (
                         <div className="tool-call-web-meta">
                           char {match.matchStart.toLocaleString()}
-                          {match.matchEnd != null
-                            ? `\u2013${match.matchEnd.toLocaleString()}`
-                            : ''}
+                          {match.matchEnd != null ? `\u2013${match.matchEnd.toLocaleString()}` : ''}
                         </div>
                       )}
-                      {match.text && (
-                        <pre className="tool-call-web-page-text">{match.text}</pre>
-                      )}
+                      {match.text && <pre className="tool-call-web-page-text">{match.text}</pre>}
                     </li>
                   ))}
                 </ul>
@@ -6470,10 +7383,20 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 )}
                 <button
                   className="tool-call-copy-btn"
-                  onClick={() => copyToClipboard(visibleDisplayText || maskHiddenToolNames(effectiveOutput), 'result', 'tool-default-result')}
+                  onClick={() =>
+                    copyToClipboard(
+                      visibleDisplayText || maskHiddenToolNames(effectiveOutput),
+                      'result',
+                      'tool-default-result',
+                    )
+                  }
                   title="Copy result"
                 >
-                  {isCopiedButton('result', 'tool-default-result') ? <Check size={12} /> : <Copy size={12} />}
+                  {isCopiedButton('result', 'tool-default-result') ? (
+                    <Check size={12} />
+                  ) : (
+                    <Copy size={12} />
+                  )}
                 </button>
               </div>
             </div>
@@ -6490,11 +7413,15 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
 
   return (
     <>
-      <div className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}>
+      <div
+        className={`tool-call tool-call-${toolCall.status}${isFailed ? ' tool-call-failed' : ''}`}
+      >
         <div className="tool-call-header-row">
           <button
             className="tool-call-header"
-            onClick={() => setManuallyExpanded((current) => (inChatSearchForcesExpanded ? false : !current))}
+            onClick={() =>
+              setManuallyExpanded((current) => (inChatSearchForcesExpanded ? false : !current))
+            }
           >
             <span className="tool-call-icon">{statusIcon || toolIcon}</span>
             {isTerminalCommand ? (
@@ -6542,56 +7469,101 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <pre className="tool-call-code tool-call-error-text">{retryError}</pre>
               </div>
             )}
-            {inputDisplay && !userspaceWriteResult && !userspaceReadResult && !isUserspaceStructuredJsonTool && toolCall.tool !== 'list_userspace_files' && !isTerminalCommand && toolCall.tool !== 'web_search' && toolCall.tool !== 'web_browse' && toolCall.tool !== WEB_READ_PDF_TOOL_ID && !isKnowledgeSearchToolName(toolCall.tool) && (
+            {inputDisplay &&
+              !userspaceWriteResult &&
+              !userspaceReadResult &&
+              !isUserspaceStructuredJsonTool &&
+              toolCall.tool !== 'list_userspace_files' &&
+              !isTerminalCommand &&
+              toolCall.tool !== 'web_search' &&
+              toolCall.tool !== 'web_browse' &&
+              toolCall.tool !== WEB_READ_PDF_TOOL_ID &&
+              !isKnowledgeSearchToolName(toolCall.tool) && (
+                <div className="tool-call-section">
+                  <div className="tool-call-section-header">
+                    <span className="tool-call-section-label">Query:</span>
+                    <div className="tool-call-terminal-header-actions">
+                      <button
+                        className="tool-call-copy-btn"
+                        onClick={() => copyToClipboard(inputDisplay, 'query', 'generic-query')}
+                        title="Copy query"
+                      >
+                        {isCopiedButton('query', 'generic-query') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Copy size={12} />
+                        )}
+                      </button>
+                      {isSqlTool && canRerun && hasRerunContext && (
+                        <button
+                          className="tool-call-copy-btn tool-call-terminal-rerun-btn"
+                          onClick={handleRerunCommand}
+                          title="Replay query"
+                          disabled={isRerunning}
+                        >
+                          {isRerunning ? (
+                            <MiniLoadingSpinner variant="icon" size={12} />
+                          ) : (
+                            <Play size={12} />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <pre className="tool-call-code">{inputDisplay}</pre>
+                </div>
+              )}
+            {mcpDisplay && (
               <div className="tool-call-section">
                 <div className="tool-call-section-header">
-                  <span className="tool-call-section-label">Query:</span>
-                  <div className="tool-call-terminal-header-actions">
-                    <button
-                      className="tool-call-copy-btn"
-                      onClick={() => copyToClipboard(inputDisplay, 'query', 'generic-query')}
-                      title="Copy query"
-                    >
-                      {isCopiedButton('query', 'generic-query') ? <Check size={12} /> : <Copy size={12} />}
-                    </button>
-                    {isSqlTool && canRerun && hasRerunContext && (
-                      <button
-                        className="tool-call-copy-btn tool-call-terminal-rerun-btn"
-                        onClick={handleRerunCommand}
-                        title="Replay query"
-                        disabled={isRerunning}
-                      >
-                        {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
-                      </button>
-                    )}
-                  </div>
+                  <span className="tool-call-section-label">MCP:</span>
+                  <span className="tool-call-section-label">{mcpDisplay.title}</span>
                 </div>
-                <pre className="tool-call-code">{inputDisplay}</pre>
+                <pre className="tool-call-code">
+                  Request: {mcpDisplay.request}
+                  {'\n\n'}Response: {mcpDisplay.response}
+                </pre>
               </div>
             )}
             {isTerminalCommand && terminalOutput ? (
               <div className="tool-call-section tool-call-terminal-section">
                 <div className="tool-call-terminal-block">
                   <div className="tool-call-terminal-header-bar">
-                    <span className="tool-call-terminal-cwd">{terminalOutput.cwd === '.' ? '~' : `~/${terminalOutput.cwd}`}</span>
+                    <span className="tool-call-terminal-cwd">
+                      {terminalOutput.cwd === '.' ? '~' : `~/${terminalOutput.cwd}`}
+                    </span>
                     <div className="tool-call-terminal-header-actions">
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-complete')}
+                        onClick={() =>
+                          copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-complete')
+                        }
                         title="Copy command"
                       >
-                        {isCopiedButton('query', 'terminal-copy-command-complete') ? <Check size={12} /> : <Terminal size={12} />}
+                        {isCopiedButton('query', 'terminal-copy-command-complete') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Terminal size={12} />
+                        )}
                       </button>
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(
-                          [terminalOutput.stdout, terminalOutput.stderr].filter(Boolean).join('\n') || inputDisplay,
-                          'result',
-                          'terminal-copy-output-complete'
-                        )}
+                        onClick={() =>
+                          copyToClipboard(
+                            [terminalOutput.stdout, terminalOutput.stderr]
+                              .filter(Boolean)
+                              .join('\n') || inputDisplay,
+                            'result',
+                            'terminal-copy-output-complete',
+                          )
+                        }
                         title="Copy output"
                       >
-                        {isCopiedButton('result', 'terminal-copy-output-complete') ? <Check size={12} /> : <Copy size={12} />}
+                        {isCopiedButton('result', 'terminal-copy-output-complete') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Copy size={12} />
+                        )}
                       </button>
                       {canRerun && hasRerunContext && (
                         <button
@@ -6600,7 +7572,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                           title="Re-run command"
                           disabled={isRerunning}
                         >
-                          {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                          {isRerunning ? (
+                            <MiniLoadingSpinner variant="icon" size={12} />
+                          ) : (
+                            <Play size={12} />
+                          )}
                         </button>
                       )}
                     </div>
@@ -6632,17 +7608,33 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     <div className="tool-call-terminal-header-actions">
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-running')}
+                        onClick={() =>
+                          copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-running')
+                        }
                         title="Copy command"
                       >
-                        {isCopiedButton('query', 'terminal-copy-command-running') ? <Check size={12} /> : <Terminal size={12} />}
+                        {isCopiedButton('query', 'terminal-copy-command-running') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Terminal size={12} />
+                        )}
                       </button>
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-running')}
+                        onClick={() =>
+                          copyToClipboard(
+                            activeTerminalOutput || inputDisplay,
+                            'result',
+                            'terminal-copy-output-running',
+                          )
+                        }
                         title="Copy output"
                       >
-                        {isCopiedButton('result', 'terminal-copy-output-running') ? <Check size={12} /> : <Copy size={12} />}
+                        {isCopiedButton('result', 'terminal-copy-output-running') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Copy size={12} />
+                        )}
                       </button>
                       {canRerun && hasRerunContext && (
                         <button
@@ -6651,7 +7643,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                           title="Re-run command"
                           disabled={isRerunning}
                         >
-                          {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                          {isRerunning ? (
+                            <MiniLoadingSpinner variant="icon" size={12} />
+                          ) : (
+                            <Play size={12} />
+                          )}
                         </button>
                       )}
                     </div>
@@ -6671,17 +7667,33 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     <div className="tool-call-terminal-header-actions">
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-empty')}
+                        onClick={() =>
+                          copyToClipboard(inputDisplay, 'query', 'terminal-copy-command-empty')
+                        }
                         title="Copy command"
                       >
-                        {isCopiedButton('query', 'terminal-copy-command-empty') ? <Check size={12} /> : <Terminal size={12} />}
+                        {isCopiedButton('query', 'terminal-copy-command-empty') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Terminal size={12} />
+                        )}
                       </button>
                       <button
                         className="tool-call-copy-btn"
-                        onClick={() => copyToClipboard(activeTerminalOutput || inputDisplay, 'result', 'terminal-copy-output-empty')}
+                        onClick={() =>
+                          copyToClipboard(
+                            activeTerminalOutput || inputDisplay,
+                            'result',
+                            'terminal-copy-output-empty',
+                          )
+                        }
                         title="Copy output"
                       >
-                        {isCopiedButton('result', 'terminal-copy-output-empty') ? <Check size={12} /> : <Copy size={12} />}
+                        {isCopiedButton('result', 'terminal-copy-output-empty') ? (
+                          <Check size={12} />
+                        ) : (
+                          <Copy size={12} />
+                        )}
                       </button>
                       {canRerun && hasRerunContext && (
                         <button
@@ -6690,7 +7702,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                           title="Re-run command"
                           disabled={isRerunning}
                         >
-                          {isRerunning ? <MiniLoadingSpinner variant="icon" size={12} /> : <Play size={12} />}
+                          {isRerunning ? (
+                            <MiniLoadingSpinner variant="icon" size={12} />
+                          ) : (
+                            <Play size={12} />
+                          )}
                         </button>
                       )}
                     </div>
@@ -6703,8 +7719,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 </div>
               </div>
             ) : null}
-            {(effectiveOutput || isUserspaceStructuredJsonTool || isKnowledgeSearchToolName(toolCall.tool)) && !isTerminalCommand && (
-              screenshotPreview && !hasErrorInOutput ? (
+            {(effectiveOutput ||
+              isUserspaceStructuredJsonTool ||
+              isKnowledgeSearchToolName(toolCall.tool)) &&
+              !isTerminalCommand &&
+              (screenshotPreview && !hasErrorInOutput ? (
                 <div className="tool-call-section">
                   <div className="tool-call-screenshot-meta">
                     {screenshotPreview.width && screenshotPreview.height
@@ -6723,8 +7742,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                     style={{ cursor: 'zoom-in' }}
                   />
                 </div>
-              ) : renderUserspaceResultBody()
-            )}
+              ) : (
+                renderUserspaceResultBody()
+              ))}
           </div>
         )}
       </div>
@@ -6758,24 +7778,24 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           beforeLabel="Last Snapshot"
           afterLabel="Tool Result"
           onDismiss={() => setShowUserspaceDiffOverlay(false)}
-          onOverlayClick={() => { }}
-          onOverlayMouseEnter={() => { }}
-          onOverlayMouseLeave={() => { }}
+          onOverlayClick={() => {}}
+          onOverlayMouseEnter={() => {}}
+          onOverlayMouseLeave={() => {}}
         />
       )}
     </>
   );
-})
+});
 
 // Consolidated streaming content - groups content events between tool calls
 // This avoids re-rendering markdown for every token and dramatically improves performance
 interface StreamingSegment {
   type: 'content' | 'tool' | 'reasoning';
-  content?: string;  // For content/reasoning segments - consolidated text
-  toolCall?: ActiveToolCall;  // For tool segments
-  isComplete?: boolean;  // For reasoning segments - whether thinking has finished
-  durationSeconds?: number;  // For reasoning segments - persisted final elapsed time
-  reasoningParts?: ReasoningPart[];  // For reasoning segments - ordered text/tool parts
+  content?: string; // For content/reasoning segments - consolidated text
+  toolCall?: ActiveToolCall; // For tool segments
+  isComplete?: boolean; // For reasoning segments - whether thinking has finished
+  durationSeconds?: number; // For reasoning segments - persisted final elapsed time
+  reasoningParts?: ReasoningPart[]; // For reasoning segments - ordered text/tool parts
 }
 
 // Memoized component for rendering streaming segments efficiently
@@ -6827,41 +7847,47 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
 
   const handleToggle = useCallback(() => {
     userToggledRef.current = true;
-    setIsExpanded(prev => !prev);
+    setIsExpanded((prev) => !prev);
   }, []);
 
   // Strip generated tool-call markup from reasoning text. Executed non-artifact
   // tools can render inline from structured commentary-channel events.
-  const cleanToolCallXml = useCallback((text: string) => {
-    // Strip complete <tool_call>...</tool_call> blocks
-    let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
-    // During streaming, truncate at any unclosed <tool_call> tag
-    if (!isComplete) {
-      const openIdx = cleaned.lastIndexOf('<tool_call>');
-      if (openIdx !== -1 && cleaned.indexOf('</tool_call>', openIdx) === -1) {
-        cleaned = cleaned.substring(0, openIdx);
+  const cleanToolCallXml = useCallback(
+    (text: string) => {
+      // Strip complete <tool_call>...</tool_call> blocks
+      let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+      // During streaming, truncate at any unclosed <tool_call> tag
+      if (!isComplete) {
+        const openIdx = cleaned.lastIndexOf('<tool_call>');
+        if (openIdx !== -1 && cleaned.indexOf('</tool_call>', openIdx) === -1) {
+          cleaned = cleaned.substring(0, openIdx);
+        }
+        // Also catch partially-typed opening tags (e.g. "<tool_c")
+        const partial = cleaned.match(/<tool_c[^>]*$/);
+        if (partial && partial.index !== undefined) {
+          cleaned = cleaned.substring(0, partial.index);
+        }
       }
-      // Also catch partially-typed opening tags (e.g. "<tool_c")
-      const partial = cleaned.match(/<tool_c[^>]*$/);
-      if (partial && partial.index !== undefined) {
-        cleaned = cleaned.substring(0, partial.index);
-      }
-    }
-    return cleaned.replace(/\n{3,}/g, '\n\n').trimEnd();
-  }, [isComplete]);
+      return cleaned.replace(/\n{3,}/g, '\n\n').trimEnd();
+    },
+    [isComplete],
+  );
 
   const renderedParts = useMemo(() => {
-    const raw = (parts && parts.length > 0) ? parts : [{ type: 'text' as const, text: content }];
-    return raw.map(part => {
-      if (part.type !== 'text' || !part.text) return part;
-      const cleaned = cleanToolCallXml(part.text);
-      if (!cleaned) return null;
-      return { ...part, text: cleaned };
-    }).filter(Boolean) as ReasoningPart[];
+    const raw = parts && parts.length > 0 ? parts : [{ type: 'text' as const, text: content }];
+    return raw
+      .map((part) => {
+        if (part.type !== 'text' || !part.text) return part;
+        const cleaned = cleanToolCallXml(part.text);
+        if (!cleaned) return null;
+        return { ...part, text: cleaned };
+      })
+      .filter(Boolean) as ReasoningPart[];
   }, [parts, content, cleanToolCallXml]);
 
   const cleanedContent = useMemo(() => cleanToolCallXml(content), [content, cleanToolCallXml]);
-  const hasInlineToolCalls = showToolCalls && renderedParts.some((part) => part.type === 'tool' && !!part.toolCall);
+  const hasInlineToolCalls =
+    showToolCalls && renderedParts.some((part) => part.type === 'tool' && !!part.toolCall);
 
   // Elapsed timer while streaming
   useEffect(() => {
@@ -6915,7 +7941,10 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
 
   // Summary: first meaningful line for compact header
   const summaryLine = useMemo(() => {
-    const lines = cleanedContent.split('\n').map(l => l.trim()).filter(l => l.length > 10);
+    const lines = cleanedContent
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 10);
     const first = (lines[0] || '').replace(/^\*\*(.+)\*\*$/, '$1');
     return first.length > 120 ? first.slice(0, 117) + '...' : first;
   }, [cleanedContent]);
@@ -6940,71 +7969,79 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
     const lines = text.split('\n');
     let inIndentedList = false;
 
-    return lines.map((line) => {
-      if (!line.trim()) {
-        return '';
-      }
+    return lines
+      .map((line) => {
+        if (!line.trim()) {
+          return '';
+        }
 
-      if (/^ {4,}(?:[*+-]\s|\d+[.)]\s)/.test(line)) {
-        inIndentedList = true;
-        return line.replace(/^ {4}/, '');
-      }
-
-      if (inIndentedList) {
-        if (/^ {4,}\S/.test(line)) {
+        if (/^ {4,}(?:[*+-]\s|\d+[.)]\s)/.test(line)) {
+          inIndentedList = true;
           return line.replace(/^ {4}/, '');
         }
-        inIndentedList = false;
-      }
 
-      return line;
-    }).join('\n');
+        if (inIndentedList) {
+          if (/^ {4,}\S/.test(line)) {
+            return line.replace(/^ {4}/, '');
+          }
+          inIndentedList = false;
+        }
+
+        return line;
+      })
+      .join('\n');
   }, []);
 
   // Convert standalone **title** lines in reasoning text to ### markdown headers
   // so the model's section headings are visually distinct rather than showing raw asterisks.
-  const formatReasoningText = useCallback((text: string) => {
-    let result = text.replace(/\r\n?/g, '\n');
-    result = normalizeReasoningListIndentation(result);
-    // Some streamed reasoning chunks place the next **Heading** immediately after
-    // the previous sentence with no newline at all. Split those into their own block first.
-    result = result.replace(/([^\n])(\*\*([A-Z][^*\n]{2,})\*\*)/g, '$1\n\n$2');
-    result = result.replace(/(\*\*([A-Z][^*\n]{2,})\*\*)([^\n])/g, '$1\n\n$3');
-    result = result.replace(/^\*\*([^*\n]+)\*\*\s*$/gm, (_, title) => `### ${title}`);
-    // Ensure a blank line before and after headings so markdown always treats them as blocks.
-    result = result.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
-    result = result.replace(/(#{1,6} [^\n]+)\n([^\n#])/g, '$1\n\n$2');
-    result = result.replace(/\n{3,}/g, '\n\n');
-    return result;
-  }, [normalizeReasoningListIndentation]);
+  const formatReasoningText = useCallback(
+    (text: string) => {
+      let result = text.replace(/\r\n?/g, '\n');
+      result = normalizeReasoningListIndentation(result);
+      // Some streamed reasoning chunks place the next **Heading** immediately after
+      // the previous sentence with no newline at all. Split those into their own block first.
+      result = result.replace(/([^\n])(\*\*([A-Z][^*\n]{2,})\*\*)/g, '$1\n\n$2');
+      result = result.replace(/(\*\*([A-Z][^*\n]{2,})\*\*)([^\n])/g, '$1\n\n$3');
+      result = result.replace(/^\*\*([^*\n]+)\*\*\s*$/gm, (_, title) => `### ${title}`);
+      // Ensure a blank line before and after headings so markdown always treats them as blocks.
+      result = result.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
+      result = result.replace(/(#{1,6} [^\n]+)\n([^\n#])/g, '$1\n\n$2');
+      result = result.replace(/\n{3,}/g, '\n\n');
+      return result;
+    },
+    [normalizeReasoningListIndentation],
+  );
 
   // Keep this after all hooks so hook order remains stable across renders.
   if (visibility === 'hidden' && isComplete) return null;
 
   return (
     <div className={`reasoning-block ${isComplete ? 'reasoning-complete' : 'reasoning-active'}`}>
-      <button
-        className="reasoning-header"
-        onClick={handleToggle}
-        aria-expanded={isExpanded}
-      >
+      <button className="reasoning-header" onClick={handleToggle} aria-expanded={isExpanded}>
         <BrainCircuit size={14} className="reasoning-icon" />
-        <span className="reasoning-label">
-          {isComplete ? 'Thought process' : 'Thinking...'}
-        </span>
+        <span className="reasoning-label">{isComplete ? 'Thought process' : 'Thinking...'}</span>
         <span className="reasoning-meta">
           {resolvedElapsed > 0 && (
-            <span className="reasoning-meta-item" title={isComplete ? 'Reasoning time' : 'Elapsed time'}>
+            <span
+              className="reasoning-meta-item"
+              title={isComplete ? 'Reasoning time' : 'Elapsed time'}
+            >
               <Clock size={10} /> {formatElapsed(resolvedElapsed)}
             </span>
           )}
           {showToolCalls && toolCount > 0 && (
-            <span className="reasoning-meta-item" title={`${toolCount} tool call${toolCount !== 1 ? 's' : ''}`}>
+            <span
+              className="reasoning-meta-item"
+              title={`${toolCount} tool call${toolCount !== 1 ? 's' : ''}`}
+            >
               {toolCount} tool{toolCount !== 1 ? 's' : ''}
             </span>
           )}
           {isComplete && charCount > 0 && (
-            <span className="reasoning-meta-item" title={`${charCount.toLocaleString()} characters`}>
+            <span
+              className="reasoning-meta-item"
+              title={`${charCount.toLocaleString()} characters`}
+            >
               {charCount > 1000 ? `${(charCount / 1000).toFixed(1)}k` : charCount} chars
             </span>
           )}
@@ -7017,31 +8054,35 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
       {!isExpanded && isComplete && summaryLine && (
         <div className="reasoning-summary">{summaryLine}</div>
       )}
-      <div className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}>
+      <div
+        className={`reasoning-content ${isExpanded ? 'reasoning-content-expanded' : 'reasoning-content-collapsed'}`}
+      >
         <div className="reasoning-content-inner" ref={contentRef} onScroll={handleContentScroll}>
-          {hasInlineToolCalls ? renderedParts.map((part, index) => {
-            if (part.type === 'text') {
+          {hasInlineToolCalls ? (
+            renderedParts.map((part, index) => {
+              if (part.type === 'text') {
+                return (
+                  <div key={index} className="markdown-content">
+                    <MemoizedMarkdown content={formatReasoningText(part.text ?? '')} />
+                  </div>
+                );
+              }
+              if (!part.toolCall) return null;
               return (
-                <div key={index} className="markdown-content">
-                  <MemoizedMarkdown content={formatReasoningText(part.text ?? '')} />
+                <div key={index} className="chat-tool-calls reasoning-embedded-tool">
+                  <ToolCallDisplay
+                    toolCall={part.toolCall}
+                    defaultExpanded={false}
+                    workspaceId={workspaceId}
+                    conversationId={conversationId}
+                    onOpenWorkspaceFile={onOpenWorkspaceFile}
+                    inChatSearchQuery={inChatSearchQuery}
+                    inChatSearchOptions={inChatSearchOptions}
+                  />
                 </div>
               );
-            }
-            if (!part.toolCall) return null;
-            return (
-              <div key={index} className="chat-tool-calls reasoning-embedded-tool">
-                <ToolCallDisplay
-                  toolCall={part.toolCall}
-                  defaultExpanded={false}
-                  workspaceId={workspaceId}
-                  conversationId={conversationId}
-                  onOpenWorkspaceFile={onOpenWorkspaceFile}
-                  inChatSearchQuery={inChatSearchQuery}
-                  inChatSearchOptions={inChatSearchOptions}
-                />
-              </div>
-            );
-          }) : (
+            })
+          ) : (
             <div className="markdown-content">
               <MemoizedMarkdown content={formatReasoningText(cleanedContent)} />
             </div>
@@ -7092,7 +8133,12 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
         inChatSearchOptions={inChatSearchOptions}
       />
     );
-  } else if (segment.type === 'tool' && segment.toolCall && showToolCalls && !isHiddenToolCall(segment.toolCall)) {
+  } else if (
+    segment.type === 'tool' &&
+    segment.toolCall &&
+    showToolCalls &&
+    !isHiddenToolCall(segment.toolCall)
+  ) {
     return (
       <div className="chat-tool-calls">
         <ToolCallDisplay
@@ -7136,25 +8182,28 @@ function isAttachmentContentPart(value: unknown): value is ContentPart {
 }
 
 function isMultimodalContentPartArray(value: unknown[]): value is ContentPart[] {
-  return value.every((item) => isRecord(item) && (item.type === 'text' || item.type === 'image_url' || item.type === 'file'));
+  return value.every(
+    (item) =>
+      isRecord(item) && (item.type === 'text' || item.type === 'image_url' || item.type === 'file'),
+  );
 }
 
 function isReasoningContentBlock(value: Record<string, unknown>): boolean {
   const blockType = typeof value.type === 'string' ? value.type.toLowerCase() : '';
   if (
-    blockType === 'thinking'
-    || blockType === 'reasoning'
-    || blockType === 'reasoning.text'
-    || blockType === 'reasoning_content'
-    || blockType === 'reasoning_summary'
-    || blockType === 'reasoning_text'
-    || blockType === 'reasoning.summary'
-    || blockType === 'reasoning_summary_text'
-    || blockType === 'redacted_thinking'
-    || blockType.endsWith('reasoning.delta')
-    || blockType.endsWith('thinking.delta')
-    || blockType.endsWith('reasoning_text.delta')
-    || blockType.endsWith('reasoning_summary_text.delta')
+    blockType === 'thinking' ||
+    blockType === 'reasoning' ||
+    blockType === 'reasoning.text' ||
+    blockType === 'reasoning_content' ||
+    blockType === 'reasoning_summary' ||
+    blockType === 'reasoning_text' ||
+    blockType === 'reasoning.summary' ||
+    blockType === 'reasoning_summary_text' ||
+    blockType === 'redacted_thinking' ||
+    blockType.endsWith('reasoning.delta') ||
+    blockType.endsWith('thinking.delta') ||
+    blockType.endsWith('reasoning_text.delta') ||
+    blockType.endsWith('reasoning_summary_text.delta')
   ) {
     return true;
   }
@@ -7207,7 +8256,10 @@ function extractVisibleTextFromProviderContent(value: unknown): string {
 }
 
 // Helper to extract text and attachments from message content
-export function parseMessageContent(content: string | ContentPart[]): { text: string; attachments: ContentPart[] } {
+export function parseMessageContent(content: string | ContentPart[]): {
+  text: string;
+  attachments: ContentPart[];
+} {
   if (typeof content === 'string') {
     // Try to parse as JSON content parts (for backward compatibility)
     try {
@@ -7221,7 +8273,7 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
         }
         const text = parsed
           .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-          .map(p => p.text)
+          .map((p) => p.text)
           .join('\n');
         const attachments = parsed.filter((p): p is ContentPart => p.type !== 'text');
         return { text, attachments };
@@ -7238,7 +8290,7 @@ export function parseMessageContent(content: string | ContentPart[]): { text: st
   // Already parsed array
   const text = content
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-    .map(p => p.text)
+    .map((p) => p.text)
     .join('\n');
   const attachments = content.filter((p): p is ContentPart => p.type !== 'text');
   return { text, attachments };
@@ -7281,7 +8333,10 @@ interface MessageAttachmentsProps {
   onImageClick?: (url: string) => void;
 }
 
-export const MessageAttachments = memo(function MessageAttachments({ attachments, onImageClick }: MessageAttachmentsProps) {
+export const MessageAttachments = memo(function MessageAttachments({
+  attachments,
+  onImageClick,
+}: MessageAttachmentsProps) {
   if (attachments.length === 0) return null;
 
   return (
@@ -7368,7 +8423,9 @@ function getArchiveAgeLabel(days: number): string {
 
 function getNextArchiveAgePreset(days: number): number {
   const normalized = normalizeArchiveAgePreset(days);
-  const index = CHAT_ARCHIVE_AGE_PRESET_DAYS.indexOf(normalized as (typeof CHAT_ARCHIVE_AGE_PRESET_DAYS)[number]);
+  const index = CHAT_ARCHIVE_AGE_PRESET_DAYS.indexOf(
+    normalized as (typeof CHAT_ARCHIVE_AGE_PRESET_DAYS)[number],
+  );
   const nextIndex = index >= 0 ? (index + 1) % CHAT_ARCHIVE_AGE_PRESET_DAYS.length : 0;
   return CHAT_ARCHIVE_AGE_PRESET_DAYS[nextIndex];
 }
@@ -7414,11 +8471,14 @@ type ConversationArchiveCursor = {
 const ARCHIVE_PAGE_SIZE = 50;
 
 function getConversationWorkspaceId(conversation: Conversation): string | null {
-  const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null }).workspaceId;
+  const camelWorkspaceId = (conversation as Conversation & { workspaceId?: string | null })
+    .workspaceId;
   return conversation.workspace_id ?? camelWorkspaceId ?? null;
 }
 
-function getConversationArchiveCursor(conversations: Conversation[]): ConversationArchiveCursor | null {
+function getConversationArchiveCursor(
+  conversations: Conversation[],
+): ConversationArchiveCursor | null {
   const lastConversation = conversations[conversations.length - 1];
   if (!lastConversation) return null;
   return {
@@ -7461,7 +8521,11 @@ function getConversationSearchText(conversation: Conversation): string {
   return parts.join('\n');
 }
 
-function buildConversationSnippet(conversation: Conversation, query: string, radius = 60): string | null {
+function buildConversationSnippet(
+  conversation: Conversation,
+  query: string,
+  radius = 60,
+): string | null {
   const needle = query.trim().toLowerCase();
   if (!needle) return null;
   // Skip if the title alone matches — the title is highlighted separately.
@@ -7513,8 +8577,10 @@ function branchSearchMatchTargetsGroup(
   group: BranchRenderGroup,
 ): boolean {
   if (!match) return false;
-  return group.sourceBranchPointIndex === match.branchPointIndex
-    || group.branches.some((branch) => branch.id === match.branchId);
+  return (
+    group.sourceBranchPointIndex === match.branchPointIndex ||
+    group.branches.some((branch) => branch.id === match.branchId)
+  );
 }
 
 function useConversationBranchSearchMatches({
@@ -7527,7 +8593,9 @@ function useConversationBranchSearchMatches({
   conversationIds: string[];
 }): Record<string, ConversationBranchSearchMatch> {
   const conversationIdsKey = useMemo(() => conversationIds.join('\u0000'), [conversationIds]);
-  const [matchesByConversationId, setMatchesByConversationId] = useState<Record<string, ConversationBranchSearchMatch>>({});
+  const [matchesByConversationId, setMatchesByConversationId] = useState<
+    Record<string, ConversationBranchSearchMatch>
+  >({});
 
   useEffect(() => {
     let cancelled = false;
@@ -7540,7 +8608,8 @@ function useConversationBranchSearchMatches({
       };
     }
 
-    void api.searchConversationBranches(ids, trimmedQuery)
+    void api
+      .searchConversationBranches(ids, trimmedQuery)
       .then((response) => {
         if (cancelled) return;
         setMatchesByConversationId(mapBranchSearchMatchesByConversation(response.matches));
@@ -7558,13 +8627,7 @@ function useConversationBranchSearchMatches({
   return matchesByConversationId;
 }
 
-function BranchSearchToggle({
-  enabled,
-  onToggle,
-}: {
-  enabled: boolean;
-  onToggle: () => void;
-}) {
+function BranchSearchToggle({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
   const title = enabled ? 'Search includes chat branches' : 'Search chat branches';
   return (
     <button
@@ -7580,7 +8643,13 @@ function BranchSearchToggle({
   );
 }
 
-const HighlightedText = memo(function HighlightedText({ text, query }: { text: string; query: string }) {
+const HighlightedText = memo(function HighlightedText({
+  text,
+  query,
+}: {
+  text: string;
+  query: string;
+}) {
   if (!text) return null;
   const needle = query.trim();
   if (!needle) return <>{text}</>;
@@ -7628,7 +8697,10 @@ interface ChatPanelProps {
   onTaskComplete?: () => void;
   onConversationStateChange?: (hasLive: boolean, hasInterrupted: boolean) => void;
   onActiveConversationChange?: (conversationId: string | null) => void;
-  onBranchSwitch?: (branchId: string | null, associatedSnapshotId: string | null) => void | Promise<void>;
+  onBranchSwitch?: (
+    branchId: string | null,
+    associatedSnapshotId: string | null,
+  ) => void | Promise<void>;
   onFullscreenChange?: (fullscreen: boolean) => void;
   onOpenWorkspaceFile?: (path: string) => void;
   /**
@@ -7637,7 +8709,9 @@ interface ChatPanelProps {
    * unmount) so the workspace editor can weave references into the message as
    * the user selects code or clicks file actions.
    */
-  onRegisterContextReferenceInserter?: (insert: ((reference: ChatContextReference) => void) | null) => void;
+  onRegisterContextReferenceInserter?: (
+    insert: ((reference: ChatContextReference) => void) | null,
+  ) => void;
   onContextReferencesChange?: (references: ChatContextReference[]) => void;
   onOpenContextReference?: (reference: ChatContextReference) => void | Promise<void>;
   onMessageSnapshotRestored?: (details?: {
@@ -7726,8 +8800,10 @@ export function ChatPanel({
   const [streamingConversationId, setStreamingConversationId] = useState<string | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
   const [compactingConversationId, setCompactingConversationId] = useState<string | null>(null);
-  const [queuedCompactionMessage, setQueuedCompactionMessage] = useState<QueuedCompactionMessage | null>(null);
-  const [compactionReviewMarker, setCompactionReviewMarker] = useState<CompactionReviewMarker | null>(null);
+  const [queuedCompactionMessage, setQueuedCompactionMessage] =
+    useState<QueuedCompactionMessage | null>(null);
+  const [compactionReviewMarker, setCompactionReviewMarker] =
+    useState<CompactionReviewMarker | null>(null);
   const [retryingCompactionMarker, setRetryingCompactionMarker] = useState<{
     conversationId: string;
     messageId?: string;
@@ -7737,7 +8813,8 @@ export function ChatPanel({
   const [compactionReviewDraft, setCompactionReviewDraft] = useState('');
   const [compactionReviewError, setCompactionReviewError] = useState<string | null>(null);
   const [isSavingCompactionReview, setIsSavingCompactionReview] = useState(false);
-  const [compactionReviewOriginalSummary, setCompactionReviewOriginalSummary] = useState<string>('');
+  const [compactionReviewOriginalSummary, setCompactionReviewOriginalSummary] =
+    useState<string>('');
 
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
@@ -7756,7 +8833,8 @@ export function ChatPanel({
   const [editingHeaderTitle, setEditingHeaderTitle] = useState<string | null>(null);
   const [titleInput, setTitleInput] = useState('');
   const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
-  const [editMessageSegments, setEditMessageSegments] = useState<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
+  const [editMessageSegments, setEditMessageSegments] =
+    useState<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
   const editMessageSegmentsRef = useRef<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
   const editRichInputRef = useRef<RichChatInputHandle>(null);
   // Which composer most recently held focus, so editor selections and file
@@ -7770,8 +8848,11 @@ export function ChatPanel({
   const [branchPoints, setBranchPoints] = useState<ConversationBranchPointInfo[]>([]);
   const [branchSwitching, setBranchSwitching] = useState(false);
   const [branchSelections, setBranchSelections] = useState<Record<string, string>>({});
-  const [branchSearchAnchorHint, setBranchSearchAnchorHint] = useState<BranchSearchAnchorHint | null>(null);
-  const [chatKeywordFocusHint, setChatKeywordFocusHint] = useState<ChatKeywordFocusHint | null>(null);
+  const [branchSearchAnchorHint, setBranchSearchAnchorHint] =
+    useState<BranchSearchAnchorHint | null>(null);
+  const [chatKeywordFocusHint, setChatKeywordFocusHint] = useState<ChatKeywordFocusHint | null>(
+    null,
+  );
   // In-chat find state — browser-like find scoped to the rendered messages
   // of the active conversation. Independent from the sidebar/workspace
   // search above so the global search experience is unaffected.
@@ -7785,10 +8866,17 @@ export function ChatPanel({
   const [inChatSearchTotal, setInChatSearchTotal] = useState(0);
   const [inChatSearchRunning, setInChatSearchRunning] = useState(false);
   const [inChatSearchFloating, setInChatSearchFloating] = useState(false);
-  const [inChatSearchBranchMatches, setInChatSearchBranchMatches] = useState<ConversationBranchSearchMatch[]>([]);
+  const [inChatSearchBranchMatches, setInChatSearchBranchMatches] = useState<
+    ConversationBranchSearchMatch[]
+  >([]);
   const [inChatSearchBranchIndex, setInChatSearchBranchIndex] = useState(0);
-  const [inChatSearchActiveSource, setInChatSearchActiveSource] = useState<'visible' | 'branch'>('visible');
-  const [inChatSearchInlineSize, setInChatSearchInlineSize] = useState<{ width: number; height: number } | null>(null);
+  const [inChatSearchActiveSource, setInChatSearchActiveSource] = useState<'visible' | 'branch'>(
+    'visible',
+  );
+  const [inChatSearchInlineSize, setInChatSearchInlineSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
   const inChatSearchInputRef = useRef<HTMLTextAreaElement | null>(null);
   const inChatSearchMarksRef = useRef<InChatSearchMatchTarget[]>([]);
   const inChatSearchActiveIndexRef = useRef(0);
@@ -7848,12 +8936,23 @@ export function ChatPanel({
     return grouped;
   }, [branchPoints, activeConversation?.messages.length]);
   const branchesById = useMemo(
-    () => new Map(branchPoints.flatMap((point) => point.branches.map((branch) => [branch.id, branch] as const))),
+    () =>
+      new Map(
+        branchPoints.flatMap((point) =>
+          point.branches.map((branch) => [branch.id, branch] as const),
+        ),
+      ),
     [branchPoints],
   );
 
   useEffect(() => {
-    if (!activeConversation || !compactionReviewMarker || isEditingCompactionReview || isSavingCompactionReview) return;
+    if (
+      !activeConversation ||
+      !compactionReviewMarker ||
+      isEditingCompactionReview ||
+      isSavingCompactionReview
+    )
+      return;
 
     let nextIndex: number | null = null;
     if (compactionReviewMarker.messageId) {
@@ -7862,7 +8961,11 @@ export function ChatPanel({
       );
       nextIndex = foundIndex >= 0 ? foundIndex : null;
     }
-    if (nextIndex === null && compactionReviewMarker.messageIndex >= 0 && compactionReviewMarker.messageIndex < activeConversation.messages.length) {
+    if (
+      nextIndex === null &&
+      compactionReviewMarker.messageIndex >= 0 &&
+      compactionReviewMarker.messageIndex < activeConversation.messages.length
+    ) {
       nextIndex = compactionReviewMarker.messageIndex;
     }
     if (nextIndex === null) return;
@@ -7872,10 +8975,10 @@ export function ChatPanel({
 
     const nextSummary = extractCompactionSummary(message.content);
     if (
-      nextSummary === compactionReviewMarker.summary
-      && nextIndex === compactionReviewMarker.messageIndex
-      && message.message_id === compactionReviewMarker.messageId
-      && message.timestamp === compactionReviewMarker.timestamp
+      nextSummary === compactionReviewMarker.summary &&
+      nextIndex === compactionReviewMarker.messageIndex &&
+      message.message_id === compactionReviewMarker.messageId &&
+      message.timestamp === compactionReviewMarker.timestamp
     ) {
       return;
     }
@@ -7889,10 +8992,16 @@ export function ChatPanel({
     setCompactionReviewDraft(nextSummary);
     setCompactionReviewOriginalSummary(nextSummary);
     setCompactionReviewError(null);
-  }, [activeConversation, compactionReviewMarker, isEditingCompactionReview, isSavingCompactionReview]);
+  }, [
+    activeConversation,
+    compactionReviewMarker,
+    isEditingCompactionReview,
+    isSavingCompactionReview,
+  ]);
 
   useEffect(() => {
-    if (!branchSearchAnchorHint || activeConversationId !== branchSearchAnchorHint.conversationId) return;
+    if (!branchSearchAnchorHint || activeConversationId !== branchSearchAnchorHint.conversationId)
+      return;
     const anchor = document.querySelector<HTMLElement>('.chat-branch-nav-search-highlight');
     if (!anchor) return;
 
@@ -7900,12 +9009,12 @@ export function ChatPanel({
       anchor.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
     const timeoutId = window.setTimeout(() => {
-      setBranchSearchAnchorHint((current) => (
-        current?.conversationId === branchSearchAnchorHint.conversationId
-          && current.branchId === branchSearchAnchorHint.branchId
+      setBranchSearchAnchorHint((current) =>
+        current?.conversationId === branchSearchAnchorHint.conversationId &&
+        current.branchId === branchSearchAnchorHint.branchId
           ? null
-          : current
-      ));
+          : current,
+      );
     }, 5000);
 
     return () => {
@@ -7915,7 +9024,8 @@ export function ChatPanel({
   }, [activeConversationId, branchGroupsByIndex, branchSearchAnchorHint]);
 
   useEffect(() => {
-    if (!chatKeywordFocusHint || activeConversationId !== chatKeywordFocusHint.conversationId) return;
+    if (!chatKeywordFocusHint || activeConversationId !== chatKeywordFocusHint.conversationId)
+      return;
     const messagesRoot = chatMessagesRef.current;
     if (!messagesRoot) return;
 
@@ -7927,7 +9037,9 @@ export function ChatPanel({
     const tryHighlight = (attempt = 0) => {
       if (cancelled) return;
 
-      const messageWrappers = Array.from(messagesRoot.querySelectorAll<HTMLElement>('.chat-branch-wrapper'));
+      const messageWrappers = Array.from(
+        messagesRoot.querySelectorAll<HTMLElement>('.chat-branch-wrapper'),
+      );
       const branchAnchor = chatKeywordFocusHint.preferBranchAnchor
         ? messagesRoot.querySelector<HTMLElement>('.chat-branch-nav-search-highlight')
         : null;
@@ -7948,8 +9060,9 @@ export function ChatPanel({
         }
       }
 
-      const wrapped = wrapFirstMatchingText(candidateContainers, chatKeywordFocusHint.query)
-        || (branchAnchor ? wrapFirstMatchingText(messageWrappers, chatKeywordFocusHint.query) : null);
+      const wrapped =
+        wrapFirstMatchingText(candidateContainers, chatKeywordFocusHint.query) ||
+        (branchAnchor ? wrapFirstMatchingText(messageWrappers, chatKeywordFocusHint.query) : null);
 
       if (!wrapped) {
         if (attempt < 20) {
@@ -7963,7 +9076,9 @@ export function ChatPanel({
       clearTimeoutId = window.setTimeout(() => {
         cleanupHighlight?.();
         cleanupHighlight = null;
-        setChatKeywordFocusHint((current) => (current?.token === chatKeywordFocusHint.token ? null : current));
+        setChatKeywordFocusHint((current) =>
+          current?.token === chatKeywordFocusHint.token ? null : current,
+        );
       }, 5000);
     };
 
@@ -7996,10 +9111,13 @@ export function ChatPanel({
   // In-chat find: recompute highlights when query/options/active conversation
   // change, or when streaming/branch updates rerender the messages tree.
   const inChatSearchTrimmedQuery = debouncedInChatSearchQuery.trim();
-  const activeInChatSearchOptions = useMemo<InChatSearchOptions>(() => ({
-    matchCase: inChatSearchMatchCase,
-    wholeWord: inChatSearchWholeWord,
-  }), [inChatSearchMatchCase, inChatSearchWholeWord]);
+  const activeInChatSearchOptions = useMemo<InChatSearchOptions>(
+    () => ({
+      matchCase: inChatSearchMatchCase,
+      wholeWord: inChatSearchWholeWord,
+    }),
+    [inChatSearchMatchCase, inChatSearchWholeWord],
+  );
   useEffect(() => {
     const root = chatMessagesRef.current;
     if (!root) return;
@@ -8039,9 +9157,10 @@ export function ChatPanel({
           if (cancelled) return;
           inChatSearchMarksRef.current = partialMarks;
           setInChatSearchTotal(partialMarks.length);
-          const clamped = partialMarks.length === 0
-            ? 0
-            : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), partialMarks.length - 1);
+          const clamped =
+            partialMarks.length === 0
+              ? 0
+              : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), partialMarks.length - 1);
           clearInChatSearchActiveHighlight(previouslyActiveInChatMarkRef.current);
           const nextActive = partialMarks[clamped] ?? null;
           previouslyActiveInChatMarkRef.current = nextActive;
@@ -8055,9 +9174,10 @@ export function ChatPanel({
       inChatSearchMarksRef.current = marks;
       setInChatSearchTotal(marks.length);
       setInChatSearchRunning(false);
-      const clamped = marks.length === 0
-        ? 0
-        : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), marks.length - 1);
+      const clamped =
+        marks.length === 0
+          ? 0
+          : Math.min(Math.max(inChatSearchActiveIndexRef.current, 0), marks.length - 1);
       if (clamped !== inChatSearchActiveIndexRef.current) {
         setInChatSearchActiveIndex(clamped);
       }
@@ -8130,7 +9250,12 @@ export function ChatPanel({
         if (rangeRect && messagesRoot) {
           const rootRect = messagesRoot.getBoundingClientRect();
           messagesRoot.scrollTo({
-            top: messagesRoot.scrollTop + rangeRect.top - rootRect.top - (rootRect.height / 2) + (rangeRect.height / 2),
+            top:
+              messagesRoot.scrollTop +
+              rangeRect.top -
+              rootRect.top -
+              rootRect.height / 2 +
+              rangeRect.height / 2,
             behavior: 'smooth',
           });
           return;
@@ -8150,17 +9275,25 @@ export function ChatPanel({
   // for the active conversation and lets next/prev jump across branch results
   // when the currently rendered branch has no visible matches.
   useEffect(() => {
-    if (!inChatSearchOpen || !inChatSearchIncludeBranches || !inChatSearchTrimmedQuery || !activeConversationId) {
+    if (
+      !inChatSearchOpen ||
+      !inChatSearchIncludeBranches ||
+      !inChatSearchTrimmedQuery ||
+      !activeConversationId
+    ) {
       setInChatSearchBranchMatches([]);
       setInChatSearchBranchIndex(0);
       setInChatSearchActiveSource('visible');
       return;
     }
     let cancelled = false;
-    void api.searchConversationBranches([activeConversationId], inChatSearchTrimmedQuery)
+    void api
+      .searchConversationBranches([activeConversationId], inChatSearchTrimmedQuery)
       .then((response) => {
         if (cancelled) return;
-        const matches = response.matches.filter((match) => match.conversation_id === activeConversationId);
+        const matches = response.matches.filter(
+          (match) => match.conversation_id === activeConversationId,
+        );
         setInChatSearchBranchMatches(matches);
         setInChatSearchBranchIndex(0);
         setInChatSearchActiveSource('visible');
@@ -8174,7 +9307,12 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [inChatSearchOpen, inChatSearchIncludeBranches, inChatSearchTrimmedQuery, activeConversationId]);
+  }, [
+    inChatSearchOpen,
+    inChatSearchIncludeBranches,
+    inChatSearchTrimmedQuery,
+    activeConversationId,
+  ]);
 
   // Reset find when switching conversations so stale matches do not bleed
   // into the next chat.
@@ -8190,11 +9328,14 @@ export function ChatPanel({
     setInChatSearchActiveSource('visible');
     const restore = branchSearchPreviewRestoreRef.current;
     if (restore && restore.conversation.id !== activeConversationId) {
-      setConversations((prev) => prev.map((conversation) => (
-        conversation.id === restore.conversation.id && conversation.active_branch_id === restore.previewBranchId
-          ? restore.conversation
-          : conversation
-      )));
+      setConversations((prev) =>
+        prev.map((conversation) =>
+          conversation.id === restore.conversation.id &&
+          conversation.active_branch_id === restore.previewBranchId
+            ? restore.conversation
+            : conversation,
+        ),
+      );
       branchSearchPreviewRestoreRef.current = null;
     }
   }, [activeConversationId]);
@@ -8209,11 +9350,14 @@ export function ChatPanel({
       if (current.active_branch_id !== restore.previewBranchId) return current;
       return restore.conversation;
     });
-    setConversations((prev) => prev.map((conversation) => (
-      conversation.id === restore.conversation.id && conversation.active_branch_id === restore.previewBranchId
-        ? restore.conversation
-        : conversation
-    )));
+    setConversations((prev) =>
+      prev.map((conversation) =>
+        conversation.id === restore.conversation.id &&
+        conversation.active_branch_id === restore.previewBranchId
+          ? restore.conversation
+          : conversation,
+      ),
+    );
   }, []);
 
   // Responsive placement: drop the find bar below the header when the main
@@ -8255,8 +9399,9 @@ export function ChatPanel({
     event.preventDefault();
     event.stopPropagation();
 
-    const wrapper = (event.currentTarget.closest('.chat-in-chat-search-inline') as HTMLElement | null)
-      ?? (event.currentTarget.closest('.chat-in-chat-search') as HTMLElement | null);
+    const wrapper =
+      (event.currentTarget.closest('.chat-in-chat-search-inline') as HTMLElement | null) ??
+      (event.currentTarget.closest('.chat-in-chat-search') as HTMLElement | null);
     const input = inChatSearchInputRef.current;
     if (!wrapper || !input) return;
 
@@ -8273,8 +9418,14 @@ export function ChatPanel({
     const maxHeight = 260;
 
     const onMouseMove = (moveEvent: MouseEvent) => {
-      const width = Math.max(minWidth, Math.min(maxWidth, startWidth + (moveEvent.clientX - startX)));
-      const height = Math.max(minHeight, Math.min(maxHeight, startHeight + (moveEvent.clientY - startY)));
+      const width = Math.max(
+        minWidth,
+        Math.min(maxWidth, startWidth + (moveEvent.clientX - startX)),
+      );
+      const height = Math.max(
+        minHeight,
+        Math.min(maxHeight, startHeight + (moveEvent.clientY - startY)),
+      );
       setInChatSearchInlineSize({
         width: Math.round(width),
         height: Math.round(height),
@@ -8336,7 +9487,9 @@ export function ChatPanel({
   // conversations older than the active cutoff; loaded only on demand to
   // keep ?view=chat boot fast for users with long histories.
   const [conversationSearchQuery, setConversationSearchQuery] = useState('');
-  const [archiveAgeDays, setArchiveAgeDays] = useState<number>(() => readStoredArchiveAgeDays(currentUser.id));
+  const [archiveAgeDays, setArchiveAgeDays] = useState<number>(() =>
+    readStoredArchiveAgeDays(currentUser.id),
+  );
   const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
   const [archivedConversationCount, setArchivedConversationCount] = useState<number | null>(null);
   const [archiveCountLoaded, setArchiveCountLoaded] = useState(false);
@@ -8346,22 +9499,23 @@ export function ChatPanel({
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveCursor, setArchiveCursor] = useState<ConversationArchiveCursor | null>(null);
-  const [workspaceArchivedConversations, setWorkspaceArchivedConversations] = useState<Conversation[]>([]);
+  const [workspaceArchivedConversations, setWorkspaceArchivedConversations] = useState<
+    Conversation[]
+  >([]);
   const [workspaceArchiveLoaded, setWorkspaceArchiveLoaded] = useState(false);
   const [workspaceArchiveLoading, setWorkspaceArchiveLoading] = useState(false);
   const [showArchiveModal, setShowArchiveModal] = useState(false);
   const [archiveSearchQuery, setArchiveSearchQuery] = useState('');
   const isAdmin = currentUser.role === 'admin';
   const isReadOnly = readOnly && !(allowAdminReadOnlyBypass && isAdmin);
-  const effectiveReadOnlyMessage = readOnlyMessage || 'Workspace is read-only. Viewers can review messages but cannot send prompts.';
+  const effectiveReadOnlyMessage =
+    readOnlyMessage ||
+    'Workspace is read-only. Viewers can review messages but cannot send prompts.';
   const isActiveConversationCompacting = Boolean(
-    isCompacting
-    && activeConversation
-    && compactingConversationId === activeConversation.id,
+    isCompacting && activeConversation && compactingConversationId === activeConversation.id,
   );
   const hasQueuedCompactionMessageForActiveConversation = Boolean(
-    activeConversation
-    && queuedCompactionMessage?.conversationId === activeConversation.id,
+    activeConversation && queuedCompactionMessage?.conversationId === activeConversation.id,
   );
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
@@ -8373,24 +9527,31 @@ export function ChatPanel({
 
   // Background task state
   const [activeTask, setActiveTask] = useState<ChatTask | null>(null);
-  const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null);  // Last interrupted task for continue
-  const [interruptedConversationIds, setInterruptedConversationIds] = useState<Set<string>>(new Set());
+  const [interruptedTask, setInterruptedTask] = useState<ChatTask | null>(null); // Last interrupted task for continue
+  const [interruptedConversationIds, setInterruptedConversationIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [interruptDismissed, setInterruptDismissed] = useState(false);
   const prevChatStateRef = useRef<InterruptChatStateSnapshot | undefined>(undefined);
   const [_isPollingTask, setIsPollingTask] = useState(false);
 
-  const syncConversationActiveTaskId = useCallback((conversationId: string, taskId: string | null) => {
-    setConversations((prev) => prev.map((conversation) => {
-      if (conversation.id !== conversationId) return conversation;
-      if ((conversation.active_task_id ?? null) === taskId) return conversation;
-      return { ...conversation, active_task_id: taskId };
-    }));
-    setActiveConversation((prev) => {
-      if (!prev || prev.id !== conversationId) return prev;
-      if ((prev.active_task_id ?? null) === taskId) return prev;
-      return { ...prev, active_task_id: taskId };
-    });
-  }, []);
+  const syncConversationActiveTaskId = useCallback(
+    (conversationId: string, taskId: string | null) => {
+      setConversations((prev) =>
+        prev.map((conversation) => {
+          if (conversation.id !== conversationId) return conversation;
+          if ((conversation.active_task_id ?? null) === taskId) return conversation;
+          return { ...conversation, active_task_id: taskId };
+        }),
+      );
+      setActiveConversation((prev) => {
+        if (!prev || prev.id !== conversationId) return prev;
+        if ((prev.active_task_id ?? null) === taskId) return prev;
+        return { ...prev, active_task_id: taskId };
+      });
+    },
+    [],
+  );
 
   // Read/reset dismiss cookie when workspaceId changes.
   // Seed prevHasInterruptedRef from the cookie: if the user already dismissed an
@@ -8412,8 +9573,7 @@ export function ChatPanel({
   // transition check to avoid clearing a valid dismiss cookie on page refresh.
   useEffect(() => {
     const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
-    const hasLive = Boolean(activeTask)
-      || conversations.some(c => Boolean(c.active_task_id));
+    const hasLive = Boolean(activeTask) || conversations.some((c) => Boolean(c.active_task_id));
     if (!workspaceId) {
       prevChatStateRef.current = undefined;
       return;
@@ -8449,14 +9609,20 @@ export function ChatPanel({
     const rawInterrupted = Boolean(interruptedTask) || interruptedConversationIds.size > 0;
     const hasInterrupted = rawInterrupted && !interruptDismissed;
     // Don't count conversations with stale active_task_ids as live
-    const hasLiveTask = Boolean(activeTask)
-      || conversations.some(c => Boolean(c.active_task_id));
+    const hasLiveTask = Boolean(activeTask) || conversations.some((c) => Boolean(c.active_task_id));
     // Report live and interrupted independently so the workspace picker can
     // show the spinner even when another conversation is interrupted.
     onConversationStateChange(hasLiveTask, hasInterrupted);
-  }, [activeTask, conversations, interruptedTask, interruptedConversationIds, interruptDismissed, onConversationStateChange]);
+  }, [
+    activeTask,
+    conversations,
+    interruptedTask,
+    interruptedConversationIds,
+    interruptDismissed,
+    onConversationStateChange,
+  ]);
 
-  const lastSeenVersionRef = useRef<number>(0);  // Track last seen version for delta polling
+  const lastSeenVersionRef = useRef<number>(0); // Track last seen version for delta polling
   // Available models from shared context
   const {
     models: availableModels,
@@ -8469,7 +9635,9 @@ export function ChatPanel({
   const [isWorkspaceConversationMenuOpen, setIsWorkspaceConversationMenuOpen] = useState(false);
   const [workspaceConversationSearchQuery, setWorkspaceConversationSearchQuery] = useState('');
   const deferredConversationSearchQuery = useDeferredValue(conversationSearchQuery);
-  const deferredWorkspaceConversationSearchQuery = useDeferredValue(workspaceConversationSearchQuery);
+  const deferredWorkspaceConversationSearchQuery = useDeferredValue(
+    workspaceConversationSearchQuery,
+  );
   const deferredArchiveSearchQuery = useDeferredValue(archiveSearchQuery);
   const [sidebarBranchSearchEnabled, setSidebarBranchSearchEnabled] = useState(false);
   const [workspaceBranchSearchEnabled, setWorkspaceBranchSearchEnabled] = useState(false);
@@ -8477,7 +9645,8 @@ export function ChatPanel({
   const workspaceConversationSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [conversationMembers, setConversationMembers] = useState<ConversationMember[]>([]);
-  const [conversationToolSelectionMode, setConversationToolSelectionMode] = useState<UserSpaceToolSelection['mode']>('default_all');
+  const [conversationToolSelectionMode, setConversationToolSelectionMode] =
+    useState<UserSpaceToolSelection['mode']>('default_all');
   const [conversationToolIds, setConversationToolIds] = useState<string[]>([]);
   const [conversationToolGroupIds, setConversationToolGroupIds] = useState<string[]>([]);
   const [pendingConversationToolSelection, setPendingConversationToolSelection] = useState<{
@@ -8486,22 +9655,34 @@ export function ChatPanel({
   } | null>(null);
   const conversationToolSelectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const conversationToolSelectionSaveSeqRef = useRef(0);
-  const [conversationDisabledBuiltInToolIds, setConversationDisabledBuiltInToolIds] = useState<string[]>([]);
+  const [conversationDisabledBuiltInToolIds, setConversationDisabledBuiltInToolIds] = useState<
+    string[]
+  >([]);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const conversationSearchTextById = useMemo(() => {
     const searchTextById = new Map<string, string>();
-    for (const conversation of [...conversations, ...archivedConversations, ...workspaceArchivedConversations]) {
+    for (const conversation of [
+      ...conversations,
+      ...archivedConversations,
+      ...workspaceArchivedConversations,
+    ]) {
       if (!searchTextById.has(conversation.id)) {
         searchTextById.set(conversation.id, getConversationSearchText(conversation).toLowerCase());
       }
     }
     return searchTextById;
   }, [conversations, archivedConversations, workspaceArchivedConversations]);
-  const conversationMatchesCachedQuery = useCallback((conversation: Conversation, query: string): boolean => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return true;
-    return (conversationSearchTextById.get(conversation.id) ?? getConversationSearchText(conversation).toLowerCase()).includes(needle);
-  }, [conversationSearchTextById]);
+  const conversationMatchesCachedQuery = useCallback(
+    (conversation: Conversation, query: string): boolean => {
+      const needle = query.trim().toLowerCase();
+      if (!needle) return true;
+      return (
+        conversationSearchTextById.get(conversation.id) ??
+        getConversationSearchText(conversation).toLowerCase()
+      ).includes(needle);
+    },
+    [conversationSearchTextById],
+  );
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [memberPickerUsers, setMemberPickerUsers] = useState<UserDirectoryEntry[]>([]);
@@ -8516,11 +9697,11 @@ export function ChatPanel({
   const [promptDebugMessageIndex, setPromptDebugMessageIndex] = useState<number | null>(null);
 
   const useWorkspaceToolSource = Boolean(
-    embedded
-    && workspaceId
-    && workspaceAvailableTools
-    && workspaceSelectedToolIds
-    && onWorkspaceToolSelectionChange,
+    embedded &&
+    workspaceId &&
+    workspaceAvailableTools &&
+    workspaceSelectedToolIds &&
+    onWorkspaceToolSelectionChange,
   );
 
   const initialConversationIdRef = useRef<string | null>(
@@ -8529,12 +9710,20 @@ export function ChatPanel({
 
   const sidebarBranchSearchConversationIds = useMemo(() => {
     if (workspaceId) return [];
-    return Array.from(new Set([...conversations, ...archivedConversations].map((conversation) => conversation.id)));
+    return Array.from(
+      new Set([...conversations, ...archivedConversations].map((conversation) => conversation.id)),
+    );
   }, [workspaceId, conversations, archivedConversations]);
 
   const workspaceBranchSearchConversationIds = useMemo(() => {
     if (!workspaceId) return [];
-    return Array.from(new Set([...conversations, ...workspaceArchivedConversations].map((conversation) => conversation.id)));
+    return Array.from(
+      new Set(
+        [...conversations, ...workspaceArchivedConversations].map(
+          (conversation) => conversation.id,
+        ),
+      ),
+    );
   }, [workspaceId, conversations, workspaceArchivedConversations]);
 
   const archiveBranchSearchConversationIds = useMemo(() => {
@@ -8563,58 +9752,69 @@ export function ChatPanel({
     }
   }, [initialConversationId]);
 
-  const effectiveAvailableTools = useWorkspaceToolSource
-    ? (workspaceAvailableTools ?? [])
-    : availableTools;
-  const conversationBaseToolSelection = useMemo<UserSpaceToolSelection>(() => ({
-    mode: conversationToolSelectionMode,
-    toolIds: conversationToolIds,
-    toolGroupIds: conversationToolGroupIds,
-  }), [conversationToolGroupIds, conversationToolIds, conversationToolSelectionMode]);
-  const effectiveConversationToolSelection = pendingConversationToolSelection && pendingConversationToolSelection.conversationId === activeConversation?.id
-    ? pendingConversationToolSelection.selection
-    : conversationBaseToolSelection;
+  const effectiveAvailableTools = useMemo(
+    () => (useWorkspaceToolSource ? (workspaceAvailableTools ?? []) : availableTools),
+    [useWorkspaceToolSource, workspaceAvailableTools, availableTools],
+  );
+  const conversationBaseToolSelection = useMemo<UserSpaceToolSelection>(
+    () => ({
+      mode: conversationToolSelectionMode,
+      toolIds: conversationToolIds,
+      toolGroupIds: conversationToolGroupIds,
+    }),
+    [conversationToolGroupIds, conversationToolIds, conversationToolSelectionMode],
+  );
+  const effectiveConversationToolSelection =
+    pendingConversationToolSelection &&
+    pendingConversationToolSelection.conversationId === activeConversation?.id
+      ? pendingConversationToolSelection.selection
+      : conversationBaseToolSelection;
   const effectiveToolSelection = useWorkspaceToolSource
-    ? {
-      mode: workspaceToolSelectionMode ?? ((workspaceSelectedToolIds ?? []).length === 0 && (workspaceSelectedToolGroupIds ?? []).length === 0 ? 'default_all' : 'custom'),
-      toolIds: workspaceSelectedToolIds ?? [],
-      toolGroupIds: workspaceSelectedToolGroupIds ?? [],
-    } satisfies UserSpaceToolSelection
+    ? ({
+        mode:
+          workspaceToolSelectionMode ??
+          ((workspaceSelectedToolIds ?? []).length === 0 &&
+          (workspaceSelectedToolGroupIds ?? []).length === 0
+            ? 'default_all'
+            : 'custom'),
+        toolIds: workspaceSelectedToolIds ?? [],
+        toolGroupIds: workspaceSelectedToolGroupIds ?? [],
+      } satisfies UserSpaceToolSelection)
     : effectiveConversationToolSelection;
   const resolvedConversationToolIds = useMemo(
-    () => resolveDefaultSelectedToolIds(
-      effectiveConversationToolSelection.toolIds,
-      effectiveConversationToolSelection.toolGroupIds,
-      effectiveAvailableTools,
-      effectiveConversationToolSelection.mode,
-    ),
-    [effectiveAvailableTools, effectiveConversationToolSelection]
+    () =>
+      resolveDefaultSelectedToolIds(
+        effectiveConversationToolSelection.toolIds,
+        effectiveConversationToolSelection.toolGroupIds,
+        effectiveAvailableTools,
+        effectiveConversationToolSelection.mode,
+      ),
+    [effectiveAvailableTools, effectiveConversationToolSelection],
   );
   const resolvedEffectiveToolIds = useMemo(
-    () => resolveDefaultSelectedToolIds(
-      effectiveToolSelection.toolIds,
-      effectiveToolSelection.toolGroupIds,
-      effectiveAvailableTools,
-      effectiveToolSelection.mode,
-    ),
-    [effectiveAvailableTools, effectiveToolSelection]
+    () =>
+      resolveDefaultSelectedToolIds(
+        effectiveToolSelection.toolIds,
+        effectiveToolSelection.toolGroupIds,
+        effectiveAvailableTools,
+        effectiveToolSelection.mode,
+      ),
+    [effectiveAvailableTools, effectiveToolSelection],
   );
   const resolvedConversationToolIdSet = useMemo(
     () => new Set(resolvedConversationToolIds),
-    [resolvedConversationToolIds]
+    [resolvedConversationToolIds],
   );
   const resolvedEffectiveToolIdSet = useMemo(
     () => new Set(resolvedEffectiveToolIds),
-    [resolvedEffectiveToolIds]
+    [resolvedEffectiveToolIds],
   );
   const effectiveSavingTools = useWorkspaceToolSource ? workspaceSavingTools : savingTools;
 
   const effectiveToolGroupIds = useWorkspaceToolSource
     ? effectiveToolSelection.toolGroupIds
     : effectiveConversationToolSelection.toolGroupIds;
-  const effectiveToolGroups = useWorkspaceToolSource
-    ? (workspaceToolGroups ?? [])
-    : toolGroups;
+  const effectiveToolGroups = useWorkspaceToolSource ? (workspaceToolGroups ?? []) : toolGroups;
   const hasWorkspaceConversationContext = Boolean(
     workspaceId || activeConversation?.workspace_id || activeConversation?.workspaceId,
   );
@@ -8627,7 +9827,7 @@ export function ChatPanel({
   }, [conversationDisabledBuiltInToolIds]);
   const effectiveToolGroupIdSet = useMemo(
     () => new Set(effectiveToolGroupIds),
-    [effectiveToolGroupIds]
+    [effectiveToolGroupIds],
   );
   useUserSpaceToolHealthEvents({
     availableTools,
@@ -8640,21 +9840,26 @@ export function ChatPanel({
   // Computed conversation ownership and permissions
   const conversationOwnerId = useMemo(() => {
     if (!activeConversation) return null;
-    const ownerMember = conversationMembers.find(m => m.role === 'owner');
+    const ownerMember = conversationMembers.find((m) => m.role === 'owner');
     return ownerMember?.user_id || activeConversation.user_id || null;
   }, [activeConversation, conversationMembers]);
 
   const myConversationRole = useMemo(() => {
     if (!activeConversation || !currentUser) return null;
-    const myMember = conversationMembers.find(m => m.user_id === currentUser.id);
+    const myMember = conversationMembers.find((m) => m.user_id === currentUser.id);
     return myMember?.role || null;
   }, [activeConversation, currentUser, conversationMembers]);
 
-  const isConversationOwner = myConversationRole === 'owner' || activeConversation?.user_id === currentUser?.id;
+  const isConversationOwner =
+    myConversationRole === 'owner' || activeConversation?.user_id === currentUser?.id;
   const isConversationViewer = myConversationRole === 'viewer';
   const hasWorkspaceChatCollaboration = Boolean(workspaceId);
-  const canManageConversationMembers = Boolean(activeConversation) && (hasWorkspaceChatCollaboration || isConversationOwner);
-  const canUseConversationTools = Boolean(activeConversation) && !isReadOnly && (hasWorkspaceChatCollaboration || !isConversationViewer);
+  const canManageConversationMembers =
+    Boolean(activeConversation) && (hasWorkspaceChatCollaboration || isConversationOwner);
+  const canUseConversationTools =
+    Boolean(activeConversation) &&
+    !isReadOnly &&
+    (hasWorkspaceChatCollaboration || !isConversationViewer);
   const showPromptDebugButton = Boolean(debugMode && isAdmin && activeConversation);
 
   const toggleFullscreen = useCallback(() => {
@@ -8663,44 +9868,50 @@ export function ChatPanel({
     onFullscreenChange?.(next);
   }, [isFullscreen, onFullscreenChange]);
 
-  const loadPromptDebugRecords = useCallback(async (messageIndex: number | null) => {
-    if (!activeConversation || !showPromptDebugButton) return;
-    if (messageIndex === null) {
-      setPromptDebugRecords([]);
-      setPromptDebugError('No assistant message was selected for prompt debug.');
-      return;
-    }
-    setPromptDebugLoading(true);
-    setPromptDebugError(null);
-    try {
-      const records = await api.getConversationProviderDebugPrompts(
-        activeConversation.id,
-        messageIndex,
-        workspaceId,
-        200,
-      );
-      setPromptDebugRecords(records);
-    } catch (err) {
-      setPromptDebugError(
-        err instanceof Error ? err.message : 'Failed to load prompt debug records.'
-      );
-    } finally {
-      setPromptDebugLoading(false);
-    }
-  }, [activeConversation, showPromptDebugButton, workspaceId]);
+  const loadPromptDebugRecords = useCallback(
+    async (messageIndex: number | null) => {
+      if (!activeConversation || !showPromptDebugButton) return;
+      if (messageIndex === null) {
+        setPromptDebugRecords([]);
+        setPromptDebugError('No assistant message was selected for prompt debug.');
+        return;
+      }
+      setPromptDebugLoading(true);
+      setPromptDebugError(null);
+      try {
+        const records = await api.getConversationProviderDebugPrompts(
+          activeConversation.id,
+          messageIndex,
+          workspaceId,
+          200,
+        );
+        setPromptDebugRecords(records);
+      } catch (err) {
+        setPromptDebugError(
+          err instanceof Error ? err.message : 'Failed to load prompt debug records.',
+        );
+      } finally {
+        setPromptDebugLoading(false);
+      }
+    },
+    [activeConversation, showPromptDebugButton, workspaceId],
+  );
 
   const closePromptDebugModal = useCallback(() => {
     setShowPromptDebugModal(false);
     setPromptDebugMessageIndex(null);
   }, []);
 
-  const openPromptDebugForAssistantMessage = useCallback((messageIndex: number) => {
-    if (!activeConversation) return;
-    const msg = activeConversation.messages[messageIndex];
-    if (!msg || msg.role !== 'assistant') return;
-    setPromptDebugMessageIndex(messageIndex);
-    setShowPromptDebugModal(true);
-  }, [activeConversation]);
+  const openPromptDebugForAssistantMessage = useCallback(
+    (messageIndex: number) => {
+      if (!activeConversation) return;
+      const msg = activeConversation.messages[messageIndex];
+      if (!msg || msg.role !== 'assistant') return;
+      setPromptDebugMessageIndex(messageIndex);
+      setShowPromptDebugModal(true);
+    },
+    [activeConversation],
+  );
 
   const copyPromptText = useCallback(async (messageKey: string, text: string) => {
     try {
@@ -8718,15 +9929,18 @@ export function ChatPanel({
     if (typeof content === 'string') return content;
 
     if (Array.isArray(content)) {
-      return content.map((part) => {
-        if (!part || typeof part !== 'object') return String(part ?? '');
-        const typedPart = part as Record<string, unknown>;
-        const partType = typedPart.type;
-        if (partType === 'text') return String(typedPart.text ?? '');
-        if (partType === 'image_url') return '[image]';
-        if (partType === 'file') return `[file: ${String(typedPart.filename ?? typedPart.file_path ?? 'attachment')}]`;
-        return JSON.stringify(typedPart, null, 2);
-      }).join('\n');
+      return content
+        .map((part) => {
+          if (!part || typeof part !== 'object') return String(part ?? '');
+          const typedPart = part as Record<string, unknown>;
+          const partType = typedPart.type;
+          if (partType === 'text') return String(typedPart.text ?? '');
+          if (partType === 'image_url') return '[image]';
+          if (partType === 'file')
+            return `[file: ${String(typedPart.filename ?? typedPart.file_path ?? 'attachment')}]`;
+          return JSON.stringify(typedPart, null, 2);
+        })
+        .join('\n');
     }
 
     if (content && typeof content === 'object') {
@@ -8736,7 +9950,9 @@ export function ChatPanel({
   }, []);
 
   const chronologicalPromptDebugRecords = useMemo(() => {
-    return [...promptDebugRecords].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    return [...promptDebugRecords].sort(
+      (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at),
+    );
   }, [promptDebugRecords]);
 
   const promptDebugCompactionMarker = useMemo(() => {
@@ -8840,9 +10056,17 @@ export function ChatPanel({
   // handler (defined earlier in the component) can trigger task streaming
   // as soon as a task_started event arrives, without waiting for the
   // periodic task-state poll.
-  const connectTaskStreamRef = useRef<((taskId: string, conversationId?: string) => void) | null>(null);
-  const watchCompactionTaskRef = useRef<((taskId: string, conversationId: string) => void) | null>(null);
-  const autoCompactionCompletionRef = useRef<{ conversationId: string; messageKey: string; completedAt: number } | null>(null);
+  const connectTaskStreamRef = useRef<((taskId: string, conversationId?: string) => void) | null>(
+    null,
+  );
+  const watchCompactionTaskRef = useRef<((taskId: string, conversationId: string) => void) | null>(
+    null,
+  );
+  const autoCompactionCompletionRef = useRef<{
+    conversationId: string;
+    messageKey: string;
+    completedAt: number;
+  } | null>(null);
   const workspaceConversationDropdownRef = useRef<HTMLDivElement>(null);
   const chatMainRef = useRef<HTMLDivElement>(null);
   const selectConversationRequestIdRef = useRef(0);
@@ -8861,18 +10085,24 @@ export function ChatPanel({
     return `${lastMessage.message_id ?? lastMessage.timestamp ?? 'none'}:${conversation.messages.length}`;
   }, []);
 
-  const markAutoCompactionCandidate = useCallback((conversation: Conversation) => {
-    const tailKey = getConversationTailKey(conversation);
-    if (!tailKey || conversation.messages[conversation.messages.length - 1]?.role === 'compaction') {
-      return;
-    }
+  const markAutoCompactionCandidate = useCallback(
+    (conversation: Conversation) => {
+      const tailKey = getConversationTailKey(conversation);
+      if (
+        !tailKey ||
+        conversation.messages[conversation.messages.length - 1]?.role === 'compaction'
+      ) {
+        return;
+      }
 
-    autoCompactionCompletionRef.current = {
-      conversationId: conversation.id,
-      messageKey: tailKey,
-      completedAt: Date.now(),
-    };
-  }, [getConversationTailKey]);
+      autoCompactionCompletionRef.current = {
+        conversationId: conversation.id,
+        messageKey: tailKey,
+        completedAt: Date.now(),
+      };
+    },
+    [getConversationTailKey],
+  );
 
   useEffect(() => {
     inputAreaHeightLiveRef.current = inputAreaHeight;
@@ -8987,19 +10217,22 @@ export function ChatPanel({
     sidebarWidth,
   ]);
 
-  const handleResizeSidebar = useCallback((delta: number) => {
-    if (embedded) return;
-    setSidebarWidth((prev) => {
-      const next = Math.min(480, Math.max(0, prev + delta));
-      if (next < 120) {
-        if (prev >= 120) prevSidebarWidth.current = prev;
-        setShowSidebar(false);
-        return prevSidebarWidth.current || prev || 280;
-      }
-      prevSidebarWidth.current = next;
-      return next;
-    });
-  }, [embedded]);
+  const handleResizeSidebar = useCallback(
+    (delta: number) => {
+      if (embedded) return;
+      setSidebarWidth((prev) => {
+        const next = Math.min(480, Math.max(0, prev + delta));
+        if (next < 120) {
+          if (prev >= 120) prevSidebarWidth.current = prev;
+          setShowSidebar(false);
+          return prevSidebarWidth.current || prev || 280;
+        }
+        prevSidebarWidth.current = next;
+        return next;
+      });
+    },
+    [embedded],
+  );
 
   const expandSidebar = useCallback(() => {
     setShowSidebar(true);
@@ -9024,72 +10257,82 @@ export function ChatPanel({
     return Math.max(MIN_INPUT_AREA_HEIGHT, containerHeight - occupiedHeight);
   }, [MIN_INPUT_AREA_HEIGHT]);
 
-  const handleResizeInputArea = useCallback((delta: number) => {
-    const inputArea = chatMainRef.current?.querySelector('.chat-input-area') as HTMLElement | null;
-    const messages = chatMainRef.current?.querySelector('.chat-messages') as HTMLElement | null;
-    const prev = inputAreaHeightLiveRef.current;
-    const proposed = prev - delta;
-    const draggingDown = delta > 0;
-    const draggingUp = delta < 0;
-    const atMinHeight = prev <= MIN_INPUT_AREA_HEIGHT;
-    const crossedCollapseThreshold = proposed < INPUT_AREA_COLLAPSE_THRESHOLD;
+  const handleResizeInputArea = useCallback(
+    (delta: number) => {
+      const inputArea = chatMainRef.current?.querySelector(
+        '.chat-input-area',
+      ) as HTMLElement | null;
+      const messages = chatMainRef.current?.querySelector('.chat-messages') as HTMLElement | null;
+      const prev = inputAreaHeightLiveRef.current;
+      const proposed = prev - delta;
+      const draggingDown = delta > 0;
+      const draggingUp = delta < 0;
+      const atMinHeight = prev <= MIN_INPUT_AREA_HEIGHT;
+      const crossedCollapseThreshold = proposed < INPUT_AREA_COLLAPSE_THRESHOLD;
 
-    if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
-      if (!inputAreaCollapsedLiveRef.current && prev > MIN_INPUT_AREA_HEIGHT) {
-        prevInputAreaHeight.current = prev;
+      if (draggingDown && (atMinHeight || crossedCollapseThreshold)) {
+        if (!inputAreaCollapsedLiveRef.current && prev > MIN_INPUT_AREA_HEIGHT) {
+          prevInputAreaHeight.current = prev;
+        }
+        inputAreaCollapsedLiveRef.current = true;
+        messagesCollapsedLiveRef.current = false;
+        manualResizeLiveRef.current = false;
+        if (inputArea) inputArea.style.display = 'none';
+        if (messages) messages.style.display = '';
+        return;
       }
-      inputAreaCollapsedLiveRef.current = true;
-      messagesCollapsedLiveRef.current = false;
-      manualResizeLiveRef.current = false;
-      if (inputArea) inputArea.style.display = 'none';
-      if (messages) messages.style.display = '';
-      return;
-    }
 
-    const maxInputHeight = getMaxInputAreaHeight();
+      const maxInputHeight = getMaxInputAreaHeight();
 
-    if (draggingUp && proposed >= maxInputHeight) {
-      if (!messagesCollapsedLiveRef.current) {
-        prevInputAreaHeight.current = prev;
+      if (draggingUp && proposed >= maxInputHeight) {
+        if (!messagesCollapsedLiveRef.current) {
+          prevInputAreaHeight.current = prev;
+        }
+        inputAreaHeightLiveRef.current = maxInputHeight;
+        inputAreaCollapsedLiveRef.current = false;
+        messagesCollapsedLiveRef.current = true;
+        manualResizeLiveRef.current = false;
+        if (inputArea) {
+          inputArea.style.display = '';
+          inputArea.style.height = '';
+          inputArea.style.minHeight = 'auto';
+          inputArea.style.flex = '1';
+        }
+        if (messages) messages.style.display = 'none';
+        return;
       }
-      inputAreaHeightLiveRef.current = maxInputHeight;
+
+      const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, proposed));
+      inputAreaHeightLiveRef.current = next;
       inputAreaCollapsedLiveRef.current = false;
-      messagesCollapsedLiveRef.current = true;
-      manualResizeLiveRef.current = false;
+      messagesCollapsedLiveRef.current = false;
+      manualResizeLiveRef.current = true;
+      prevInputAreaHeight.current = next;
       if (inputArea) {
         inputArea.style.display = '';
-        inputArea.style.height = '';
-        inputArea.style.minHeight = 'auto';
-        inputArea.style.flex = '1';
+        inputArea.style.flex = '';
+        inputArea.style.height = `${next}px`;
+        inputArea.style.minHeight = `${next}px`;
       }
-      if (messages) messages.style.display = 'none';
-      return;
-    }
-
-    const next = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, proposed));
-    inputAreaHeightLiveRef.current = next;
-    inputAreaCollapsedLiveRef.current = false;
-    messagesCollapsedLiveRef.current = false;
-    manualResizeLiveRef.current = true;
-    prevInputAreaHeight.current = next;
-    if (inputArea) {
-      inputArea.style.display = '';
-      inputArea.style.flex = '';
-      inputArea.style.height = `${next}px`;
-      inputArea.style.minHeight = `${next}px`;
-    }
-    if (messages) messages.style.display = '';
-  }, [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight]);
+      if (messages) messages.style.display = '';
+    },
+    [INPUT_AREA_COLLAPSE_THRESHOLD, MIN_INPUT_AREA_HEIGHT, getMaxInputAreaHeight],
+  );
 
   const commitResizeInputArea = useCallback(() => {
     setInputAreaHeight(inputAreaHeightLiveRef.current);
     setIsInputAreaCollapsed(inputAreaCollapsedLiveRef.current);
-    setIsMessagesCollapsed(inputAreaCollapsedLiveRef.current ? false : messagesCollapsedLiveRef.current);
+    setIsMessagesCollapsed(
+      inputAreaCollapsedLiveRef.current ? false : messagesCollapsedLiveRef.current,
+    );
     setIsManualResize(manualResizeLiveRef.current);
   }, []);
 
   const expandInputArea = useCallback(() => {
-    const nextHeight = Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+    const nextHeight = Math.max(
+      MIN_INPUT_AREA_HEIGHT,
+      prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT,
+    );
     inputAreaHeightLiveRef.current = nextHeight;
     inputAreaCollapsedLiveRef.current = false;
     manualResizeLiveRef.current = nextHeight > MIN_INPUT_AREA_HEIGHT;
@@ -9104,7 +10347,10 @@ export function ChatPanel({
   }, [MIN_INPUT_AREA_HEIGHT]);
 
   const expandMessages = useCallback(() => {
-    const nextHeight = Math.max(MIN_INPUT_AREA_HEIGHT, prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT);
+    const nextHeight = Math.max(
+      MIN_INPUT_AREA_HEIGHT,
+      prevInputAreaHeight.current || MIN_INPUT_AREA_HEIGHT,
+    );
     inputAreaHeightLiveRef.current = nextHeight;
     messagesCollapsedLiveRef.current = false;
     manualResizeLiveRef.current = nextHeight > MIN_INPUT_AREA_HEIGHT;
@@ -9120,70 +10366,75 @@ export function ChatPanel({
   // Adjust the input area container height to fit the composer content.
   // The composer (a contentEditable div) grows with its inline content,
   // including any inline reference chips; this function manages the container.
-  const autoResizeInput = useCallback((el?: HTMLDivElement | null) => {
-    const editor = el ?? inputRef.current;
-    if (!editor) return;
+  const autoResizeInput = useCallback(
+    (el?: HTMLDivElement | null) => {
+      const editor = el ?? inputRef.current;
+      if (!editor) return;
 
-    const currentLength = editor.textContent?.length ?? 0;
+      const currentLength = editor.textContent?.length ?? 0;
 
-    if (isManualResize) {
-      if (currentLength === 0 && prevInputLengthRef.current > 0) {
-        setIsManualResize(false);
-        setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
+      if (isManualResize) {
+        if (currentLength === 0 && prevInputLengthRef.current > 0) {
+          setIsManualResize(false);
+          setInputAreaHeight(MIN_INPUT_AREA_HEIGHT);
+        }
+        prevInputLengthRef.current = currentLength;
+        return;
       }
+
       prevInputLengthRef.current = currentLength;
-      return;
-    }
 
-    prevInputLengthRef.current = currentLength;
+      const wrapper = editor.closest('.chat-input-area') as HTMLElement | null;
 
-    const wrapper = editor.closest('.chat-input-area') as HTMLElement | null;
+      let wrapperOverhead = 0;
+      if (wrapper) {
+        const wrapperStyle = getComputedStyle(wrapper);
+        const verticalPadding =
+          parseFloat(wrapperStyle.paddingTop) + parseFloat(wrapperStyle.paddingBottom);
+        const borderWidth =
+          parseFloat(wrapperStyle.borderTopWidth) + parseFloat(wrapperStyle.borderBottomWidth);
+        wrapperOverhead = verticalPadding + borderWidth;
+      }
 
-    let wrapperOverhead = 0;
-    if (wrapper) {
-      const wrapperStyle = getComputedStyle(wrapper);
-      const verticalPadding = parseFloat(wrapperStyle.paddingTop) + parseFloat(wrapperStyle.paddingBottom);
-      const borderWidth = parseFloat(wrapperStyle.borderTopWidth) + parseFloat(wrapperStyle.borderBottomWidth);
-      wrapperOverhead = verticalPadding + borderWidth;
-    }
+      // A contentEditable element is content-sized; its scrollHeight already
+      // reflects wrapped text and inline chips. Read the field padding so the
+      // measured content maps cleanly onto the container height.
+      const field = editor.closest('.chat-input-field') as HTMLElement | null;
+      let fieldPadding = 0;
+      if (field) {
+        const fieldStyle = getComputedStyle(field);
+        fieldPadding = parseFloat(fieldStyle.paddingTop) + parseFloat(fieldStyle.paddingBottom);
+      }
+      const contentHeight = editor.scrollHeight + fieldPadding;
 
-    // A contentEditable element is content-sized; its scrollHeight already
-    // reflects wrapped text and inline chips. Read the field padding so the
-    // measured content maps cleanly onto the container height.
-    const field = editor.closest('.chat-input-field') as HTMLElement | null;
-    let fieldPadding = 0;
-    if (field) {
-      const fieldStyle = getComputedStyle(field);
-      fieldPadding = parseFloat(fieldStyle.paddingTop) + parseFloat(fieldStyle.paddingBottom);
-    }
-    const contentHeight = editor.scrollHeight + fieldPadding;
+      // Content-driven auto-resize: grow or shrink container to fit.
+      const rawMax = getMaxInputAreaHeight();
+      const maxInputHeight = embedded
+        ? rawMax
+        : Math.min(rawMax, Math.floor(window.innerHeight * 0.5));
 
-    // Content-driven auto-resize: grow or shrink container to fit.
-    const rawMax = getMaxInputAreaHeight();
-    const maxInputHeight = embedded
-      ? rawMax
-      : Math.min(rawMax, Math.floor(window.innerHeight * 0.5));
+      const needed = contentHeight + wrapperOverhead;
+      const target = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, Math.ceil(needed)));
 
-    const needed = contentHeight + wrapperOverhead;
-    const target = Math.min(maxInputHeight, Math.max(MIN_INPUT_AREA_HEIGHT, Math.ceil(needed)));
+      setInputAreaHeight((prev) => {
+        if (prev === target) return prev;
+        // Enable transition classes for content-driven resize only
+        const shrinking = target < prev;
+        setAutoResizeState(shrinking ? 'shrinking' : 'growing');
 
-    setInputAreaHeight((prev) => {
-      if (prev === target) return prev;
-      // Enable transition classes for content-driven resize only
-      const shrinking = target < prev;
-      setAutoResizeState(shrinking ? 'shrinking' : 'growing');
+        const cleanup = () => {
+          setAutoResizeState(null);
+          wrapper?.removeEventListener('transitionend', cleanup);
+        };
+        wrapper?.addEventListener('transitionend', cleanup, { once: true });
+        // Fallback removal in case transitionend doesn't fire
+        setTimeout(cleanup, shrinking ? 80 : 180);
 
-      const cleanup = () => {
-        setAutoResizeState(null);
-        wrapper?.removeEventListener('transitionend', cleanup);
-      };
-      wrapper?.addEventListener('transitionend', cleanup, { once: true });
-      // Fallback removal in case transitionend doesn't fire
-      setTimeout(cleanup, shrinking ? 80 : 180);
-
-      return target;
-    });
-  }, [MIN_INPUT_AREA_HEIGHT, embedded, getMaxInputAreaHeight, isManualResize]);
+        return target;
+      });
+    },
+    [MIN_INPUT_AREA_HEIGHT, embedded, getMaxInputAreaHeight, isManualResize],
+  );
 
   // Cover composer changes (typing, programmatic clears, conversation switch,
   // and inline chip add/remove — all of which change the segment model).
@@ -9193,16 +10444,19 @@ export function ChatPanel({
   }, [autoResizeInput, messageSegments]);
 
   // onChange from the rich composer: update the segment model and resize.
-  const handleSegmentsChange = useCallback((next: RichChatSegment[]) => {
-    messageSegmentsRef.current = next;
-    setMessageSegments(next);
-    autoResizeInput();
-  }, [autoResizeInput]);
+  const handleSegmentsChange = useCallback(
+    (next: RichChatSegment[]) => {
+      messageSegmentsRef.current = next;
+      setMessageSegments(next);
+      autoResizeInput();
+    },
+    [autoResizeInput],
+  );
 
   const handleRemoveComposerReference = useCallback((referenceId: string) => {
-    setMessageSegments((current) => current.filter(
-      (segment) => segment.type !== 'ref' || segment.reference.id !== referenceId,
-    ));
+    setMessageSegments((current) =>
+      current.filter((segment) => segment.type !== 'ref' || segment.reference.id !== referenceId),
+    );
   }, []);
 
   // Insert a context reference chip into the active composer's caret. Performs
@@ -9211,59 +10465,64 @@ export function ChatPanel({
   // decision is made against the live segment ref so the insert-vs-update
   // branch is taken synchronously. Routes to whichever composer (main message
   // box or the edit-a-previous-message box) the user last focused.
-  const insertComposerReference = useCallback((candidate: ChatContextReference) => {
-    const editing = activeComposerRef.current === 'edit' && editingMessageIdx !== null;
-    const current = editing ? editMessageSegmentsRef.current : messageSegmentsRef.current;
-    const applySegments = (next: RichChatSegment[]) => {
-      if (editing) {
-        editMessageSegmentsRef.current = next;
-        setEditMessageSegments(next);
-      } else {
-        messageSegmentsRef.current = next;
-        setMessageSegments(next);
-      }
-    };
-    const targetInput = editing ? editRichInputRef.current : richInputRef.current;
+  const insertComposerReference = useCallback(
+    (candidate: ChatContextReference) => {
+      const editing = activeComposerRef.current === 'edit' && editingMessageIdx !== null;
+      const current = editing ? editMessageSegmentsRef.current : messageSegmentsRef.current;
+      const applySegments = (next: RichChatSegment[]) => {
+        if (editing) {
+          editMessageSegmentsRef.current = next;
+          setEditMessageSegments(next);
+        } else {
+          messageSegmentsRef.current = next;
+          setMessageSegments(next);
+        }
+      };
+      const targetInput = editing ? editRichInputRef.current : richInputRef.current;
 
-    const findMatchIndex = (): number => {
-      if (candidate.source === 'file') {
-        return current.findIndex(
-          (segment) => segment.type === 'ref'
-            && segment.reference.source === 'file'
-            && segment.reference.path === candidate.path,
-        );
-      }
-      const candidateStart = candidate.startLine ?? 0;
-      const candidateEnd = candidate.endLine ?? candidateStart;
-      return current.findIndex((segment) => {
-        if (segment.type !== 'ref') return false;
-        const ref = segment.reference;
-        if (ref.source !== 'selection' || ref.path !== candidate.path) return false;
-        const refStart = ref.startLine ?? 0;
-        const refEnd = ref.endLine ?? refStart;
-        return ref.id === candidate.id
-          || (candidateStart === refStart && candidateEnd === refEnd);
-      });
-    };
+      const findMatchIndex = (): number => {
+        if (candidate.source === 'file') {
+          return current.findIndex(
+            (segment) =>
+              segment.type === 'ref' &&
+              segment.reference.source === 'file' &&
+              segment.reference.path === candidate.path,
+          );
+        }
+        const candidateStart = candidate.startLine ?? 0;
+        const candidateEnd = candidate.endLine ?? candidateStart;
+        return current.findIndex((segment) => {
+          if (segment.type !== 'ref') return false;
+          const ref = segment.reference;
+          if (ref.source !== 'selection' || ref.path !== candidate.path) return false;
+          const refStart = ref.startLine ?? 0;
+          const refEnd = ref.endLine ?? refStart;
+          return (
+            ref.id === candidate.id || (candidateStart === refStart && candidateEnd === refEnd)
+          );
+        });
+      };
 
-    const matchIndex = findMatchIndex();
+      const matchIndex = findMatchIndex();
 
-    if (matchIndex >= 0) {
-      // Update the existing chip in place (file refs keep their existing chip;
-      // selection refs keep one chip per exact range or active drag gesture).
-      if (candidate.source === 'file') {
+      if (matchIndex >= 0) {
+        // Update the existing chip in place (file refs keep their existing chip;
+        // selection refs keep one chip per exact range or active drag gesture).
+        if (candidate.source === 'file') {
+          return;
+        }
+        const next = [...current];
+        next[matchIndex] = { type: 'ref', reference: candidate };
+        applySegments(next);
         return;
       }
-      const next = [...current];
-      next[matchIndex] = { type: 'ref', reference: candidate };
-      applySegments(next);
-      return;
-    }
 
-    // Brand-new reference: insert a chip at the active composer's caret. The
-    // rich input calls back through onChange to update the segment model + ref.
-    targetInput?.insertReferenceAtCaret(candidate);
-  }, [editingMessageIdx]);
+      // Brand-new reference: insert a chip at the active composer's caret. The
+      // rich input calls back through onChange to update the segment model + ref.
+      targetInput?.insertReferenceAtCaret(candidate);
+    },
+    [editingMessageIdx],
+  );
 
   useEffect(() => {
     if (!onRegisterContextReferenceInserter) return;
@@ -9323,9 +10582,10 @@ export function ChatPanel({
     setIsWorkspaceConversationMenuOpen(false);
   }, [activeConversation?.id, workspaceId, embedded]);
 
-
-
-  const getOwnerKey = useCallback((conv: Conversation) => conv.username || conv.user_id || 'unknown', []);
+  const getOwnerKey = useCallback(
+    (conv: Conversation) => conv.username || conv.user_id || 'unknown',
+    [],
+  );
 
   const getOwnerLabel = useCallback(
     (conv: Conversation) => conv.display_name || conv.username || 'Unknown user',
@@ -9348,11 +10608,11 @@ export function ChatPanel({
       return;
     }
 
-    setCollapsedGroups(prev => {
+    setCollapsedGroups((prev) => {
       const next = { ...prev };
       let changed = false;
 
-      conversations.forEach(conv => {
+      conversations.forEach((conv) => {
         const key = getOwnerKey(conv);
         if (!(key in next)) {
           next[key] = conv.user_id !== currentUser.id; // current user's group expanded by default
@@ -9365,7 +10625,7 @@ export function ChatPanel({
   }, [collapsedGroups, conversations, currentUser.id, getOwnerKey, isAdmin]);
 
   const toggleGroup = useCallback((key: string) => {
-    setCollapsedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+    setCollapsedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
   // Preserve partial assistant output locally when server state lags behind stream completion/cancel.
@@ -9397,6 +10657,7 @@ export function ChatPanel({
           output: ev.toolCall.output,
           presentation: ev.toolCall.presentation,
           connection: ev.toolCall.connection,
+          mcp: ev.toolCall.mcp,
         });
       }
     }
@@ -9412,18 +10673,21 @@ export function ChatPanel({
     };
   }, []);
 
-  const applyFallbackAssistantIfNeeded = useCallback((conversation: Conversation): Conversation => {
-    const fallback = buildFallbackAssistantFromStreaming();
-    if (!fallback) return conversation;
+  const applyFallbackAssistantIfNeeded = useCallback(
+    (conversation: Conversation): Conversation => {
+      const fallback = buildFallbackAssistantFromStreaming();
+      if (!fallback) return conversation;
 
-    const lastMessage = conversation.messages[conversation.messages.length - 1];
-    if (lastMessage?.role === 'assistant') return conversation;
+      const lastMessage = conversation.messages[conversation.messages.length - 1];
+      if (lastMessage?.role === 'assistant') return conversation;
 
-    return {
-      ...conversation,
-      messages: [...conversation.messages, fallback],
-    };
-  }, [buildFallbackAssistantFromStreaming]);
+      return {
+        ...conversation,
+        messages: [...conversation.messages, fallback],
+      };
+    },
+    [buildFallbackAssistantFromStreaming],
+  );
 
   // Live notification: as the agent stream lands a completed
   // `create_userspace_snapshot` tool call, tell the parent so the snapshots
@@ -9462,9 +10726,7 @@ export function ChatPanel({
   // inline inside active reasoning; visualization artifacts render standalone.
   const consolidatedSegments = useMemo((): StreamingSegment[] => {
     if (!streamingEvents.length) {
-      return streamingContent.trim()
-        ? [{ type: 'content', content: streamingContent }]
-        : [];
+      return streamingContent.trim() ? [{ type: 'content', content: streamingContent }] : [];
     }
 
     const segments: StreamingSegment[] = [];
@@ -9482,7 +10744,10 @@ export function ChatPanel({
         content: currentReasoning,
         isComplete,
         durationSeconds: currentReasoningDurationSeconds,
-        reasoningParts: currentReasoningParts.length > 0 ? [...currentReasoningParts] : [{ type: 'text', text: currentReasoning }],
+        reasoningParts:
+          currentReasoningParts.length > 0
+            ? [...currentReasoningParts]
+            : [{ type: 'text', text: currentReasoning }],
       };
       segments.push(seg);
       currentReasoning = '';
@@ -9545,8 +10810,9 @@ export function ChatPanel({
   // Only render streaming output when it belongs to the conversation currently
   // in view. `streamingConversationId === null` covers legacy/self-initiated
   // streams whose owner has not been recorded yet (always the active chat).
-  const isStreamingForActiveConversation = isStreaming
-    && (streamingConversationId === null || streamingConversationId === activeConversation?.id);
+  const isStreamingForActiveConversation =
+    isStreaming &&
+    (streamingConversationId === null || streamingConversationId === activeConversation?.id);
 
   // Save showToolCalls preference to localStorage
   useEffect(() => {
@@ -9629,7 +10895,13 @@ export function ChatPanel({
   useEffect(() => {
     if (!shouldAutoScrollRef.current || !chatMessagesRef.current) return;
     scheduleScrollToBottom(isStreaming ? 'auto' : 'smooth');
-  }, [activeConversation?.messages, consolidatedSegments, isStreaming, scheduleScrollToBottom, streamingContent]);
+  }, [
+    activeConversation?.messages,
+    consolidatedSegments,
+    isStreaming,
+    scheduleScrollToBottom,
+    streamingContent,
+  ]);
 
   const handleScroll = useCallback(() => {
     if (!chatMessagesRef.current) return;
@@ -9648,114 +10920,127 @@ export function ChatPanel({
     inputRef.current?.focus();
   }, [activeConversation?.id]);
 
-  const applyWorkspaceChatState = useCallback((nextWorkspaceState: WorkspaceChatStateResponse) => {
-    const visibleConversations = nextWorkspaceState.conversations.filter((conversation) => {
-      if (conversation.id === nextWorkspaceState.selected_conversation_id) {
-        return true;
-      }
-      return !isConversationOlderThanWindow(conversation, archiveAgeDays);
-    });
-
-    setConversations((prev) => {
-      let changed = prev.length !== visibleConversations.length;
-
-      const prevById = new Map(prev.map((conversation) => [conversation.id, conversation]));
-      const next = visibleConversations.map((conversation) => {
-        const existing = prevById.get(conversation.id);
-        if (!existing) {
-          changed = true;
-          return conversation;
+  const applyWorkspaceChatState = useCallback(
+    (nextWorkspaceState: WorkspaceChatStateResponse) => {
+      const visibleConversations = nextWorkspaceState.conversations.filter((conversation) => {
+        if (conversation.id === nextWorkspaceState.selected_conversation_id) {
+          return true;
         }
-
-        if (
-          existing.active_task_id !== conversation.active_task_id
-          || existing.title !== conversation.title
-          || existing.model !== conversation.model
-          || existing.message_count !== conversation.message_count
-          || existing.updated_at !== conversation.updated_at
-        ) {
-          changed = true;
-          return { ...existing, ...conversation };
-        }
-
-        return existing;
+        return !isConversationOlderThanWindow(conversation, archiveAgeDays);
       });
 
-      return changed ? next : prev;
-    });
+      setConversations((prev) => {
+        let changed = prev.length !== visibleConversations.length;
 
-    setActiveConversation((current) => {
-      const targetConversationId = nextWorkspaceState.selected_conversation_id ?? current?.id ?? null;
-      if (!targetConversationId) {
-        return visibleConversations[0] ?? null;
-      }
-      const matchingConversation = visibleConversations.find((conversation) => conversation.id === targetConversationId);
-      if (current && matchingConversation && current.id === matchingConversation.id) {
-        const restore = branchSearchPreviewRestoreRef.current;
-        if (restore?.conversation.id === current.id && current.active_branch_id === restore.previewBranchId) {
-          branchSearchPreviewRestoreRef.current = {
-            ...restore,
-            conversation: mergeConversationFromWorkspaceSnapshot(restore.conversation, matchingConversation),
-          };
-          const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
-          return {
-            ...merged,
-            active_branch_id: current.active_branch_id,
-            messages: current.messages,
-          };
+        const prevById = new Map(prev.map((conversation) => [conversation.id, conversation]));
+        const next = visibleConversations.map((conversation) => {
+          const existing = prevById.get(conversation.id);
+          if (!existing) {
+            changed = true;
+            return conversation;
+          }
+
+          if (
+            existing.active_task_id !== conversation.active_task_id ||
+            existing.title !== conversation.title ||
+            existing.model !== conversation.model ||
+            existing.message_count !== conversation.message_count ||
+            existing.updated_at !== conversation.updated_at
+          ) {
+            changed = true;
+            return { ...existing, ...conversation };
+          }
+
+          return existing;
+        });
+
+        return changed ? next : prev;
+      });
+
+      setActiveConversation((current) => {
+        const targetConversationId =
+          nextWorkspaceState.selected_conversation_id ?? current?.id ?? null;
+        if (!targetConversationId) {
+          return visibleConversations[0] ?? null;
         }
-        return mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
-      }
-      return matchingConversation ?? visibleConversations[0] ?? null;
-    });
+        const matchingConversation = visibleConversations.find(
+          (conversation) => conversation.id === targetConversationId,
+        );
+        if (current && matchingConversation && current.id === matchingConversation.id) {
+          const restore = branchSearchPreviewRestoreRef.current;
+          if (
+            restore?.conversation.id === current.id &&
+            current.active_branch_id === restore.previewBranchId
+          ) {
+            branchSearchPreviewRestoreRef.current = {
+              ...restore,
+              conversation: mergeConversationFromWorkspaceSnapshot(
+                restore.conversation,
+                matchingConversation,
+              ),
+            };
+            const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+            return {
+              ...merged,
+              active_branch_id: current.active_branch_id,
+              messages: current.messages,
+            };
+          }
+          return mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
+        }
+        return matchingConversation ?? visibleConversations[0] ?? null;
+      });
 
-    const nextInterruptedIds = new Set<string>(nextWorkspaceState.interrupted_conversation_ids);
-    setInterruptedConversationIds((prev) => {
-      if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
-      for (const id of nextInterruptedIds) {
-        if (!prev.has(id)) return nextInterruptedIds;
-      }
-      return prev;
-    });
+      const nextInterruptedIds = new Set<string>(nextWorkspaceState.interrupted_conversation_ids);
+      setInterruptedConversationIds((prev) => {
+        if (prev.size !== nextInterruptedIds.size) return nextInterruptedIds;
+        for (const id of nextInterruptedIds) {
+          if (!prev.has(id)) return nextInterruptedIds;
+        }
+        return prev;
+      });
 
-    const selectedConversationId = nextWorkspaceState.selected_conversation_id;
-    if (!selectedConversationId) {
-      setActiveTask(null);
-      setInterruptedTask(null);
+      const selectedConversationId = nextWorkspaceState.selected_conversation_id;
+      if (!selectedConversationId) {
+        setActiveTask(null);
+        setInterruptedTask(null);
+        setIsConversationListLoading(false);
+        return;
+      }
+
+      const activeT = nextWorkspaceState.active_task;
+      const interruptedT = nextWorkspaceState.interrupted_task;
+
       setIsConversationListLoading(false);
-      return;
-    }
 
-    const activeT = nextWorkspaceState.active_task;
-    const interruptedT = nextWorkspaceState.interrupted_task;
-
-    setIsConversationListLoading(false);
-
-    if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
-      setActiveTask(activeT);
-      setInterruptedTask(null);
-      if (isCompactionTask(activeT)) {
-        setIsCompacting(true);
-        setCompactingConversationId(selectedConversationId);
+      if (activeT && (activeT.status === 'pending' || activeT.status === 'running')) {
+        setActiveTask(activeT);
+        setInterruptedTask(null);
+        if (isCompactionTask(activeT)) {
+          setIsCompacting(true);
+          setCompactingConversationId(selectedConversationId);
+        }
+        syncConversationActiveTaskId(selectedConversationId, activeT.id);
+        return;
       }
-      syncConversationActiveTaskId(selectedConversationId, activeT.id);
-      return;
-    }
 
-    setActiveTask(null);
-    if (compactingConversationId === selectedConversationId) {
-      setIsCompacting(false);
-      setCompactingConversationId(null);
-    }
-    setInterruptedTask(interruptedT ?? null);
-    syncConversationActiveTaskId(selectedConversationId, null);
-  }, [archiveAgeDays, compactingConversationId, syncConversationActiveTaskId]);
+      setActiveTask(null);
+      if (compactingConversationId === selectedConversationId) {
+        setIsCompacting(false);
+        setCompactingConversationId(null);
+      }
+      setInterruptedTask(interruptedT ?? null);
+      syncConversationActiveTaskId(selectedConversationId, null);
+    },
+    [archiveAgeDays, compactingConversationId, syncConversationActiveTaskId],
+  );
 
   const loadConversations = async () => {
     setIsConversationListLoading(true);
     try {
       const workspaceState = workspaceId
-        ? (workspaceChatState ?? await api.getWorkspaceChatState(workspaceId, activeConversationRef.current?.id ?? null))
+        ? (workspaceChatState ??
+          (await api.getWorkspaceChatState(workspaceId, activeConversationRef.current?.id ?? null)))
         : null;
       const sinceIso = archiveCutoffIso(archiveAgeDays);
       const [data, workspacePage] = await Promise.all([
@@ -9764,16 +11049,19 @@ export function ChatPanel({
           : api.listConversations(workspaceId, sinceIso ? { since: sinceIso } : undefined),
         !workspaceId
           ? api.listUserSpaceWorkspaces(0, 200).catch((workspaceErr) => {
-            console.warn('Failed to load userspace workspaces for conversation filtering:', workspaceErr);
-            return null;
-          })
+              console.warn(
+                'Failed to load userspace workspaces for conversation filtering:',
+                workspaceErr,
+              );
+              return null;
+            })
           : Promise.resolve(null),
       ]);
       let userspaceConversationIds = new Set<string>();
 
       if (workspacePage) {
         userspaceConversationIds = new Set(
-          workspacePage.items.flatMap((workspace) => workspace.conversation_ids || [])
+          workspacePage.items.flatMap((workspace) => workspace.conversation_ids || []),
         );
       }
       userspaceConversationIdsRef.current = userspaceConversationIds;
@@ -9792,7 +11080,9 @@ export function ChatPanel({
       setActiveConversation((current) => {
         const preferredConversationId = initialConversationIdRef.current;
         if (preferredConversationId) {
-          const preferredConversation = visibleConversations.find((conversation) => conversation.id === preferredConversationId);
+          const preferredConversation = visibleConversations.find(
+            (conversation) => conversation.id === preferredConversationId,
+          );
           if (preferredConversation) {
             initialConversationIdRef.current = null;
             return preferredConversation;
@@ -9802,12 +11092,21 @@ export function ChatPanel({
         if (!current) {
           return visibleConversations[0] ?? null;
         }
-        const matchingConversation = visibleConversations.find((conversation) => conversation.id === current.id);
+        const matchingConversation = visibleConversations.find(
+          (conversation) => conversation.id === current.id,
+        );
         const restore = branchSearchPreviewRestoreRef.current;
-        if (matchingConversation && restore?.conversation.id === current.id && current.active_branch_id === restore.previewBranchId) {
+        if (
+          matchingConversation &&
+          restore?.conversation.id === current.id &&
+          current.active_branch_id === restore.previewBranchId
+        ) {
           branchSearchPreviewRestoreRef.current = {
             ...restore,
-            conversation: mergeConversationFromWorkspaceSnapshot(restore.conversation, matchingConversation),
+            conversation: mergeConversationFromWorkspaceSnapshot(
+              restore.conversation,
+              matchingConversation,
+            ),
           };
           const merged = mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
           return {
@@ -9870,11 +11169,11 @@ export function ChatPanel({
       const cutoff = archiveCutoffIso(archiveAgeDays);
       const data = cutoff
         ? await api.listConversations(undefined, {
-          until: cutoff,
-          limit: ARCHIVE_PAGE_SIZE,
-          cursorUpdatedAt: isResetLoad ? null : archiveCursor?.updatedAt ?? null,
-          cursorId: isResetLoad ? null : archiveCursor?.id ?? null,
-        })
+            until: cutoff,
+            limit: ARCHIVE_PAGE_SIZE,
+            cursorUpdatedAt: isResetLoad ? null : (archiveCursor?.updatedAt ?? null),
+            cursorId: isResetLoad ? null : (archiveCursor?.id ?? null),
+          })
         : [];
       const filtered = filterStandaloneConversations(data);
       const nextArchivedConversations = isResetLoad
@@ -9897,7 +11196,16 @@ export function ChatPanel({
     } finally {
       setArchiveLoading(false);
     }
-  }, [workspaceId, archiveLoading, archiveLoaded, archiveFullyLoaded, archiveAgeDays, archiveCursor, archivedConversations, filterStandaloneConversations]);
+  }, [
+    workspaceId,
+    archiveLoading,
+    archiveLoaded,
+    archiveFullyLoaded,
+    archiveAgeDays,
+    archiveCursor,
+    archivedConversations,
+    filterStandaloneConversations,
+  ]);
 
   // Lazy-load full workspace conversations on search so the picker can still
   // match message bodies without making initial workspace load carry every transcript.
@@ -9908,9 +11216,10 @@ export function ChatPanel({
     try {
       const data = await api.listConversations(workspaceId);
       const filtered = data.filter((conversation) => {
-        const linkedWorkspaceId = conversation.workspace_id
-          ?? (conversation as Conversation & { workspaceId?: string | null }).workspaceId
-          ?? null;
+        const linkedWorkspaceId =
+          conversation.workspace_id ??
+          (conversation as Conversation & { workspaceId?: string | null }).workspaceId ??
+          null;
         return linkedWorkspaceId === workspaceId;
       });
       setWorkspaceArchivedConversations(filtered);
@@ -9947,7 +11256,14 @@ export function ChatPanel({
     if (archiveLoading) return;
     if (archiveLoaded && archiveFullyLoaded) return;
     void loadArchivedConversations();
-  }, [deferredConversationSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
+  }, [
+    deferredConversationSearchQuery,
+    workspaceId,
+    archiveLoaded,
+    archiveFullyLoaded,
+    archiveLoading,
+    loadArchivedConversations,
+  ]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -9981,7 +11297,6 @@ export function ChatPanel({
     setArchiveFullyLoaded(false);
     setArchiveCursor(null);
     setWorkspaceArchiveLoaded(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [archiveAgeDays]);
 
   // While the archive modal is open, refetch whenever the cached data is
@@ -10000,15 +11315,26 @@ export function ChatPanel({
     if (archiveLoading) return;
     if (archiveLoaded && archiveFullyLoaded) return;
     void loadArchivedConversations();
-  }, [showArchiveModal, deferredArchiveSearchQuery, workspaceId, archiveLoaded, archiveFullyLoaded, archiveLoading, loadArchivedConversations]);
+  }, [
+    showArchiveModal,
+    deferredArchiveSearchQuery,
+    workspaceId,
+    archiveLoaded,
+    archiveFullyLoaded,
+    archiveLoading,
+    loadArchivedConversations,
+  ]);
 
-  const handleArchiveModalScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    if (archiveLoading || !archiveLoaded || archiveFullyLoaded) return;
-    const target = event.currentTarget;
-    const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
-    if (remaining > 160) return;
-    void loadArchivedConversations();
-  }, [archiveLoading, archiveLoaded, archiveFullyLoaded, loadArchivedConversations]);
+  const handleArchiveModalScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      if (archiveLoading || !archiveLoaded || archiveFullyLoaded) return;
+      const target = event.currentTarget;
+      const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+      if (remaining > 160) return;
+      void loadArchivedConversations();
+    },
+    [archiveLoading, archiveLoaded, archiveFullyLoaded, loadArchivedConversations],
+  );
 
   const cycleArchiveAgePreset = useCallback(() => {
     setArchiveAgeDays((current) => getNextArchiveAgePreset(current));
@@ -10082,23 +11408,31 @@ export function ChatPanel({
     }
   }, []);
 
-  const refreshBranchPoints = useCallback(async (conversationId: string): Promise<ConversationBranchPointInfo[]> => {
-    try {
-      const points = await api.getConversationBranchPoints(conversationId, workspaceId);
-      setBranchPoints(points);
-      return points;
-    } catch {
-      setBranchPoints([]);
-      return [];
-    }
-  }, [workspaceId]);
+  const refreshBranchPoints = useCallback(
+    async (conversationId: string): Promise<ConversationBranchPointInfo[]> => {
+      try {
+        const points = await api.getConversationBranchPoints(conversationId, workspaceId);
+        setBranchPoints(points);
+        return points;
+      } catch {
+        setBranchPoints([]);
+        return [];
+      }
+    },
+    [workspaceId],
+  );
 
-  const handleLiveVisualizationRefreshSuccess = useCallback((response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse) => {
-    if (response.conversation) {
-      setActiveConversation(response.conversation);
-      setConversations(prev => prev.map(c => c.id === response.conversation!.id ? response.conversation! : c));
-    }
-  }, []);
+  const handleLiveVisualizationRefreshSuccess = useCallback(
+    (response: RefreshLiveVisualizationResponse | SwitchVisualizationBranchResponse) => {
+      if (response.conversation) {
+        setActiveConversation(response.conversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === response.conversation!.id ? response.conversation! : c)),
+        );
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     setBranchPoints([]);
@@ -10137,7 +11471,13 @@ export function ChatPanel({
       setConversationDisabledBuiltInToolIds([]);
       setBranchPoints([]);
     }
-  }, [activeConversationId, fetchConversationMembers, fetchConversationTools, useWorkspaceToolSource, refreshBranchPoints]);
+  }, [
+    activeConversationId,
+    fetchConversationMembers,
+    fetchConversationTools,
+    useWorkspaceToolSource,
+    refreshBranchPoints,
+  ]);
 
   // Load available tools on mount
   useEffect(() => {
@@ -10157,59 +11497,78 @@ export function ChatPanel({
     setShowMembersModal(true);
   }, [activeConversation, canManageConversationMembers]);
 
-  const handleSaveMembers = useCallback(async (members: ConversationMember[]) => {
-    if (!activeConversation) return;
-    setSavingMembers(true);
-    try {
-      await api.updateConversationMembers(activeConversation.id, { members });
-      await fetchConversationMembers(activeConversation.id);
-      setShowMembersModal(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update members');
-      throw err;
-    } finally {
-      setSavingMembers(false);
-    }
-  }, [activeConversation, fetchConversationMembers]);
+  const handleSaveMembers = useCallback(
+    async (members: ConversationMember[]) => {
+      if (!activeConversation) return;
+      setSavingMembers(true);
+      try {
+        await api.updateConversationMembers(activeConversation.id, { members });
+        await fetchConversationMembers(activeConversation.id);
+        setShowMembersModal(false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update members');
+        throw err;
+      } finally {
+        setSavingMembers(false);
+      }
+    },
+    [activeConversation, fetchConversationMembers],
+  );
 
-  const handleToolSelectionChange = useCallback((selection: UserSpaceToolSelection) => {
-    if (useWorkspaceToolSource) {
-      onWorkspaceToolSelectionChange?.(selection);
-      return;
-    }
-    if (!activeConversation || isConversationViewer) return;
+  const handleToolSelectionChange = useCallback(
+    (selection: UserSpaceToolSelection) => {
+      if (useWorkspaceToolSource) {
+        onWorkspaceToolSelectionChange?.(selection);
+        return;
+      }
+      if (!activeConversation || isConversationViewer) return;
 
-    const conversationId = activeConversation.id;
-    setPendingConversationToolSelection({ conversationId, selection });
-    setSavingTools(true);
+      const conversationId = activeConversation.id;
+      setPendingConversationToolSelection({ conversationId, selection });
+      setSavingTools(true);
 
-    if (conversationToolSelectionSaveTimerRef.current) {
-      clearTimeout(conversationToolSelectionSaveTimerRef.current);
-    }
-    const seq = ++conversationToolSelectionSaveSeqRef.current;
-    conversationToolSelectionSaveTimerRef.current = setTimeout(() => {
-      conversationToolSelectionSaveTimerRef.current = null;
-      void api.updateConversationTools(conversationId, {
-        tool_selection_mode: selection.mode,
-        tool_config_ids: selection.toolIds,
-        tool_group_ids: selection.toolGroupIds,
-      }).then(() => {
-        if (conversationToolSelectionSaveSeqRef.current !== seq) return;
-        setConversationToolSelectionMode(selection.mode);
-        setConversationToolIds(selection.toolIds);
-        setConversationToolGroupIds(selection.toolGroupIds);
-        setPendingConversationToolSelection((current) => current?.conversationId === conversationId ? null : current);
-      }).catch((err) => {
-        if (conversationToolSelectionSaveSeqRef.current !== seq) return;
-        setPendingConversationToolSelection((current) => current?.conversationId === conversationId ? null : current);
-        setError(err instanceof Error ? err.message : 'Failed to update tool selection');
-      }).finally(() => {
-        if (conversationToolSelectionSaveSeqRef.current === seq) {
-          setSavingTools(false);
-        }
-      });
-    }, 200);
-  }, [activeConversation, isConversationViewer, onWorkspaceToolSelectionChange, useWorkspaceToolSource]);
+      if (conversationToolSelectionSaveTimerRef.current) {
+        clearTimeout(conversationToolSelectionSaveTimerRef.current);
+      }
+      const seq = ++conversationToolSelectionSaveSeqRef.current;
+      conversationToolSelectionSaveTimerRef.current = setTimeout(() => {
+        conversationToolSelectionSaveTimerRef.current = null;
+        void api
+          .updateConversationTools(conversationId, {
+            tool_selection_mode: selection.mode,
+            tool_config_ids: selection.toolIds,
+            tool_group_ids: selection.toolGroupIds,
+          })
+          .then(() => {
+            if (conversationToolSelectionSaveSeqRef.current !== seq) return;
+            setConversationToolSelectionMode(selection.mode);
+            setConversationToolIds(selection.toolIds);
+            setConversationToolGroupIds(selection.toolGroupIds);
+            setPendingConversationToolSelection((current) =>
+              current?.conversationId === conversationId ? null : current,
+            );
+          })
+          .catch((err) => {
+            if (conversationToolSelectionSaveSeqRef.current !== seq) return;
+            setPendingConversationToolSelection((current) =>
+              current?.conversationId === conversationId ? null : current,
+            );
+            setError(err instanceof Error ? err.message : 'Failed to update tool selection');
+          })
+          .finally(() => {
+            if (conversationToolSelectionSaveSeqRef.current === seq) {
+              setSavingTools(false);
+            }
+          });
+      }, 200);
+    },
+    [
+      activeConversation,
+      isConversationViewer,
+      onWorkspaceToolSelectionChange,
+      useWorkspaceToolSource,
+    ],
+  );
 
   useEffect(() => {
     return () => {
@@ -10224,107 +11583,133 @@ export function ChatPanel({
     conversationDisabledBuiltInToolIdsRef.current = conversationDisabledBuiltInToolIds;
   }, [conversationDisabledBuiltInToolIds]);
 
-  const handleToggleConversationBuiltInTool = useCallback(async (toolId: string) => {
-    if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
-    if (!CHAT_BUILT_IN_TOOL_ID_SET.has(toolId)) return;
+  const handleToggleConversationBuiltInTool = useCallback(
+    async (toolId: string) => {
+      if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
+      if (!CHAT_BUILT_IN_TOOL_ID_SET.has(toolId)) return;
 
-    const nextDisabled = new Set(conversationDisabledBuiltInToolIds);
-    if (nextDisabled.has(toolId)) {
-      nextDisabled.delete(toolId);
-      if (toolId === WEB_BROWSE_TOOL_ID) {
-        nextDisabled.delete(WEB_READ_PDF_TOOL_ID);
+      const nextDisabled = new Set(conversationDisabledBuiltInToolIds);
+      if (nextDisabled.has(toolId)) {
+        nextDisabled.delete(toolId);
+        if (toolId === WEB_BROWSE_TOOL_ID) {
+          nextDisabled.delete(WEB_READ_PDF_TOOL_ID);
+        }
+      } else {
+        nextDisabled.add(toolId);
+        if (toolId === WEB_BROWSE_TOOL_ID) {
+          nextDisabled.add(WEB_READ_PDF_TOOL_ID);
+        }
       }
-    } else {
-      nextDisabled.add(toolId);
-      if (toolId === WEB_BROWSE_TOOL_ID) {
-        nextDisabled.add(WEB_READ_PDF_TOOL_ID);
+
+      const normalized = normalizeDisabledBuiltInToolIds(
+        CHAT_BUILT_IN_TOOL_IDS.filter((id) => nextDisabled.has(id)),
+      );
+      const previous = conversationDisabledBuiltInToolIdsRef.current;
+      setConversationDisabledBuiltInToolIds(normalized);
+      setSavingTools(true);
+
+      try {
+        await api.updateConversationTools(activeConversation.id, {
+          tool_selection_mode: effectiveConversationToolSelection.mode,
+          tool_config_ids: effectiveConversationToolSelection.toolIds,
+          tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+          disabled_builtin_tool_ids: normalized,
+        });
+        const updatedConversation: Conversation = {
+          ...activeConversation,
+          disabled_builtin_tool_ids: normalized,
+        };
+        setActiveConversation(updatedConversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+        );
+      } catch (err) {
+        setConversationDisabledBuiltInToolIds(previous);
+        setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
+      } finally {
+        setSavingTools(false);
       }
-    }
+    },
+    [
+      activeConversation,
+      conversationDisabledBuiltInToolIds,
+      effectiveConversationToolSelection,
+      hasWorkspaceConversationContext,
+      isConversationViewer,
+    ],
+  );
 
-    const normalized = normalizeDisabledBuiltInToolIds(CHAT_BUILT_IN_TOOL_IDS.filter((id) => nextDisabled.has(id)));
-    const previous = conversationDisabledBuiltInToolIdsRef.current;
-    setConversationDisabledBuiltInToolIds(normalized);
-    setSavingTools(true);
+  const handleBulkConversationBuiltInToggle = useCallback(
+    async (selected: boolean) => {
+      if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
+      const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
+      const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
+      const previous = conversationDisabledBuiltInToolIdsRef.current;
+      setConversationDisabledBuiltInToolIds(normalized);
+      setSavingTools(true);
 
-    try {
-      await api.updateConversationTools(activeConversation.id, {
-        tool_selection_mode: effectiveConversationToolSelection.mode,
-        tool_config_ids: effectiveConversationToolSelection.toolIds,
-        tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
-        disabled_builtin_tool_ids: normalized,
-      });
-      const updatedConversation: Conversation = {
-        ...activeConversation,
-        disabled_builtin_tool_ids: normalized,
-      };
-      setActiveConversation(updatedConversation);
-      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
-    } catch (err) {
-      setConversationDisabledBuiltInToolIds(previous);
-      setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
-    } finally {
-      setSavingTools(false);
-    }
-  }, [activeConversation, conversationDisabledBuiltInToolIds, effectiveConversationToolSelection, hasWorkspaceConversationContext, isConversationViewer]);
+      try {
+        await api.updateConversationTools(activeConversation.id, {
+          tool_selection_mode: effectiveConversationToolSelection.mode,
+          tool_config_ids: effectiveConversationToolSelection.toolIds,
+          tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+          disabled_builtin_tool_ids: normalized,
+        });
+        const updatedConversation: Conversation = {
+          ...activeConversation,
+          disabled_builtin_tool_ids: normalized,
+        };
+        setActiveConversation(updatedConversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+        );
+      } catch (err) {
+        setConversationDisabledBuiltInToolIds(previous);
+        setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
+      } finally {
+        setSavingTools(false);
+      }
+    },
+    [
+      activeConversation,
+      effectiveConversationToolSelection,
+      hasWorkspaceConversationContext,
+      isConversationViewer,
+    ],
+  );
 
-  const handleBulkConversationBuiltInToggle = useCallback(async (selected: boolean) => {
-    if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
-    const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
-    const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
-    const previous = conversationDisabledBuiltInToolIdsRef.current;
-    setConversationDisabledBuiltInToolIds(normalized);
-    setSavingTools(true);
-
-    try {
-      await api.updateConversationTools(activeConversation.id, {
-        tool_selection_mode: effectiveConversationToolSelection.mode,
-        tool_config_ids: effectiveConversationToolSelection.toolIds,
-        tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
-        disabled_builtin_tool_ids: normalized,
-      });
-      const updatedConversation: Conversation = {
-        ...activeConversation,
-        disabled_builtin_tool_ids: normalized,
-      };
-      setActiveConversation(updatedConversation);
-      setConversations(prev => prev.map(c => c.id === updatedConversation.id ? updatedConversation : c));
-    } catch (err) {
-      setConversationDisabledBuiltInToolIds(previous);
-      setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
-    } finally {
-      setSavingTools(false);
-    }
-  }, [activeConversation, effectiveConversationToolSelection, hasWorkspaceConversationContext, isConversationViewer]);
-
-  const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
-    const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
-    const displayName = user?.display_name?.trim();
-    if (displayName && displayName !== username) {
-      return `${displayName} (@${username})`;
-    }
-    return `@${username}`;
-  }, []);
+  const formatUserLabel = useCallback(
+    (user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
+      const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
+      const displayName = user?.display_name?.trim();
+      if (displayName && displayName !== username) {
+        return `${displayName} (@${username})`;
+      }
+      return `@${username}`;
+    },
+    [],
+  );
 
   // Resolve context limit from stored conversation model value.
   // Handles provider-scoped and legacy model id formats to avoid 8k fallback mismatches.
-  const getContextLimit = useCallback((storedModel: string): number => {
-    const selection = resolveConversationModelSelection(
-      storedModel,
-      availableModels,
-    );
-    if (!selection.modelId) {
+  const getContextLimit = useCallback(
+    (storedModel: string): number => {
+      const selection = resolveConversationModelSelection(storedModel, availableModels);
+      if (!selection.modelId) {
+        return defaultContextLimit;
+      }
+
+      if (selection.matchedModel) {
+        return selection.matchedModel.context_limit;
+      }
+
       return defaultContextLimit;
-    }
-
-    if (selection.matchedModel) {
-      return selection.matchedModel.context_limit;
-    }
-
-    return defaultContextLimit;
-  }, [availableModels, defaultContextLimit, modelsMeta]);
+    },
+    [availableModels, defaultContextLimit],
+  );
 
   const applyCreatedConversation = useCallback((conversation: Conversation) => {
-    setConversations(prev => [conversation, ...prev]);
+    setConversations((prev) => [conversation, ...prev]);
     setActiveConversation(conversation);
     setConversationToolIds([]);
     setConversationToolGroupIds([]);
@@ -10348,7 +11733,6 @@ export function ChatPanel({
     }
   };
 
-
   // Listen for conversation events (auto-generated titles + chat task
   // lifecycle) per active conversation using SSE.
   // IMPORTANT: We only open ONE SSE connection for the active conversation to
@@ -10363,93 +11747,101 @@ export function ChatPanel({
     titleSourceRef.current.delete(conversationId);
   }, []);
 
-  const startTitleStreamFor = useCallback((conversationId: string, _title: string) => {
-    if (titleSourceRef.current.has(conversationId)) return;
+  const startTitleStreamFor = useCallback(
+    (conversationId: string, _title: string) => {
+      if (titleSourceRef.current.has(conversationId)) return;
 
-    try {
-      const url = api.getConversationEventsUrl(conversationId, workspaceId);
-      const es = new EventSource(url, { withCredentials: true });
+      try {
+        const url = api.getConversationEventsUrl(conversationId, workspaceId);
+        const es = new EventSource(url, { withCredentials: true });
 
-      es.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
+        es.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
 
-          // Auto-generated title arrived
-          if (data.type === 'title_update' && data.title) {
-            setConversations(prev => prev.map(c => {
-              if (c.id === conversationId) {
-                return { ...c, title: data.title };
-              }
-              return c;
-            }));
-            setActiveConversation(prev => {
-              if (prev && prev.id === conversationId) {
-                return { ...prev, title: data.title };
-              }
-              return prev;
-            });
-            return;
-          }
-
-          // Background chat task lifecycle events. These let us pick up a
-          // newly-running task immediately instead of waiting for the
-          // periodic /task-state poll, which makes streaming feel instant.
-          if (data.event === 'task_started' && data.task_id) {
-            if (data.task_kind === 'compaction') {
-              setIsCompacting(true);
-              setCompactingConversationId(conversationId);
-              syncConversationActiveTaskId(conversationId, data.task_id);
+            // Auto-generated title arrived
+            if (data.type === 'title_update' && data.title) {
+              setConversations((prev) =>
+                prev.map((c) => {
+                  if (c.id === conversationId) {
+                    return { ...c, title: data.title };
+                  }
+                  return c;
+                }),
+              );
+              setActiveConversation((prev) => {
+                if (prev && prev.id === conversationId) {
+                  return { ...prev, title: data.title };
+                }
+                return prev;
+              });
               return;
             }
-            connectTaskStreamRef.current?.(data.task_id, conversationId);
-            return;
+
+            // Background chat task lifecycle events. These let us pick up a
+            // newly-running task immediately instead of waiting for the
+            // periodic /task-state poll, which makes streaming feel instant.
+            if (data.event === 'task_started' && data.task_id) {
+              if (data.task_kind === 'compaction') {
+                setIsCompacting(true);
+                setCompactingConversationId(conversationId);
+                syncConversationActiveTaskId(conversationId, data.task_id);
+                return;
+              }
+              connectTaskStreamRef.current?.(data.task_id, conversationId);
+              return;
+            }
+
+            if (data.event === 'task_completed') {
+              const completedSuccessfully = (data.status || 'unknown') === 'completed';
+              const isCompactionCompletion = data.task_kind === 'compaction';
+              // The per-task SSE stream already drives streaming UI cleanup;
+              // refresh the conversation here so persisted assistant messages
+              // and any post-completion state (e.g. interrupted_task) are
+              // reflected even if the task SSE was not active.
+              void api
+                .getConversation(conversationId, workspaceId)
+                .then((fresh) => {
+                  if (completedSuccessfully && !isCompactionCompletion) {
+                    markAutoCompactionCandidate(fresh);
+                  }
+                  setActiveConversation((prev) =>
+                    prev && prev.id === conversationId ? fresh : prev,
+                  );
+                  setConversations((prev) =>
+                    prev.map((c) => (c.id === conversationId ? { ...c, ...fresh } : c)),
+                  );
+                })
+                .catch(() => {});
+              return;
+            }
+          } catch (e) {
+            console.error('Failed to parse conversation event', e);
           }
+        };
 
-          if (data.event === 'task_completed') {
-            const completedSuccessfully = (data.status || 'unknown') === 'completed';
-            const isCompactionCompletion = data.task_kind === 'compaction';
-            // The per-task SSE stream already drives streaming UI cleanup;
-            // refresh the conversation here so persisted assistant messages
-            // and any post-completion state (e.g. interrupted_task) are
-            // reflected even if the task SSE was not active.
-            void api.getConversation(conversationId, workspaceId)
-              .then(fresh => {
-                if (completedSuccessfully && !isCompactionCompletion) {
-                  markAutoCompactionCandidate(fresh);
-                }
-                setActiveConversation(prev => (
-                  prev && prev.id === conversationId ? fresh : prev
-                ));
-                setConversations(prev => prev.map(c => (
-                  c.id === conversationId ? { ...c, ...fresh } : c
-                )));
-              })
-              .catch(() => { });
-            return;
-          }
-        } catch (e) {
-          console.error("Failed to parse conversation event", e);
-        }
-      };
+        es.onerror = () => {
+          es.close();
+          titleSourceRef.current.delete(conversationId);
+        };
 
-      es.onerror = () => {
-        es.close();
-        titleSourceRef.current.delete(conversationId);
-      };
-
-      titleSourceRef.current.set(conversationId, es);
-    } catch (e) {
-      console.error("Failed to start conversation event stream", e);
-    }
-  }, [markAutoCompactionCandidate, syncConversationActiveTaskId, workspaceId]);
+        titleSourceRef.current.set(conversationId, es);
+      } catch (e) {
+        console.error('Failed to start conversation event stream', e);
+      }
+    },
+    [markAutoCompactionCandidate, syncConversationActiveTaskId, workspaceId],
+  );
 
   // Only subscribe to title events for the ACTIVE conversation to avoid
   // saturating the browser's 6-connection-per-origin limit with idle SSE streams.
   useEffect(() => {
     const activeId = activeConversation?.id;
+    // Capture the stable ref Map so the cleanup closure uses the same instance.
+    const titleSources = titleSourceRef.current;
 
     // Close streams for any conversation that is NOT the active one
-    titleSourceRef.current.forEach((_, id) => {
+    titleSources.forEach((_, id) => {
       if (id !== activeId) {
         stopTitleStreamFor(id);
       }
@@ -10461,15 +11853,10 @@ export function ChatPanel({
     }
 
     return () => {
-      titleSourceRef.current.forEach(es => es.close());
-      titleSourceRef.current.clear();
+      titleSources.forEach((es) => es.close());
+      titleSources.clear();
     };
-  }, [
-    activeConversation?.id,
-    activeConversation?.title,
-    startTitleStreamFor,
-    stopTitleStreamFor,
-  ]);
+  }, [activeConversation?.id, activeConversation?.title, startTitleStreamFor, stopTitleStreamFor]);
 
   // =========================================================================
   // Background Task Streaming (Resume & Reconnect)
@@ -10496,356 +11883,413 @@ export function ChatPanel({
     syncConversationActiveTaskId(activeConversationRef.current?.id ?? '', null);
   }, [stopTaskStreaming, syncConversationActiveTaskId]);
 
-  const connectTaskStream = useCallback(async (taskId: string, conversationId?: string) => {
-    // Prevent duplicate connection for same task
-    if (processingTaskRef.current === taskId) return;
+  const connectTaskStream = useCallback(
+    async (taskId: string, conversationId?: string) => {
+      // Prevent duplicate connection for same task
+      if (processingTaskRef.current === taskId) return;
 
-    // Determine which conversation owns this task so its streaming output is
-    // only rendered while that conversation is active. Fall back to the
-    // conversation currently in view when the caller does not specify one.
-    const ownerConversationId = conversationId ?? activeConversationRef.current?.id ?? null;
+      // Determine which conversation owns this task so its streaming output is
+      // only rendered while that conversation is active. Fall back to the
+      // conversation currently in view when the caller does not specify one.
+      const ownerConversationId = conversationId ?? activeConversationRef.current?.id ?? null;
 
-    // Do not start streaming a task that belongs to a conversation other than
-    // the one currently in view. Without this guard, a background task started
-    // in a previous chat would bleed its output into the chat the user has
-    // since switched to.
-    if (
-      ownerConversationId
-      && activeConversationRef.current
-      && activeConversationRef.current.id !== ownerConversationId
-    ) {
-      return;
-    }
+      // Do not start streaming a task that belongs to a conversation other than
+      // the one currently in view. Without this guard, a background task started
+      // in a previous chat would bleed its output into the chat the user has
+      // since switched to.
+      if (
+        ownerConversationId &&
+        activeConversationRef.current &&
+        activeConversationRef.current.id !== ownerConversationId
+      ) {
+        return;
+      }
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
 
-    processingTaskRef.current = taskId;
-    setStreamingConversationId(ownerConversationId);
-    setIsPollingTask(true);
-    setIsStreaming(true);
+      processingTaskRef.current = taskId;
+      setStreamingConversationId(ownerConversationId);
+      setIsPollingTask(true);
+      setIsStreaming(true);
 
-    // Create new abort controller for this stream
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
-    lastSeenVersionRef.current = sinceVersion;
-    let terminalStatus: string | null = null;
-    let switchedAway = false;
+      // Create new abort controller for this stream
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
+      lastSeenVersionRef.current = sinceVersion;
+      let terminalStatus: string | null = null;
+      let switchedAway = false;
 
-    try {
-      const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
+      try {
+        const stream = api.streamChatTask(
+          taskId,
+          sinceVersion,
+          abortController.signal,
+          workspaceId,
+        );
 
-      for await (const data of stream) {
-        // Stop applying updates if the user switched to a different
-        // conversation mid-stream. The background task keeps running on the
-        // server and will be reconnected when its conversation is reopened.
-        if (
-          ownerConversationId
-          && activeConversationRef.current
-          && activeConversationRef.current.id !== ownerConversationId
-        ) {
-          switchedAway = true;
-          break;
-        }
-
-        // Handle explicit completion event
-        if (data.type === 'completion' || data.completed) {
-          const status = data.status || (data.completed ? 'completed' : 'unknown');
-          terminalStatus = status;
-          if (status === 'failed' && data.error) {
-            setError(data.error);
+        for await (const data of stream) {
+          // Stop applying updates if the user switched to a different
+          // conversation mid-stream. The background task keeps running on the
+          // server and will be reconnected when its conversation is reopened.
+          if (
+            ownerConversationId &&
+            activeConversationRef.current &&
+            activeConversationRef.current.id !== ownerConversationId
+          ) {
+            switchedAway = true;
+            break;
           }
-          break; // Exit loop, cleanup below
+
+          // Handle explicit completion event
+          if (data.type === 'completion' || data.completed) {
+            const status = data.status || (data.completed ? 'completed' : 'unknown');
+            terminalStatus = status;
+            if (status === 'failed' && data.error) {
+              setError(data.error);
+            }
+            break; // Exit loop, cleanup below
+          }
+
+          // Handle streaming state update
+          let state: ChatTaskStreamEvent = data;
+          if (data.type === 'state' && data.state) state = data.state;
+
+          // Validation: ensure it looks like a streaming state
+          if (state && typeof state === 'object') {
+            const { content, events, version, hit_max_iterations } = state;
+
+            if (version !== undefined) {
+              lastSeenVersionRef.current = version;
+              taskStreamVersionRef.current.set(taskId, version);
+            }
+
+            if (content !== undefined) {
+              setStreamingContent((prev) => (prev === content ? prev : content));
+            }
+
+            if (events && Array.isArray(events)) {
+              setStreamingEvents((prev) => {
+                // Skip update if events haven't changed (simple length + last event check)
+                if (prev.length === events.length) {
+                  if (events.length === 0) return prev;
+                  const lastP = prev[prev.length - 1];
+                  const lastN = events[events.length - 1];
+                  // Simple check on last item to avoid unnecessary re-renders
+                  if (JSON.stringify(lastP) === JSON.stringify(lastN)) return prev;
+                }
+
+                // Convert to StreamingRenderEvent format.
+                // Raw SSE event objects are dynamically shaped; helpers below
+                // narrow each field defensively.
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                return events.map((ev: any) => {
+                  const channel = getChatEventChannel(ev);
+                  if (channel === 'final' && ev.type === 'content')
+                    return {
+                      type: 'content' as const,
+                      channel: 'final' as const,
+                      content: ev.content || '',
+                    };
+                  const reasoningContent = getReasoningEventContent(ev);
+                  if (channel === 'analysis' && reasoningContent) {
+                    return {
+                      type: 'reasoning' as const,
+                      channel: 'analysis' as const,
+                      content: reasoningContent,
+                      durationSeconds: getReasoningEventDurationSeconds(ev),
+                    };
+                  }
+                  return normalizeStreamingToolEvent(ev);
+                });
+              });
+            }
+
+            if (hit_max_iterations) setHitMaxIterations(true);
+          }
         }
+      } catch (err) {
+        if (!(err instanceof Error) || err.name !== 'AbortError') {
+          console.error('Task stream error:', err);
+        }
+      } finally {
+        if (processingTaskRef.current === taskId) {
+          processingTaskRef.current = null;
+          setIsPollingTask(false);
 
-        // Handle streaming state update
-        let state = data;
-        if (data.type === 'state') state = data.state;
+          // The user moved to a different conversation while this task was
+          // streaming. Tear down this stream's UI without treating it as a
+          // completion for the now-active conversation (which would otherwise
+          // refresh the wrong conversation and fire onTaskComplete).
+          if (switchedAway) {
+            setActiveTask((prev) => (prev && prev.id === taskId ? null : prev));
+            setIsStreaming(false);
+            setStreamingConversationId(null);
+            setStreamingContent('');
+            setStreamingEvents([]);
+          } else {
+            setActiveTask(null);
 
-        // Validation: ensure it looks like a streaming state
-        if (state && typeof state === 'object') {
-          const { content, events, version, hit_max_iterations } = state;
+            // Refresh conversation on completion before clearing streaming state.
+            // This avoids a UI gap where the in-progress output disappears before
+            // the persisted assistant message is rendered.
+            const currentConversation = activeConversationRef.current;
+            if (currentConversation) {
+              syncConversationActiveTaskId(currentConversation.id, null);
+              try {
+                const updated = await api.getConversation(currentConversation.id, workspaceId);
+                const resolved = applyFallbackAssistantIfNeeded(updated);
+                if (terminalStatus === 'completed') {
+                  markAutoCompactionCandidate(resolved);
+                }
+                setActiveConversation(resolved);
+                setConversations((prev) => prev.map((c) => (c.id === resolved.id ? resolved : c)));
+              } catch (e) {
+                console.error(e);
+              }
+            }
 
+            setIsStreaming(false);
+            setStreamingConversationId(null);
+            setStreamingContent('');
+            setStreamingEvents([]);
+            taskStreamVersionRef.current.delete(taskId);
+
+            // Notify parent that the task finished (e.g. refresh workspace preview)
+            if (onTaskComplete) {
+              try {
+                onTaskComplete();
+              } catch (e) {
+                console.error(e);
+              }
+            }
+          }
+        }
+      }
+    },
+    [
+      applyFallbackAssistantIfNeeded,
+      markAutoCompactionCandidate,
+      onTaskComplete,
+      syncConversationActiveTaskId,
+      workspaceId,
+    ],
+  );
+
+  const watchCompactionTask = useCallback(
+    async (taskId: string, conversationId: string) => {
+      if (settledCompactionTaskIdsRef.current.has(taskId)) return;
+      if (compactionTaskRef.current === taskId) return;
+
+      if (compactionAbortControllerRef.current) {
+        compactionAbortControllerRef.current.abort();
+      }
+
+      compactionTaskRef.current = taskId;
+      setIsCompacting(true);
+      setCompactingConversationId(conversationId);
+
+      const abortController = new AbortController();
+      compactionAbortControllerRef.current = abortController;
+      const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
+
+      let terminalStatus: string | null = null;
+      let terminalError: string | null = null;
+      let streamError: string | null = null;
+
+      try {
+        const stream = api.streamChatTask(
+          taskId,
+          sinceVersion,
+          abortController.signal,
+          workspaceId,
+        );
+        for await (const data of stream) {
+          if (data.type === 'completion' || data.completed) {
+            terminalStatus = data.status || (data.completed ? 'completed' : 'unknown');
+            terminalError = data.error || null;
+            break;
+          }
+          const state = data.type === 'state' ? data.state : data;
+          const version = state && typeof state === 'object' ? state.version : undefined;
           if (version !== undefined) {
-            lastSeenVersionRef.current = version;
             taskStreamVersionRef.current.set(taskId, version);
           }
-
-          if (content !== undefined) {
-            setStreamingContent(prev => prev === content ? prev : content);
-          }
-
-          if (events && Array.isArray(events)) {
-            setStreamingEvents(prev => {
-              // Skip update if events haven't changed (simple length + last event check)
-              if (prev.length === events.length) {
-                if (events.length === 0) return prev;
-                const lastP = prev[prev.length - 1];
-                const lastN = events[events.length - 1];
-                // Simple check on last item to avoid unnecessary re-renders
-                if (JSON.stringify(lastP) === JSON.stringify(lastN)) return prev;
-              }
-
-              // Convert to StreamingRenderEvent format
-              return events.map((ev: any) => {
-                const channel = getChatEventChannel(ev);
-                if (channel === 'final' && ev.type === 'content') return { type: 'content' as const, channel: 'final' as const, content: ev.content || '' };
-                const reasoningContent = getReasoningEventContent(ev);
-                if (channel === 'analysis' && reasoningContent) {
-                  return {
-                    type: 'reasoning' as const,
-                    channel: 'analysis' as const,
-                    content: reasoningContent,
-                    durationSeconds: getReasoningEventDurationSeconds(ev),
-                  };
-                }
-                return normalizeStreamingToolEvent(ev);
-              });
-            });
-          }
-
-          if (hit_max_iterations) setHitMaxIterations(true);
         }
-      }
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Task stream error:', err);
-      }
-    } finally {
-      if (processingTaskRef.current === taskId) {
-        processingTaskRef.current = null;
-        setIsPollingTask(false);
-
-        // The user moved to a different conversation while this task was
-        // streaming. Tear down this stream's UI without treating it as a
-        // completion for the now-active conversation (which would otherwise
-        // refresh the wrong conversation and fire onTaskComplete).
-        if (switchedAway) {
-          setActiveTask(prev => (prev && prev.id === taskId ? null : prev));
-          setIsStreaming(false);
-          setStreamingConversationId(null);
-          setStreamingContent('');
-          setStreamingEvents([]);
-          return;
+      } catch (err) {
+        if (!(err instanceof Error) || err.name !== 'AbortError') {
+          console.error('Compaction task stream error:', err);
+          streamError =
+            err instanceof Error ? err.message : 'Lost connection to compaction updates';
         }
+      } finally {
+        if (compactionTaskRef.current === taskId) {
+          compactionTaskRef.current = null;
+          compactionAbortControllerRef.current = null;
+          taskStreamVersionRef.current.delete(taskId);
+          setIsCompacting(false);
+          setCompactingConversationId(null);
+          setRetryingCompactionMarker((current) =>
+            current?.conversationId === conversationId ? null : current,
+          );
+          setActiveTask((current) => (current?.id === taskId ? null : current));
+          syncConversationActiveTaskId(conversationId, null);
 
-        setActiveTask(null);
-
-        // Refresh conversation on completion before clearing streaming state.
-        // This avoids a UI gap where the in-progress output disappears before
-        // the persisted assistant message is rendered.
-        const currentConversation = activeConversationRef.current;
-        if (currentConversation) {
-          syncConversationActiveTaskId(currentConversation.id, null);
+          let refreshedConversation: Conversation | null = null;
           try {
-            const updated = await api.getConversation(currentConversation.id, workspaceId);
-            const resolved = applyFallbackAssistantIfNeeded(updated);
-            if (terminalStatus === 'completed') {
-              markAutoCompactionCandidate(resolved);
-            }
-            setActiveConversation(resolved);
-            setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
+            const updated = await api.getConversation(conversationId, workspaceId);
+            refreshedConversation = updated;
+            setActiveConversation((prev) => (prev && prev.id === conversationId ? updated : prev));
+            setConversations((prev) =>
+              prev.map((c) => (c.id === conversationId ? { ...c, ...updated } : c)),
+            );
+            void refreshBranchPoints(conversationId);
           } catch (e) {
             console.error(e);
           }
-        }
 
-        setIsStreaming(false);
-        setStreamingConversationId(null);
-        setStreamingContent('');
-        setStreamingEvents([]);
-        taskStreamVersionRef.current.delete(taskId);
+          if (!terminalStatus && streamError) {
+            terminalStatus = 'failed';
+            terminalError = streamError;
+          }
 
-        // Notify parent that the task finished (e.g. refresh workspace preview)
-        if (onTaskComplete) {
-          try { onTaskComplete(); } catch (e) { console.error(e); }
-        }
-      }
-    }
-  }, [applyFallbackAssistantIfNeeded, markAutoCompactionCandidate, onTaskComplete, syncConversationActiveTaskId, workspaceId]);
+          if (terminalStatus && terminalStatus !== 'completed') {
+            const queued = queuedCompactionMessageRef.current;
+            if (queued?.conversationId === conversationId) {
+              setQueuedCompactionMessage(null);
+              if (activeConversationRef.current?.id === conversationId) {
+                setMessageSegments(queued.inputSegments ?? plainTextToSegments(queued.inputText));
+                setAttachments(queued.attachments);
+              }
+            }
+          }
 
-  const watchCompactionTask = useCallback(async (taskId: string, conversationId: string) => {
-    if (settledCompactionTaskIdsRef.current.has(taskId)) return;
-    if (compactionTaskRef.current === taskId) return;
+          if (terminalStatus && terminalStatus !== 'completed' && terminalStatus !== 'cancelled') {
+            const message = terminalError || 'Failed to compact conversation';
+            setError(message);
+            toastActions.error(message);
+          } else if (terminalStatus === 'completed') {
+            settledCompactionTaskIdsRef.current.add(taskId);
+            if (!notifiedCompactionTaskIdsRef.current.has(taskId)) {
+              notifiedCompactionTaskIdsRef.current.add(taskId);
+              toastActions.success('Conversation context compacted');
+            }
+            if (queuedCompactionMessageRef.current?.conversationId === conversationId) {
+              setQueuedCompactionMessage((current) =>
+                current?.conversationId === conversationId
+                  ? { ...current, compactionStatus: 'compacted' }
+                  : current,
+              );
+            }
+            if (refreshedConversation) {
+              window.setTimeout(
+                () => {
+                  sendQueuedAfterCompactionRef.current?.(refreshedConversation);
+                },
+                queuedCompactionMessageRef.current?.conversationId === conversationId ? 250 : 0,
+              );
+            }
+          }
 
-    if (compactionAbortControllerRef.current) {
-      compactionAbortControllerRef.current.abort();
-    }
-
-    compactionTaskRef.current = taskId;
-    setIsCompacting(true);
-    setCompactingConversationId(conversationId);
-
-    const abortController = new AbortController();
-    compactionAbortControllerRef.current = abortController;
-    const sinceVersion = taskStreamVersionRef.current.get(taskId) ?? 0;
-
-    let terminalStatus: string | null = null;
-    let terminalError: string | null = null;
-    let streamError: string | null = null;
-
-    try {
-      const stream = api.streamChatTask(taskId, sinceVersion, abortController.signal, workspaceId);
-      for await (const data of stream) {
-        if (data.type === 'completion' || data.completed) {
-          terminalStatus = data.status || (data.completed ? 'completed' : 'unknown');
-          terminalError = data.error || null;
-          break;
-        }
-        const state = data.type === 'state' ? data.state : data;
-        const version = state && typeof state === 'object' ? state.version : undefined;
-        if (version !== undefined) {
-          taskStreamVersionRef.current.set(taskId, version);
-        }
-      }
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Compaction task stream error:', err);
-        streamError = err instanceof Error ? err.message : 'Lost connection to compaction updates';
-      }
-    } finally {
-      if (compactionTaskRef.current !== taskId) return;
-
-      compactionTaskRef.current = null;
-      compactionAbortControllerRef.current = null;
-      taskStreamVersionRef.current.delete(taskId);
-      setIsCompacting(false);
-      setCompactingConversationId(null);
-      setRetryingCompactionMarker((current) => (
-        current?.conversationId === conversationId ? null : current
-      ));
-      setActiveTask(current => current?.id === taskId ? null : current);
-      syncConversationActiveTaskId(conversationId, null);
-
-      let refreshedConversation: Conversation | null = null;
-      try {
-        const updated = await api.getConversation(conversationId, workspaceId);
-        refreshedConversation = updated;
-        setActiveConversation(prev => prev && prev.id === conversationId ? updated : prev);
-        setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, ...updated } : c));
-        void refreshBranchPoints(conversationId);
-      } catch (e) {
-        console.error(e);
-      }
-
-      if (!terminalStatus && streamError) {
-        terminalStatus = 'failed';
-        terminalError = streamError;
-      }
-
-      if (terminalStatus && terminalStatus !== 'completed') {
-        const queued = queuedCompactionMessageRef.current;
-        if (queued?.conversationId === conversationId) {
-          setQueuedCompactionMessage(null);
-          if (activeConversationRef.current?.id === conversationId) {
-            setMessageSegments(queued.inputSegments ?? plainTextToSegments(queued.inputText));
-            setAttachments(queued.attachments);
+          if (onTaskComplete) {
+            try {
+              onTaskComplete();
+            } catch (e) {
+              console.error(e);
+            }
           }
         }
       }
+    },
+    [onTaskComplete, refreshBranchPoints, syncConversationActiveTaskId, toastActions, workspaceId],
+  );
 
-      if (terminalStatus && terminalStatus !== 'completed' && terminalStatus !== 'cancelled') {
-        const message = terminalError || 'Failed to compact conversation';
-        setError(message);
-        toastActions.error(message);
-      } else if (terminalStatus === 'completed') {
-        settledCompactionTaskIdsRef.current.add(taskId);
-        if (!notifiedCompactionTaskIdsRef.current.has(taskId)) {
-          notifiedCompactionTaskIdsRef.current.add(taskId);
-          toastActions.success('Conversation context compacted');
+  const startTaskAndStream = useCallback(
+    async (conversationId: string, message: string, conversationOverride?: Conversation | null) => {
+      const baseConversation =
+        conversationOverride ??
+        (activeConversation?.id === conversationId ? activeConversation : null);
+      const previousConversation =
+        baseConversation?.id === conversationId ? baseConversation : null;
+
+      // 1. Optimistic update (User message)
+      let content: string | ContentPart[] = message;
+      try {
+        const parsed = JSON.parse(message);
+        if (Array.isArray(parsed) && parsed.some((p) => p.type)) {
+          content = parsed;
         }
-        if (queuedCompactionMessageRef.current?.conversationId === conversationId) {
-          setQueuedCompactionMessage((current) => (
-            current?.conversationId === conversationId
-              ? { ...current, compactionStatus: 'compacted' }
-              : current
-          ));
-        }
-        if (refreshedConversation) {
-          window.setTimeout(() => {
-            sendQueuedAfterCompactionRef.current?.(refreshedConversation);
-          }, queuedCompactionMessageRef.current?.conversationId === conversationId ? 250 : 0);
-        }
+      } catch {
+        // Not JSON
       }
 
-      if (onTaskComplete) {
-        try { onTaskComplete(); } catch (e) { console.error(e); }
-      }
-    }
-  }, [onTaskComplete, refreshBranchPoints, syncConversationActiveTaskId, toastActions, workspaceId]);
-
-  const startTaskAndStream = useCallback(async (conversationId: string, message: string, conversationOverride?: Conversation | null) => {
-    const baseConversation = conversationOverride ?? (activeConversation?.id === conversationId ? activeConversation : null);
-    const previousConversation = baseConversation?.id === conversationId
-      ? baseConversation
-      : null;
-
-    // 1. Optimistic update (User message)
-    let content: string | ContentPart[] = message;
-    try {
-      const parsed = JSON.parse(message);
-      if (Array.isArray(parsed) && parsed.some(p => p.type)) {
-        content = parsed;
-      }
-    } catch {
-      // Not JSON
-    }
-
-    const optimisticMsg: ChatMessage = {
-      role: 'user',
-      content: content as any,
-      timestamp: new Date().toISOString()
-    };
-
-    if (baseConversation) {
-      const updatedWithUser = {
-        ...baseConversation,
-        messages: [...baseConversation.messages, optimisticMsg]
+      const optimisticMsg: ChatMessage = {
+        role: 'user',
+        content: content as ChatMessage['content'],
+        timestamp: new Date().toISOString(),
       };
-      setActiveConversation(prev => prev?.id === conversationId ? updatedWithUser : prev);
-      setConversations(prev => prev.map(c => c.id === conversationId ? updatedWithUser : c));
-    }
 
-    let startedTaskId: string | null = null;
-    try {
-      // 2. Start background task
-      const task = await api.sendMessageBackground(conversationId, message, workspaceId);
-      startedTaskId = task.id;
-      setActiveTask(task);
-      setInterruptedTask(null);
-      syncConversationActiveTaskId(conversationId, task.id);
+      if (baseConversation) {
+        const updatedWithUser = {
+          ...baseConversation,
+          messages: [...baseConversation.messages, optimisticMsg],
+        };
+        setActiveConversation((prev) => (prev?.id === conversationId ? updatedWithUser : prev));
+        setConversations((prev) =>
+          prev.map((c) => (c.id === conversationId ? updatedWithUser : c)),
+        );
+      }
 
-      // 3. Connect to stream
-      await connectTaskStream(task.id, conversationId);
-    } catch (err: any) {
-      console.error(err);
-      let messagePersisted = false;
-      if (!startedTaskId) {
-        try {
-          const refreshed = await api.getConversation(conversationId, workspaceId);
-          const previousMessageCount = previousConversation?.messages.length ?? 0;
-          messagePersisted = refreshed.messages.length > previousMessageCount;
-          setActiveConversation(refreshed);
-          setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
-          syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
-        } catch (refreshErr) {
-          console.error('Failed to refresh conversation after task start error:', refreshErr);
+      let startedTaskId: string | null = null;
+      try {
+        // 2. Start background task
+        const task = await api.sendMessageBackground(conversationId, message, workspaceId);
+        startedTaskId = task.id;
+        setActiveTask(task);
+        setInterruptedTask(null);
+        syncConversationActiveTaskId(conversationId, task.id);
+
+        // 3. Connect to stream
+        await connectTaskStream(task.id, conversationId);
+      } catch (err) {
+        console.error(err);
+        let messagePersisted = false;
+        if (!startedTaskId) {
+          try {
+            const refreshed = await api.getConversation(conversationId, workspaceId);
+            const previousMessageCount = previousConversation?.messages.length ?? 0;
+            messagePersisted = refreshed.messages.length > previousMessageCount;
+            setActiveConversation(refreshed);
+            setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
+            syncConversationActiveTaskId(conversationId, refreshed.active_task_id ?? null);
+          } catch (refreshErr) {
+            console.error('Failed to refresh conversation after task start error:', refreshErr);
+          }
         }
+        if (!startedTaskId && !messagePersisted && previousConversation) {
+          setActiveConversation(previousConversation);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === conversationId ? previousConversation : c)),
+          );
+          syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
+        }
+        clearActiveStreamingUi();
+        if (messagePersisted && err && typeof err === 'object') {
+          (err as { messagePersisted?: boolean }).messagePersisted = true;
+        }
+        throw err;
       }
-      if (!startedTaskId && !messagePersisted && previousConversation) {
-        setActiveConversation(previousConversation);
-        setConversations(prev => prev.map(c => c.id === conversationId ? previousConversation : c));
-        syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
-      }
-      clearActiveStreamingUi();
-      if (messagePersisted && err && typeof err === 'object') {
-        (err as { messagePersisted?: boolean }).messagePersisted = true;
-      }
-      throw err;
-    }
-  }, [activeConversation, clearActiveStreamingUi, connectTaskStream, syncConversationActiveTaskId, workspaceId]);
+    },
+    [
+      activeConversation,
+      clearActiveStreamingUi,
+      connectTaskStream,
+      syncConversationActiveTaskId,
+      workspaceId,
+    ],
+  );
 
   // Keep task streaming in sync when workspace aggregate state sets activeTask.
   useEffect(() => {
@@ -10856,9 +12300,9 @@ export function ChatPanel({
     // momentarily reference a previously-active conversation) from streaming
     // into the chat the user has switched to.
     if (
-      activeConversation?.id
-      && activeTask.conversation_id
-      && activeTask.conversation_id !== activeConversation.id
+      activeConversation?.id &&
+      activeTask.conversation_id &&
+      activeTask.conversation_id !== activeConversation.id
     ) {
       return;
     }
@@ -10867,21 +12311,36 @@ export function ChatPanel({
       return;
     }
     void connectTaskStream(activeTask.id, activeTask.conversation_id);
-  }, [activeTask?.id, activeTask?.status, activeTask?.conversation_id, activeTask?.user_message, activeConversation?.id, connectTaskStream, watchCompactionTask]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends on granular activeTask fields, not the whole object
+  }, [
+    activeTask?.id,
+    activeTask?.status,
+    activeTask?.conversation_id,
+    activeTask?.user_message,
+    activeConversation?.id,
+    connectTaskStream,
+    watchCompactionTask,
+  ]);
 
   // Expose connectTaskStream via ref so the conversation event SSE handler
   // (declared earlier in the component) can trigger task streaming the moment
   // a task_started event is received.
   useEffect(() => {
-    connectTaskStreamRef.current = (taskId: string, conversationId?: string) => { void connectTaskStream(taskId, conversationId); };
-    return () => { connectTaskStreamRef.current = null; };
+    connectTaskStreamRef.current = (taskId: string, conversationId?: string) => {
+      void connectTaskStream(taskId, conversationId);
+    };
+    return () => {
+      connectTaskStreamRef.current = null;
+    };
   }, [connectTaskStream]);
 
   useEffect(() => {
     watchCompactionTaskRef.current = (taskId: string, conversationId: string) => {
       void watchCompactionTask(taskId, conversationId);
     };
-    return () => { watchCompactionTaskRef.current = null; };
+    return () => {
+      watchCompactionTaskRef.current = null;
+    };
   }, [watchCompactionTask]);
 
   // Check for active/interrupted background task when conversation changes
@@ -10912,7 +12371,7 @@ export function ChatPanel({
       try {
         const taskState = await api.getConversationTaskState(activeConversation.id, workspaceId);
         if (cancelled) return;
-        
+
         const activeT = taskState.active_task;
         const interruptedT = taskState.interrupted_task;
 
@@ -10969,7 +12428,14 @@ export function ChatPanel({
       // Stop streaming when conversation ID changes (unmounting this effect instance)
       stopTaskStreaming();
     };
-  }, [activeConversation?.id, stopTaskStreaming, syncConversationActiveTaskId, workspaceChatState, workspaceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on activeConversation.id, not the full conversation object
+  }, [
+    activeConversation?.id,
+    stopTaskStreaming,
+    syncConversationActiveTaskId,
+    workspaceChatState,
+    workspaceId,
+  ]);
 
   // Cleanup on component unmount
   useEffect(() => {
@@ -10979,11 +12445,16 @@ export function ChatPanel({
     };
   }, [stopTaskStreaming]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally a per-render async handler; wrapping in useCallback is out of scope for this change
   const selectConversation = async (conversation: Conversation): Promise<Conversation | null> => {
     const isSwitchingConversation = activeConversation?.id !== conversation.id;
     const requestId = ++selectConversationRequestIdRef.current;
     try {
-      if (!embedded && typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
+      if (
+        !embedded &&
+        typeof window !== 'undefined' &&
+        window.matchMedia('(max-width: 768px)').matches
+      ) {
         setShowSidebar(false);
       }
       shouldAutoScrollRef.current = true;
@@ -11001,7 +12472,9 @@ export function ChatPanel({
       setActiveConversation(fresh);
       // Sync sidebar title in case it was updated while another conversation was active
       if (fresh.title !== conversation.title) {
-        setConversations(prev => prev.map(c => c.id === fresh.id ? { ...c, title: fresh.title } : c));
+        setConversations((prev) =>
+          prev.map((c) => (c.id === fresh.id ? { ...c, title: fresh.title } : c)),
+        );
       }
       setError(null);
       return fresh;
@@ -11037,7 +12510,7 @@ export function ChatPanel({
 
     try {
       await api.deleteConversation(conversationId, workspaceId);
-      setConversations(prev => prev.filter(c => c.id !== conversationId));
+      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
       if (activeConversation?.id === conversationId) {
         setActiveConversation(null);
       }
@@ -11060,10 +12533,24 @@ export function ChatPanel({
     }
 
     try {
-      const updated = await api.updateConversationTitle(conversationId, titleInput.trim(), workspaceId);
-      setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, title: updated.title, updated_at: updated.updated_at } : c));
+      const updated = await api.updateConversationTitle(
+        conversationId,
+        titleInput.trim(),
+        workspaceId,
+      );
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversationId
+            ? { ...c, title: updated.title, updated_at: updated.updated_at }
+            : c,
+        ),
+      );
       if (activeConversation?.id === conversationId) {
-        setActiveConversation(prev => prev?.id === conversationId ? { ...prev, title: updated.title, updated_at: updated.updated_at } : prev);
+        setActiveConversation((prev) =>
+          prev?.id === conversationId
+            ? { ...prev, title: updated.title, updated_at: updated.updated_at }
+            : prev,
+        );
       }
       setEditingTitle(null);
       setEditingHeaderTitle(null);
@@ -11076,15 +12563,13 @@ export function ChatPanel({
     if (!activeConversation || isStreaming) return;
 
     try {
-      const selection = resolveConversationModelSelection(
-        newModel,
-        availableModels,
-      );
+      const selection = resolveConversationModelSelection(newModel, availableModels);
       const requestedModelId = selection.modelId || newModel.trim();
       const requestedProvider = selection.explicitProvider || selection.inferredProvider;
-      const requestedProviderForApi = requestedProvider && KNOWN_PROVIDER_KEYS.has(requestedProvider)
-        ? (requestedProvider as LlmProviderWire)
-        : undefined;
+      const requestedProviderForApi =
+        requestedProvider && KNOWN_PROVIDER_KEYS.has(requestedProvider)
+          ? (requestedProvider as LlmProviderWire)
+          : undefined;
       const selected = selection.matchedModel;
 
       const updated = await api.updateConversationModel(
@@ -11093,8 +12578,16 @@ export function ChatPanel({
         workspaceId,
         selected?.provider || requestedProviderForApi,
       );
-      setActiveConversation(prev => prev?.id === updated.id ? { ...prev, model: updated.model, updated_at: updated.updated_at } : prev);
-      setConversations(prev => prev.map(c => c.id === updated.id ? { ...c, model: updated.model, updated_at: updated.updated_at } : c));
+      setActiveConversation((prev) =>
+        prev?.id === updated.id
+          ? { ...prev, model: updated.model, updated_at: updated.updated_at }
+          : prev,
+      );
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === updated.id ? { ...c, model: updated.model, updated_at: updated.updated_at } : c,
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to change model');
     }
@@ -11153,7 +12646,7 @@ export function ChatPanel({
         const updated = await api.getConversation(currentConversation.id, workspaceId);
         const resolved = applyFallbackAssistantIfNeeded(updated);
         setActiveConversation(resolved);
-        setConversations(prev => prev.map(c => c.id === resolved.id ? resolved : c));
+        setConversations((prev) => prev.map((c) => (c.id === resolved.id ? resolved : c)));
       } catch (err) {
         console.error('Failed to update conversation after stop:', err);
 
@@ -11162,7 +12655,9 @@ export function ChatPanel({
         if (localConversation) {
           const fallbackConversation = applyFallbackAssistantIfNeeded(localConversation);
           setActiveConversation(fallbackConversation);
-          setConversations(prev => prev.map(c => c.id === fallbackConversation.id ? fallbackConversation : c));
+          setConversations((prev) =>
+            prev.map((c) => (c.id === fallbackConversation.id ? fallbackConversation : c)),
+          );
         }
       }
     }
@@ -11191,40 +12686,45 @@ export function ChatPanel({
   };
 
   const isModelsLoading = Boolean(
-    modelsLoading || modelsReadiness?.models_loading || modelsReadiness?.copilot_refresh_in_progress,
+    modelsLoading ||
+    modelsReadiness?.models_loading ||
+    modelsReadiness?.copilot_refresh_in_progress,
   );
-  const getBranchSendBlockReason = useCallback(async (
-    branchKind: ConversationBranchKind,
-    conversation: Conversation | null,
-  ): Promise<string | null> => {
-    if (!branchStartsGeneration(branchKind) || !conversation) {
+  const getBranchSendBlockReason = useCallback(
+    async (
+      branchKind: ConversationBranchKind,
+      conversation: Conversation | null,
+    ): Promise<string | null> => {
+      if (!branchStartsGeneration(branchKind) || !conversation) {
+        return null;
+      }
+
+      const modelState = isModelsLoading
+        ? await awaitModelsReady()
+        : { models: availableModels, meta: modelsMeta };
+      const allowedModels = modelState.meta?.allowed_models ?? [];
+      if (!allowedModels.length) {
+        return null;
+      }
+
+      const selection = resolveConversationModelSelection(
+        conversation.model || '',
+        modelState.models,
+      );
+      if (!selection.modelId) {
+        return null;
+      }
+
+      const scopedIdentifier = resolvedModelSelectionKey(selection);
+
+      if (!modelIdentifierInList(scopedIdentifier, allowedModels)) {
+        return MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE;
+      }
+
       return null;
-    }
-
-    const modelState = isModelsLoading
-      ? await awaitModelsReady()
-      : { models: availableModels, meta: modelsMeta };
-    const allowedModels = modelState.meta?.allowed_models ?? [];
-    if (!allowedModels.length) {
-      return null;
-    }
-
-    const selection = resolveConversationModelSelection(
-      conversation.model || '',
-      modelState.models,
-    );
-    if (!selection.modelId) {
-      return null;
-    }
-
-    const scopedIdentifier = resolvedModelSelectionKey(selection);
-
-    if (!modelIdentifierInList(scopedIdentifier, allowedModels)) {
-      return MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE;
-    }
-
-    return null;
-  }, [availableModels, awaitModelsReady, isModelsLoading, modelsMeta]);
+    },
+    [availableModels, awaitModelsReady, isModelsLoading, modelsMeta],
+  );
 
   // Direct message send - bypasses inputValue state for programmatic sending
   const sendMessageDirect = async (
@@ -11232,7 +12732,14 @@ export function ChatPanel({
     options?: { allowDuringCompaction?: boolean; conversationOverride?: Conversation | null },
   ) => {
     const conversation = options?.conversationOverride ?? activeConversation;
-    if (!message.trim() || !conversation || isStreaming || (!options?.allowDuringCompaction && isActiveConversationCompacting) || isReadOnly) return;
+    if (
+      !message.trim() ||
+      !conversation ||
+      isStreaming ||
+      (!options?.allowDuringCompaction && isActiveConversationCompacting) ||
+      isReadOnly
+    )
+      return;
     shouldAutoScrollRef.current = true;
 
     const userMessage = message.trim();
@@ -11250,7 +12757,9 @@ export function ChatPanel({
     });
 
     if (!contextUsage.hasHeadroom) {
-      setError(`Context limit nearly reached (${contextUsage.projectedInputPercent}%). Consider starting a new conversation.`);
+      setError(
+        `Context limit nearly reached (${contextUsage.projectedInputPercent}%). Consider starting a new conversation.`,
+      );
       return;
     }
 
@@ -11272,21 +12781,21 @@ export function ChatPanel({
       // Use background task streaming
       await startTaskAndStream(conversation.id, userMessage, conversation);
       return true;
-
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to send message';
 
       // Check for connection errors
-      const isConnError = errorMessage.toLowerCase().includes('502') ||
+      const isConnError =
+        errorMessage.toLowerCase().includes('502') ||
         errorMessage.toLowerCase().includes('503') ||
         errorMessage.toLowerCase().includes('connection') ||
         errorMessage.toLowerCase().includes('network') ||
         errorMessage.toLowerCase().includes('fetch');
       const messagePersisted = Boolean(
-        err
-        && typeof err === 'object'
-        && 'messagePersisted' in err
-        && (err as { messagePersisted?: boolean }).messagePersisted,
+        err &&
+        typeof err === 'object' &&
+        'messagePersisted' in err &&
+        (err as { messagePersisted?: boolean }).messagePersisted,
       );
 
       setIsConnectionError(!messagePersisted && isConnError);
@@ -11322,7 +12831,13 @@ export function ChatPanel({
 
   const sendMessage = async () => {
     const hasComposerContent = !segmentsAreEmpty(messageSegments);
-    if ((!hasComposerContent && attachments.length === 0) || !activeConversation || isStreaming || isReadOnly) return;
+    if (
+      (!hasComposerContent && attachments.length === 0) ||
+      !activeConversation ||
+      isStreaming ||
+      isReadOnly
+    )
+      return;
     if (hasQueuedCompactionMessageForActiveConversation) return;
 
     const serializedUserMessage = serializeRichChatSegments(messageSegments);
@@ -11330,12 +12845,14 @@ export function ChatPanel({
     const messageAttachments = [...attachments];
 
     if (isActiveConversationCompacting) {
-      const serializedMessage = messageAttachments.length > 0
-        ? JSON.stringify(attachmentsToContentParts(serializedUserMessage, messageAttachments))
-        : serializedUserMessage;
-      const displayContent = messageAttachments.length > 0
-        ? attachmentsToContentParts(serializedUserMessage, messageAttachments)
-        : serializedUserMessage;
+      const serializedMessage =
+        messageAttachments.length > 0
+          ? JSON.stringify(attachmentsToContentParts(serializedUserMessage, messageAttachments))
+          : serializedUserMessage;
+      const displayContent =
+        messageAttachments.length > 0
+          ? attachmentsToContentParts(serializedUserMessage, messageAttachments)
+          : serializedUserMessage;
 
       setMessageSegments(EMPTY_RICH_SEGMENTS);
       setAttachments([]);
@@ -11377,46 +12894,60 @@ export function ChatPanel({
     }
   };
 
-  const contentPartsToAttachments = useCallback(async (parts: ContentPart[]): Promise<AttachmentFile[]> => {
-    // Extract mime type from data URL (e.g., "data:image/png;base64,..." -> "image/png")
-    const extractMimeFromDataUrl = (url: string): string => {
-      const match = url.match(/^data:([^;,]+)/);
-      return match?.[1] || 'image/png';
-    };
+  const contentPartsToAttachments = useCallback(
+    async (parts: ContentPart[]): Promise<AttachmentFile[]> => {
+      // Extract mime type from data URL (e.g., "data:image/png;base64,..." -> "image/png")
+      const extractMimeFromDataUrl = (url: string): string => {
+        const match = url.match(/^data:([^;,]+)/);
+        return match?.[1] || 'image/png';
+      };
 
-    const mapped = await Promise.all(parts
-      .filter(p => p.type === 'image_url' || p.type === 'file')
-      .map(async (p, i) => {
-        if (p.type === 'image_url') {
-          const url = p.image_url.url;
-          const mimeType = extractMimeFromDataUrl(url);
-          const resized = await resizeAttachmentImageDataUrl(url, mimeType);
-          return {
-            id: `edit-attachment-${i}-${Date.now()}`,
-            type: 'image' as const,
-            name: 'Attached Image',
-            size: 0,
-            mimeType,
-            preview: resized,
-            dataUrl: resized
-          } as AttachmentFile;
-        }
-        // Handle file type
-        return {
-          id: `edit-attachment-${i}-${Date.now()}`,
-          type: 'file' as const,
-          name: (p as any).filename || 'file',
-          size: (p as any).size_bytes || 0,
-          mimeType: (p as any).mime_type || 'application/octet-stream',
-          filePath: (p as any).file_path,
-          attachmentId: (p as any).attachment_id,
-          attachmentSource: (p as any).attachment_source,
-          expiresAt: (p as any).expires_at,
-        } as AttachmentFile;
-      }));
+      const mapped = await Promise.all(
+        parts
+          .filter((p) => p.type === 'image_url' || p.type === 'file')
+          .map(async (p, i) => {
+            if (p.type === 'image_url') {
+              const url = p.image_url.url;
+              const mimeType = extractMimeFromDataUrl(url);
+              const resized = await resizeAttachmentImageDataUrl(url, mimeType);
+              return {
+                id: `edit-attachment-${i}-${Date.now()}`,
+                type: 'image' as const,
+                name: 'Attached Image',
+                size: 0,
+                mimeType,
+                preview: resized,
+                dataUrl: resized,
+              } as AttachmentFile;
+            }
+            // Handle file type
+            const filePart = p as {
+              filename?: string;
+              size_bytes?: number;
+              mime_type?: string;
+              file_path?: string;
+              attachment_id?: string;
+              attachment_source?: string;
+              expires_at?: string;
+            };
+            return {
+              id: `edit-attachment-${i}-${Date.now()}`,
+              type: 'file' as const,
+              name: filePart.filename || 'file',
+              size: filePart.size_bytes || 0,
+              mimeType: filePart.mime_type || 'application/octet-stream',
+              filePath: filePart.file_path,
+              attachmentId: filePart.attachment_id,
+              attachmentSource: filePart.attachment_source,
+              expiresAt: filePart.expires_at,
+            } as AttachmentFile;
+          }),
+      );
 
-    return mapped;
-  }, []);
+      return mapped;
+    },
+    [],
+  );
 
   const startEditMessage = (idx: number, content: string, attachments: ContentPart[] = []) => {
     setEditingMessageIdx(idx);
@@ -11462,313 +12993,384 @@ export function ChatPanel({
     });
   }, []);
 
-  const createBranchForMessageMutation = useCallback(async (
-    conversationId: string,
-    branchPointIndex: number,
-    messageCount: number,
-    branchKind: ConversationBranchKind,
-  ) => {
-    if (branchPointIndex < 0 || branchPointIndex >= messageCount) {
-      return null;
-    }
-
-    const blockReason = await getBranchSendBlockReason(branchKind, activeConversation);
-    if (blockReason) {
-      throw new Error(blockReason);
-    }
-
-    const createdBranch = await api.createConversationBranch(
-      conversationId,
-      {
-        from_message_index: branchPointIndex,
-        branch_kind: branchKind,
-        auto_snapshot: Boolean(workspaceId),
-      },
-      workspaceId,
-    );
-
-    // The backend always clears active_branch_id when a new branch is
-    // created (the conversation moves to the live path). Mirror that in
-    // local state immediately so the branch nav lineage walk does not
-    // still resolve to the prior branch and show e.g. "5/11" when the
-    // user is actually on the new "11/11" branch. This applies uniformly
-    // to edit, replay, and delete flows.
-    setActiveConversation((prev) => (
-      prev && prev.id === conversationId && prev.active_branch_id !== null
-        ? { ...prev, active_branch_id: null }
-        : prev
-    ));
-    setConversations((prev) => prev.map((c) => (
-      c.id === conversationId && c.active_branch_id !== null
-        ? { ...c, active_branch_id: null }
-        : c
-    )));
-
-    if (createdBranch.parent_branch_id) {
-      const anchorIndex = getConversationBranchAnchorIndex(
-        branchPointIndex,
-        createdBranch.branch_kind ?? branchKind,
-        messageCount,
-      );
-      const selectionKey = getConversationBranchSelectionKey(branchPointIndex, anchorIndex);
-      setBranchSelections((prev) => ({ ...prev, [selectionKey]: createdBranch.parent_branch_id! }));
-    }
-
-    // Inject the newly created branch into UI state using the actual server
-    // response from the POST request. This avoids waiting for a secondary
-    // GET request (refreshBranchPoints) to finish before the UI updates,
-    // ensuring the X/N nav count bumps instantaneously before the streaming
-    // task even starts.
-    //
-    // Also mirror the backend's sibling-absorption: when a new branch is
-    // created at bp=K, the server deletes sibling branches at bp>K that
-    // share the same parentBranchId (see repository.create_conversation_branch).
-    // Dropping those siblings client-side makes the injected count match the
-    // final server state, avoiding a visible flicker when the refresh GET
-    // lands.
-    setBranchPoints((prev) => {
-      const parentBranchId = createdBranch.parent_branch_id ?? null;
-      // 1) Remove entries whose branches are fully absorbed siblings.
-      const filtered = prev
-        .map((p) => {
-          if (p.branch_point_index <= branchPointIndex) return p;
-          const kept = p.branches.filter(
-            (b) => (b.parent_branch_id ?? null) !== parentBranchId || b.id === createdBranch.id,
-          );
-          if (kept.length === p.branches.length) return p;
-          return { ...p, branches: kept };
-        })
-        .filter((p) => p.branches.length > 0);
-      // 2) Insert/merge the newly created branch at its own bp.
-      const existingIdx = filtered.findIndex((p) => p.branch_point_index === branchPointIndex);
-      if (existingIdx >= 0) {
-        const next = [...filtered];
-        next[existingIdx] = {
-          ...next[existingIdx],
-          branches: [...next[existingIdx].branches, createdBranch],
-        };
-        return next;
+  const createBranchForMessageMutation = useCallback(
+    async (
+      conversationId: string,
+      branchPointIndex: number,
+      messageCount: number,
+      branchKind: ConversationBranchKind,
+    ) => {
+      if (branchPointIndex < 0 || branchPointIndex >= messageCount) {
+        return null;
       }
-      return [
-        ...filtered,
+
+      const blockReason = await getBranchSendBlockReason(branchKind, activeConversation);
+      if (blockReason) {
+        throw new Error(blockReason);
+      }
+
+      const createdBranch = await api.createConversationBranch(
+        conversationId,
         {
-          branch_point_index: branchPointIndex,
-          branches: [createdBranch],
-          active_branch_id: null,
+          from_message_index: branchPointIndex,
+          branch_kind: branchKind,
+          auto_snapshot: Boolean(workspaceId),
         },
-      ];
-    });
+        workspaceId,
+      );
 
-    // Refresh branch points immediately so the X/N nav reflects the new
-    // branch on the very next render. Fire-and-forget: this drives only
-    // the visual count and must not block the caller's optimistic UI
-    // update (message truncation, snapshot restore, etc.).
-    void refreshBranchPoints(conversationId);
+      // The backend always clears active_branch_id when a new branch is
+      // created (the conversation moves to the live path). Mirror that in
+      // local state immediately so the branch nav lineage walk does not
+      // still resolve to the prior branch and show e.g. "5/11" when the
+      // user is actually on the new "11/11" branch. This applies uniformly
+      // to edit, replay, and delete flows.
+      setActiveConversation((prev) =>
+        prev && prev.id === conversationId && prev.active_branch_id !== null
+          ? { ...prev, active_branch_id: null }
+          : prev,
+      );
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === conversationId && c.active_branch_id !== null
+            ? { ...c, active_branch_id: null }
+            : c,
+        ),
+      );
 
-    // Branch creation with auto_snapshot may have created a new userspace
-    // snapshot. Notify parent so the snapshots panel can refresh.
-    if (workspaceId) {
-      try {
-        onSnapshotsMaybeChanged?.();
-      } catch (notifyErr) {
-        console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+      if (createdBranch.parent_branch_id) {
+        const anchorIndex = getConversationBranchAnchorIndex(
+          branchPointIndex,
+          createdBranch.branch_kind ?? branchKind,
+          messageCount,
+        );
+        const selectionKey = getConversationBranchSelectionKey(branchPointIndex, anchorIndex);
+        setBranchSelections((prev) => ({
+          ...prev,
+          [selectionKey]: createdBranch.parent_branch_id!,
+        }));
       }
-    }
 
-    return createdBranch;
-  }, [activeConversation, workspaceId, onSnapshotsMaybeChanged, refreshBranchPoints, getBranchSendBlockReason]);
+      // Inject the newly created branch into UI state using the actual server
+      // response from the POST request. This avoids waiting for a secondary
+      // GET request (refreshBranchPoints) to finish before the UI updates,
+      // ensuring the X/N nav count bumps instantaneously before the streaming
+      // task even starts.
+      //
+      // Also mirror the backend's sibling-absorption: when a new branch is
+      // created at bp=K, the server deletes sibling branches at bp>K that
+      // share the same parentBranchId (see repository.create_conversation_branch).
+      // Dropping those siblings client-side makes the injected count match the
+      // final server state, avoiding a visible flicker when the refresh GET
+      // lands.
+      setBranchPoints((prev) => {
+        const parentBranchId = createdBranch.parent_branch_id ?? null;
+        // 1) Remove entries whose branches are fully absorbed siblings.
+        const filtered = prev
+          .map((p) => {
+            if (p.branch_point_index <= branchPointIndex) return p;
+            const kept = p.branches.filter(
+              (b) => (b.parent_branch_id ?? null) !== parentBranchId || b.id === createdBranch.id,
+            );
+            if (kept.length === p.branches.length) return p;
+            return { ...p, branches: kept };
+          })
+          .filter((p) => p.branches.length > 0);
+        // 2) Insert/merge the newly created branch at its own bp.
+        const existingIdx = filtered.findIndex((p) => p.branch_point_index === branchPointIndex);
+        if (existingIdx >= 0) {
+          const next = [...filtered];
+          next[existingIdx] = {
+            ...next[existingIdx],
+            branches: [...next[existingIdx].branches, createdBranch],
+          };
+          return next;
+        }
+        return [
+          ...filtered,
+          {
+            branch_point_index: branchPointIndex,
+            branches: [createdBranch],
+            active_branch_id: null,
+          },
+        ];
+      });
+
+      // Refresh branch points immediately so the X/N nav reflects the new
+      // branch on the very next render. Fire-and-forget: this drives only
+      // the visual count and must not block the caller's optimistic UI
+      // update (message truncation, snapshot restore, etc.).
+      void refreshBranchPoints(conversationId);
+
+      // Branch creation with auto_snapshot may have created a new userspace
+      // snapshot. Notify parent so the snapshots panel can refresh.
+      if (workspaceId) {
+        try {
+          onSnapshotsMaybeChanged?.();
+        } catch (notifyErr) {
+          console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+        }
+      }
+
+      return createdBranch;
+    },
+    [
+      activeConversation,
+      workspaceId,
+      onSnapshotsMaybeChanged,
+      refreshBranchPoints,
+      getBranchSendBlockReason,
+    ],
+  );
 
   // Walk back from messageIdx to the nearest user message. Branches are
   // always anchored at user messages so the branch nav appears on a single,
   // predictable row and replay/edit/delete cannot collide by anchoring at
   // assistant indices.
-  const findUserMessageIndexAtOrBefore = useCallback((
-    messages: ChatMessage[],
-    messageIdx: number,
-  ): number => {
-    let i = Math.min(messageIdx, messages.length - 1);
-    while (i >= 0 && messages[i]?.role !== 'user') {
-      i--;
-    }
-    return i;
-  }, []);
+  const findUserMessageIndexAtOrBefore = useCallback(
+    (messages: ChatMessage[], messageIdx: number): number => {
+      let i = Math.min(messageIdx, messages.length - 1);
+      while (i >= 0 && messages[i]?.role !== 'user') {
+        i--;
+      }
+      return i;
+    },
+    [],
+  );
 
   const getDeleteBranchPointIndex = useCallback((messageIdx: number): number => {
     return Math.max(messageIdx, 0);
   }, []);
 
-  const switchBranch = useCallback(async (branchId: string, conversationOverride?: Conversation) => {
-    const targetConversation = conversationOverride ?? activeConversation;
-    if (!targetConversation || branchSwitching) return;
-    const conversationId = targetConversation.id;
-    const isLiveTarget = branchId.startsWith('__current__:');
-    setBranchSwitching(true);
-    try {
-      // Remember the old active branch's position before switching
-      const oldActiveBranchId = targetConversation.active_branch_id;
-      if (oldActiveBranchId) {
-        const oldBranch = branchesById.get(oldActiveBranchId);
-        if (oldBranch) {
-          const anchorIndex = getConversationBranchAnchorIndex(
-            oldBranch.branch_point_index,
-            oldBranch.branch_kind,
-            targetConversation.messages.length,
-          );
-          const selectionKey = getConversationBranchSelectionKey(oldBranch.branch_point_index, anchorIndex);
-          setBranchSelections(prev => ({ ...prev, [selectionKey]: oldActiveBranchId }));
+  const switchBranch = useCallback(
+    async (branchId: string, conversationOverride?: Conversation) => {
+      const targetConversation = conversationOverride ?? activeConversation;
+      if (!targetConversation || branchSwitching) return;
+      const conversationId = targetConversation.id;
+      const isLiveTarget = branchId.startsWith('__current__:');
+      setBranchSwitching(true);
+      try {
+        // Remember the old active branch's position before switching
+        const oldActiveBranchId = targetConversation.active_branch_id;
+        if (oldActiveBranchId) {
+          const oldBranch = branchesById.get(oldActiveBranchId);
+          if (oldBranch) {
+            const anchorIndex = getConversationBranchAnchorIndex(
+              oldBranch.branch_point_index,
+              oldBranch.branch_kind,
+              targetConversation.messages.length,
+            );
+            const selectionKey = getConversationBranchSelectionKey(
+              oldBranch.branch_point_index,
+              anchorIndex,
+            );
+            setBranchSelections((prev) => ({ ...prev, [selectionKey]: oldActiveBranchId }));
+          }
         }
-      }
 
-      let updated: Conversation;
-      if (isLiveTarget) {
-        // No active branch to release → UI is already on live; no-op.
-        if (!oldActiveBranchId) {
-          setBranchSwitching(false);
-          return;
-        }
-        updated = await api.releaseConversationBranch(conversationId, workspaceId);
-      } else {
-        updated = await api.switchConversationBranch(conversationId, branchId, workspaceId);
-      }
-      setActiveConversation(updated);
-      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
-      const refreshedPoints = await refreshBranchPoints(conversationId);
-
-      // Notify parent (UserSpacePanel) about the branch switch with associated snapshot
-      if (onBranchSwitch) {
+        let updated: Conversation;
         if (isLiveTarget) {
-          onBranchSwitch(null, null);
+          // No active branch to release → UI is already on live; no-op.
+          if (!oldActiveBranchId) {
+            setBranchSwitching(false);
+            return;
+          }
+          updated = await api.releaseConversationBranch(conversationId, workspaceId);
         } else {
-          const allBranches = refreshedPoints.flatMap(bp => bp.branches);
-          const targetBranch = allBranches.find(b => b.id === branchId);
-          if (targetBranch && !targetBranch.branch_kind) {
+          updated = await api.switchConversationBranch(conversationId, branchId, workspaceId);
+        }
+        setActiveConversation(updated);
+        setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+        const refreshedPoints = await refreshBranchPoints(conversationId);
+
+        // Notify parent (UserSpacePanel) about the branch switch with associated snapshot
+        if (onBranchSwitch) {
+          if (isLiveTarget) {
             onBranchSwitch(null, null);
           } else {
-            onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+            const allBranches = refreshedPoints.flatMap((bp) => bp.branches);
+            const targetBranch = allBranches.find((b) => b.id === branchId);
+            if (targetBranch && !targetBranch.branch_kind) {
+              onBranchSwitch(null, null);
+            } else {
+              onBranchSwitch(branchId, targetBranch?.associated_snapshot_id ?? null);
+            }
           }
         }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to switch branch');
+      } finally {
+        setBranchSwitching(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to switch branch');
-    } finally {
-      setBranchSwitching(false);
-    }
-  }, [activeConversation, branchSwitching, workspaceId, branchesById, refreshBranchPoints, onBranchSwitch]);
+    },
+    [
+      activeConversation,
+      branchSwitching,
+      workspaceId,
+      branchesById,
+      refreshBranchPoints,
+      onBranchSwitch,
+    ],
+  );
 
-  const renderBranchNavStack = useCallback((groups: BranchRenderGroup[], conversation: Conversation) => {
-    if (groups.length === 0) return null;
-    const activeBranchId = conversation.active_branch_id;
+  const renderBranchNavStack = useCallback(
+    (groups: BranchRenderGroup[], conversation: Conversation) => {
+      if (groups.length === 0) return null;
+      const activeBranchId = conversation.active_branch_id;
 
-    return (
-      <span className="chat-branch-nav-stack">
-        {groups.map((group) => {
-          const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
-          const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
-          const hasLivePathOption = !storedLivePathBranch;
-          const allOptions = [
-            ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
-            ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
-          ];
-          const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
-          const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
-          const branchIdsInGroup = new Set(group.branches.map(b => b.id));
-          let lineageBranchId: string | null = null;
-          if (activeBranchId) {
-            const visited = new Set<string>();
-            let curr: string | null = activeBranchId;
-            while (curr && !visited.has(curr)) {
-              visited.add(curr);
-              if (branchIdsInGroup.has(curr)) {
-                lineageBranchId = curr;
-                break;
+      return (
+        <span className="chat-branch-nav-stack">
+          {groups.map((group) => {
+            const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
+            const storedLivePathBranch = group.branches.find((b) => !b.branch_kind) ?? null;
+            const hasLivePathOption = !storedLivePathBranch;
+            const allOptions = [
+              ...group.branches.map((b) => ({
+                id: b.id,
+                label: b.branch_kind ? b.created_by_username || 'Branch' : 'Current',
+              })),
+              ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+            ];
+            const newestBranch =
+              group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
+            const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
+            const branchIdsInGroup = new Set(group.branches.map((b) => b.id));
+            let lineageBranchId: string | null = null;
+            if (activeBranchId) {
+              const visited = new Set<string>();
+              let curr: string | null = activeBranchId;
+              while (curr && !visited.has(curr)) {
+                visited.add(curr);
+                if (branchIdsInGroup.has(curr)) {
+                  lineageBranchId = curr;
+                  break;
+                }
+                const parent = branchesById.get(curr);
+                curr = parent?.parent_branch_id ?? null;
               }
-              const parent = branchesById.get(curr);
-              curr = parent?.parent_branch_id ?? null;
             }
-          }
 
-          let matchIdx = lineageBranchId
-            ? allOptions.findIndex(o => o.id === lineageBranchId)
-            : -1;
-          if (matchIdx < 0 && !activeBranchId) {
-            if (hasLivePathOption) {
-              matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
-            } else if (storedLivePathBranch) {
-              matchIdx = allOptions.length - 1;
+            let matchIdx = lineageBranchId
+              ? allOptions.findIndex((o) => o.id === lineageBranchId)
+              : -1;
+            if (matchIdx < 0 && !activeBranchId) {
+              if (hasLivePathOption) {
+                matchIdx = allOptions.findIndex((o) => o.id === livePathOptionId);
+              } else if (storedLivePathBranch) {
+                matchIdx = allOptions.length - 1;
+              }
             }
-          }
-          if (matchIdx < 0 && branchSelections[group.selectionKey]) {
-            matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
-          }
-          if (matchIdx < 0 && inferredCurrentBranchId) {
-            matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
-          }
-          const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
-          const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === conversation.id
-            && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
+            if (matchIdx < 0 && branchSelections[group.selectionKey]) {
+              matchIdx = allOptions.findIndex((o) => o.id === branchSelections[group.selectionKey]);
+            }
+            if (matchIdx < 0 && inferredCurrentBranchId) {
+              matchIdx = allOptions.findIndex((o) => o.id === inferredCurrentBranchId);
+            }
+            const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+            const isBranchSearchAnchor =
+              branchSearchAnchorHint?.conversationId === conversation.id &&
+              branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
 
-          return (
-            <span
-              key={group.selectionKey}
-              className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
-              title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
-            >
-              <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id, conversation); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
-                <ChevronLeft size={12} />
-              </button>
-              <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
-              <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id, conversation); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
-                <ChevronRight size={12} />
-              </button>
-            </span>
-          );
-        })}
-      </span>
-    );
-  }, [branchSearchAnchorHint, branchSelections, branchSwitching, branchesById, switchBranch]);
-
-  const compactActiveConversation = useCallback(async (replaceMarker?: CompactionReviewMarker | null) => {
-    if (!activeConversation || isActiveConversationCompacting || isStreaming || isReadOnly) return;
-    setIsCompacting(true);
-    setCompactingConversationId(activeConversation.id);
-    setError(null);
-    toastActions.info(replaceMarker ? 'Retrying conversation compaction...' : 'Compacting conversation context...');
-    try {
-      const task = await api.compactConversation(
-        activeConversation.id,
-        workspaceId,
-        AUTO_COMPACTION_KEEP_RECENT_PAIRS,
-        replaceMarker
-          ? {
-            replaceMessageId: replaceMarker.messageId,
-            replaceMessageIndex: replaceMarker.messageIndex,
-            createRevisionBranch: true,
-          }
-          : undefined,
+            return (
+              <span
+                key={group.selectionKey}
+                className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
+                title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
+              >
+                <button
+                  className="chat-branch-nav-btn"
+                  onClick={() => {
+                    if (currentOptionIdx > 0 && !branchSwitching)
+                      switchBranch(allOptions[currentOptionIdx - 1].id, conversation);
+                  }}
+                  disabled={currentOptionIdx <= 0 || branchSwitching}
+                  aria-label="Previous branch"
+                >
+                  <ChevronLeft size={12} />
+                </button>
+                <span className="chat-branch-nav-label">
+                  {currentOptionIdx + 1}/{allOptions.length}
+                </span>
+                <button
+                  className="chat-branch-nav-btn"
+                  onClick={() => {
+                    if (currentOptionIdx < allOptions.length - 1 && !branchSwitching)
+                      switchBranch(allOptions[currentOptionIdx + 1].id, conversation);
+                  }}
+                  disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching}
+                  aria-label="Next branch"
+                >
+                  <ChevronRight size={12} />
+                </button>
+              </span>
+            );
+          })}
+        </span>
       );
-      if (replaceMarker) {
-        void refreshBranchPoints(activeConversation.id);
+    },
+    [branchSearchAnchorHint, branchSelections, branchSwitching, branchesById, switchBranch],
+  );
+
+  const compactActiveConversation = useCallback(
+    async (replaceMarker?: CompactionReviewMarker | null) => {
+      if (!activeConversation || isActiveConversationCompacting || isStreaming || isReadOnly)
+        return;
+      setIsCompacting(true);
+      setCompactingConversationId(activeConversation.id);
+      setError(null);
+      toastActions.info(
+        replaceMarker
+          ? 'Retrying conversation compaction...'
+          : 'Compacting conversation context...',
+      );
+      try {
+        const task = await api.compactConversation(
+          activeConversation.id,
+          workspaceId,
+          AUTO_COMPACTION_KEEP_RECENT_PAIRS,
+          replaceMarker
+            ? {
+                replaceMessageId: replaceMarker.messageId,
+                replaceMessageIndex: replaceMarker.messageIndex,
+                createRevisionBranch: true,
+              }
+            : undefined,
+        );
+        if (replaceMarker) {
+          void refreshBranchPoints(activeConversation.id);
+        }
+        setActiveTask(task);
+        syncConversationActiveTaskId(activeConversation.id, task.id);
+        void watchCompactionTask(task.id, activeConversation.id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to compact conversation';
+        setError(message);
+        toastActions.error(message);
+        setIsCompacting(false);
+        setCompactingConversationId(null);
+        if (replaceMarker) {
+          setRetryingCompactionMarker((current) =>
+            current?.conversationId === activeConversation.id &&
+            current.messageIndex === replaceMarker.messageIndex &&
+            (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
+              ? null
+              : current,
+          );
+        }
       }
-      setActiveTask(task);
-      syncConversationActiveTaskId(activeConversation.id, task.id);
-      void watchCompactionTask(task.id, activeConversation.id);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to compact conversation';
-      setError(message);
-      toastActions.error(message);
-      setIsCompacting(false);
-      setCompactingConversationId(null);
-      if (replaceMarker) {
-        setRetryingCompactionMarker((current) => (
-          current?.conversationId === activeConversation.id
-            && current.messageIndex === replaceMarker.messageIndex
-            && (replaceMarker.messageId ? current.messageId === replaceMarker.messageId : true)
-            ? null
-            : current
-        ));
-      }
-    }
-  }, [activeConversation, isActiveConversationCompacting, isReadOnly, isStreaming, refreshBranchPoints, syncConversationActiveTaskId, toastActions, watchCompactionTask, workspaceId]);
+    },
+    [
+      activeConversation,
+      isActiveConversationCompacting,
+      isReadOnly,
+      isStreaming,
+      refreshBranchPoints,
+      syncConversationActiveTaskId,
+      toastActions,
+      watchCompactionTask,
+      workspaceId,
+    ],
+  );
 
   const openCompactionReview = useCallback((marker: CompactionReviewMarker | null) => {
     if (!marker) return;
@@ -11800,10 +13402,16 @@ export function ChatPanel({
     });
 
     void compactActiveConversation(marker);
-  }, [activeConversation, closeCompactionReview, compactActiveConversation, compactionReviewMarker]);
+  }, [
+    activeConversation,
+    closeCompactionReview,
+    compactActiveConversation,
+    compactionReviewMarker,
+  ]);
 
   const saveCompactionReview = useCallback(async () => {
-    if (!activeConversation || !compactionReviewMarker || isSavingCompactionReview || isReadOnly) return;
+    if (!activeConversation || !compactionReviewMarker || isSavingCompactionReview || isReadOnly)
+      return;
     const summary = compactionReviewDraft.trim();
     if (!summary) {
       setCompactionReviewError('Compaction summary cannot be empty.');
@@ -11830,7 +13438,7 @@ export function ChatPanel({
         workspaceId,
       );
       setActiveConversation(updated);
-      setConversations(prev => prev.map(c => c.id === updated.id ? updated : c));
+      setConversations((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
       void refreshBranchPoints(updated.id);
       setCompactionReviewMarker({
         ...compactionReviewMarker,
@@ -11846,128 +13454,158 @@ export function ChatPanel({
     } finally {
       setIsSavingCompactionReview(false);
     }
-  }, [activeConversation, compactionReviewDraft, compactionReviewMarker, compactionReviewOriginalSummary, isReadOnly, isSavingCompactionReview, refreshBranchPoints, toastActions, workspaceId]);
-
-  const applyBranchSearchPreview = useCallback((
-    conversation: Conversation,
-    branchSearchMatch: ConversationBranchSearchMatch,
-  ): boolean => {
-    const preservedMessages = branchSearchMatch.preserved_messages ?? [];
-    if (preservedMessages.length === 0) {
-      return false;
-    }
-
-    const existingRestore = branchSearchPreviewRestoreRef.current;
-    let originConversation = conversation;
-    if (existingRestore) {
-      if (existingRestore.conversation.id === conversation.id) {
-        originConversation = existingRestore.conversation;
-      } else {
-        restoreBranchSearchPreview();
-      }
-    }
-
-    const branchPointIndex = Math.max(
-      0,
-      Math.min(branchSearchMatch.branch_point_index, originConversation.messages.length),
-    );
-    const previewConversation: Conversation = {
-      ...originConversation,
-      active_branch_id: branchSearchMatch.branch_id,
-      messages: [
-        ...originConversation.messages.slice(0, branchPointIndex),
-        ...preservedMessages,
-      ],
-    };
-    branchSearchPreviewRestoreRef.current = {
-      conversation: originConversation,
-      previewBranchId: branchSearchMatch.branch_id,
-    };
-    setActiveConversation(previewConversation);
-    setConversations((prev) => prev.map((item) => (
-      item.id === previewConversation.id ? previewConversation : item
-    )));
-    return true;
-  }, [restoreBranchSearchPreview]);
-
-  const selectConversationFromSearchResult = useCallback(async (
-    conversation: Conversation,
-    branchSearchMatch?: ConversationBranchSearchMatch,
-    keywordQuery?: string,
-  ) => {
-    const selectedConversation = await selectConversation(conversation);
-    if (!selectedConversation) {
-      return;
-    }
-
-    const trimmedKeywordQuery = keywordQuery?.trim() || '';
-    if (!branchSearchMatch?.branch_id) {
-      setBranchSearchAnchorHint(null);
-      setChatKeywordFocusHint(trimmedKeywordQuery ? {
-        conversationId: conversation.id,
-        query: trimmedKeywordQuery,
-        preferBranchAnchor: false,
-        token: Date.now(),
-      } : null);
-      return;
-    }
-
-    setBranchSearchAnchorHint({
-      conversationId: conversation.id,
-      branchId: branchSearchMatch.branch_id,
-      branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
-    });
-
-    const didPreview = applyBranchSearchPreview(selectedConversation, branchSearchMatch);
-    if (!didPreview) {
-      void refreshBranchPoints(conversation.id);
-    }
-
-    setChatKeywordFocusHint(trimmedKeywordQuery ? {
-      conversationId: conversation.id,
-      query: trimmedKeywordQuery,
-      preferBranchAnchor: true,
-      token: Date.now(),
-    } : null);
-  }, [applyBranchSearchPreview, refreshBranchPoints, selectConversation]);
-
-  const jumpToBranchSearchResult = useCallback(async (
-    conversation: Conversation,
-    branchSearchMatch?: ConversationBranchSearchMatch,
-    keywordQuery?: string,
-  ) => {
-    if (!branchSearchMatch) {
-      return;
-    }
-    await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
-  }, [selectConversationFromSearchResult]);
-
-  const jumpToInChatBranchMatch = useCallback(async (matchIndex: number) => {
-    if (!activeConversation || !inChatSearchIncludeBranches || inChatSearchBranchMatches.length === 0) return;
-    const normalized = ((matchIndex % inChatSearchBranchMatches.length) + inChatSearchBranchMatches.length)
-      % inChatSearchBranchMatches.length;
-    const match = inChatSearchBranchMatches[normalized];
-    setInChatSearchBranchIndex(normalized);
-    setInChatSearchActiveSource('branch');
-    setBranchSearchAnchorHint({
-      conversationId: activeConversation.id,
-      branchId: match.branch_id,
-      branchPointIndex: Math.max(0, match.branch_point_index),
-    });
-    applyBranchSearchPreview(activeConversation, match);
-    setChatKeywordFocusHint({
-      conversationId: activeConversation.id,
-      query: inChatSearchTrimmedQuery,
-      preferBranchAnchor: true,
-      token: Date.now(),
-    });
   }, [
     activeConversation,
-    applyBranchSearchPreview,
-    inChatSearchIncludeBranches,
-    inChatSearchBranchMatches,
-    inChatSearchTrimmedQuery,
+    compactionReviewDraft,
+    compactionReviewMarker,
+    compactionReviewOriginalSummary,
+    isReadOnly,
+    isSavingCompactionReview,
+    refreshBranchPoints,
+    toastActions,
+    workspaceId,
   ]);
+
+  const applyBranchSearchPreview = useCallback(
+    (conversation: Conversation, branchSearchMatch: ConversationBranchSearchMatch): boolean => {
+      const preservedMessages = branchSearchMatch.preserved_messages ?? [];
+      if (preservedMessages.length === 0) {
+        return false;
+      }
+
+      const existingRestore = branchSearchPreviewRestoreRef.current;
+      let originConversation = conversation;
+      if (existingRestore) {
+        if (existingRestore.conversation.id === conversation.id) {
+          originConversation = existingRestore.conversation;
+        } else {
+          restoreBranchSearchPreview();
+        }
+      }
+
+      const branchPointIndex = Math.max(
+        0,
+        Math.min(branchSearchMatch.branch_point_index, originConversation.messages.length),
+      );
+      const previewConversation: Conversation = {
+        ...originConversation,
+        active_branch_id: branchSearchMatch.branch_id,
+        messages: [...originConversation.messages.slice(0, branchPointIndex), ...preservedMessages],
+      };
+      branchSearchPreviewRestoreRef.current = {
+        conversation: originConversation,
+        previewBranchId: branchSearchMatch.branch_id,
+      };
+      setActiveConversation(previewConversation);
+      setConversations((prev) =>
+        prev.map((item) => (item.id === previewConversation.id ? previewConversation : item)),
+      );
+      return true;
+    },
+    [restoreBranchSearchPreview],
+  );
+
+  const selectConversationFromSearchResult = useCallback(
+    async (
+      conversation: Conversation,
+      branchSearchMatch?: ConversationBranchSearchMatch,
+      keywordQuery?: string,
+    ) => {
+      const selectedConversation = await selectConversation(conversation);
+      if (!selectedConversation) {
+        return;
+      }
+
+      const trimmedKeywordQuery = keywordQuery?.trim() || '';
+      if (!branchSearchMatch?.branch_id) {
+        setBranchSearchAnchorHint(null);
+        setChatKeywordFocusHint(
+          trimmedKeywordQuery
+            ? {
+                conversationId: conversation.id,
+                query: trimmedKeywordQuery,
+                preferBranchAnchor: false,
+                token: Date.now(),
+              }
+            : null,
+        );
+        return;
+      }
+
+      setBranchSearchAnchorHint({
+        conversationId: conversation.id,
+        branchId: branchSearchMatch.branch_id,
+        branchPointIndex: Math.max(0, branchSearchMatch.branch_point_index),
+      });
+
+      const didPreview = applyBranchSearchPreview(selectedConversation, branchSearchMatch);
+      if (!didPreview) {
+        void refreshBranchPoints(conversation.id);
+      }
+
+      setChatKeywordFocusHint(
+        trimmedKeywordQuery
+          ? {
+              conversationId: conversation.id,
+              query: trimmedKeywordQuery,
+              preferBranchAnchor: true,
+              token: Date.now(),
+            }
+          : null,
+      );
+    },
+    [applyBranchSearchPreview, refreshBranchPoints, selectConversation],
+  );
+
+  const jumpToBranchSearchResult = useCallback(
+    async (
+      conversation: Conversation,
+      branchSearchMatch?: ConversationBranchSearchMatch,
+      keywordQuery?: string,
+    ) => {
+      if (!branchSearchMatch) {
+        return;
+      }
+      await selectConversationFromSearchResult(conversation, branchSearchMatch, keywordQuery);
+    },
+    [selectConversationFromSearchResult],
+  );
+
+  const jumpToInChatBranchMatch = useCallback(
+    async (matchIndex: number) => {
+      if (
+        !activeConversation ||
+        !inChatSearchIncludeBranches ||
+        inChatSearchBranchMatches.length === 0
+      )
+        return;
+      const normalized =
+        ((matchIndex % inChatSearchBranchMatches.length) + inChatSearchBranchMatches.length) %
+        inChatSearchBranchMatches.length;
+      const match = inChatSearchBranchMatches[normalized];
+      setInChatSearchBranchIndex(normalized);
+      setInChatSearchActiveSource('branch');
+      setBranchSearchAnchorHint({
+        conversationId: activeConversation.id,
+        branchId: match.branch_id,
+        branchPointIndex: Math.max(0, match.branch_point_index),
+      });
+      applyBranchSearchPreview(activeConversation, match);
+      setChatKeywordFocusHint({
+        conversationId: activeConversation.id,
+        query: inChatSearchTrimmedQuery,
+        preferBranchAnchor: true,
+        token: Date.now(),
+      });
+    },
+    [
+      activeConversation,
+      applyBranchSearchPreview,
+      inChatSearchIncludeBranches,
+      inChatSearchBranchMatches,
+      inChatSearchTrimmedQuery,
+    ],
+  );
 
   const goToNextInChatMatch = useCallback(() => {
     const branchCount = inChatSearchIncludeBranches ? inChatSearchBranchMatches.length : 0;
@@ -12059,197 +13697,254 @@ export function ChatPanel({
     try {
       await navigator.clipboard.writeText(text);
       setCopiedMessageIdx(idx);
-      setTimeout(() => setCopiedMessageIdx(prev => prev === idx ? null : prev), 2000);
-    } catch { /* ignore */ }
+      setTimeout(() => setCopiedMessageIdx((prev) => (prev === idx ? null : prev)), 2000);
+    } catch {
+      /* ignore */
+    }
   }, []);
 
-  const replayFromMessage = useCallback(async (messageIdx: number) => {
-    if (!activeConversation || isStreaming || isReadOnly) return;
-    const conversationId = activeConversation.id;
-    const selectedMessage = activeConversation.messages[messageIdx];
-    if (!selectedMessage) return;
+  const replayFromMessage = useCallback(
+    async (messageIdx: number) => {
+      if (!activeConversation || isStreaming || isReadOnly) return;
+      const conversationId = activeConversation.id;
+      const selectedMessage = activeConversation.messages[messageIdx];
+      if (!selectedMessage) return;
 
-    // Replay always anchors at the user message that drove the (possibly
-    // assistant) selected row, so the branch nav surfaces on the user row
-    // and a single replay creates exactly one new branch.
-    const userIdx = findUserMessageIndexAtOrBefore(activeConversation.messages, messageIdx);
-    if (userIdx < 0) return;
+      // Replay always anchors at the user message that drove the (possibly
+      // assistant) selected row, so the branch nav surfaces on the user row
+      // and a single replay creates exactly one new branch.
+      const userIdx = findUserMessageIndexAtOrBefore(activeConversation.messages, messageIdx);
+      if (userIdx < 0) return;
 
-    const userMsg = activeConversation.messages[userIdx];
-    const truncateAt = userIdx;
-    const previousConversation = activeConversation;
-    let replayBranch: ConversationBranchSummary | null = null;
-    try {
-      replayBranch = await createBranchForMessageMutation(
-        conversationId,
-        truncateAt,
-        activeConversation.messages.length,
-        'replay',
-      );
-
-      // Re-send the original user message content verbatim
-      const rawContent = userMsg.content;
-      const messageToSend = typeof rawContent === 'string'
-        ? rawContent
-        : JSON.stringify(rawContent);
-
-      // Optimistic update
-      const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
-      const optimisticMsg: ChatMessage = {
-        role: 'user',
-        content: rawContent as any,
-        timestamp: new Date().toISOString(),
-      };
-      // The backend cleared active_branch_id when it created the new branch
-      // (we are now on the live path). Mirror that here so the branch nav
-      // lineage walk does not still resolve to the prior branch and show
-      // e.g. "5/11" when the user is actually on the new "11/11" branch.
-      const optimisticConv: Conversation = {
-        ...activeConversation,
-        messages: [...messagesToKeep, optimisticMsg],
-        active_branch_id: null,
-      };
-      setActiveConversation(optimisticConv);
-      setConversations(prev => prev.map(c => c.id === optimisticConv.id ? optimisticConv : c));
-
-      shouldAutoScrollRef.current = true;
-      setIsStreaming(true);
-      setStreamingConversationId(conversationId);
-      setStreamingContent('');
-      setStreamingEvents([]);
-      setHitMaxIterations(false);
-      setIsConnectionError(false);
-
-      const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
-      setActiveTask(task);
-      syncConversationActiveTaskId(conversationId, task.id);
-      await connectTaskStream(task.id, conversationId);
-
-      const replayResult = activeConversationRef.current;
-      if (replayBranch && replayResult?.id === conversationId && replayResult.messages.length <= truncateAt) {
-        const restored = await api.switchConversationBranch(conversationId, replayBranch.id, workspaceId);
-        setActiveConversation(restored);
-        setConversations(prev => prev.map(c => c.id === restored.id ? restored : c));
-        syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
-      }
-
-      // Refresh branch points after the branch was created
-      void refreshBranchPoints(conversationId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to retry message');
-      setIsStreaming(false);
-      setStreamingContent('');
-      setStreamingEvents([]);
-      if (replayBranch) {
-        try {
-          const restored = await api.switchConversationBranch(conversationId, replayBranch.id, workspaceId);
-          setActiveConversation(restored);
-          setConversations(prev => prev.map(c => c.id === restored.id ? restored : c));
-          syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
-          void refreshBranchPoints(conversationId);
-          return;
-        } catch (restoreErr) {
-          console.error('Failed to restore replay branch after replay error:', restoreErr);
-        }
-      }
-      setActiveConversation(previousConversation);
-      setConversations(prev => prev.map(c => c.id === previousConversation.id ? previousConversation : c));
-      syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
-    }
-  }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, findUserMessageIndexAtOrBefore, workspaceId, refreshBranchPoints, connectTaskStream, syncConversationActiveTaskId]);
-
-  const deleteFromMessage = useCallback(async (messageIdx: number) => {
-    if (!activeConversation || isStreaming || isReadOnly) return;
-    const conversationId = activeConversation.id;
-    const selectedMessage = activeConversation.messages[messageIdx];
-    if (!selectedMessage) return;
-    const selectedMessageId = selectedMessage.message_id;
-
-    // Anchor the branch at the deleted message itself so the backend
-    // preserves the truncated tail and truncates the live path to
-    // [:messageIdx]. The UI surfaces the restore nav on that same row.
-    const branchPointIndex = getDeleteBranchPointIndex(messageIdx);
-    const rolledBackSnapshot = Boolean(
-      workspaceId && selectedMessageId && selectedMessage.snapshot_restore,
-    );
-
-    try {
-      // 1. Preserve the original messages on a new branch (auto-snapshots
-      //    the current workspace state when running inside a workspace).
-      await createBranchForMessageMutation(
-        conversationId,
-        branchPointIndex,
-        activeConversation.messages.length,
-        'delete',
-      );
-
-      // 2. If this message has an explicit snapshot link, restore the
-      //    workspace files to that snapshot. The endpoint also truncates
-      //    the chat to the link's stored restore_message_count, but since
-      //    branch creation already truncated to branchPointIndex, that
-      //    second truncate is a no-op (truncate cannot grow the chat).
-      let updatedConversation: Conversation | null = null;
-      if (rolledBackSnapshot && selectedMessageId) {
-        const restored = await api.restoreConversationMessageSnapshot(
+      const userMsg = activeConversation.messages[userIdx];
+      const truncateAt = userIdx;
+      const previousConversation = activeConversation;
+      let replayBranch: ConversationBranchSummary | null = null;
+      try {
+        replayBranch = await createBranchForMessageMutation(
           conversationId,
-          selectedMessageId,
-          workspaceId,
+          truncateAt,
+          activeConversation.messages.length,
+          'replay',
         );
-        updatedConversation = restored.conversation;
-      }
 
-      // 3. Source-of-truth resync: pull the conversation server-side so the
-      //    chat reflects the truncation done by branch creation (and any
-      //    further mutations the restore endpoint applied). This is one
-      //    extra GET but keeps the optimistic state honest in every code
-      //    path (delete-with-snapshot, delete-without-snapshot, both roles).
-      if (!updatedConversation) {
-        updatedConversation = await api.getConversation(conversationId, workspaceId);
-      }
+        // Re-send the original user message content verbatim
+        const rawContent = userMsg.content;
+        const messageToSend =
+          typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
 
-      setActiveConversation(updatedConversation);
-      setConversations(prev => prev.map(c => c.id === updatedConversation!.id ? updatedConversation! : c));
+        // Optimistic update
+        const messagesToKeep = activeConversation.messages.slice(0, truncateAt);
+        const optimisticMsg: ChatMessage = {
+          role: 'user',
+          content: rawContent as ChatMessage['content'],
+          timestamp: new Date().toISOString(),
+        };
+        // The backend cleared active_branch_id when it created the new branch
+        // (we are now on the live path). Mirror that here so the branch nav
+        // lineage walk does not still resolve to the prior branch and show
+        // e.g. "5/11" when the user is actually on the new "11/11" branch.
+        const optimisticConv: Conversation = {
+          ...activeConversation,
+          messages: [...messagesToKeep, optimisticMsg],
+          active_branch_id: null,
+        };
+        setActiveConversation(optimisticConv);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === optimisticConv.id ? optimisticConv : c)),
+        );
 
-      if (rolledBackSnapshot) {
-        onMessageSnapshotRestored?.({
-          rolledBackSnapshot: true,
-          requiresRuntimeRestart: true,
-        });
-        // Walkback moved the snapshot cursor; tell the snapshots panel.
-        try {
-          onSnapshotsMaybeChanged?.();
-        } catch (notifyErr) {
-          console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+        shouldAutoScrollRef.current = true;
+        setIsStreaming(true);
+        setStreamingConversationId(conversationId);
+        setStreamingContent('');
+        setStreamingEvents([]);
+        setHitMaxIterations(false);
+        setIsConnectionError(false);
+
+        const task = await api.sendMessageBackground(conversationId, messageToSend, workspaceId);
+        setActiveTask(task);
+        syncConversationActiveTaskId(conversationId, task.id);
+        await connectTaskStream(task.id, conversationId);
+
+        const replayResult = activeConversationRef.current;
+        if (
+          replayBranch &&
+          replayResult?.id === conversationId &&
+          replayResult.messages.length <= truncateAt
+        ) {
+          const restored = await api.switchConversationBranch(
+            conversationId,
+            replayBranch.id,
+            workspaceId,
+          );
+          setActiveConversation(restored);
+          setConversations((prev) => prev.map((c) => (c.id === restored.id ? restored : c)));
+          syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
         }
+
+        // Refresh branch points after the branch was created
+        void refreshBranchPoints(conversationId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to retry message');
+        setIsStreaming(false);
+        setStreamingContent('');
+        setStreamingEvents([]);
+        if (replayBranch) {
+          try {
+            const restored = await api.switchConversationBranch(
+              conversationId,
+              replayBranch.id,
+              workspaceId,
+            );
+            setActiveConversation(restored);
+            setConversations((prev) => prev.map((c) => (c.id === restored.id ? restored : c)));
+            syncConversationActiveTaskId(conversationId, restored.active_task_id ?? null);
+            void refreshBranchPoints(conversationId);
+            return;
+          } catch (restoreErr) {
+            console.error('Failed to restore replay branch after replay error:', restoreErr);
+          }
+        }
+        setActiveConversation(previousConversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === previousConversation.id ? previousConversation : c)),
+        );
+        syncConversationActiveTaskId(conversationId, previousConversation.active_task_id ?? null);
       }
-      void refreshBranchPoints(conversationId);
-    } catch (err) {
-      console.error('Failed to delete from message:', err);
-      const message = err instanceof Error ? err.message : 'Failed to delete message';
-      alert(message);
-    }
-  }, [activeConversation, isStreaming, isReadOnly, createBranchForMessageMutation, getDeleteBranchPointIndex, onMessageSnapshotRestored, onSnapshotsMaybeChanged, refreshBranchPoints, workspaceId]);
+    },
+    [
+      activeConversation,
+      isStreaming,
+      isReadOnly,
+      createBranchForMessageMutation,
+      findUserMessageIndexAtOrBefore,
+      workspaceId,
+      refreshBranchPoints,
+      connectTaskStream,
+      syncConversationActiveTaskId,
+    ],
+  );
+
+  const deleteFromMessage = useCallback(
+    async (messageIdx: number) => {
+      if (!activeConversation || isStreaming || isReadOnly) return;
+      const conversationId = activeConversation.id;
+      const selectedMessage = activeConversation.messages[messageIdx];
+      if (!selectedMessage) return;
+      const selectedMessageId = selectedMessage.message_id;
+
+      // Anchor the branch at the deleted message itself so the backend
+      // preserves the truncated tail and truncates the live path to
+      // [:messageIdx]. The UI surfaces the restore nav on that same row.
+      const branchPointIndex = getDeleteBranchPointIndex(messageIdx);
+      const rolledBackSnapshot = Boolean(
+        workspaceId && selectedMessageId && selectedMessage.snapshot_restore,
+      );
+
+      try {
+        // 1. Preserve the original messages on a new branch (auto-snapshots
+        //    the current workspace state when running inside a workspace).
+        await createBranchForMessageMutation(
+          conversationId,
+          branchPointIndex,
+          activeConversation.messages.length,
+          'delete',
+        );
+
+        // 2. If this message has an explicit snapshot link, restore the
+        //    workspace files to that snapshot. The endpoint also truncates
+        //    the chat to the link's stored restore_message_count, but since
+        //    branch creation already truncated to branchPointIndex, that
+        //    second truncate is a no-op (truncate cannot grow the chat).
+        let updatedConversation: Conversation | null = null;
+        if (rolledBackSnapshot && selectedMessageId) {
+          const restored = await api.restoreConversationMessageSnapshot(
+            conversationId,
+            selectedMessageId,
+            workspaceId,
+          );
+          updatedConversation = restored.conversation;
+        }
+
+        // 3. Source-of-truth resync: pull the conversation server-side so the
+        //    chat reflects the truncation done by branch creation (and any
+        //    further mutations the restore endpoint applied). This is one
+        //    extra GET but keeps the optimistic state honest in every code
+        //    path (delete-with-snapshot, delete-without-snapshot, both roles).
+        if (!updatedConversation) {
+          updatedConversation = await api.getConversation(conversationId, workspaceId);
+        }
+
+        setActiveConversation(updatedConversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === updatedConversation!.id ? updatedConversation! : c)),
+        );
+
+        if (rolledBackSnapshot) {
+          onMessageSnapshotRestored?.({
+            rolledBackSnapshot: true,
+            requiresRuntimeRestart: true,
+          });
+          // Walkback moved the snapshot cursor; tell the snapshots panel.
+          try {
+            onSnapshotsMaybeChanged?.();
+          } catch (notifyErr) {
+            console.warn('onSnapshotsMaybeChanged threw:', notifyErr);
+          }
+        }
+        void refreshBranchPoints(conversationId);
+      } catch (err) {
+        console.error('Failed to delete from message:', err);
+        const message = err instanceof Error ? err.message : 'Failed to delete message';
+        alert(message);
+      }
+    },
+    [
+      activeConversation,
+      isStreaming,
+      isReadOnly,
+      createBranchForMessageMutation,
+      getDeleteBranchPointIndex,
+      onMessageSnapshotRestored,
+      onSnapshotsMaybeChanged,
+      refreshBranchPoints,
+      workspaceId,
+    ],
+  );
 
   const submitEditMessage = async () => {
     const editHasContent = !segmentsAreEmpty(editMessageSegments);
-    if (isReadOnly || !activeConversation || editingMessageIdx === null || (!editHasContent && editMessageAttachments.length === 0) || isSubmittingEdit) return;
+    if (
+      isReadOnly ||
+      !activeConversation ||
+      editingMessageIdx === null ||
+      (!editHasContent && editMessageAttachments.length === 0) ||
+      isSubmittingEdit
+    )
+      return;
     setIsSubmittingEdit(true);
     shouldAutoScrollRef.current = true;
     const conversationId = activeConversation.id;
 
     let messageToSend: string = serializeRichChatSegments(editMessageSegments);
     if (editMessageAttachments.length > 0) {
-      const normalizedEditAttachments = await Promise.all(editMessageAttachments.map(async (attachment) => {
-        if (attachment.type !== 'image' || !attachment.dataUrl) {
-          return attachment;
-        }
-        const resized = await resizeAttachmentImageDataUrl(attachment.dataUrl, attachment.mimeType);
-        return {
-          ...attachment,
-          dataUrl: resized,
-          preview: resized,
-        };
-      }));
+      const normalizedEditAttachments = await Promise.all(
+        editMessageAttachments.map(async (attachment) => {
+          if (attachment.type !== 'image' || !attachment.dataUrl) {
+            return attachment;
+          }
+          const resized = await resizeAttachmentImageDataUrl(
+            attachment.dataUrl,
+            attachment.mimeType,
+          );
+          return {
+            ...attachment,
+            dataUrl: resized,
+            preview: resized,
+          };
+        }),
+      );
       const parts = attachmentsToContentParts(messageToSend, normalizedEditAttachments);
       messageToSend = JSON.stringify(parts);
     }
@@ -12282,7 +13977,7 @@ export function ChatPanel({
       let content: string | ContentPart[] = messageToSend;
       try {
         const parsed = JSON.parse(messageToSend);
-        if (Array.isArray(parsed) && parsed.some(p => p.type)) {
+        if (Array.isArray(parsed) && parsed.some((p) => p.type)) {
           content = parsed;
         }
       } catch {
@@ -12291,8 +13986,8 @@ export function ChatPanel({
 
       const optimisticMsg: ChatMessage = {
         role: 'user',
-        content: content as any,
-        timestamp: new Date().toISOString()
+        content: content as ChatMessage['content'],
+        timestamp: new Date().toISOString(),
       };
 
       // The backend cleared active_branch_id when it created the new branch
@@ -12306,7 +14001,9 @@ export function ChatPanel({
       };
 
       setActiveConversation(optimisticConv);
-      setConversations(prev => prev.map(c => c.id === optimisticConv.id ? optimisticConv : c));
+      setConversations((prev) =>
+        prev.map((c) => (c.id === optimisticConv.id ? optimisticConv : c)),
+      );
 
       setIsStreaming(true);
       setStreamingConversationId(conversationId);
@@ -12326,7 +14023,6 @@ export function ChatPanel({
 
       // 5. Refresh branch points for UI
       void refreshBranchPoints(conversationId);
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resend message');
       setIsStreaming(false);
@@ -12338,7 +14034,7 @@ export function ChatPanel({
         try {
           const refreshed = await api.getConversation(conversationId, workspaceId);
           setActiveConversation(refreshed);
-          setConversations(prev => prev.map(c => c.id === refreshed.id ? refreshed : c));
+          setConversations((prev) => prev.map((c) => (c.id === refreshed.id ? refreshed : c)));
         } catch (refreshErr) {
           console.error('Failed to refresh conversation after edit error:', refreshErr);
         }
@@ -12378,7 +14074,15 @@ export function ChatPanel({
       streamingEvents: streamingEvents as StreamingRenderEvent[],
       streamingContent,
     });
-  }, [activeConversation, defaultContextLimit, getContextLimit, inputValueWithContext, isStreaming, streamingContent, streamingEvents]);
+  }, [
+    activeConversation,
+    defaultContextLimit,
+    getContextLimit,
+    inputValueWithContext,
+    isStreaming,
+    streamingContent,
+    streamingEvents,
+  ]);
 
   useEffect(() => {
     if (!activeConversation) {
@@ -12387,12 +14091,12 @@ export function ChatPanel({
     }
 
     if (
-      autoCompactThresholdPercent >= 100
-      || isReadOnly
-      || isStreaming
-      || isActiveConversationCompacting
-      || hasQueuedCompactionMessageForActiveConversation
-      || contextUsage.contextUsagePercent < autoCompactThresholdPercent
+      autoCompactThresholdPercent >= 100 ||
+      isReadOnly ||
+      isStreaming ||
+      isActiveConversationCompacting ||
+      hasQueuedCompactionMessageForActiveConversation ||
+      contextUsage.contextUsagePercent < autoCompactThresholdPercent
     ) {
       return;
     }
@@ -12405,11 +14109,11 @@ export function ChatPanel({
     const tailKey = getConversationTailKey(activeConversation);
     const completionCandidate = autoCompactionCompletionRef.current;
     if (
-      !tailKey
-      || !completionCandidate
-      || completionCandidate.conversationId !== activeConversation.id
-      || completionCandidate.messageKey !== tailKey
-      || Date.now() - completionCandidate.completedAt > AUTO_COMPACTION_COMPLETION_WINDOW_MS
+      !tailKey ||
+      !completionCandidate ||
+      completionCandidate.conversationId !== activeConversation.id ||
+      completionCandidate.messageKey !== tailKey ||
+      Date.now() - completionCandidate.completedAt > AUTO_COMPACTION_COMPLETION_WINDOW_MS
     ) {
       return;
     }
@@ -12434,9 +14138,14 @@ export function ChatPanel({
   ]);
 
   const showWorkspaceConversationSelect = embedded && Boolean(workspaceId);
-  const workspaceConversationOptions = conversations.filter((conv) => conv.title !== 'Untitled Chat');
-  const workspaceArchivedConversationOptions = workspaceArchivedConversations.filter((conv) => conv.title !== 'Untitled Chat');
-  const archivedConversationDisplayCount = archivedConversationCount ?? (archiveLoaded ? archivedConversations.length : null);
+  const workspaceConversationOptions = conversations.filter(
+    (conv) => conv.title !== 'Untitled Chat',
+  );
+  const workspaceArchivedConversationOptions = workspaceArchivedConversations.filter(
+    (conv) => conv.title !== 'Untitled Chat',
+  );
+  const archivedConversationDisplayCount =
+    archivedConversationCount ?? (archiveLoaded ? archivedConversations.length : null);
   const shareableConversationUsers = useMemo(() => {
     if (!conversationShareableUserIds || conversationShareableUserIds.length === 0) {
       return memberPickerUsers;
@@ -12449,11 +14158,14 @@ export function ChatPanel({
   }, [memberPickerUsers, conversationOwnerId, conversationShareableUserIds]);
   const showInlineToolSelector = canUseConversationTools;
 
-  const renderConversationItem = (conv: Conversation, options?: {
-    searchQuery?: string;
-    onClickOverride?: () => void | Promise<void>;
-    branchSearchMatch?: ConversationBranchSearchMatch;
-  }) => {
+  const renderConversationItem = (
+    conv: Conversation,
+    options?: {
+      searchQuery?: string;
+      onClickOverride?: () => void | Promise<void>;
+      branchSearchMatch?: ConversationBranchSearchMatch;
+    },
+  ) => {
     const searchQuery = options?.searchQuery ?? '';
     const messageCount = getConversationMessageCount(conv);
     const metaMessageCount = `${messageCount} msg${messageCount === 1 ? '' : 's'}`;
@@ -12461,13 +14173,14 @@ export function ChatPanel({
     const isActive = activeConversation?.id === conv.id;
     const branchSearchMatch = searchQuery.trim() ? options?.branchSearchMatch : undefined;
     const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
-    const snippet = searchQuery.trim()
-      ? buildConversationSnippet(conv, searchQuery)
+    const snippet = searchQuery.trim() ? buildConversationSnippet(conv, searchQuery) : null;
+    const branchSearchTooltip = branchSearchMatch
+      ? getBranchSearchTooltip(branchSearchMatch)
       : null;
-    const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
     const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
-    const handleItemClick = options?.onClickOverride
-      ?? (() => selectConversationFromSearchResult(conv, branchSearchMatch, searchQuery));
+    const handleItemClick =
+      options?.onClickOverride ??
+      (() => selectConversationFromSearchResult(conv, branchSearchMatch, searchQuery));
     const handleBranchResultClick = (event: React.MouseEvent | React.KeyboardEvent) => {
       event.stopPropagation();
       void jumpToBranchSearchResult(conv, branchSearchMatch, searchQuery);
@@ -12477,11 +14190,18 @@ export function ChatPanel({
       <div
         key={conv.id}
         className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
-        onClick={() => { void handleItemClick(); }}
+        onClick={() => {
+          void handleItemClick();
+        }}
       >
         {editingTitle === conv.id ? (
           <textarea
-            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+            ref={(el) => {
+              if (el) {
+                el.style.height = 'auto';
+                el.style.height = `${el.scrollHeight}px`;
+              }
+            }}
             value={titleInput}
             onChange={(e) => {
               setTitleInput(e.target.value);
@@ -12490,7 +14210,10 @@ export function ChatPanel({
             }}
             onBlur={() => saveTitle(conv.id)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveTitle(conv.id); }
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                saveTitle(conv.id);
+              }
               if (e.key === 'Escape') setEditingTitle(null);
             }}
             onClick={(e) => e.stopPropagation()}
@@ -12506,10 +14229,11 @@ export function ChatPanel({
                   <MiniLoadingSpinner variant="icon" size={12} />
                 </span>
               )}
-              {searchQuery.trim()
-                ? <HighlightedText text={conv.title || 'Untitled Chat'} query={searchQuery} />
-                : <ChatTitle title={conv.title} />
-              }
+              {searchQuery.trim() ? (
+                <HighlightedText text={conv.title || 'Untitled Chat'} query={searchQuery} />
+              ) : (
+                <ChatTitle title={conv.title} />
+              )}
             </div>
             <div className="chat-conversation-meta">
               <span className="chat-meta-count">{metaMessageCount}</span>
@@ -12637,7 +14361,10 @@ export function ChatPanel({
   const renderFullChatSkeleton = () => (
     <>
       {/* Skeleton header */}
-      <div className={`chat-header ${embedded ? 'chat-header-embedded' : ''} chat-header-skeleton`} aria-hidden="true">
+      <div
+        className={`chat-header ${embedded ? 'chat-header-embedded' : ''} chat-header-skeleton`}
+        aria-hidden="true"
+      >
         <div className="chat-header-info">
           <div className="chat-skeleton-line chat-header-skeleton-title"></div>
         </div>
@@ -12647,9 +14374,7 @@ export function ChatPanel({
         </div>
       </div>
       {/* Skeleton messages */}
-      <div className="chat-messages chat-messages-skeleton">
-        {renderMessageBubbleSkeletons()}
-      </div>
+      <div className="chat-messages chat-messages-skeleton">{renderMessageBubbleSkeletons()}</div>
       {/* Skeleton input area */}
       <div className="chat-input-area manual-resize chat-input-area-skeleton" aria-hidden="true">
         <div className="chat-input-wrapper">
@@ -12660,7 +14385,7 @@ export function ChatPanel({
   );
 
   const panelStyle: CSSProperties | undefined = !embedded
-    ? ({ ['--chat-sidebar-width' as '--chat-sidebar-width']: `${sidebarWidth}px` } as CSSProperties)
+    ? ({ ['--chat-sidebar-width' as const]: `${sidebarWidth}px` } as CSSProperties)
     : undefined;
 
   const renderInChatSearchBar = (variant: 'inline' | 'floating') => {
@@ -12695,10 +14420,12 @@ export function ChatPanel({
       <div
         className={`chat-in-chat-search chat-in-chat-search-${variant}`}
         aria-busy={inChatSearchRunning || undefined}
-        style={({
-          ['--chat-in-chat-search-inline-width' as '--chat-in-chat-search-inline-width']: `${inlineWidthPx}px`,
-          ['--chat-in-chat-search-inline-height' as '--chat-in-chat-search-inline-height']: `${inlineHeightPx}px`,
-        } as CSSProperties)}
+        style={
+          {
+            ['--chat-in-chat-search-inline-width' as const]: `${inlineWidthPx}px`,
+            ['--chat-in-chat-search-inline-height' as const]: `${inlineHeightPx}px`,
+          } as CSSProperties
+        }
       >
         <div className="chat-in-chat-search-field">
           <textarea
@@ -12733,7 +14460,11 @@ export function ChatPanel({
             aria-label="Find in chat"
           />
           <div className="chat-in-chat-search-controls">
-            {showCount && <span className="chat-in-chat-search-count" title={counterTitle} aria-live="polite">{counterText}</span>}
+            {showCount && (
+              <span className="chat-in-chat-search-count" title={counterTitle} aria-live="polite">
+                {counterText}
+              </span>
+            )}
             {hasAnyResults && (
               <>
                 <button
@@ -12760,7 +14491,11 @@ export function ChatPanel({
               type="button"
               className={`chat-in-chat-search-toggle${inChatSearchIncludeBranches ? ' active' : ''}`}
               onClick={() => setInChatSearchIncludeBranches((value) => !value)}
-              title={inChatSearchIncludeBranches ? 'Search includes chat branches' : 'Search chat branches'}
+              title={
+                inChatSearchIncludeBranches
+                  ? 'Search includes chat branches'
+                  : 'Search chat branches'
+              }
               aria-pressed={inChatSearchIncludeBranches}
             >
               <GitBranch size={12} />
@@ -12805,164 +14540,208 @@ export function ChatPanel({
   };
 
   return (
-    <div className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`} style={panelStyle}>
+    <div
+      className={`chat-panel ${embedded ? 'chat-panel-embedded' : ''}${showWorkspaceConversationSelect ? ' chat-panel-workspace' : ''}${isFullscreen ? ' chat-panel-fullscreen' : ''}`}
+      style={panelStyle}
+    >
       {/* Conversations Sidebar */}
-      {!embedded && showSidebar && <div className="chat-sidebar open">
-        {!workspaceId && (
-          <div className="chat-conversation-search chat-search-with-branches">
-            <input
-              type="text"
-              className="chat-conversation-search-input"
-              placeholder="Search chats..."
-              value={conversationSearchQuery}
-              onChange={(e) => setConversationSearchQuery(e.target.value)}
-              aria-label="Search conversations by title or content"
-            />
-            {conversationSearchQuery && (
-              <button
-                type="button"
-                className="chat-conversation-search-clear"
-                onClick={() => setConversationSearchQuery('')}
-                title="Clear search"
-                aria-label="Clear search"
-              >
-                <X size={12} />
-              </button>
-            )}
-            <BranchSearchToggle
-              enabled={sidebarBranchSearchEnabled}
-              onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
-            />
-            {(archiveLoading && conversationSearchQuery) || conversations.some(c => c.active_task_id) ? (
-              <span className="chat-conversation-search-spinner" title={archiveLoading && conversationSearchQuery ? 'Loading older chats' : 'Processing in background'}>
-                <MiniLoadingSpinner variant="icon" size={12} />
-              </span>
-            ) : null}
-          </div>
-        )}
-
-        <div className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`} aria-busy={isConversationListLoading}>
-          {isConversationListLoading ? (
-            <div className="chat-conversation-skeleton-list" aria-hidden="true">
-              {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
-                <div key={index} className="chat-conversation-skeleton">
-                  <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
-                  <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
-                </div>
-              ))}
+      {!embedded && showSidebar && (
+        <div className="chat-sidebar open">
+          {!workspaceId && (
+            <div className="chat-conversation-search chat-search-with-branches">
+              <input
+                type="text"
+                className="chat-conversation-search-input"
+                placeholder="Search chats..."
+                value={conversationSearchQuery}
+                onChange={(e) => setConversationSearchQuery(e.target.value)}
+                aria-label="Search conversations by title or content"
+              />
+              {conversationSearchQuery && (
+                <button
+                  type="button"
+                  className="chat-conversation-search-clear"
+                  onClick={() => setConversationSearchQuery('')}
+                  title="Clear search"
+                  aria-label="Clear search"
+                >
+                  <X size={12} />
+                </button>
+              )}
+              <BranchSearchToggle
+                enabled={sidebarBranchSearchEnabled}
+                onToggle={() => setSidebarBranchSearchEnabled((enabled) => !enabled)}
+              />
+              {(archiveLoading && conversationSearchQuery) ||
+              conversations.some((c) => c.active_task_id) ? (
+                <span
+                  className="chat-conversation-search-spinner"
+                  title={
+                    archiveLoading && conversationSearchQuery
+                      ? 'Loading older chats'
+                      : 'Processing in background'
+                  }
+                >
+                  <MiniLoadingSpinner variant="icon" size={12} />
+                </span>
+              ) : null}
             </div>
-          ) : (() => {
-            const trimmedQuery = deferredConversationSearchQuery.trim();
-            // While searching, fold archived hits into the visible list so
-            // matches across older chats surface inline.
-            const baseConversations = trimmedQuery && !workspaceId
-              ? [
-                ...conversations,
-                ...archivedConversations.filter((archived) => !conversations.some((c) => c.id === archived.id)),
-              ]
-              : conversations;
-            const filteredConversations = trimmedQuery
-              ? baseConversations.filter((c) => (
-                conversationMatchesCachedQuery(c, trimmedQuery)
-                || Boolean(sidebarBranchSearchMatches[c.id])
-              ))
-              : baseConversations;
+          )}
 
-            if (filteredConversations.length === 0) {
-              if (trimmedQuery) {
-                return (
-                  <div className="chat-empty-state chat-empty-state-search">
-                    <p>No chats match "{trimmedQuery}".</p>
-                    {!workspaceId && !archiveLoaded && !archiveLoading && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => void loadArchivedConversations()}>
-                        Search older chats
-                      </button>
-                    )}
+          <div
+            className={`chat-conversation-list ${!isAdmin ? 'chat-conversation-list-non-admin' : ''}`}
+            aria-busy={isConversationListLoading}
+          >
+            {isConversationListLoading ? (
+              <div className="chat-conversation-skeleton-list" aria-hidden="true">
+                {Array.from({ length: isAdmin ? 6 : 8 }).map((_, index) => (
+                  <div key={index} className="chat-conversation-skeleton">
+                    <div className="chat-skeleton-line chat-conversation-skeleton-title"></div>
+                    <div className="chat-skeleton-line chat-conversation-skeleton-meta"></div>
                   </div>
-                );
-              }
-              return (
-                <div className="chat-empty-state">
-                  <p>No conversations yet</p>
-                  <button className="btn" onClick={createNewConversation}>
-                    Start a conversation
-                  </button>
-                </div>
-              );
-            }
+                ))}
+              </div>
+            ) : (
+              (() => {
+                const trimmedQuery = deferredConversationSearchQuery.trim();
+                // While searching, fold archived hits into the visible list so
+                // matches across older chats surface inline.
+                const baseConversations =
+                  trimmedQuery && !workspaceId
+                    ? [
+                        ...conversations,
+                        ...archivedConversations.filter(
+                          (archived) => !conversations.some((c) => c.id === archived.id),
+                        ),
+                      ]
+                    : conversations;
+                const filteredConversations = trimmedQuery
+                  ? baseConversations.filter(
+                      (c) =>
+                        conversationMatchesCachedQuery(c, trimmedQuery) ||
+                        Boolean(sidebarBranchSearchMatches[c.id]),
+                    )
+                  : baseConversations;
 
-            const renderItem = (conv: Conversation) => renderConversationItem(conv, {
-              searchQuery: trimmedQuery,
-              branchSearchMatch: sidebarBranchSearchMatches[conv.id],
-            });
+                if (filteredConversations.length === 0) {
+                  if (trimmedQuery) {
+                    return (
+                      <div className="chat-empty-state chat-empty-state-search">
+                        <p>No chats match "{trimmedQuery}".</p>
+                        {!workspaceId && !archiveLoaded && !archiveLoading && (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => void loadArchivedConversations()}
+                          >
+                            Search older chats
+                          </button>
+                        )}
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="chat-empty-state">
+                      <p>No conversations yet</p>
+                      <button className="btn" onClick={createNewConversation}>
+                        Start a conversation
+                      </button>
+                    </div>
+                  );
+                }
 
-            if (isAdmin) {
-              // Re-group filtered list so admin grouping still works while searching.
-              const groups = new Map<string, { key: string; label: string; conversations: Conversation[]; isCurrentUserGroup: boolean }>();
-              for (const conv of filteredConversations) {
-                const key = getOwnerKey(conv);
-                const label = getOwnerLabel(conv);
-                const existing = groups.get(key);
-                if (existing) {
-                  existing.conversations.push(conv);
-                  existing.isCurrentUserGroup = existing.isCurrentUserGroup || conv.user_id === currentUser.id;
-                } else {
-                  groups.set(key, {
-                    key,
-                    label,
-                    conversations: [conv],
-                    isCurrentUserGroup: conv.user_id === currentUser.id,
+                const renderItem = (conv: Conversation) =>
+                  renderConversationItem(conv, {
+                    searchQuery: trimmedQuery,
+                    branchSearchMatch: sidebarBranchSearchMatches[conv.id],
+                  });
+
+                if (isAdmin) {
+                  // Re-group filtered list so admin grouping still works while searching.
+                  const groups = new Map<
+                    string,
+                    {
+                      key: string;
+                      label: string;
+                      conversations: Conversation[];
+                      isCurrentUserGroup: boolean;
+                    }
+                  >();
+                  for (const conv of filteredConversations) {
+                    const key = getOwnerKey(conv);
+                    const label = getOwnerLabel(conv);
+                    const existing = groups.get(key);
+                    if (existing) {
+                      existing.conversations.push(conv);
+                      existing.isCurrentUserGroup =
+                        existing.isCurrentUserGroup || conv.user_id === currentUser.id;
+                    } else {
+                      groups.set(key, {
+                        key,
+                        label,
+                        conversations: [conv],
+                        isCurrentUserGroup: conv.user_id === currentUser.id,
+                      });
+                    }
+                  }
+                  const groupList = Array.from(groups.values()).sort((a, b) => {
+                    if (a.isCurrentUserGroup !== b.isCurrentUserGroup)
+                      return a.isCurrentUserGroup ? -1 : 1;
+                    return a.label.localeCompare(b.label);
+                  });
+                  return groupList.map((group) => {
+                    // When searching, expand groups so matches are visible.
+                    const isCollapsed = trimmedQuery
+                      ? false
+                      : (collapsedGroups[group.key] ?? !group.isCurrentUserGroup);
+                    return (
+                      <div key={group.key} className="chat-conversation-group">
+                        <button
+                          className="chat-group-header"
+                          onClick={() => toggleGroup(group.key)}
+                        >
+                          <span className="chat-group-name">{group.label}</span>
+                          <span className="chat-group-count">{group.conversations.length}</span>
+                          <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
+                        </button>
+                        {!isCollapsed && (
+                          <div className="chat-group-list">
+                            {group.conversations.map(renderItem)}
+                          </div>
+                        )}
+                      </div>
+                    );
                   });
                 }
-              }
-              const groupList = Array.from(groups.values()).sort((a, b) => {
-                if (a.isCurrentUserGroup !== b.isCurrentUserGroup) return a.isCurrentUserGroup ? -1 : 1;
-                return a.label.localeCompare(b.label);
-              });
-              return groupList.map((group) => {
-                // When searching, expand groups so matches are visible.
-                const isCollapsed = trimmedQuery ? false : (collapsedGroups[group.key] ?? !group.isCurrentUserGroup);
-                return (
-                  <div key={group.key} className="chat-conversation-group">
-                    <button className="chat-group-header" onClick={() => toggleGroup(group.key)}>
-                      <span className="chat-group-name">{group.label}</span>
-                      <span className="chat-group-count">{group.conversations.length}</span>
-                      <span className="chat-group-toggle">{isCollapsed ? '▶' : '▼'}</span>
-                    </button>
-                    {!isCollapsed && (
-                      <div className="chat-group-list">
-                        {group.conversations.map(renderItem)}
-                      </div>
-                    )}
-                  </div>
-                );
-              });
-            }
-            return filteredConversations.map(renderItem);
-          })()}
-        </div>
-
-        {!workspaceId && !isConversationListLoading && (
-          <div className="chat-sidebar-footer">
-            <button
-              type="button"
-              className="chat-show-older-btn"
-              onClick={() => {
-                setShowArchiveModal(true);
-                setArchiveSearchQuery('');
-                if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
-              }}
-              title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
-            >
-              <Clock size={13} aria-hidden="true" />
-              <span>Show Older</span>
-              {archivedConversationDisplayCount !== null && archivedConversationDisplayCount > 0 && (
-                <span className="chat-show-older-count">{archivedConversationDisplayCount}</span>
-              )}
-            </button>
+                return filteredConversations.map(renderItem);
+              })()
+            )}
           </div>
-        )}
-      </div>}
+
+          {!workspaceId && !isConversationListLoading && (
+            <div className="chat-sidebar-footer">
+              <button
+                type="button"
+                className="chat-show-older-btn"
+                onClick={() => {
+                  setShowArchiveModal(true);
+                  setArchiveSearchQuery('');
+                  if (!archiveLoaded && !archiveLoading) void loadArchivedConversations();
+                }}
+                title={`Show chats older than ${getArchiveAgeLabel(archiveAgeDays)}`}
+              >
+                <Clock size={13} aria-hidden="true" />
+                <span>Show Older</span>
+                {archivedConversationDisplayCount !== null &&
+                  archivedConversationDisplayCount > 0 && (
+                    <span className="chat-show-older-count">
+                      {archivedConversationDisplayCount}
+                    </span>
+                  )}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {!embedded && (
         <ResizeHandle
@@ -13003,38 +14782,58 @@ export function ChatPanel({
                       tabIndex={0}
                       className="model-selector-trigger chat-workspace-conversation-trigger"
                       onClick={() => setIsWorkspaceConversationMenuOpen((open) => !open)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setIsWorkspaceConversationMenuOpen((open) => !open); } }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setIsWorkspaceConversationMenuOpen((open) => !open);
+                        }
+                      }}
                       title="Select a workspace chat"
                       aria-haspopup="listbox"
                       aria-expanded={isWorkspaceConversationMenuOpen}
                     >
-                      <MessageSquare size={14} className="chat-workspace-conversation-icon" aria-hidden="true" />
-                      <span className="model-selector-text chat-workspace-conversation-trigger-label">{activeConversation.title || 'Untitled Chat'}</span>
+                      <MessageSquare
+                        size={14}
+                        className="chat-workspace-conversation-icon"
+                        aria-hidden="true"
+                      />
+                      <span className="model-selector-text chat-workspace-conversation-trigger-label">
+                        {activeConversation.title || 'Untitled Chat'}
+                      </span>
                       {(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (
-                        <MiniLoadingSpinner variant="icon" size={14} title="Processing in background" ariaHidden />
+                        <MiniLoadingSpinner
+                          variant="icon"
+                          size={14}
+                          title="Processing in background"
+                          ariaHidden
+                        />
                       )}
-                      {!(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) && (Boolean(interruptedTask) || interruptedConversationIds.size > 0) && !interruptDismissed && (
-                        <button
-                          type="button"
-                          className="chat-workspace-interrupt-dismiss"
-                          title="A conversation was interrupted — click to dismiss"
-                          onPointerDown={(e) => {
-                            e.stopPropagation();
-                          }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
-                            setInterruptDismissed(true);
-                          }}
-                        >
-                          <AlertCircle size={13} className="alert-icon" />
-                          <Slash size={13} className="dismiss-icon" aria-hidden />
-                        </button>
-                      )}
-                      <span className="model-selector-arrow chat-workspace-conversation-trigger-arrow">▾</span>
+                      {!(Boolean(activeTask) || Boolean(activeConversation.active_task_id)) &&
+                        (Boolean(interruptedTask) || interruptedConversationIds.size > 0) &&
+                        !interruptDismissed && (
+                          <button
+                            type="button"
+                            className="chat-workspace-interrupt-dismiss"
+                            title="A conversation was interrupted — click to dismiss"
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                            }}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
+                              setInterruptDismissed(true);
+                            }}
+                          >
+                            <AlertCircle size={13} className="alert-icon" />
+                            <Slash size={13} className="dismiss-icon" aria-hidden />
+                          </button>
+                        )}
+                      <span className="model-selector-arrow chat-workspace-conversation-trigger-arrow">
+                        ▾
+                      </span>
                     </div>
 
                     {isWorkspaceConversationMenuOpen && (
@@ -13076,55 +14875,87 @@ export function ChatPanel({
                             )}
                             <BranchSearchToggle
                               enabled={workspaceBranchSearchEnabled}
-                              onToggle={() => setWorkspaceBranchSearchEnabled((enabled) => !enabled)}
+                              onToggle={() =>
+                                setWorkspaceBranchSearchEnabled((enabled) => !enabled)
+                              }
                             />
                           </div>
                         )}
-                        <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace chats">
+                        <div
+                          className="model-selector-dropdown-inner"
+                          role="listbox"
+                          aria-label="Workspace chats"
+                        >
                           {(() => {
-                            const needle = deferredWorkspaceConversationSearchQuery.trim().toLowerCase();
+                            const needle = deferredWorkspaceConversationSearchQuery
+                              .trim()
+                              .toLowerCase();
                             const hydratedWorkspaceConversationsById = new Map(
-                              workspaceArchivedConversationOptions.map((conversation) => [conversation.id, conversation]),
+                              workspaceArchivedConversationOptions.map((conversation) => [
+                                conversation.id,
+                                conversation,
+                              ]),
                             );
-                            const searchableWorkspaceConversationOptions = workspaceConversationOptions.map((conversation) => {
-                              const hydrated = hydratedWorkspaceConversationsById.get(conversation.id);
-                              return hydrated && hydrated.messages.length > conversation.messages.length
-                                ? hydrated
-                                : conversation;
-                            });
+                            const searchableWorkspaceConversationOptions =
+                              workspaceConversationOptions.map((conversation) => {
+                                const hydrated = hydratedWorkspaceConversationsById.get(
+                                  conversation.id,
+                                );
+                                return hydrated &&
+                                  hydrated.messages.length > conversation.messages.length
+                                  ? hydrated
+                                  : conversation;
+                              });
                             const searchBase = needle
                               ? [
-                                ...searchableWorkspaceConversationOptions,
-                                ...workspaceArchivedConversationOptions.filter(
-                                  (archived) => !workspaceConversationOptions.some((c) => c.id === archived.id),
-                                ),
-                              ]
+                                  ...searchableWorkspaceConversationOptions,
+                                  ...workspaceArchivedConversationOptions.filter(
+                                    (archived) =>
+                                      !workspaceConversationOptions.some(
+                                        (c) => c.id === archived.id,
+                                      ),
+                                  ),
+                                ]
                               : workspaceConversationOptions;
                             const filtered = needle
-                              ? searchBase.filter((c) => (
-                                conversationMatchesCachedQuery(c, needle)
-                                || Boolean(workspaceBranchSearchMatches[c.id])
-                              ))
+                              ? searchBase.filter(
+                                  (c) =>
+                                    conversationMatchesCachedQuery(c, needle) ||
+                                    Boolean(workspaceBranchSearchMatches[c.id]),
+                                )
                               : searchBase;
                             if (filtered.length === 0) {
                               return (
                                 <div className="model-selector-empty">
-                                  {needle ? `No chats match "${deferredWorkspaceConversationSearchQuery.trim()}"` : 'No chats yet'}
+                                  {needle
+                                    ? `No chats match "${deferredWorkspaceConversationSearchQuery.trim()}"`
+                                    : 'No chats yet'}
                                 </div>
                               );
                             }
                             return filtered.map((conversation) => {
                               const isSelected = conversation.id === activeConversation.id;
                               const isEditing = editingTitle === conversation.id;
-                              const isLive = Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask));
-                              const isInterruptedTask = !isLive && (isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id));
+                              const isLive =
+                                Boolean(conversation.active_task_id) ||
+                                (isSelected && Boolean(activeTask));
+                              const isInterruptedTask =
+                                !isLive &&
+                                (isSelected
+                                  ? Boolean(interruptedTask)
+                                  : interruptedConversationIds.has(conversation.id));
                               const isRawInterrupted = isInterruptedTask;
                               const isInterrupted = isRawInterrupted && !interruptDismissed;
-                              const branchSearchMatch = deferredWorkspaceConversationSearchQuery.trim()
-                                ? workspaceBranchSearchMatches[conversation.id]
-                                : undefined;
-                              const branchSearchTooltip = branchSearchMatch ? getBranchSearchTooltip(branchSearchMatch) : null;
-                              const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
+                              const branchSearchMatch =
+                                deferredWorkspaceConversationSearchQuery.trim()
+                                  ? workspaceBranchSearchMatches[conversation.id]
+                                  : undefined;
+                              const branchSearchTooltip = branchSearchMatch
+                                ? getBranchSearchTooltip(branchSearchMatch)
+                                : null;
+                              const branchSearchLabel = branchSearchMatch
+                                ? getBranchSearchLabel(branchSearchMatch)
+                                : null;
                               const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
 
                               return (
@@ -13136,7 +14967,11 @@ export function ChatPanel({
                                   className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
                                   onClick={() => {
                                     setIsWorkspaceConversationMenuOpen(false);
-                                    void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                    void selectConversationFromSearchResult(
+                                      conversation,
+                                      branchSearchMatch,
+                                      workspaceConversationSearchQuery,
+                                    );
                                   }}
                                   onKeyDown={(event) => {
                                     if (isEditing) {
@@ -13145,14 +14980,23 @@ export function ChatPanel({
                                     if (event.key === 'Enter' || event.key === ' ') {
                                       event.preventDefault();
                                       setIsWorkspaceConversationMenuOpen(false);
-                                      void selectConversationFromSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                      void selectConversationFromSearchResult(
+                                        conversation,
+                                        branchSearchMatch,
+                                        workspaceConversationSearchQuery,
+                                      );
                                     }
                                   }}
                                 >
                                   <div className="chat-workspace-conversation-content">
                                     {isEditing ? (
                                       <textarea
-                                        ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+                                        ref={(el) => {
+                                          if (el) {
+                                            el.style.height = 'auto';
+                                            el.style.height = `${el.scrollHeight}px`;
+                                          }
+                                        }}
                                         value={titleInput}
                                         onChange={(e) => {
                                           setTitleInput(e.target.value);
@@ -13179,9 +15023,14 @@ export function ChatPanel({
                                     ) : (
                                       <>
                                         <span className="model-selector-item-name chat-workspace-conversation-item-name">
-                                          {deferredWorkspaceConversationSearchQuery.trim()
-                                            ? <HighlightedText text={conversation.title || 'Untitled Chat'} query={workspaceConversationSearchQuery} />
-                                            : (conversation.title || 'Untitled Chat')}
+                                          {deferredWorkspaceConversationSearchQuery.trim() ? (
+                                            <HighlightedText
+                                              text={conversation.title || 'Untitled Chat'}
+                                              query={workspaceConversationSearchQuery}
+                                            />
+                                          ) : (
+                                            conversation.title || 'Untitled Chat'
+                                          )}
                                         </span>
                                         {branchSearchLabel && (
                                           <span
@@ -13192,14 +15041,22 @@ export function ChatPanel({
                                             onClick={(event) => {
                                               event.stopPropagation();
                                               setIsWorkspaceConversationMenuOpen(false);
-                                              void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                              void jumpToBranchSearchResult(
+                                                conversation,
+                                                branchSearchMatch,
+                                                workspaceConversationSearchQuery,
+                                              );
                                             }}
                                             onKeyDown={(event) => {
                                               if (event.key === 'Enter' || event.key === ' ') {
                                                 event.preventDefault();
                                                 event.stopPropagation();
                                                 setIsWorkspaceConversationMenuOpen(false);
-                                                void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                                void jumpToBranchSearchResult(
+                                                  conversation,
+                                                  branchSearchMatch,
+                                                  workspaceConversationSearchQuery,
+                                                );
                                               }
                                             }}
                                           >
@@ -13208,34 +15065,59 @@ export function ChatPanel({
                                           </span>
                                         )}
                                         {(() => {
-                                          const snippet = deferredWorkspaceConversationSearchQuery.trim()
-                                            ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
-                                            : null;
+                                          const snippet =
+                                            deferredWorkspaceConversationSearchQuery.trim()
+                                              ? buildConversationSnippet(
+                                                  conversation,
+                                                  workspaceConversationSearchQuery,
+                                                )
+                                              : null;
                                           if (!snippet && !branchSearchMatch) return null;
                                           return (
                                             <>
                                               {snippet && (
-                                                <div className="chat-conversation-snippet chat-workspace-conversation-snippet" title={snippet}>
-                                                  <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
+                                                <div
+                                                  className="chat-conversation-snippet chat-workspace-conversation-snippet"
+                                                  title={snippet}
+                                                >
+                                                  <HighlightedText
+                                                    text={snippet}
+                                                    query={workspaceConversationSearchQuery}
+                                                  />
                                                 </div>
                                               )}
                                               {branchSearchMatch && (
                                                 <div
                                                   className="chat-conversation-snippet chat-conversation-branch-snippet chat-workspace-conversation-snippet chat-branch-search-jump-target"
-                                                  title={branchSnippet || branchSearchTooltip || undefined}
+                                                  title={
+                                                    branchSnippet ||
+                                                    branchSearchTooltip ||
+                                                    undefined
+                                                  }
                                                   role="button"
                                                   tabIndex={0}
                                                   onClick={(event) => {
                                                     event.stopPropagation();
                                                     setIsWorkspaceConversationMenuOpen(false);
-                                                    void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                                    void jumpToBranchSearchResult(
+                                                      conversation,
+                                                      branchSearchMatch,
+                                                      workspaceConversationSearchQuery,
+                                                    );
                                                   }}
                                                   onKeyDown={(event) => {
-                                                    if (event.key === 'Enter' || event.key === ' ') {
+                                                    if (
+                                                      event.key === 'Enter' ||
+                                                      event.key === ' '
+                                                    ) {
                                                       event.preventDefault();
                                                       event.stopPropagation();
                                                       setIsWorkspaceConversationMenuOpen(false);
-                                                      void jumpToBranchSearchResult(conversation, branchSearchMatch, workspaceConversationSearchQuery);
+                                                      void jumpToBranchSearchResult(
+                                                        conversation,
+                                                        branchSearchMatch,
+                                                        workspaceConversationSearchQuery,
+                                                      );
                                                     }
                                                   }}
                                                 >
@@ -13244,7 +15126,10 @@ export function ChatPanel({
                                                     Branch match
                                                   </span>
                                                   {branchSnippet ? (
-                                                    <HighlightedText text={branchSnippet} query={workspaceConversationSearchQuery} />
+                                                    <HighlightedText
+                                                      text={branchSnippet}
+                                                      query={workspaceConversationSearchQuery}
+                                                    />
                                                   ) : (
                                                     <span>{branchSearchTooltip}</span>
                                                   )}
@@ -13267,7 +15152,9 @@ export function ChatPanel({
                                           <button
                                             type="button"
                                             className="chat-action-btn confirm-delete"
-                                            onClick={(e) => void confirmDeleteConversation(conversation.id, e)}
+                                            onClick={(e) =>
+                                              void confirmDeleteConversation(conversation.id, e)
+                                            }
                                             title="Confirm delete"
                                           >
                                             <Check size={14} />
@@ -13297,7 +15184,9 @@ export function ChatPanel({
                                           <button
                                             type="button"
                                             className="chat-action-btn"
-                                            onClick={(e) => void deleteConversation(conversation.id, e)}
+                                            onClick={(e) =>
+                                              void deleteConversation(conversation.id, e)
+                                            }
                                             title="Delete"
                                           >
                                             <Trash2 size={14} />
@@ -13314,16 +15203,25 @@ export function ChatPanel({
                                       title="Conversation interrupted — click to dismiss"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
+                                        if (workspaceId)
+                                          dismissInterruptAlert(currentUser.id, workspaceId);
                                         setInterruptDismissed(true);
                                       }}
                                     >
-                                      <AlertCircle size={12} className="alert-icon chat-workspace-conversation-interrupted" />
+                                      <AlertCircle
+                                        size={12}
+                                        className="alert-icon chat-workspace-conversation-interrupted"
+                                      />
                                       <Slash size={12} className="dismiss-icon" aria-hidden />
                                     </button>
                                   )}
                                   {isLive && (
-                                    <MiniLoadingSpinner variant="icon" size={14} title="Processing in background" ariaHidden />
+                                    <MiniLoadingSpinner
+                                      variant="icon"
+                                      size={14}
+                                      title="Processing in background"
+                                      ariaHidden
+                                    />
                                   )}
                                 </div>
                               );
@@ -13334,10 +15232,17 @@ export function ChatPanel({
                     )}
                   </div>
                 ) : (
-                  <div className={`chat-header-title-row${editingHeaderTitle === activeConversation.id ? ' is-editing' : ''}`}>
+                  <div
+                    className={`chat-header-title-row${editingHeaderTitle === activeConversation.id ? ' is-editing' : ''}`}
+                  >
                     {editingHeaderTitle === activeConversation.id ? (
                       <textarea
-                        ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+                        ref={(el) => {
+                          if (el) {
+                            el.style.height = 'auto';
+                            el.style.height = `${el.scrollHeight}px`;
+                          }
+                        }}
                         value={titleInput}
                         onChange={(e) => {
                           setTitleInput(e.target.value);
@@ -13383,7 +15288,14 @@ export function ChatPanel({
                   contextLimit={contextUsage.contextLimit}
                   compactThresholdPercent={compactThresholdPercent}
                   loading={isModelsLoading}
-                  onCompact={contextUsage.contextUsagePercent >= compactThresholdPercent && !isStreaming && !isReadOnly && !isActiveConversationCompacting ? compactActiveConversation : undefined}
+                  onCompact={
+                    contextUsage.contextUsagePercent >= compactThresholdPercent &&
+                    !isStreaming &&
+                    !isReadOnly &&
+                    !isActiveConversationCompacting
+                      ? compactActiveConversation
+                      : undefined
+                  }
                   isCompacting={isActiveConversationCompacting}
                 />
                 <button
@@ -13442,30 +15354,50 @@ export function ChatPanel({
                       availableModels,
                     );
                     return selection.matchedModel
-                      ? toProviderScopedModelKey(selection.matchedModel.provider, selection.matchedModel.id)
+                      ? toProviderScopedModelKey(
+                          selection.matchedModel.provider,
+                          selection.matchedModel.id,
+                        )
                       : selection.modelId;
                   })()}
                   onModelChange={changeModel}
-                  getModelSelectionKey={(model) => toProviderScopedModelKey(model.provider, model.id)}
+                  getModelSelectionKey={(model) =>
+                    toProviderScopedModelKey(model.provider, model.id)
+                  }
                   disabled={isStreaming || isModelsLoading}
                   loading={isModelsLoading}
                   triggerIcon={showWorkspaceConversationSelect ? <Bot size={14} /> : undefined}
-                  triggerClassName={showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined}
+                  triggerClassName={
+                    showWorkspaceConversationSelect ? 'chat-workspace-model-trigger' : undefined
+                  }
                 />
                 <button
                   className="btn btn-sm btn-secondary chat-new-chat-btn"
                   onClick={startFreshConversation}
-                  title={isCreatingFreshConversation ? 'Creating a new conversation...' : 'Start a new conversation'}
+                  title={
+                    isCreatingFreshConversation
+                      ? 'Creating a new conversation...'
+                      : 'Start a new conversation'
+                  }
                   disabled={isReadOnly || isCreatingFreshConversation}
                 >
                   {isCreatingFreshConversation ? (
                     <>
-                      <MiniLoadingSpinner variant="icon" size={14} className="chat-new-chat-spinner" ariaHidden />
+                      <MiniLoadingSpinner
+                        variant="icon"
+                        size={14}
+                        className="chat-new-chat-spinner"
+                        ariaHidden
+                      />
                       <span className="chat-new-chat-label">Creating...</span>
                     </>
                   ) : (
                     <>
-                      <MessageSquarePlus size={14} className="chat-new-chat-icon" aria-hidden="true" />
+                      <MessageSquarePlus
+                        size={14}
+                        className="chat-new-chat-icon"
+                        aria-hidden="true"
+                      />
                       <span className="chat-new-chat-label">New Chat</span>
                     </>
                   )}
@@ -13487,12 +15419,15 @@ export function ChatPanel({
             {/* Messages */}
             {!isMessagesCollapsed && (
               <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
-                {(isConversationSwitchLoading || isCreatingFreshConversation) ? (
+                {isConversationSwitchLoading || isCreatingFreshConversation ? (
                   renderMessageBubbleSkeletons()
                 ) : activeConversation.messages.length === 0 && !isStreaming ? (
                   <div className="chat-welcome">
                     <h3>Start a conversation</h3>
-                    <p>Ask questions about your indexed code, query databases, or get help with your systems.</p>
+                    <p>
+                      Ask questions about your indexed code, query databases, or get help with your
+                      systems.
+                    </p>
                   </div>
                 ) : (
                   <>
@@ -13506,14 +15441,19 @@ export function ChatPanel({
                           timestamp: msg.timestamp,
                         };
                         const isRetryingThisCompaction = Boolean(
-                          retryingCompactionMarker
-                          && retryingCompactionMarker.conversationId === activeConversation.id
-                          && retryingCompactionMarker.messageIndex === idx
-                          && (!retryingCompactionMarker.messageId || retryingCompactionMarker.messageId === msg.message_id)
-                          && isActiveConversationCompacting,
+                          retryingCompactionMarker &&
+                          retryingCompactionMarker.conversationId === activeConversation.id &&
+                          retryingCompactionMarker.messageIndex === idx &&
+                          (!retryingCompactionMarker.messageId ||
+                            retryingCompactionMarker.messageId === msg.message_id) &&
+                          isActiveConversationCompacting,
                         );
                         return (
-                          <div key={`msg-${idx}`} className="chat-compaction-divider" title={summary || undefined}>
+                          <div
+                            key={`msg-${idx}`}
+                            className="chat-compaction-divider"
+                            title={summary || undefined}
+                          >
                             {isRetryingThisCompaction ? (
                               <span className="chat-compaction-divider-label">Chat compacting</span>
                             ) : (
@@ -13533,9 +15473,15 @@ export function ChatPanel({
                       const hasBranches = branchGroups.length > 0;
                       const msgKey = `msg-${idx}`;
                       return (
-                        <div key={msgKey} className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}>
+                        <div
+                          key={msgKey}
+                          className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}
+                        >
                           <div className={`chat-message chat-message-${msg.role}`}>
-                            <div className="chat-message-content" key={editingMessageIdx === idx ? 'editing' : 'viewing'}>
+                            <div
+                              className="chat-message-content"
+                              key={editingMessageIdx === idx ? 'editing' : 'viewing'}
+                            >
                               {editingMessageIdx === idx ? (
                                 <>
                                   <RichChatInput
@@ -13544,7 +15490,9 @@ export function ChatPanel({
                                     onChange={handleEditSegmentsChange}
                                     onSubmit={submitEditMessage}
                                     onCancel={cancelEditMessage}
-                                    onFocus={() => { activeComposerRef.current = 'edit'; }}
+                                    onFocus={() => {
+                                      activeComposerRef.current = 'edit';
+                                    }}
                                     onRemoveReference={handleRemoveEditReference}
                                     onOpenReference={onOpenContextReference}
                                     className="chat-message-text chat-message-user-text chat-edit-input"
@@ -13559,7 +15507,9 @@ export function ChatPanel({
                               ) : (
                                 <>
                                   {/* Render chronological events if available */}
-                                  {msg.role === 'assistant' && msg.events && msg.events.length > 0 ? (
+                                  {msg.role === 'assistant' &&
+                                  msg.events &&
+                                  msg.events.length > 0 ? (
                                     <>
                                       {(() => {
                                         // Render events chronologically, merging only ADJACENT reasoning events
@@ -13577,15 +15527,21 @@ export function ChatPanel({
                                               key={`reasoning-${reasoningBlockCount}`}
                                               content={pendingReasoning}
                                               isComplete={true}
-                                              parts={pendingReasoningParts.length > 0 ? pendingReasoningParts : undefined}
+                                              parts={
+                                                pendingReasoningParts.length > 0
+                                                  ? pendingReasoningParts
+                                                  : undefined
+                                              }
                                               durationSeconds={pendingReasoningDurationSeconds}
                                               showToolCalls={showToolCalls}
                                               workspaceId={workspaceId}
                                               conversationId={activeConversation.id}
                                               onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                              inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                              inChatSearchQuery={
+                                                inChatSearchOpen ? inChatSearchTrimmedQuery : ''
+                                              }
                                               inChatSearchOptions={activeInChatSearchOptions}
-                                            />
+                                            />,
                                           );
                                           pendingReasoning = '';
                                           pendingReasoningParts = [];
@@ -13598,18 +15554,34 @@ export function ChatPanel({
                                           const reasoningContent = getReasoningEventContent(ev);
                                           if (channel === 'analysis' && reasoningContent) {
                                             // Accumulate adjacent reasoning
-                                            pendingReasoning += (pendingReasoning ? '\n\n' : '') + reasoningContent;
-                                            const durationSeconds = getReasoningEventDurationSeconds(ev);
+                                            pendingReasoning +=
+                                              (pendingReasoning ? '\n\n' : '') + reasoningContent;
+                                            const durationSeconds =
+                                              getReasoningEventDurationSeconds(ev);
                                             if (typeof durationSeconds === 'number') {
                                               pendingReasoningDurationSeconds = durationSeconds;
                                             }
-                                            const lastPart = pendingReasoningParts[pendingReasoningParts.length - 1];
+                                            const lastPart =
+                                              pendingReasoningParts[
+                                                pendingReasoningParts.length - 1
+                                              ];
                                             if (lastPart && lastPart.type === 'text') {
-                                              lastPart.text = (lastPart.text || '') + (lastPart.text ? '\n\n' : '') + reasoningContent;
+                                              lastPart.text =
+                                                (lastPart.text || '') +
+                                                (lastPart.text ? '\n\n' : '') +
+                                                reasoningContent;
                                             } else {
-                                              pendingReasoningParts.push({ type: 'text', text: reasoningContent });
+                                              pendingReasoningParts.push({
+                                                type: 'text',
+                                                text: reasoningContent,
+                                              });
                                             }
-                                          } else if (channel === 'commentary' && ev.type === 'tool' && pendingReasoning && !isVisualizationToolName(ev.tool)) {
+                                          } else if (
+                                            channel === 'commentary' &&
+                                            ev.type === 'tool' &&
+                                            pendingReasoning &&
+                                            !isVisualizationToolName(ev.tool)
+                                          ) {
                                             pendingReasoningParts.push({
                                               type: 'tool',
                                               toolCall: {
@@ -13618,15 +15590,23 @@ export function ChatPanel({
                                                 output: ev.output,
                                                 presentation: ev.presentation,
                                                 connection: ev.connection,
+                                                mcp: ev.mcp,
                                                 status: 'complete' as const,
                                               },
                                             });
                                           } else {
                                             // Final content and visualization artifacts break reasoning adjacency.
                                             flushReasoning();
-                                            if (channel === 'commentary' && ev.type === 'tool' && showToolCalls) {
+                                            if (
+                                              channel === 'commentary' &&
+                                              ev.type === 'tool' &&
+                                              showToolCalls
+                                            ) {
                                               result.push(
-                                                <div key={`event-${evIdx}`} className="chat-tool-calls">
+                                                <div
+                                                  key={`event-${evIdx}`}
+                                                  className="chat-tool-calls"
+                                                >
                                                   <ToolCallDisplay
                                                     toolCall={{
                                                       tool: ev.tool,
@@ -13634,7 +15614,8 @@ export function ChatPanel({
                                                       output: ev.output,
                                                       presentation: ev.presentation,
                                                       connection: ev.connection,
-                                                      status: 'complete'
+                                                      mcp: ev.mcp,
+                                                      status: 'complete',
                                                     }}
                                                     defaultExpanded={false}
                                                     conversationId={activeConversation.id}
@@ -13643,31 +15624,47 @@ export function ChatPanel({
                                                     messageId={msg.message_id}
                                                     messageIndex={idx}
                                                     eventIndex={evIdx}
-                                                    onLiveVisualizationRefreshSuccess={handleLiveVisualizationRefreshSuccess}
+                                                    onLiveVisualizationRefreshSuccess={
+                                                      handleLiveVisualizationRefreshSuccess
+                                                    }
                                                     onVisualizationDisplayError={toastActions.error}
                                                     onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                                    inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                                    inChatSearchQuery={
+                                                      inChatSearchOpen
+                                                        ? inChatSearchTrimmedQuery
+                                                        : ''
+                                                    }
                                                     inChatSearchOptions={activeInChatSearchOptions}
                                                   />
-                                                </div>
+                                                </div>,
                                               );
-                                            } else if (channel === 'final' && ev.type === 'content') {
+                                            } else if (
+                                              channel === 'final' &&
+                                              ev.type === 'content'
+                                            ) {
                                               result.push(
-                                                <div key={`event-${evIdx}`} className="chat-message-text markdown-content">
+                                                <div
+                                                  key={`event-${evIdx}`}
+                                                  className="chat-message-text markdown-content"
+                                                >
                                                   <MemoizedMarkdown
                                                     content={ev.content}
                                                     conversationId={activeConversation.id}
                                                     workspaceId={workspaceId}
                                                     enableTableExports
                                                   />
-                                                </div>
+                                                </div>,
                                               );
                                             } else if (ev.type === 'error') {
                                               result.push(
-                                                <div key={`event-${evIdx}`} className="chat-message-generation-error" role="status">
+                                                <div
+                                                  key={`event-${evIdx}`}
+                                                  className="chat-message-generation-error"
+                                                  role="status"
+                                                >
                                                   <AlertCircle size={14} aria-hidden="true" />
                                                   <span>Generation failed: {ev.content}</span>
-                                                </div>
+                                                </div>,
                                               );
                                             }
                                           }
@@ -13683,10 +15680,17 @@ export function ChatPanel({
                                       {msg.role === 'user' ? (
                                         <>
                                           {(() => {
-                                            const { text, attachments } = parseMessageContent(msg.content);
+                                            const { text, attachments } = parseMessageContent(
+                                              msg.content,
+                                            );
                                             return (
                                               <>
-                                                {attachments.length > 0 && <MessageAttachments attachments={attachments} onImageClick={setModalImageUrl} />}
+                                                {attachments.length > 0 && (
+                                                  <MessageAttachments
+                                                    attachments={attachments}
+                                                    onImageClick={setModalImageUrl}
+                                                  />
+                                                )}
                                                 {text && (
                                                   <div className="chat-message-text chat-message-user-text">
                                                     <LinkifiedText text={text} />
@@ -13725,15 +15729,27 @@ export function ChatPanel({
                               <span className="chat-branch-nav-stack">
                                 {branchGroups.map((group) => {
                                   const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
-                                  const storedLivePathBranch = group.branches.find(b => !b.branch_kind) ?? null;
+                                  const storedLivePathBranch =
+                                    group.branches.find((b) => !b.branch_kind) ?? null;
                                   const hasLivePathOption = !storedLivePathBranch;
                                   const allOptions = [
-                                    ...group.branches.map(b => ({ id: b.id, label: b.branch_kind ? (b.created_by_username || 'Branch') : 'Current' })),
-                                    ...(hasLivePathOption ? [{ id: livePathOptionId, label: 'Current' }] : []),
+                                    ...group.branches.map((b) => ({
+                                      id: b.id,
+                                      label: b.branch_kind
+                                        ? b.created_by_username || 'Branch'
+                                        : 'Current',
+                                    })),
+                                    ...(hasLivePathOption
+                                      ? [{ id: livePathOptionId, label: 'Current' }]
+                                      : []),
                                   ];
-                                  const newestBranch = group.branches.length > 0 ? group.branches[group.branches.length - 1] : null;
-                                  const inferredCurrentBranchId = newestBranch?.parent_branch_id ?? null;
-                                  const branchIdsInGroup = new Set(group.branches.map(b => b.id));
+                                  const newestBranch =
+                                    group.branches.length > 0
+                                      ? group.branches[group.branches.length - 1]
+                                      : null;
+                                  const inferredCurrentBranchId =
+                                    newestBranch?.parent_branch_id ?? null;
+                                  const branchIdsInGroup = new Set(group.branches.map((b) => b.id));
                                   let lineageBranchId: string | null = null;
                                   if (activeBranchId) {
                                     const visited = new Set<string>();
@@ -13750,11 +15766,13 @@ export function ChatPanel({
                                   }
 
                                   let matchIdx = lineageBranchId
-                                    ? allOptions.findIndex(o => o.id === lineageBranchId)
+                                    ? allOptions.findIndex((o) => o.id === lineageBranchId)
                                     : -1;
                                   if (matchIdx < 0 && !activeBranchId) {
                                     if (hasLivePathOption) {
-                                      matchIdx = allOptions.findIndex(o => o.id === livePathOptionId);
+                                      matchIdx = allOptions.findIndex(
+                                        (o) => o.id === livePathOptionId,
+                                      );
                                     } else if (storedLivePathBranch) {
                                       // active_branch_id=null is the authoritative live path.
                                       // A saved branch_kind=null row can be an older stashed
@@ -13765,26 +15783,61 @@ export function ChatPanel({
                                     }
                                   }
                                   if (matchIdx < 0 && branchSelections[group.selectionKey]) {
-                                    matchIdx = allOptions.findIndex(o => o.id === branchSelections[group.selectionKey]);
+                                    matchIdx = allOptions.findIndex(
+                                      (o) => o.id === branchSelections[group.selectionKey],
+                                    );
                                   }
                                   if (matchIdx < 0 && inferredCurrentBranchId) {
-                                    matchIdx = allOptions.findIndex(o => o.id === inferredCurrentBranchId);
+                                    matchIdx = allOptions.findIndex(
+                                      (o) => o.id === inferredCurrentBranchId,
+                                    );
                                   }
-                                  const currentOptionIdx = matchIdx >= 0 ? matchIdx : allOptions.length - 1;
-                                  const isBranchSearchAnchor = branchSearchAnchorHint?.conversationId === activeConversation.id
-                                    && branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
+                                  const currentOptionIdx =
+                                    matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+                                  const isBranchSearchAnchor =
+                                    branchSearchAnchorHint?.conversationId ===
+                                      activeConversation.id &&
+                                    branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
 
                                   return (
                                     <span
                                       key={group.selectionKey}
                                       className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
-                                      title={isBranchSearchAnchor ? 'Branch search match is anchored here' : undefined}
+                                      title={
+                                        isBranchSearchAnchor
+                                          ? 'Branch search match is anchored here'
+                                          : undefined
+                                      }
                                     >
-                                      <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx > 0 && !branchSwitching) switchBranch(allOptions[currentOptionIdx - 1].id); }} disabled={currentOptionIdx <= 0 || branchSwitching} aria-label="Previous branch">
+                                      <button
+                                        className="chat-branch-nav-btn"
+                                        onClick={() => {
+                                          if (currentOptionIdx > 0 && !branchSwitching)
+                                            switchBranch(allOptions[currentOptionIdx - 1].id);
+                                        }}
+                                        disabled={currentOptionIdx <= 0 || branchSwitching}
+                                        aria-label="Previous branch"
+                                      >
                                         <ChevronLeft size={12} />
                                       </button>
-                                      <span className="chat-branch-nav-label">{currentOptionIdx + 1}/{allOptions.length}</span>
-                                      <button className="chat-branch-nav-btn" onClick={() => { if (currentOptionIdx < allOptions.length - 1 && !branchSwitching) switchBranch(allOptions[currentOptionIdx + 1].id); }} disabled={currentOptionIdx >= allOptions.length - 1 || branchSwitching} aria-label="Next branch">
+                                      <span className="chat-branch-nav-label">
+                                        {currentOptionIdx + 1}/{allOptions.length}
+                                      </span>
+                                      <button
+                                        className="chat-branch-nav-btn"
+                                        onClick={() => {
+                                          if (
+                                            currentOptionIdx < allOptions.length - 1 &&
+                                            !branchSwitching
+                                          )
+                                            switchBranch(allOptions[currentOptionIdx + 1].id);
+                                        }}
+                                        disabled={
+                                          currentOptionIdx >= allOptions.length - 1 ||
+                                          branchSwitching
+                                        }
+                                        aria-label="Next branch"
+                                      >
                                         <ChevronRight size={12} />
                                       </button>
                                     </span>
@@ -13795,14 +15848,19 @@ export function ChatPanel({
 
                             const isCopied = copiedMessageIdx === idx;
                             // Only show the restore banner on the branch-point message for the active branch
-                            const showBanner = inputBanner && activeBranchId && branchGroups.some(group => group.branches.some(b => b.id === activeBranchId));
+                            const showBanner =
+                              inputBanner &&
+                              activeBranchId &&
+                              branchGroups.some((group) =>
+                                group.branches.some((b) => b.id === activeBranchId),
+                              );
 
                             if (msg.role === 'user') {
                               return (
                                 <>
                                   {isEditing && editMessageAttachments.length > 0 && (
                                     <div className="chat-edit-preview-list">
-                                      {editMessageAttachments.map(att => (
+                                      {editMessageAttachments.map((att) => (
                                         <div key={att.id} className="attachment-item">
                                           {att.type === 'image' && att.preview ? (
                                             <div className="attachment-image-preview">
@@ -13810,26 +15868,57 @@ export function ChatPanel({
                                             </div>
                                           ) : (
                                             <div className="attachment-file-preview">
-                                              {att.filePath ? <Link size={20} /> : <FileText size={20} />}
+                                              {att.filePath ? (
+                                                <Link size={20} />
+                                              ) : (
+                                                <FileText size={20} />
+                                              )}
                                             </div>
                                           )}
                                           <div className="attachment-info">
-                                            <span className="attachment-name" title={att.name}>{att.name}</span>
-                                            <span className="attachment-size">{formatAttachmentSize(att.size)}</span>
+                                            <span className="attachment-name" title={att.name}>
+                                              {att.name}
+                                            </span>
+                                            <span className="attachment-size">
+                                              {formatAttachmentSize(att.size)}
+                                            </span>
                                           </div>
-                                          <button type="button" className="attachment-remove" onClick={() => setEditMessageAttachments(editMessageAttachments.filter(a => a.id !== att.id))}>
+                                          <button
+                                            type="button"
+                                            className="attachment-remove"
+                                            onClick={() =>
+                                              setEditMessageAttachments(
+                                                editMessageAttachments.filter(
+                                                  (a) => a.id !== att.id,
+                                                ),
+                                              )
+                                            }
+                                          >
                                             <X size={16} />
                                           </button>
                                         </div>
                                       ))}
                                     </div>
                                   )}
-                                  <div className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}>
+                                  <div
+                                    className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}
+                                  >
                                     {isEditing ? (
                                       <>
                                         <span className="chat-message-actions-spacer" />
-                                        <button className="chat-action-text-btn primary" onClick={submitEditMessage} disabled={isSubmittingEdit}>Send</button>
-                                        <button className="chat-action-text-btn" onClick={cancelEditMessage}>Cancel</button>
+                                        <button
+                                          className="chat-action-text-btn primary"
+                                          onClick={submitEditMessage}
+                                          disabled={isSubmittingEdit}
+                                        >
+                                          Send
+                                        </button>
+                                        <button
+                                          className="chat-action-text-btn"
+                                          onClick={cancelEditMessage}
+                                        >
+                                          Cancel
+                                        </button>
                                         <div className="chat-edit-attachments-wrapper">
                                           <FileAttachment
                                             attachments={editMessageAttachments}
@@ -13841,38 +15930,67 @@ export function ChatPanel({
                                       </>
                                     ) : (
                                       <span className="chat-message-hover-actions">
-                                        <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                        <button
+                                          className="chat-action-icon-btn"
+                                          onClick={() => copyMessageText(idx, msg.content)}
+                                          title={isCopied ? 'Copied!' : 'Copy message'}
+                                        >
                                           {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                         </button>
                                         {!isStreaming && !isReadOnly && (
-                                          <button className="chat-action-icon-btn" onClick={() => { const parsed = parseMessageContent(msg.content); startEditMessage(idx, parsed.text, parsed.attachments); }} title="Edit and resend">
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => {
+                                              const parsed = parseMessageContent(msg.content);
+                                              startEditMessage(
+                                                idx,
+                                                parsed.text,
+                                                parsed.attachments,
+                                              );
+                                            }}
+                                            title="Edit and resend"
+                                          >
                                             <Pencil size={12} />
                                           </button>
                                         )}
                                         {!isStreaming && !isReadOnly && (
-                                          <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => replayFromMessage(idx)}
+                                            title="Replay from this message"
+                                          >
                                             <RefreshCw size={12} />
                                           </button>
                                         )}
                                         {!isStreaming && !isReadOnly && (
                                           <button
                                             className="chat-action-icon-btn"
-                                            onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
-                                            title={msg.snapshot_restore ? 'Delete message and restore workspace snapshot' : 'Delete message'}
+                                            onClick={() =>
+                                              setPendingDeleteIdx(
+                                                pendingDeleteIdx === idx ? null : idx,
+                                              )
+                                            }
+                                            title={
+                                              msg.snapshot_restore
+                                                ? 'Delete message and restore workspace snapshot'
+                                                : 'Delete message'
+                                            }
                                           >
                                             <Trash2 size={12} />
                                           </button>
                                         )}
-                                        {canShareConversation && !embedded && onShareConversationAtMessage && (
-                                          <button
-                                            className="chat-action-icon-btn"
-                                            onClick={() => onShareConversationAtMessage(idx)}
-                                            title="Share chat from this message"
-                                            aria-label="Share chat from this message"
-                                          >
-                                            <Share2 size={12} />
-                                          </button>
-                                        )}
+                                        {canShareConversation &&
+                                          !embedded &&
+                                          onShareConversationAtMessage && (
+                                            <button
+                                              className="chat-action-icon-btn"
+                                              onClick={() => onShareConversationAtMessage(idx)}
+                                              title="Share chat from this message"
+                                              aria-label="Share chat from this message"
+                                            >
+                                              <Share2 size={12} />
+                                            </button>
+                                          )}
                                       </span>
                                     )}
                                     {branchNav}
@@ -13880,9 +15998,26 @@ export function ChatPanel({
                                   {pendingDeleteIdx === idx && (
                                     <div className="chat-message-banner-row chat-message-banner-row-right">
                                       <div className="chat-branch-restore-banner">
-                                        <span>{msg.snapshot_restore ? 'Delete message and restore workspace snapshot?' : 'Delete this message and all messages after it?'}</span>
-                                        <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
-                                        <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
+                                        <span>
+                                          {msg.snapshot_restore
+                                            ? 'Delete message and restore workspace snapshot?'
+                                            : 'Delete this message and all messages after it?'}
+                                        </span>
+                                        <button
+                                          className="chat-branch-restore-btn confirm"
+                                          onClick={() => {
+                                            setPendingDeleteIdx(null);
+                                            deleteFromMessage(idx);
+                                          }}
+                                        >
+                                          Confirm
+                                        </button>
+                                        <button
+                                          className="chat-branch-restore-btn dismiss"
+                                          onClick={() => setPendingDeleteIdx(null)}
+                                        >
+                                          Cancel
+                                        </button>
                                       </div>
                                     </div>
                                   )}
@@ -13900,46 +16035,85 @@ export function ChatPanel({
                                     {branchNav}
                                     {branchNav && <span className="chat-message-actions-spacer" />}
                                     <span className="chat-message-hover-actions">
-                                      <button className="chat-action-icon-btn" onClick={() => copyMessageText(idx, msg.content)} title={isCopied ? 'Copied!' : 'Copy message'}>
+                                      <button
+                                        className="chat-action-icon-btn"
+                                        onClick={() => copyMessageText(idx, msg.content)}
+                                        title={isCopied ? 'Copied!' : 'Copy message'}
+                                      >
                                         {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                       </button>
                                       {!isStreaming && !isReadOnly && (
-                                        <button className="chat-action-icon-btn" onClick={() => replayFromMessage(idx)} title="Replay from this message">
+                                        <button
+                                          className="chat-action-icon-btn"
+                                          onClick={() => replayFromMessage(idx)}
+                                          title="Replay from this message"
+                                        >
                                           <RefreshCw size={12} />
                                         </button>
                                       )}
                                       {!isStreaming && !isReadOnly && (
                                         <button
                                           className="chat-action-icon-btn"
-                                          onClick={() => setPendingDeleteIdx(pendingDeleteIdx === idx ? null : idx)}
-                                          title={msg.snapshot_restore ? 'Delete reply and restore workspace snapshot' : 'Delete reply'}
+                                          onClick={() =>
+                                            setPendingDeleteIdx(
+                                              pendingDeleteIdx === idx ? null : idx,
+                                            )
+                                          }
+                                          title={
+                                            msg.snapshot_restore
+                                              ? 'Delete reply and restore workspace snapshot'
+                                              : 'Delete reply'
+                                          }
                                         >
                                           <Trash2 size={12} />
                                         </button>
                                       )}
                                       {showPromptDebugButton && (
-                                        <button className="chat-action-icon-btn" onClick={() => openPromptDebugForAssistantMessage(idx)} title="Open prompt debug for this assistant reply">
+                                        <button
+                                          className="chat-action-icon-btn"
+                                          onClick={() => openPromptDebugForAssistantMessage(idx)}
+                                          title="Open prompt debug for this assistant reply"
+                                        >
                                           <Bug size={12} />
                                         </button>
                                       )}
-                                      {canShareConversation && !embedded && onShareConversationAtMessage && (
-                                        <button
-                                          className="chat-action-icon-btn"
-                                          onClick={() => onShareConversationAtMessage(idx)}
-                                          title="Share chat from this message"
-                                          aria-label="Share chat from this message"
-                                        >
-                                          <Share2 size={12} />
-                                        </button>
-                                      )}
+                                      {canShareConversation &&
+                                        !embedded &&
+                                        onShareConversationAtMessage && (
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => onShareConversationAtMessage(idx)}
+                                            title="Share chat from this message"
+                                            aria-label="Share chat from this message"
+                                          >
+                                            <Share2 size={12} />
+                                          </button>
+                                        )}
                                     </span>
                                   </div>
                                   {pendingDeleteIdx === idx && (
                                     <div className="chat-message-banner-row chat-message-banner-row-left">
                                       <div className="chat-branch-restore-banner">
-                                        <span>{msg.snapshot_restore ? 'Delete reply and restore workspace snapshot?' : 'Delete this reply and all messages after it?'}</span>
-                                        <button className="chat-branch-restore-btn confirm" onClick={() => { setPendingDeleteIdx(null); deleteFromMessage(idx); }}>Confirm</button>
-                                        <button className="chat-branch-restore-btn dismiss" onClick={() => setPendingDeleteIdx(null)}>Cancel</button>
+                                        <span>
+                                          {msg.snapshot_restore
+                                            ? 'Delete reply and restore workspace snapshot?'
+                                            : 'Delete this reply and all messages after it?'}
+                                        </span>
+                                        <button
+                                          className="chat-branch-restore-btn confirm"
+                                          onClick={() => {
+                                            setPendingDeleteIdx(null);
+                                            deleteFromMessage(idx);
+                                          }}
+                                        >
+                                          Confirm
+                                        </button>
+                                        <button
+                                          className="chat-branch-restore-btn dismiss"
+                                          onClick={() => setPendingDeleteIdx(null)}
+                                        >
+                                          Cancel
+                                        </button>
                                       </div>
                                     </div>
                                   )}
@@ -13973,15 +16147,22 @@ export function ChatPanel({
                             <span className="chat-compaction-divider-label">Chat compacting</span>
                           )}
                         </div>
-                        {(queuedCompactionMessage.displayContent || queuedCompactionMessage.attachments.length > 0) && (
+                        {(queuedCompactionMessage.displayContent ||
+                          queuedCompactionMessage.attachments.length > 0) && (
                           <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
                             <div className="chat-message chat-message-user chat-message-queued">
                               <div className="chat-message-content">
                                 {(() => {
-                                  const { text, attachments: queuedAttachments } = parseMessageContent(queuedCompactionMessage.displayContent);
+                                  const { text, attachments: queuedAttachments } =
+                                    parseMessageContent(queuedCompactionMessage.displayContent);
                                   return (
                                     <>
-                                      {queuedAttachments.length > 0 && <MessageAttachments attachments={queuedAttachments} onImageClick={setModalImageUrl} />}
+                                      {queuedAttachments.length > 0 && (
+                                        <MessageAttachments
+                                          attachments={queuedAttachments}
+                                          onImageClick={setModalImageUrl}
+                                        />
+                                      )}
                                       {text && (
                                         <div className="chat-message-text chat-message-user-text">
                                           <LinkifiedText text={text} />
@@ -14021,7 +16202,7 @@ export function ChatPanel({
                           <div className="chat-message-streaming">
                             {(() => {
                               const runningTool = consolidatedSegments.find(
-                                seg => seg.type === 'tool' && seg.toolCall?.status === 'running'
+                                (seg) => seg.type === 'tool' && seg.toolCall?.status === 'running',
                               );
                               if (runningTool && runningTool.type === 'tool') {
                                 const lines = runningTool.toolCall?.generating_lines;
@@ -14032,12 +16213,19 @@ export function ChatPanel({
                               // Check for a tool that's being generated (has generating_lines but
                               // hasn't started executing yet - no input means still generating args)
                               const generatingTool = consolidatedSegments.find(
-                                seg => seg.type === 'tool' && !seg.toolCall?.input && seg.toolCall?.generating_lines
+                                (seg) =>
+                                  seg.type === 'tool' &&
+                                  !seg.toolCall?.input &&
+                                  seg.toolCall?.generating_lines,
                               );
                               if (generatingTool && generatingTool.type === 'tool') {
                                 return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
                               }
-                              if (consolidatedSegments.some(seg => seg.type === 'reasoning' && !seg.isComplete)) {
+                              if (
+                                consolidatedSegments.some(
+                                  (seg) => seg.type === 'reasoning' && !seg.isComplete,
+                                )
+                              ) {
                                 return 'Reasoning...';
                               }
                               return 'Generating...';
@@ -14052,7 +16240,9 @@ export function ChatPanel({
                       <div className="chat-message chat-message-assistant">
                         <div className="chat-message-content">
                           <div className="chat-typing-indicator">
-                            <span></span><span></span><span></span>
+                            <span></span>
+                            <span></span>
+                            <span></span>
                           </div>
                         </div>
                       </div>
@@ -14061,20 +16251,26 @@ export function ChatPanel({
                 )}
 
                 {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
-                {!isStreaming && activeConversation && (
+                {!isStreaming &&
+                  activeConversation &&
                   // Show continue when:
                   // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
                   // 2. OR there's an interrupted task (from server restart)
                   ((activeConversation.messages.length > 0 &&
-                    activeConversation.messages[activeConversation.messages.length - 1].role === 'assistant' &&
+                    activeConversation.messages[activeConversation.messages.length - 1].role ===
+                      'assistant' &&
                     (hitMaxIterations || isConnectionError)) ||
-                    interruptedTask) && !isReadOnly && (
+                    interruptedTask) &&
+                  !isReadOnly && (
                     <div className="chat-continue-inline">
                       <span className="chat-continue-text">
-                        Conversation interrupted, <button className="chat-continue-link" onClick={continueConversation}>continue?</button>
+                        Conversation interrupted,{' '}
+                        <button className="chat-continue-link" onClick={continueConversation}>
+                          continue?
+                        </button>
                       </span>
                     </div>
-                  ))}
+                  )}
 
                 <div ref={messagesEndRef} />
               </div>
@@ -14086,15 +16282,18 @@ export function ChatPanel({
                 {error}
                 <div className="chat-error-actions">
                   {isConnectionError && lastSentMessage && (
-                    <button
-                      className="btn-resend"
-                      onClick={resendMessage}
-                      title="Re-send"
-                    >
+                    <button className="btn-resend" onClick={resendMessage} title="Re-send">
                       Re-send
                     </button>
                   )}
-                  <button onClick={() => { setError(null); setIsConnectionError(false); }}>×</button>
+                  <button
+                    onClick={() => {
+                      setError(null);
+                      setIsConnectionError(false);
+                    }}
+                  >
+                    ×
+                  </button>
                 </div>
               </div>
             )}
@@ -14104,15 +16303,29 @@ export function ChatPanel({
               className="resize-handle resize-handle-vertical chat-resize-handle"
               onResize={handleResizeInputArea}
               onResizeEnd={commitResizeInputArea}
-              collapsed={isInputAreaCollapsed ? 'after' : isMessagesCollapsed ? 'before' : undefined}
-              onExpand={isInputAreaCollapsed ? expandInputArea : isMessagesCollapsed ? expandMessages : undefined}
+              collapsed={
+                isInputAreaCollapsed ? 'after' : isMessagesCollapsed ? 'before' : undefined
+              }
+              onExpand={
+                isInputAreaCollapsed
+                  ? expandInputArea
+                  : isMessagesCollapsed
+                    ? expandMessages
+                    : undefined
+              }
             />
 
             {/* Input Area */}
             {!isInputAreaCollapsed && (
               <div
-                className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`.trim().replace(/\s+/g, ' ')}
-                style={isMessagesCollapsed ? { flex: 1, minHeight: 'auto' } : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }}
+                className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} ${autoResizeState ? 'auto-resizing' : ''} ${autoResizeState === 'shrinking' ? 'shrinking' : ''}`
+                  .trim()
+                  .replace(/\s+/g, ' ')}
+                style={
+                  isMessagesCollapsed
+                    ? { flex: 1, minHeight: 'auto' }
+                    : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }
+                }
               >
                 {isReadOnly && (
                   <div className="chat-readonly-note" role="status">
@@ -14125,7 +16338,9 @@ export function ChatPanel({
                     onAttachmentsChange={setAttachments}
                     conversationId={activeConversation?.id}
                     workspaceId={workspaceId}
-                    disabled={isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation}
+                    disabled={
+                      isReadOnly || isStreaming || hasQueuedCompactionMessageForActiveConversation
+                    }
                   />
                   <div className="chat-input-field">
                     <RichChatInput
@@ -14134,10 +16349,16 @@ export function ChatPanel({
                       segments={messageSegments}
                       onChange={handleSegmentsChange}
                       onSubmit={sendMessage}
-                      onFocus={() => { activeComposerRef.current = 'main'; }}
+                      onFocus={() => {
+                        activeComposerRef.current = 'main';
+                      }}
                       onRemoveReference={handleRemoveComposerReference}
                       onOpenReference={onOpenContextReference}
-                      placeholder={isReadOnly ? effectiveReadOnlyMessage : 'Ask a question or paste files/images (Ctrl+V)...'}
+                      placeholder={
+                        isReadOnly
+                          ? effectiveReadOnlyMessage
+                          : 'Ask a question or paste files/images (Ctrl+V)...'
+                      }
                       disabled={isReadOnly}
                       ariaLabel="Message"
                     />
@@ -14201,12 +16422,27 @@ export function ChatPanel({
                             type="button"
                             className="btn chat-send-btn-inline"
                             onClick={sendMessage}
-                            disabled={!activeConversation || !contextUsage.hasHeadroom || hasQueuedCompactionMessageForActiveConversation}
-                            title={contextUsage.hasHeadroom
-                              ? 'Send message'
-                              : `Context headroom too low (${contextUsage.projectedInputPercent}%)`}
+                            disabled={
+                              !activeConversation ||
+                              !contextUsage.hasHeadroom ||
+                              hasQueuedCompactionMessageForActiveConversation
+                            }
+                            title={
+                              contextUsage.hasHeadroom
+                                ? 'Send message'
+                                : `Context headroom too low (${contextUsage.projectedInputPercent}%)`
+                            }
                           >
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <svg
+                              width="20"
+                              height="20"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
                               <line x1="12" y1="19" x2="12" y2="5"></line>
                               <polyline points="5 12 12 5 19 12"></polyline>
                             </svg>
@@ -14258,11 +16494,7 @@ export function ChatPanel({
       )}
 
       {showPromptDebugModal && (
-        <div
-          className="modal-overlay"
-          onClick={closePromptDebugModal}
-          role="presentation"
-        >
+        <div className="modal-overlay" onClick={closePromptDebugModal} role="presentation">
           <div
             className="modal modal-large"
             onClick={(e) => e.stopPropagation()}
@@ -14272,7 +16504,11 @@ export function ChatPanel({
           >
             <div className="modal-header">
               <h3 id="prompt-debug-modal-title">Provider Prompt Debug</h3>
-              <button className="modal-close" onClick={closePromptDebugModal} aria-label="Close prompt debug modal">
+              <button
+                className="modal-close"
+                onClick={closePromptDebugModal}
+                aria-label="Close prompt debug modal"
+              >
                 &times;
               </button>
             </div>
@@ -14284,20 +16520,51 @@ export function ChatPanel({
               </div>
 
               {promptDebugError && (
-                <div className="chat-error" style={{ marginBottom: 12 }}>{promptDebugError}</div>
+                <div className="chat-error" style={{ marginBottom: 12 }}>
+                  {promptDebugError}
+                </div>
               )}
 
               {promptDebugCompactionMarker && (
-                <div style={{ marginBottom: 16, border: '1px solid #fcd34d', borderRadius: 8, overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#fffbeb' }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: '#92400e' }}>
+                <div
+                  style={{
+                    marginBottom: 16,
+                    border: '1px solid #fcd34d',
+                    borderRadius: 8,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '6px 10px',
+                      background: '#fffbeb',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        letterSpacing: '0.04em',
+                        color: '#92400e',
+                      }}
+                    >
                       COMPACTION MARKER
                     </span>
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
                       Message {promptDebugCompactionMarker.messageIndex + 1}
                     </span>
                     {promptDebugCompactionMarker.timestamp && (
-                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--color-text-muted)',
+                          marginLeft: 'auto',
+                        }}
+                      >
                         {new Date(promptDebugCompactionMarker.timestamp).toLocaleString()}
                       </span>
                     )}
@@ -14308,11 +16575,13 @@ export function ChatPanel({
                 </div>
               )}
 
-              {!promptDebugLoading && chronologicalPromptDebugRecords.length === 0 && !promptDebugError && (
-                <div style={{ fontSize: '0.95rem', opacity: 0.8 }}>
-                  No prompt-debug records yet for this message.
-                </div>
-              )}
+              {!promptDebugLoading &&
+                chronologicalPromptDebugRecords.length === 0 &&
+                !promptDebugError && (
+                  <div style={{ fontSize: '0.95rem', opacity: 0.8 }}>
+                    No prompt-debug records yet for this message.
+                  </div>
+                )}
 
               {chronologicalPromptDebugRecords.map((record, recordIdx) => {
                 const createdAt = new Date(record.created_at).toLocaleString();
@@ -14322,47 +16591,133 @@ export function ChatPanel({
                 return (
                   <div key={record.id} style={{ marginBottom: 24 }}>
                     {recordIdx > 0 && (
-                      <hr style={{ border: 'none', borderTop: '2px solid var(--color-border)', margin: '20px 0' }} />
+                      <hr
+                        style={{
+                          border: 'none',
+                          borderTop: '2px solid var(--color-border)',
+                          margin: '20px 0',
+                        }}
+                      />
                     )}
 
                     {/* Record metadata */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14, alignItems: 'center' }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: '#2451a6', background: '#dbe7f7', padding: '4px 10px', borderRadius: 6 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                        marginBottom: 14,
+                        alignItems: 'center',
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          letterSpacing: '0.03em',
+                          color: '#2451a6',
+                          background: '#dbe7f7',
+                          padding: '4px 10px',
+                          borderRadius: 6,
+                        }}
+                      >
                         {record.provider}
                       </span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: 'var(--color-text-primary)',
+                        }}
+                      >
                         {record.model}
                       </span>
-                      <span style={{ fontSize: 12, color: '#2451a6', background: '#dbe7f7', padding: '3px 8px', borderRadius: 4 }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: '#2451a6',
+                          background: '#dbe7f7',
+                          padding: '3px 8px',
+                          borderRadius: 4,
+                        }}
+                      >
                         {record.prompt_token_count ?? 0} tokens
                       </span>
-                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', background: 'var(--color-surface-hover)', padding: '3px 8px', borderRadius: 4 }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--color-text-muted)',
+                          background: 'var(--color-surface-hover)',
+                          padding: '3px 8px',
+                          borderRadius: 4,
+                        }}
+                      >
                         {record.mode}
                       </span>
-                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', background: 'var(--color-surface-hover)', padding: '3px 8px', borderRadius: 4 }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--color-text-muted)',
+                          background: 'var(--color-surface-hover)',
+                          padding: '3px 8px',
+                          borderRadius: 4,
+                        }}
+                      >
                         {record.request_kind}
                       </span>
                       {Boolean(record.debug_metadata?.has_compaction_context) && (
-                        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.03em', color: '#92400e', background: '#fef3c7', padding: '3px 8px', borderRadius: 4 }}>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            letterSpacing: '0.03em',
+                            color: '#92400e',
+                            background: '#fef3c7',
+                            padding: '3px 8px',
+                            borderRadius: 4,
+                          }}
+                        >
                           Compacted history
                         </span>
                       )}
-                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)', marginLeft: 'auto' }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: 'var(--color-text-muted)',
+                          marginLeft: 'auto',
+                        }}
+                      >
                         {createdAt}
                       </span>
                     </div>
 
                     {/* Provider messages — exact payload sent to LLM, in order */}
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-muted)' }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 600,
+                        marginBottom: 8,
+                        color: 'var(--color-text-muted)',
+                      }}
+                    >
                       Messages sent to provider ({renderedMessages.length})
                     </div>
                     {renderedMessages.map((message, messageIdx) => {
-                      const messageRole = String((message as Record<string, unknown>)?.role ?? 'unknown').toLowerCase();
-                      const messageContent = formatPromptMessageContent((message as Record<string, unknown>)?.content);
+                      const messageRole = String(
+                        (message as Record<string, unknown>)?.role ?? 'unknown',
+                      ).toLowerCase();
+                      const messageContent = formatPromptMessageContent(
+                        (message as Record<string, unknown>)?.content,
+                      );
                       const _COMPACTION_PREFIX = 'Earlier conversation history has been compacted.';
-                      const isCompactionSystemMessage = messageRole === 'system' && messageIdx === 0
-                        && typeof messageContent === 'string' && messageContent.startsWith(_COMPACTION_PREFIX);
-                      const messageLabel = isCompactionSystemMessage ? 'COMPACTION CONTEXT' : messageRole.toUpperCase();
+                      const isCompactionSystemMessage =
+                        messageRole === 'system' &&
+                        messageIdx === 0 &&
+                        typeof messageContent === 'string' &&
+                        messageContent.startsWith(_COMPACTION_PREFIX);
+                      const messageLabel = isCompactionSystemMessage
+                        ? 'COMPACTION CONTEXT'
+                        : messageRole.toUpperCase();
                       const lineCount = messageContent ? messageContent.split('\n').length : 0;
                       const messageKey = `${record.id}-${messageIdx}`;
                       const copied = copiedPromptMessageKey === messageKey;
@@ -14398,14 +16753,44 @@ export function ChatPanel({
                       /* System and tool messages are collapsible to reduce noise. */
                       if (messageRole === 'system' || messageRole === 'tool') {
                         return (
-                          <details key={messageKey} open={messageRole === 'system'} style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
-                            <summary style={{ listStyle: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', background: headerBg }}>
+                          <details
+                            key={messageKey}
+                            open={messageRole === 'system'}
+                            style={{
+                              marginBottom: 10,
+                              border: `1px solid ${borderColor}`,
+                              borderRadius: 8,
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <summary
+                              style={{
+                                listStyle: 'none',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '4px 8px',
+                                background: headerBg,
+                              }}
+                            >
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: badgeColor }}>
+                                <span
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    letterSpacing: '0.04em',
+                                    color: badgeColor,
+                                  }}
+                                >
                                   {messageLabel}
                                 </span>
-                                <span style={{ fontWeight: 600, fontSize: 12 }}>Message {messageIdx + 1}</span>
-                                <span style={{ opacity: 0.7, fontSize: 12 }}>({lineCount} lines)</span>
+                                <span style={{ fontWeight: 600, fontSize: 12 }}>
+                                  Message {messageIdx + 1}
+                                </span>
+                                <span style={{ opacity: 0.7, fontSize: 12 }}>
+                                  ({lineCount} lines)
+                                </span>
                               </div>
                               <button
                                 style={{
@@ -14432,20 +16817,55 @@ export function ChatPanel({
                                 <span>{copied ? 'Copied' : 'Copy'}</span>
                               </button>
                             </summary>
-                            <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent}</pre>
+                            <pre
+                              style={{
+                                whiteSpace: 'pre-wrap',
+                                margin: 0,
+                                padding: 12,
+                                fontSize: 13,
+                              }}
+                            >
+                              {messageContent}
+                            </pre>
                           </details>
                         );
                       }
 
                       /* User/assistant/other messages shown inline */
                       return (
-                        <div key={messageKey} style={{ marginBottom: 10, border: `1px solid ${borderColor}`, borderRadius: 8, overflow: 'hidden' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '4px 8px', background: headerBg }}>
+                        <div
+                          key={messageKey}
+                          style={{
+                            marginBottom: 10,
+                            border: `1px solid ${borderColor}`,
+                            borderRadius: 8,
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 6,
+                              padding: '4px 8px',
+                              background: headerBg,
+                            }}
+                          >
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', color: badgeColor }}>
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  letterSpacing: '0.04em',
+                                  color: badgeColor,
+                                }}
+                              >
                                 {messageLabel}
                               </span>
-                              <span style={{ fontWeight: 600, fontSize: 12 }}>Message {messageIdx + 1}</span>
+                              <span style={{ fontWeight: 600, fontSize: 12 }}>
+                                Message {messageIdx + 1}
+                              </span>
                             </div>
                             <button
                               style={{
@@ -14468,7 +16888,11 @@ export function ChatPanel({
                               <span>{copied ? 'Copied' : 'Copy'}</span>
                             </button>
                           </div>
-                          <pre style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}>{messageContent || '(empty)'}</pre>
+                          <pre
+                            style={{ whiteSpace: 'pre-wrap', margin: 0, padding: 12, fontSize: 13 }}
+                          >
+                            {messageContent || '(empty)'}
+                          </pre>
                         </div>
                       );
                     })}
@@ -14496,7 +16920,11 @@ export function ChatPanel({
           >
             <div className="modal-header">
               <h3 id="chat-compaction-review-title">Compaction Result</h3>
-              <button className="modal-close" onClick={closeCompactionReview} aria-label="Close compaction review modal">
+              <button
+                className="modal-close"
+                onClick={closeCompactionReview}
+                aria-label="Close compaction review modal"
+              >
                 &times;
               </button>
             </div>
@@ -14508,10 +16936,11 @@ export function ChatPanel({
                 )}
                 {!isEditingCompactionReview && (
                   <span className="chat-compaction-review-meta-actions">
-                    {activeConversation && renderBranchNavStack(
-                      branchGroupsByIndex.get(compactionReviewMarker.messageIndex) ?? [],
-                      activeConversation,
-                    )}
+                    {activeConversation &&
+                      renderBranchNavStack(
+                        branchGroupsByIndex.get(compactionReviewMarker.messageIndex) ?? [],
+                        activeConversation,
+                      )}
                     <span className="chat-message-hover-actions">
                       <button
                         type="button"
@@ -14544,7 +16973,9 @@ export function ChatPanel({
                 )}
               </div>
               {compactionReviewError && (
-                <div className="chat-error chat-compaction-review-error">{compactionReviewError}</div>
+                <div className="chat-error chat-compaction-review-error">
+                  {compactionReviewError}
+                </div>
               )}
               {isEditingCompactionReview ? (
                 <textarea
@@ -14560,8 +16991,18 @@ export function ChatPanel({
               ) : (
                 <div
                   className="chat-compaction-review-summary-container"
-                  onClick={() => !isReadOnly && !isActiveConversationCompacting && !isStreaming && setIsEditingCompactionReview(true)}
-                  style={{ cursor: (!isReadOnly && !isActiveConversationCompacting && !isStreaming) ? 'text' : 'default' }}
+                  onClick={() =>
+                    !isReadOnly &&
+                    !isActiveConversationCompacting &&
+                    !isStreaming &&
+                    setIsEditingCompactionReview(true)
+                  }
+                  style={{
+                    cursor:
+                      !isReadOnly && !isActiveConversationCompacting && !isStreaming
+                        ? 'text'
+                        : 'default',
+                  }}
                 >
                   <pre className="chat-compaction-review-summary">
                     {compactionReviewMarker.summary || '(empty compaction summary)'}
@@ -14638,7 +17079,12 @@ export function ChatPanel({
                   >
                     {getArchiveAgeLabel(archiveAgeDays)}
                   </button>
-                  <button className="modal-close" onClick={() => setShowArchiveModal(false)} title="Close" aria-label="Close">
+                  <button
+                    className="modal-close"
+                    onClick={() => setShowArchiveModal(false)}
+                    title="Close"
+                    aria-label="Close"
+                  >
                     &times;
                   </button>
                 </div>
@@ -14652,51 +17098,69 @@ export function ChatPanel({
               ) : archiveError ? (
                 <div className="chat-empty-state">
                   <p>{archiveError}</p>
-                  <button className="btn btn-secondary btn-sm" onClick={() => void loadArchivedConversations()}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => void loadArchivedConversations()}
+                  >
                     Retry
                   </button>
                 </div>
-              ) : (() => {
-                const trimmed = deferredArchiveSearchQuery.trim();
-                const list = trimmed
-                  ? archivedConversations.filter((c) => (
-                    conversationMatchesCachedQuery(c, trimmed)
-                    || Boolean(archiveBranchSearchMatches[c.id])
-                  ))
-                  : archivedConversations;
-                if (list.length === 0) {
+              ) : (
+                (() => {
+                  const trimmed = deferredArchiveSearchQuery.trim();
+                  const list = trimmed
+                    ? archivedConversations.filter(
+                        (c) =>
+                          conversationMatchesCachedQuery(c, trimmed) ||
+                          Boolean(archiveBranchSearchMatches[c.id]),
+                      )
+                    : archivedConversations;
+                  if (list.length === 0) {
+                    return (
+                      <div className="chat-empty-state">
+                        <p>
+                          {trimmed
+                            ? `No older chats match "${trimmed}".`
+                            : archiveAgeDays > 0
+                              ? `No chats older than ${archiveAgeDays} day${archiveAgeDays === 1 ? '' : 's'}.`
+                              : 'Auto-hide is off — all chats are already shown in the sidebar.'}
+                        </p>
+                      </div>
+                    );
+                  }
                   return (
-                    <div className="chat-empty-state">
-                      <p>{trimmed
-                        ? `No older chats match "${trimmed}".`
-                        : archiveAgeDays > 0
-                          ? `No chats older than ${archiveAgeDays} day${archiveAgeDays === 1 ? '' : 's'}.`
-                          : 'Auto-hide is off — all chats are already shown in the sidebar.'}</p>
+                    <div className="chat-conversation-list chat-conversation-list-non-admin chat-archive-conversation-list">
+                      {list.map((conv) =>
+                        renderConversationItem(conv, {
+                          searchQuery: trimmed,
+                          branchSearchMatch: archiveBranchSearchMatches[conv.id],
+                          onClickOverride: async () => {
+                            setShowArchiveModal(false);
+                            // Pull the older chat into the visible list so the
+                            // chat panel can render it immediately without a
+                            // refetch loop.
+                            setConversations((prev) =>
+                              prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev],
+                            );
+                            await selectConversationFromSearchResult(
+                              conv,
+                              archiveBranchSearchMatches[conv.id],
+                              trimmed,
+                            );
+                          },
+                        }),
+                      )}
+                      {archiveLoading && archivedConversations.length > 0 && (
+                        <div className="chat-empty-state" aria-live="polite">
+                          <p>
+                            {trimmed ? 'Searching older chats...' : 'Loading more older chats...'}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   );
-                }
-                return (
-                  <div className="chat-conversation-list chat-conversation-list-non-admin chat-archive-conversation-list">
-                    {list.map((conv) => renderConversationItem(conv, {
-                      searchQuery: trimmed,
-                      branchSearchMatch: archiveBranchSearchMatches[conv.id],
-                      onClickOverride: async () => {
-                        setShowArchiveModal(false);
-                        // Pull the older chat into the visible list so the
-                        // chat panel can render it immediately without a
-                        // refetch loop.
-                        setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
-                        await selectConversationFromSearchResult(conv, archiveBranchSearchMatches[conv.id], trimmed);
-                      },
-                    }))}
-                    {archiveLoading && archivedConversations.length > 0 && (
-                      <div className="chat-empty-state" aria-live="polite">
-                        <p>{trimmed ? 'Searching older chats...' : 'Loading more older chats...'}</p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
+                })()
+              )}
             </div>
           </div>
         </div>

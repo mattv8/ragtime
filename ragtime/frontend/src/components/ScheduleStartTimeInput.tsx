@@ -31,7 +31,10 @@ const REPRESENTATIVE_TIMEZONES = [
 
 function getTzShortName(tz: string): string {
   try {
-    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts();
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      timeZoneName: 'short',
+    }).formatToParts();
     return parts.find((p) => p.type === 'timeZoneName')?.value || tz;
   } catch {
     return tz;
@@ -42,10 +45,15 @@ function getLocalTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
-function minuteToParts(startMinute: number | null | undefined): { hour: number; minute: number; period: 'AM' | 'PM' } {
-  const normalized = typeof startMinute === 'number' && startMinute >= 0 && startMinute < 1440
-    ? startMinute
-    : DEFAULT_START_MINUTE;
+function minuteToParts(startMinute: number | null | undefined): {
+  hour: number;
+  minute: number;
+  period: 'AM' | 'PM';
+} {
+  const normalized =
+    typeof startMinute === 'number' && startMinute >= 0 && startMinute < 1440
+      ? startMinute
+      : DEFAULT_START_MINUTE;
   const hour24 = Math.floor(normalized / 60);
   const minute = normalized % 60;
   const period = hour24 >= 12 ? 'PM' : 'AM';
@@ -56,9 +64,7 @@ function minuteToParts(startMinute: number | null | undefined): { hour: number; 
 function partsToMinute(hour: number, minute: number, period: 'AM' | 'PM'): number {
   const hour12 = Math.max(1, Math.min(12, hour));
   const normalizedMinute = Math.max(0, Math.min(59, minute));
-  const hour24 = period === 'AM'
-    ? (hour12 === 12 ? 0 : hour12)
-    : (hour12 === 12 ? 12 : hour12 + 12);
+  const hour24 = period === 'AM' ? (hour12 === 12 ? 0 : hour12) : hour12 === 12 ? 12 : hour12 + 12;
   return hour24 * 60 + normalizedMinute;
 }
 
@@ -121,7 +127,9 @@ export function ScheduleStartTimeInput({
           style={{ width: '100%', flex: 1, minWidth: 40, paddingRight: 4, paddingLeft: 4 }}
         >
           {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
-            <option key={hour} value={hour}>{hour}</option>
+            <option key={hour} value={hour}>
+              {hour}
+            </option>
           ))}
         </select>
         <select
@@ -132,7 +140,9 @@ export function ScheduleStartTimeInput({
           style={{ width: '100%', flex: 1, minWidth: 40, paddingRight: 4, paddingLeft: 4 }}
         >
           {[0, 15, 30, 45].map((minute) => (
-            <option key={minute} value={minute}>{minute.toString().padStart(2, '0')}</option>
+            <option key={minute} value={minute}>
+              {minute.toString().padStart(2, '0')}
+            </option>
           ))}
         </select>
         <select

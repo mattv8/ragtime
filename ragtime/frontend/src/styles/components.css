@@ -193,10 +193,10 @@
   color: var(--color-text-muted);
 }
 
-input[type="text"],
-input[type="number"],
-input[type="password"],
-input[type="email"],
+input[type='text'],
+input[type='number'],
+input[type='password'],
+input[type='email'],
 select,
 textarea {
   width: 100%;
@@ -207,7 +207,9 @@ textarea {
   background: var(--color-input-bg);
   border: 1px solid var(--color-input-border);
   border-radius: var(--radius-md);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 input:focus,
@@ -295,8 +297,15 @@ textarea:focus {
 }
 
 @keyframes popover-in {
-  from { opacity: 0; transform-origin: center; scale: 0.96; }
-  to   { opacity: 1; scale: 1; }
+  from {
+    opacity: 0;
+    transform-origin: center;
+    scale: 0.96;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
 }
 
 .popover-content {
@@ -446,7 +455,9 @@ textarea:focus {
 }
 
 @keyframes ragtime-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .userspace-toolbar-live-spinner {
@@ -1076,7 +1087,9 @@ textarea:focus {
   border: none;
   border-radius: calc(var(--radius-md) - 2px);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
   white-space: nowrap;
 }
 
@@ -1413,7 +1426,11 @@ textarea:focus {
   border-radius: 5px;
   background: var(--color-bg-secondary);
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.1s ease;
   display: inline-grid;
   place-items: center;
 }
@@ -1577,7 +1594,9 @@ textarea:focus {
 }
 
 .tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-tag,
-.tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-clear {
+.tool-group-content.has-selection
+  .tool-group-filter-search:not(:focus-within)
+  .settings-filter-clear {
   display: none;
 }
 
@@ -1611,7 +1630,9 @@ textarea:focus {
   line-height: 1.4;
   font-weight: 500;
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .tool-group-tab:hover {
@@ -1660,8 +1681,13 @@ textarea:focus {
 }
 
 @keyframes group-tab-pulse {
-  0%, 100% { background: color-mix(in srgb, var(--color-accent) 4%, transparent); }
-  50% { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--color-accent) 4%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
 }
 
 /* The specific tab being hovered gets a stronger highlight */
@@ -1699,7 +1725,9 @@ textarea:focus {
   font-family: var(--font-sans);
   display: block;
   field-sizing: content;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .tool-group-tab-input:focus {
@@ -1716,7 +1744,9 @@ textarea:focus {
   margin: 0 !important;
   min-height: 42px !important;
   padding: 8px 10px !important;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast) !important;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast) !important;
 }
 
 .tools-panel .inline-edit-textarea:focus {
@@ -1899,7 +1929,9 @@ textarea:focus {
   border: 2px dashed transparent;
   border-radius: var(--radius-md);
   padding: var(--space-xs);
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .tool-ungrouped-drop-zone.drag-over {
@@ -2244,7 +2276,9 @@ textarea:focus {
   align-items: center;
   flex-shrink: 0;
   opacity: 0.85;
-  transition: opacity var(--transition-fast), color var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .userspace-tree-save-btn:hover {
@@ -2328,7 +2362,9 @@ textarea:focus {
   font-size: var(--text-xs);
   cursor: pointer;
   user-select: none;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .userspace-new-file-btn:hover {
@@ -2361,7 +2397,11 @@ textarea:focus {
   padding: var(--space-xl);
   color: var(--color-text-secondary);
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--color-primary) 10%, transparent), transparent 45%),
+    radial-gradient(
+      circle at top left,
+      color-mix(in srgb, var(--color-primary) 10%, transparent),
+      transparent 45%
+    ),
     var(--color-bg-primary);
   text-align: left;
 }
@@ -2519,7 +2559,9 @@ textarea:focus {
   background: var(--color-surface-hover);
   color: var(--color-text-primary);
   font-size: var(--text-xs);
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .userspace-code-editor .cm-editor .cm-panels .cm-button:hover {
@@ -2723,7 +2765,8 @@ textarea:focus {
 .userspace-snapshot-busy-indicator {
   margin: 6px 2px;
   padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--color-accent, var(--color-primary)) 28%, var(--color-border));
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent, var(--color-primary)) 28%, var(--color-border));
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--color-accent, var(--color-primary)) 10%, transparent);
   color: var(--color-text-secondary);
@@ -2773,7 +2816,11 @@ textarea:focus {
 }
 
 .userspace-snapshot-branch-legend.active {
-  background: color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 14%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 14%,
+    transparent
+  );
 }
 
 .userspace-snapshot-branch-legend::before {
@@ -2809,7 +2856,9 @@ textarea:focus {
   border-radius: var(--radius-sm);
   margin-left: 2px;
   opacity: 0.45;
-  transition: opacity 0.15s, color 0.15s;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
 }
 
 .userspace-snapshot-branch-legend:hover .userspace-snapshot-branch-promote {
@@ -2856,7 +2905,11 @@ textarea:focus {
 }
 
 .userspace-snapshot-graph-row.current {
-  background: color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 12%,
+    transparent
+  );
 }
 
 .userspace-snapshot-graph-lanes {
@@ -2883,7 +2936,11 @@ textarea:focus {
 }
 
 .userspace-snapshot-lane-line.active {
-  background: color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 58%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 58%,
+    transparent
+  );
 }
 
 .userspace-snapshot-lane-line.start {
@@ -2908,7 +2965,12 @@ textarea:focus {
 }
 
 .userspace-snapshot-node-dot.current {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 24%, transparent);
+  box-shadow: 0 0 0 2px
+    color-mix(
+      in srgb,
+      var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 24%,
+      transparent
+    );
 }
 
 .userspace-snapshot-fork-link {
@@ -2916,7 +2978,11 @@ textarea:focus {
   top: 50%;
   height: 2px;
   transform: translateY(-50%);
-  background: color-mix(in srgb, var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 64%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--userspace-branch-color, var(--color-accent, var(--color-primary))) 64%,
+    transparent
+  );
   pointer-events: none;
   border-radius: 999px;
 }
@@ -3067,7 +3133,8 @@ textarea:focus {
   height: min(70vh, 720px);
   display: flex;
   flex-direction: column;
-  border: 1px solid color-mix(in srgb, var(--color-accent, var(--color-primary)) 18%, var(--color-border));
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent, var(--color-primary)) 18%, var(--color-border));
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--color-bg-primary) 88%, transparent);
   box-shadow:
@@ -3371,8 +3438,15 @@ textarea:focus {
   background-color: var(--color-surface-hover) !important;
 }
 
-.tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-selectionBackground,
-.tool-call-userspace-diff-card .userspace-snapshot-diff-editor-wrap .cm-editor .cm-content ::selection {
+.tool-call-userspace-diff-card
+  .userspace-snapshot-diff-editor-wrap
+  .cm-editor
+  .cm-selectionBackground,
+.tool-call-userspace-diff-card
+  .userspace-snapshot-diff-editor-wrap
+  .cm-editor
+  .cm-content
+  ::selection {
   background-color: var(--color-primary-light) !important;
 }
 
@@ -3422,19 +3496,19 @@ textarea:focus {
   visibility: hidden;
 }
 
-[data-theme="light"] .cm-diff-line-deleted {
-  background-color: rgba(220, 38, 38, 0.10) !important;
+[data-theme='light'] .cm-diff-line-deleted {
+  background-color: rgba(220, 38, 38, 0.1) !important;
 }
 
-[data-theme="light"] .cm-diff-line-added {
+[data-theme='light'] .cm-diff-line-added {
   background-color: rgba(22, 163, 74, 0.12) !important;
 }
 
-[data-theme="light"] .cm-diff-line-padding {
+[data-theme='light'] .cm-diff-line-padding {
   background-color: rgba(0, 0, 0, 0.03) !important;
 }
 
-[data-theme="light"] .cm-diff-line-gap {
+[data-theme='light'] .cm-diff-line-gap {
   background-color: rgba(0, 0, 0, 0.04) !important;
   background-image: repeating-linear-gradient(
     135deg,
@@ -3446,22 +3520,22 @@ textarea:focus {
 }
 
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .cm-diff-line-deleted {
-    background-color: rgba(220, 38, 38, 0.10) !important;
+  :root:not([data-theme='dark']) .cm-diff-line-deleted {
+    background-color: rgba(220, 38, 38, 0.1) !important;
   }
-  :root:not([data-theme="dark"]) .cm-diff-line-added {
+  :root:not([data-theme='dark']) .cm-diff-line-added {
     background-color: rgba(22, 163, 74, 0.12) !important;
   }
-  :root:not([data-theme="dark"]) .cm-diff-line-padding {
+  :root:not([data-theme='dark']) .cm-diff-line-padding {
     background-color: rgba(0, 0, 0, 0.03) !important;
   }
-  :root:not([data-theme="dark"]) .cm-diff-line-gap {
+  :root:not([data-theme='dark']) .cm-diff-line-gap {
     background-color: rgba(0, 0, 0, 0.04) !important;
   }
 }
 
 /* Light mode overrides for diff overlay */
-[data-theme="light"] .userspace-snapshot-diff-overlay {
+[data-theme='light'] .userspace-snapshot-diff-overlay {
   background: color-mix(in srgb, var(--color-bg-primary) 92%, transparent);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--color-border) 50%, transparent),
@@ -3469,20 +3543,20 @@ textarea:focus {
     0 8px 16px -4px rgba(0, 0, 0, 0.06);
 }
 
-[data-theme="light"] .userspace-snapshot-diff-backdrop {
+[data-theme='light'] .userspace-snapshot-diff-backdrop {
   background: color-mix(in srgb, white 24%, transparent);
 }
 
-[data-theme="light"] .userspace-snapshot-diff-columns {
+[data-theme='light'] .userspace-snapshot-diff-columns {
   background: var(--color-border-strong);
 }
 
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .userspace-snapshot-diff-backdrop {
+  :root:not([data-theme='dark']) .userspace-snapshot-diff-backdrop {
     background: color-mix(in srgb, white 24%, transparent);
   }
 
-  :root:not([data-theme="dark"]) .userspace-snapshot-diff-overlay {
+  :root:not([data-theme='dark']) .userspace-snapshot-diff-overlay {
     background: color-mix(in srgb, var(--color-bg-primary) 92%, transparent);
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--color-border) 50%, transparent),
@@ -3490,7 +3564,7 @@ textarea:focus {
       0 8px 16px -4px rgba(0, 0, 0, 0.06);
   }
 
-  :root:not([data-theme="dark"]) .userspace-snapshot-diff-columns {
+  :root:not([data-theme='dark']) .userspace-snapshot-diff-columns {
     background: var(--color-border-strong);
   }
 }
@@ -3620,7 +3694,9 @@ textarea:focus {
   cursor: pointer;
   padding: 2px;
   color: var(--color-text-secondary);
-  transition: color 0.1s, background 0.1s;
+  transition:
+    color 0.1s,
+    background 0.1s;
 }
 
 .userspace-snapshot-delete-btn:hover {
@@ -4349,7 +4425,9 @@ textarea:focus {
   font-size: var(--text-xs);
   padding: 6px 12px;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .userspace-member-role-option + .userspace-member-role-option {
@@ -4455,7 +4533,10 @@ textarea:focus {
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .userspace-share-url-copy-wrap:hover .userspace-share-inline-copy,
@@ -4496,7 +4577,11 @@ textarea:focus {
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .settings-inline-copy-secondary {
@@ -4535,7 +4620,6 @@ textarea:focus {
   cursor: default;
 }
 
-
 .userspace-share-meta {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
@@ -4566,7 +4650,7 @@ textarea:focus {
   cursor: pointer;
 }
 
-.userspace-share-radio-option input[type="radio"] {
+.userspace-share-radio-option input[type='radio'] {
   margin: 0;
   cursor: pointer;
 }
@@ -5009,7 +5093,9 @@ textarea {
   color: var(--color-text-secondary);
   cursor: pointer;
   padding: 0;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .copilot-device-copy-btn:hover {
@@ -5058,7 +5144,7 @@ textarea {
   font-size: var(--text-sm);
 }
 
-.checkbox-label input[type="checkbox"] {
+.checkbox-label input[type='checkbox'] {
   width: 18px;
   height: 18px;
   accent-color: var(--color-primary);
@@ -5095,7 +5181,9 @@ textarea {
   border-radius: var(--radius-md);
   cursor: pointer;
   text-align: left;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .chk-dropdown-trigger:hover:not(:disabled),
@@ -5164,7 +5252,7 @@ textarea {
   margin-bottom: 0;
 }
 
-.form-group label.chk-dropdown-item input[type="checkbox"] {
+.form-group label.chk-dropdown-item input[type='checkbox'] {
   flex: 0 0 18px;
   margin-top: 2px;
 }
@@ -5291,7 +5379,7 @@ textarea {
 }
 
 .toggle-slider::before {
-  content: "";
+  content: '';
   position: absolute;
   height: 18px;
   width: 18px;
@@ -5336,16 +5424,43 @@ textarea {
   white-space: nowrap;
 }
 
-.badge.pending { background: var(--color-bg-tertiary); color: var(--color-text-secondary); }
-.badge.processing { background: var(--color-info-light); color: var(--color-info); }
-.badge.completed { background: var(--color-success-light); color: var(--color-success); }
-.badge.failed { background: var(--color-error-light); color: var(--color-error); }
-.badge.cancelled { background: var(--color-warning-light); color: var(--color-warning); }
+.badge.pending {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+.badge.processing {
+  background: var(--color-info-light);
+  color: var(--color-info);
+}
+.badge.completed {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+.badge.failed {
+  background: var(--color-error-light);
+  color: var(--color-error);
+}
+.badge.cancelled {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
 
-.badge.type-document { background: var(--color-primary-light); color: var(--color-primary); }
-.badge.type-filesystem { background: rgba(139, 92, 246, 0.15); color: #a78bfa; }
-.badge.type-schema { background: var(--color-accent-light); color: var(--color-accent); }
-.badge.type-pdm { background: var(--color-warning-light); color: var(--color-warning);}
+.badge.type-document {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+.badge.type-filesystem {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+}
+.badge.type-schema {
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+.badge.type-pdm {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
 
 .badge.clickable {
   cursor: pointer;
@@ -5451,19 +5566,37 @@ textarea {
 }
 
 @keyframes pulse-opacity {
-  0% { opacity: 0.6; }
-  50% { opacity: 1; }
-  100% { opacity: 0.6; }
+  0% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.6;
+  }
 }
 
 @keyframes context-usage-pie-flash {
-  0%, 44% { opacity: 1; }
-  45%, 100% { opacity: 0; }
+  0%,
+  44% {
+    opacity: 1;
+  }
+  45%,
+  100% {
+    opacity: 0;
+  }
 }
 
 @keyframes context-usage-pie-flash-inverted {
-  0%, 44% { opacity: 0; }
-  45%, 100% { opacity: 1; }
+  0%,
+  44% {
+    opacity: 0;
+  }
+  45%,
+  100% {
+    opacity: 1;
+  }
 }
 
 .context-usage-pie-button {
@@ -5809,7 +5942,7 @@ textarea {
   border-color: var(--color-border);
 }
 
-.model-filter-item input[type="checkbox"] {
+.model-filter-item input[type='checkbox'] {
   cursor: pointer;
   width: 18px;
   height: 18px;
@@ -5835,7 +5968,9 @@ textarea {
   border-radius: var(--radius-md);
   background: var(--color-input-bg);
   cursor: text;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .settings-filter-search:focus-within {
@@ -5889,12 +6024,14 @@ textarea {
   cursor: pointer;
   color: var(--color-text-muted);
   border-radius: var(--radius-xs);
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .settings-filter-tag-remove:hover {
   color: var(--color-text-primary);
-  background: var(--color-surface-tertiary, rgba(255,255,255,0.1));
+  background: var(--color-surface-tertiary, rgba(255, 255, 255, 0.1));
 }
 
 .settings-filter-clear {
@@ -5953,8 +6090,12 @@ textarea {
     display: block;
   }
 
-  .tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-tag,
-  .tool-group-content.has-selection .tool-group-filter-search:not(:focus-within) .settings-filter-clear {
+  .tool-group-content.has-selection
+    .tool-group-filter-search:not(:focus-within)
+    .settings-filter-tag,
+  .tool-group-content.has-selection
+    .tool-group-filter-search:not(:focus-within)
+    .settings-filter-clear {
     display: inline-flex;
   }
 
@@ -6341,7 +6482,6 @@ fieldset legend.legend-with-status .legend-divider {
   overflow: hidden;
 }
 
-
 .auth-group-panel-header {
   display: flex;
   align-items: center;
@@ -6711,7 +6851,9 @@ fieldset legend.legend-with-status .legend-divider {
   padding: 6px 10px;
   cursor: pointer;
   min-width: 56px;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .auth-group-access-option:last-child {
@@ -6960,18 +7102,17 @@ fieldset legend.legend-with-status .legend-divider {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.2),
-    transparent
-  );
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
   animation: shimmer 1.5s infinite;
 }
 
 @keyframes shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .progress-container {
@@ -7046,7 +7187,9 @@ fieldset legend.legend-with-status .legend-divider {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* =============================================================================
@@ -7060,10 +7203,22 @@ fieldset legend.legend-with-status .legend-divider {
   flex-shrink: 0;
 }
 
-.icon-sm { width: 16px; height: 16px; }
-.icon-md { width: 20px; height: 20px; }
-.icon-lg { width: 24px; height: 24px; }
-.icon-xl { width: 32px; height: 32px; }
+.icon-sm {
+  width: 16px;
+  height: 16px;
+}
+.icon-md {
+  width: 20px;
+  height: 20px;
+}
+.icon-lg {
+  width: 24px;
+  height: 24px;
+}
+.icon-xl {
+  width: 32px;
+  height: 32px;
+}
 
 /* Tool Type Icons */
 .tool-icon {
@@ -7077,11 +7232,26 @@ fieldset legend.legend-with-status .legend-divider {
   color: var(--color-primary);
 }
 
-.tool-icon.database { background: var(--color-primary-light); color: var(--color-primary); }
-.tool-icon.terminal { background: var(--color-success-light); color: var(--color-success); }
-.tool-icon.folder { background: var(--color-warning-light); color: var(--color-warning); }
-.tool-icon.server { background: var(--color-info-light); color: var(--color-info); }
-.tool-icon.plug { background: var(--color-accent-light); color: var(--color-accent); }
+.tool-icon.database {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+.tool-icon.terminal {
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+.tool-icon.folder {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+}
+.tool-icon.server {
+  background: var(--color-info-light);
+  color: var(--color-info);
+}
+.tool-icon.plug {
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
 
 /* =============================================================================
    ACTION BUTTONS (for tables)
@@ -7237,8 +7407,12 @@ fieldset legend.legend-with-status .legend-divider {
    ============================================================================= */
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .spinning {
@@ -7403,7 +7577,9 @@ fieldset legend.legend-with-status .legend-divider {
 .highlight-setting {
   animation: highlight-pulse 0.8s ease-out 2;
   border-color: var(--color-accent) !important;
-  transition: border-color 0.3s ease-out, box-shadow 0.3s ease-out;
+  transition:
+    border-color 0.3s ease-out,
+    box-shadow 0.3s ease-out;
 }
 
 /* =============================================================================
@@ -7440,8 +7616,13 @@ fieldset legend.legend-with-status .legend-divider {
 }
 
 @keyframes memory-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
 .memory-status-icon {
@@ -7617,7 +7798,9 @@ fieldset legend.legend-with-status .legend-divider {
 }
 /* --- SQLite Inspector Modal --- */
 .userspace-sqlite-modal {
-  transition: max-width var(--transition-fast), width var(--transition-fast);
+  transition:
+    max-width var(--transition-fast),
+    width var(--transition-fast);
 }
 .userspace-sqlite-modal-compact {
   width: min(720px, calc(100vw - 32px));
@@ -7746,7 +7929,9 @@ fieldset legend.legend-with-status .legend-divider {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 .userspace-sqlite-card:hover {
   border-color: var(--color-accent, var(--color-border));

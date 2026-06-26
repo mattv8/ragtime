@@ -58,7 +58,12 @@ function cloudSourceLabel(sourceType: string | null | undefined): string {
 }
 
 function cleanDisplaySegment(value: string | null | undefined): string {
-  return String(value || '').trim().replace(/\\/g, '/').split('/').filter(Boolean).join(' ');
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .join(' ');
 }
 
 function resolveMappedBrowserDisplayPath(
@@ -83,7 +88,9 @@ function resolveMappedBrowserDisplayPath(
       continue;
     }
     const suffix = segments.slice(length).join('/');
-    return normalizeMountBrowserPath(suffix ? `${mappedAncestorPath}/${suffix}` : mappedAncestorPath);
+    return normalizeMountBrowserPath(
+      suffix ? `${mappedAncestorPath}/${suffix}` : mappedAncestorPath,
+    );
   }
 
   return null;
@@ -104,7 +111,8 @@ function resolveCloudVirtualBrowserDisplayPath(
   }
 
   if (segments[0] === 'drives' && segments.length >= 2) {
-    const driveName = cleanDisplaySegment(options?.fallbackDriveName) || cloudSourceLabel(options?.sourceType);
+    const driveName =
+      cleanDisplaySegment(options?.fallbackDriveName) || cloudSourceLabel(options?.sourceType);
     return normalizeMountBrowserPath([driveName, ...segments.slice(2)].join('/'));
   }
 
@@ -138,7 +146,9 @@ export function resolveBrowserDisplaySegment(
   pathDisplayMap?: BrowserPathDisplayMap,
   options?: CloudPathDisplayOptions,
 ): string {
-  const segments = resolveBrowserDisplayPath(browserPath, pathDisplayMap, options).split('/').filter(Boolean);
+  const segments = resolveBrowserDisplayPath(browserPath, pathDisplayMap, options)
+    .split('/')
+    .filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : fallback;
 }
 
@@ -154,7 +164,11 @@ function isImmediateDisplayEntry(parentPath: string, childPath: string): boolean
   if (parentSegments.length === 0 && childSegments[0] === 'drives' && childSegments.length === 2) {
     return true;
   }
-  if (parentSegments.length === 0 && childSegments[0] === 'my-drive' && childSegments.length === 1) {
+  if (
+    parentSegments.length === 0 &&
+    childSegments[0] === 'my-drive' &&
+    childSegments.length === 1
+  ) {
     return true;
   }
   if (childSegments.length !== parentSegments.length + 1) {

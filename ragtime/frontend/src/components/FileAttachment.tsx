@@ -16,8 +16,8 @@ export interface AttachmentFile {
   name: string;
   size: number;
   mimeType: string;
-  preview?: string;  // data URL for images
-  dataUrl?: string;  // base64 data URL
+  preview?: string; // data URL for images
+  dataUrl?: string; // base64 data URL
   filePath?: string; // For file path input
   attachmentId?: string;
   attachmentSource?: 'chat_upload' | 'userspace_path';
@@ -54,7 +54,7 @@ export async function resizeAttachmentImageDataUrl(
   dataUrl: string,
   mimeType: string,
   maxDimension = 1024,
-  quality = 0.8
+  quality = 0.8,
 ): Promise<string> {
   try {
     const img = new Image();
@@ -83,7 +83,13 @@ export async function resizeAttachmentImageDataUrl(
   }
 }
 
-export function FileAttachment({ attachments, onAttachmentsChange, disabled, conversationId, workspaceId }: FileAttachmentProps) {
+export function FileAttachment({
+  attachments,
+  onAttachmentsChange,
+  disabled,
+  conversationId,
+  workspaceId,
+}: FileAttachmentProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -135,6 +141,7 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
 
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleFiles is recreated each render; listener intentionally rebinds only on disabled/attachments changes
   }, [disabled, attachments]);
 
   const readFileAsDataURL = (file: File): Promise<string> => {
@@ -168,7 +175,7 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
           size: file.size,
           mimeType: file.type || 'image/png',
           preview: dataUrl,
-          dataUrl
+          dataUrl,
         });
         continue;
       }
@@ -180,7 +187,11 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
 
       setUploadingCount((count) => count + 1);
       try {
-        const uploaded = await api.uploadConversationChatAttachment(conversationId, file, workspaceId);
+        const uploaded = await api.uploadConversationChatAttachment(
+          conversationId,
+          file,
+          workspaceId,
+        );
         newAttachments.push({
           id: `${uploaded.attachment_id}-${Math.random()}`,
           type: 'file',
@@ -255,20 +266,20 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
       document.removeEventListener('dragleave', handleDragLeave);
       document.removeEventListener('drop', handleDrop);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleFiles is recreated each render; listener intentionally rebinds only on disabled/attachments changes
   }, [disabled, attachments]);
 
   const removeAttachment = (id: string) => {
-    onAttachmentsChange(attachments.filter(a => a.id !== id));
+    onAttachmentsChange(attachments.filter((a) => a.id !== id));
   };
 
   const formatFileSize = formatAttachmentSize;
-
 
   return (
     <>
       {attachments.length > 0 && (
         <div className="attachment-preview-list">
-          {attachments.map(attachment => (
+          {attachments.map((attachment) => (
             <div key={attachment.id} className="attachment-item">
               {attachment.type === 'image' && attachment.preview ? (
                 <div className="attachment-image-preview">
@@ -276,11 +287,7 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
                 </div>
               ) : (
                 <div className="attachment-file-preview">
-                  {attachment.filePath ? (
-                    <Link size={20} />
-                  ) : (
-                    <FileText size={20} />
-                  )}
+                  {attachment.filePath ? <Link size={20} /> : <FileText size={20} />}
                 </div>
               )}
               <div className="attachment-info">
@@ -321,7 +328,14 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
             disabled={disabled || uploadingCount > 0}
             title={uploadingCount > 0 ? 'Uploading attachments...' : 'Attach files or images'}
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
@@ -339,7 +353,9 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
                 disabled={disabled || uploadingCount > 0}
               >
                 <Upload size={18} />
-                <span>{uploadingCount > 0 ? `Uploading ${uploadingCount}...` : 'Upload Files'}</span>
+                <span>
+                  {uploadingCount > 0 ? `Uploading ${uploadingCount}...` : 'Upload Files'}
+                </span>
               </button>
             </div>
           )}
@@ -359,14 +375,17 @@ export function FileAttachment({ attachments, onAttachmentsChange, disabled, con
 }
 
 // Helper to convert attachments to API format
-export function attachmentsToContentParts(text: string, attachments: AttachmentFile[]): ContentPart[] {
+export function attachmentsToContentParts(
+  text: string,
+  attachments: AttachmentFile[],
+): ContentPart[] {
   const parts: ContentPart[] = [];
 
   // Add text content
   if (text.trim()) {
     parts.push({
       type: 'text',
-      text: text.trim()
+      text: text.trim(),
     });
   }
 
@@ -377,8 +396,8 @@ export function attachmentsToContentParts(text: string, attachments: AttachmentF
         type: 'image_url',
         image_url: {
           url: attachment.dataUrl,
-          detail: 'auto'
-        }
+          detail: 'auto',
+        },
       });
     } else if (attachment.attachmentId) {
       parts.push({
@@ -388,7 +407,7 @@ export function attachmentsToContentParts(text: string, attachments: AttachmentF
         filename: attachment.name,
         mime_type: attachment.mimeType,
         size_bytes: attachment.size,
-        expires_at: attachment.expiresAt
+        expires_at: attachment.expiresAt,
       });
     } else if (attachment.filePath) {
       parts.push({
@@ -396,7 +415,7 @@ export function attachmentsToContentParts(text: string, attachments: AttachmentF
         file_path: attachment.filePath,
         filename: attachment.name,
         mime_type: attachment.mimeType,
-        attachment_source: 'userspace_path'
+        attachment_source: 'userspace_path',
       });
     }
   }

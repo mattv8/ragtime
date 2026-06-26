@@ -13,7 +13,15 @@ export interface DirectoryBrowserProps {
   onSelect: (path: string) => void;
 }
 
-export function DirectoryBrowser({ currentPath, entries, loading, error, onNavigate, onGoUp, onSelect }: DirectoryBrowserProps) {
+export function DirectoryBrowser({
+  currentPath,
+  entries,
+  loading,
+  error,
+  onNavigate,
+  onGoUp,
+  onSelect,
+}: DirectoryBrowserProps) {
   const [pathInput, setPathInput] = useState('');
 
   useEffect(() => {
@@ -29,7 +37,9 @@ export function DirectoryBrowser({ currentPath, entries, loading, error, onNavig
   const handleFilterChange = (value: string) => {
     if (value.endsWith('/')) {
       const dirName = value.slice(0, -1);
-      const matchingDir = entries.find((entry) => entry.is_dir && entry.name.toLowerCase() === dirName.toLowerCase());
+      const matchingDir = entries.find(
+        (entry) => entry.is_dir && entry.name.toLowerCase() === dirName.toLowerCase(),
+      );
       if (matchingDir) {
         onNavigate(matchingDir.path);
         setPathInput('');
@@ -41,7 +51,9 @@ export function DirectoryBrowser({ currentPath, entries, loading, error, onNavig
       const segments = value.split('/');
       const first = segments[0];
       const rest = segments.slice(1).join('/');
-      const matchingDir = entries.find((entry) => entry.is_dir && entry.name.toLowerCase() === first.toLowerCase());
+      const matchingDir = entries.find(
+        (entry) => entry.is_dir && entry.name.toLowerCase() === first.toLowerCase(),
+      );
       if (matchingDir) {
         onNavigate(matchingDir.path);
         setPathInput(rest);
@@ -125,23 +137,32 @@ export function DirectoryBrowser({ currentPath, entries, loading, error, onNavig
         <div className="browser-loading">Loading...</div>
       ) : (
         <div className="browser-entries">
-          {filteredEntries.filter((entry) => entry.is_dir).map((entry) => (
-            <button
-              key={entry.path}
-              type="button"
-              className="browser-entry"
-              onClick={() => onNavigate(entry.path)}
-            >
-              <span className="entry-icon"><Icon name="folder" size={16} /></span>
-              <span className="entry-name">{entry.name}</span>
-            </button>
-          ))}
-          {filteredEntries.filter((entry) => !entry.is_dir).slice(0, 3).map((entry) => (
-            <div key={entry.path} className="browser-entry file">
-              <span className="entry-icon"><Icon name="file" size={16} /></span>
-              <span className="entry-name">{entry.name}</span>
-            </div>
-          ))}
+          {filteredEntries
+            .filter((entry) => entry.is_dir)
+            .map((entry) => (
+              <button
+                key={entry.path}
+                type="button"
+                className="browser-entry"
+                onClick={() => onNavigate(entry.path)}
+              >
+                <span className="entry-icon">
+                  <Icon name="folder" size={16} />
+                </span>
+                <span className="entry-name">{entry.name}</span>
+              </button>
+            ))}
+          {filteredEntries
+            .filter((entry) => !entry.is_dir)
+            .slice(0, 3)
+            .map((entry) => (
+              <div key={entry.path} className="browser-entry file">
+                <span className="entry-icon">
+                  <Icon name="file" size={16} />
+                </span>
+                <span className="entry-name">{entry.name}</span>
+              </div>
+            ))}
           {filteredEntries.filter((entry) => !entry.is_dir).length > 3 && (
             <div className="browser-more">
               +{filteredEntries.filter((entry) => !entry.is_dir).length - 3} more files

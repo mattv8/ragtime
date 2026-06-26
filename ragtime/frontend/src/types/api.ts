@@ -164,7 +164,7 @@ export interface AuthStatus {
   // Security status for UI banner
   api_key_configured: boolean;
   session_cookie_secure: boolean;
-  allowed_origins_open: boolean;  // True if ALLOWED_ORIGINS=*
+  allowed_origins_open: boolean; // True if ALLOWED_ORIGINS=*
   auth_methods?: AuthMethodStatus[];
   server_name?: string;
   authenticated_webgl_background_enabled?: boolean;
@@ -184,7 +184,7 @@ export interface McpRouteConfig {
   enabled: boolean;
   require_auth: boolean;
   has_password: boolean;
-  auth_password?: string;  // Decrypted password for admin display
+  auth_password?: string; // Decrypted password for admin display
   auth_client_id?: string;
   auth_method: 'password' | 'oauth2' | 'client_credentials';
   allowed_ldap_group: string | null;
@@ -352,15 +352,15 @@ export interface IndexConfig {
   exclude_patterns: string[];
   chunk_size: number;
   chunk_overlap: number;
-  max_file_size_kb?: number;  // Max file size in KB (default 500)
+  max_file_size_kb?: number; // Max file size in KB (default 500)
   embedding_model?: string;
-  vector_store_type?: VectorStoreType;  // Vector store backend: faiss (default) or pgvector
-  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or vision
-  ocr_provider?: OcrProvider | null;  // Provider for semantic vision OCR
-  ocr_vision_model?: string;  // Vision model for OCR
-  git_clone_timeout_minutes?: number;  // Max time for git clone (default 5 min)
-  git_history_depth?: number;  // 1=shallow (default), 0=full history
-  reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
+  vector_store_type?: VectorStoreType; // Vector store backend: faiss (default) or pgvector
+  ocr_mode?: OcrMode; // OCR mode: disabled, tesseract, or vision
+  ocr_provider?: OcrProvider | null; // Provider for semantic vision OCR
+  ocr_vision_model?: string; // Vision model for OCR
+  git_clone_timeout_minutes?: number; // Max time for git clone (default 5 min)
+  git_history_depth?: number; // 1=shallow (default), 0=full history
+  reindex_interval_hours?: number; // Hours between auto pull & re-index (0=manual)
   reindex_start_minute?: number | null;
   reindex_timezone?: string | null;
 }
@@ -369,9 +369,9 @@ export interface IndexJob {
   id: string;
   name: string;
   status: IndexStatus;
-  phase?: string;  // preparing|cloning|loading|chunking|embedding|finalizing|completed|failed|cancelled
+  phase?: string; // preparing|cloning|loading|chunking|embedding|finalizing|completed|failed|cancelled
   progress_percent: number;
-  clone_progress?: number | null;  // 0.0-1.0 git clone progress while cloning
+  clone_progress?: number | null; // 0.0-1.0 git clone progress while cloning
   total_files: number;
   processed_files: number;
   total_chunks: number;
@@ -380,7 +380,7 @@ export interface IndexJob {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
-  vector_store_type?: VectorStoreType;  // Vector store backend used
+  vector_store_type?: VectorStoreType; // Vector store backend used
 }
 
 export interface IndexConfigSnapshot {
@@ -389,39 +389,39 @@ export interface IndexConfigSnapshot {
   chunk_size: number;
   chunk_overlap: number;
   max_file_size_kb: number;
-  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or vision
-  ocr_provider?: OcrProvider | null;  // Provider for semantic vision OCR
-  ocr_vision_model?: string;  // Vision model for OCR
-  enable_ocr?: boolean;  // Legacy - for backward compatibility
-  git_clone_timeout_minutes?: number;  // May be absent for older indexes
-  git_history_depth?: number;  // 1=shallow (default), 0=full history
-  reindex_interval_hours?: number;  // Hours between auto pull & re-index (0=manual)
+  ocr_mode?: OcrMode; // OCR mode: disabled, tesseract, or vision
+  ocr_provider?: OcrProvider | null; // Provider for semantic vision OCR
+  ocr_vision_model?: string; // Vision model for OCR
+  enable_ocr?: boolean; // Legacy - for backward compatibility
+  git_clone_timeout_minutes?: number; // May be absent for older indexes
+  git_history_depth?: number; // 1=shallow (default), 0=full history
+  reindex_interval_hours?: number; // Hours between auto pull & re-index (0=manual)
   reindex_start_minute?: number | null;
   reindex_timezone?: string | null;
 }
 
 export interface IndexInfo {
-  name: string;  // Safe tool name (lowercase, alphanumeric with underscores)
-  display_name: string | null;  // Human-readable name for UI display
+  name: string; // Safe tool name (lowercase, alphanumeric with underscores)
+  display_name: string | null; // Human-readable name for UI display
   path: string;
   size_mb: number;
   document_count: number;
-  chunk_count: number;  // Number of chunks/vectors for memory calculation
+  chunk_count: number; // Number of chunks/vectors for memory calculation
   description: string;
   enabled: boolean;
-  search_weight: number;  // 0.0-10.0, default 1.0
+  search_weight: number; // 0.0-10.0, default 1.0
   source_type: 'upload' | 'git';
-  source: string | null;  // git URL or original filename
-  git_branch: string | null;  // branch for git sources
-  has_stored_token: boolean;  // True if a git token is stored for re-indexing
-  config_snapshot: IndexConfigSnapshot | null;  // Configuration used for indexing
+  source: string | null; // git URL or original filename
+  git_branch: string | null; // branch for git sources
+  has_stored_token: boolean; // True if a git token is stored for re-indexing
+  config_snapshot: IndexConfigSnapshot | null; // Configuration used for indexing
   created_at: string | null;
   last_modified: string | null;
   // Git history info
-  git_repo_size_mb: number | null;  // Size of .git_repo directory (disk)
-  has_git_history: boolean;  // True if .git_repo exists with history
+  git_repo_size_mb: number | null; // Size of .git_repo directory (disk)
+  has_git_history: boolean; // True if .git_repo exists with history
   // Vector store backend
-  vector_store_type?: VectorStoreType;  // faiss (default) or pgvector
+  vector_store_type?: VectorStoreType; // faiss (default) or pgvector
 }
 
 export interface UpdateIndexConfigRequest {
@@ -448,8 +448,8 @@ export interface RenameIndexRequest {
 
 export interface RenameIndexResponse {
   old_name: string;
-  new_name: string;  // Safe tool name
-  display_name: string;  // Human-readable name
+  new_name: string; // Safe tool name
+  display_name: string; // Human-readable name
   message: string;
 }
 
@@ -623,7 +623,17 @@ export interface UserSpacePreviewSandboxFlagOption {
 }
 
 // Canonical providers used by current UI flows.
-export type LlmProvider = 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot' | 'openai_codex' | 'claude_code';
+export type LlmProvider =
+  | 'openai'
+  | 'anthropic'
+  | 'openrouter'
+  | 'ollama'
+  | 'llama_cpp'
+  | 'lmstudio'
+  | 'omlx'
+  | 'github_copilot'
+  | 'openai_codex'
+  | 'claude_code';
 // Legacy wire compatibility for older persisted/provider values.
 export type LlmProviderWire = LlmProvider | 'github_models';
 
@@ -634,7 +644,14 @@ export interface AppSettings {
   authenticated_webgl_background_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   // Embedding Configuration (for FAISS indexing)
-  embedding_provider: 'ollama' | 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  embedding_provider:
+    | 'ollama'
+    | 'openai'
+    | 'openai_codex'
+    | 'openrouter'
+    | 'llama_cpp'
+    | 'lmstudio'
+    | 'omlx';
   embedding_model: string;
   embedding_dimensions?: number | null;
   // Ollama connection settings for embeddings (separate fields)
@@ -776,7 +793,14 @@ export interface UpdateSettingsRequest {
   authenticated_webgl_background_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   // Embedding settings
-  embedding_provider?: 'ollama' | 'openai' | 'openai_codex' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx';
+  embedding_provider?:
+    | 'ollama'
+    | 'openai'
+    | 'openai_codex'
+    | 'openrouter'
+    | 'llama_cpp'
+    | 'lmstudio'
+    | 'omlx';
   embedding_model?: string;
   embedding_dimensions?: number | null;
   ollama_protocol?: 'http' | 'https';
@@ -977,7 +1001,18 @@ export interface VisionModelsResponse {
 
 // LLM Provider Model Fetching
 export interface LLMModelsRequest {
-  provider: Extract<LlmProvider, 'openai' | 'anthropic' | 'openrouter' | 'llama_cpp' | 'lmstudio' | 'omlx' | 'github_copilot' | 'openai_codex' | 'claude_code'>;
+  provider: Extract<
+    LlmProvider,
+    | 'openai'
+    | 'anthropic'
+    | 'openrouter'
+    | 'llama_cpp'
+    | 'lmstudio'
+    | 'omlx'
+    | 'github_copilot'
+    | 'openai_codex'
+    | 'claude_code'
+  >;
   api_key?: string;
   base_url?: string;
   auth_mode?: 'oauth' | 'pat';
@@ -1168,7 +1203,15 @@ export interface EmbeddingModelsResponse {
 }
 
 // Tool Configuration Types
-export type ToolType = 'postgres' | 'mysql' | 'mssql' | 'influxdb' | 'odoo_shell' | 'ssh_shell' | 'filesystem_indexer' | 'solidworks_pdm';
+export type ToolType =
+  | 'postgres'
+  | 'mysql'
+  | 'mssql'
+  | 'influxdb'
+  | 'odoo_shell'
+  | 'ssh_shell'
+  | 'filesystem_indexer'
+  | 'solidworks_pdm';
 
 // Mount type for filesystem indexer
 export type FilesystemMountType = 'docker_volume' | 'smb' | 'nfs' | 'local';
@@ -1328,9 +1371,9 @@ export interface FilesystemConnectionConfig {
   // Safety limits
   max_file_size_mb?: number;
   max_total_files?: number;
-  ocr_mode?: OcrMode;  // OCR mode: disabled, tesseract, or vision
-  ocr_provider?: OcrProvider | null;  // Provider for semantic vision OCR
-  ocr_vision_model?: string;  // Vision model for OCR
+  ocr_mode?: OcrMode; // OCR mode: disabled, tesseract, or vision
+  ocr_provider?: OcrProvider | null; // Provider for semantic vision OCR
+  ocr_vision_model?: string; // Vision model for OCR
 
   // Re-indexing schedule
   reindex_interval_hours?: number;
@@ -1376,11 +1419,26 @@ export interface CloudMountConnectionConfig {
   root_id?: string;
 }
 
-export type ConnectionConfig = PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig | InfluxdbConnectionConfig | OdooShellConnectionConfig | SSHShellConnectionConfig | FilesystemConnectionConfig | SolidworksPdmConnectionConfig | CloudMountConnectionConfig;
+export type ConnectionConfig =
+  | PostgresConnectionConfig
+  | MysqlConnectionConfig
+  | MssqlConnectionConfig
+  | InfluxdbConnectionConfig
+  | OdooShellConnectionConfig
+  | SSHShellConnectionConfig
+  | FilesystemConnectionConfig
+  | SolidworksPdmConnectionConfig
+  | CloudMountConnectionConfig;
 export type UserspaceMountSourceType = 'ssh' | 'filesystem' | 'microsoft_drive' | 'google_drive';
 export type UserspaceMountSourceScope = 'global' | 'user';
 export type UserCloudOAuthProvider = 'microsoft_drive' | 'google_drive';
-export type UserspaceMountBackend = 'ssh' | 'docker_volume' | 'smb' | 'nfs' | 'local' | 'cloud_virtual';
+export type UserspaceMountBackend =
+  | 'ssh'
+  | 'docker_volume'
+  | 'smb'
+  | 'nfs'
+  | 'local'
+  | 'cloud_virtual';
 
 export interface ToolConfig {
   id: string;
@@ -1617,7 +1675,10 @@ export interface HeartbeatResponse {
 }
 
 // Tool type metadata for the wizard UI
-export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: string; icon: string; recommended?: boolean }> = {
+export const TOOL_TYPE_INFO: Record<
+  ToolType,
+  { name: string; description: string; icon: string; recommended?: boolean }
+> = {
   postgres: {
     name: 'PostgreSQL Database',
     description: 'Connect to a PostgreSQL database to execute SQL queries',
@@ -1650,7 +1711,8 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
   },
   filesystem_indexer: {
     name: 'Filesystem Indexer',
-    description: 'Index files from a filesystem path (Docker volume, SMB, NFS, or local) for semantic search',
+    description:
+      'Index files from a filesystem path (Docker volume, SMB, NFS, or local) for semantic search',
     icon: 'folder',
   },
   solidworks_pdm: {
@@ -1662,7 +1724,10 @@ export const TOOL_TYPE_INFO: Record<ToolType, { name: string; description: strin
 
 // Filesystem mount type metadata for the wizard UI
 // Note: 'local' type exists in backend but hidden from UI since Docker Volume handles it
-export const MOUNT_TYPE_INFO: Record<string, { name: string; description: string; recommended?: boolean }> = {
+export const MOUNT_TYPE_INFO: Record<
+  string,
+  { name: string; description: string; recommended?: boolean }
+> = {
   docker_volume: {
     name: 'Docker Volume',
     description: 'Browse files from mounted Docker volumes',
@@ -1731,7 +1796,12 @@ export interface TriggerFilesystemIndexRequest {
 }
 
 // Filesystem Analysis Types
-export type FilesystemAnalysisStatus = 'pending' | 'scanning' | 'analyzing' | 'completed' | 'failed';
+export type FilesystemAnalysisStatus =
+  | 'pending'
+  | 'scanning'
+  | 'analyzing'
+  | 'completed'
+  | 'failed';
 
 export interface FileTypeStats {
   extension: string;
@@ -1927,6 +1997,16 @@ export interface ToolCallRecord {
   output?: string;
   connection?: ToolConnectionRef;
   presentation?: ToolPresentation;
+  mcp?: ToolMcpMetadata;
+}
+
+export interface ToolMcpMetadata {
+  ok?: boolean;
+  server_id?: string;
+  server_name?: string;
+  tool_name?: string;
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
 }
 
 export interface ToolConnectionRef {
@@ -1956,6 +2036,7 @@ export interface ToolCallEvent {
   output?: string;
   connection?: ToolConnectionRef;
   presentation?: ToolPresentation;
+  mcp?: ToolMcpMetadata;
 }
 
 export interface ReasoningEvent {
@@ -2019,12 +2100,12 @@ export interface MessageSnapshotRestore {
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'compaction';
-  content: string | ContentPart[];  // Support both simple string and multimodal array
+  content: string | ContentPart[]; // Support both simple string and multimodal array
   timestamp: string;
-  message_id?: string;             // Stable per-message identifier (post-upgrade only)
-  tool_calls?: ToolCallRecord[];  // Compatibility mirror derived from events when available
-  events?: MessageEvent[];        // Preferred: chronological events
-  snapshot_restore?: MessageSnapshotRestore;  // Per-message snapshot link (when present)
+  message_id?: string; // Stable per-message identifier (post-upgrade only)
+  tool_calls?: ToolCallRecord[]; // Compatibility mirror derived from events when available
+  events?: MessageEvent[]; // Preferred: chronological events
+  snapshot_restore?: MessageSnapshotRestore; // Per-message snapshot link (when present)
 }
 
 export interface UpdateConversationCompactionRequest {
@@ -2046,10 +2127,10 @@ export interface ToolCallInfo {
 
 export interface StreamEvent {
   type: StreamEventType;
-  content?: string;         // For 'content' events
-  toolCall?: ToolCallInfo;  // For 'tool_start' and 'tool_end' events
-  reasoning?: string;       // For 'reasoning' events (thinking/reasoning content)
-  error?: string;          // For 'error' events
+  content?: string; // For 'content' events
+  toolCall?: ToolCallInfo; // For 'tool_start' and 'tool_end' events
+  reasoning?: string; // For 'reasoning' events (thinking/reasoning content)
+  error?: string; // For 'error' events
 }
 
 export type ToolOutputMode = 'default' | 'show' | 'hide' | 'auto';
@@ -2066,11 +2147,11 @@ export interface Conversation {
   messages: ChatMessage[];
   message_count?: number | null;
   total_tokens: number;
-  active_task_id: string | null;  // ID of currently running background task
-  active_branch_id?: string | null;  // ID of currently active chat branch
+  active_task_id: string | null; // ID of currently running background task
+  active_branch_id?: string | null; // ID of currently active chat branch
   disabled_builtin_tool_ids?: string[];
   tool_selection_mode?: ToolSelectionMode;
-  tool_output_mode: ToolOutputMode;  // Per-conversation tool output preference
+  tool_output_mode: ToolOutputMode; // Per-conversation tool output preference
   created_at: string;
   updated_at: string;
 }
@@ -2225,7 +2306,7 @@ export interface SendMessageResponse {
 
 export interface ConversationMember {
   user_id: string;
-  role: WorkspaceRole;  // Reuse existing WorkspaceRole type
+  role: WorkspaceRole; // Reuse existing WorkspaceRole type
 }
 
 export interface UpdateConversationMembersRequest {
@@ -2315,7 +2396,12 @@ export type UserSpaceWorkspaceScmProvider = 'github' | 'gitlab' | 'generic';
 export type UserSpaceWorkspaceScmDirection = 'import' | 'export';
 export type UserSpaceWorkspaceScmRemoteRole = 'upstream' | 'publish';
 export type UserSpaceWorkspaceScmAutoSyncPolicy = 'manual' | 'auto_push';
-export type UserSpaceWorkspaceScmPreviewState = 'missing_remote' | 'missing_branch' | 'up_to_date' | 'safe' | 'destructive';
+export type UserSpaceWorkspaceScmPreviewState =
+  | 'missing_remote'
+  | 'missing_branch'
+  | 'up_to_date'
+  | 'safe'
+  | 'destructive';
 
 export interface UserSpaceWorkspaceScmStatus {
   connected: boolean;
@@ -2743,7 +2829,11 @@ export interface DeleteUserSpaceObjectStorageBucketResponse {
 
 export type MountSyncStatus = 'pending' | 'syncing' | 'synced' | 'error';
 export type WorkspaceMountSyncMode = 'merge' | 'source_authoritative' | 'target_authoritative';
-export type MountSourceUnavailableKind = 'cloud_auth' | 'cloud_unavailable' | 'filesystem_unavailable' | 'mount_source_unavailable';
+export type MountSourceUnavailableKind =
+  | 'cloud_auth'
+  | 'cloud_unavailable'
+  | 'filesystem_unavailable'
+  | 'mount_source_unavailable';
 
 export interface UserspaceMountSource {
   id: string;
@@ -3390,7 +3480,12 @@ export interface UserSpaceSharedPreviewResponse {
   live_data_connections?: UserSpaceLiveDataConnection[] | null;
 }
 
-export type UserSpaceRuntimeSessionState = 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
+export type UserSpaceRuntimeSessionState =
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'stopped'
+  | 'error';
 export type UserSpaceRuntimeOperationPhase =
   | 'queued'
   | 'provisioning'
@@ -3473,7 +3568,10 @@ export interface UserSpacePreviewLaunchRequest {
 
 export type UserSpacePreviewRoutingMode = 'subdomain' | 'root_proxy';
 export type UserSpacePreviewWarningSource = 'configured' | 'derived' | 'debug_default';
-export type UserSpacePreviewWarningCode = 'preview_dns_unresolvable' | 'preview_host_unreachable' | 'preview_dev_domain_outside_debug';
+export type UserSpacePreviewWarningCode =
+  | 'preview_dns_unresolvable'
+  | 'preview_host_unreachable'
+  | 'preview_dev_domain_outside_debug';
 
 export interface UserSpacePreviewWarning {
   issue_code: UserSpacePreviewWarningCode;
@@ -3638,7 +3736,13 @@ export interface ConversationExportTableData {
   rows: unknown[];
 }
 
-export type ConversationExportSourceKind = 'table' | 'chart' | 'datatable' | 'live_table' | 'content' | 'binary';
+export type ConversationExportSourceKind =
+  | 'table'
+  | 'chart'
+  | 'datatable'
+  | 'live_table'
+  | 'content'
+  | 'binary';
 
 export interface CreateConversationExportRequest {
   filename: string;
@@ -3722,9 +3826,9 @@ export interface AvailableModel {
   id: string;
   name: string;
   provider: LlmProviderWire;
-  context_limit: number;  // Max context window tokens
-  max_output_tokens?: number;  // Max output tokens for this model
-  group?: string;  // Optional group for UI organization
+  context_limit: number; // Max context window tokens
+  max_output_tokens?: number; // Max output tokens for this model
+  group?: string; // Optional group for UI organization
   model_provider?: string;
   model_provider_label?: string;
   model_family?: string;
@@ -3763,8 +3867,8 @@ export interface AvailableModelsResponse {
   automatic_default_model?: string | null;
   current_model: string | null;
   discovered_model_identifiers?: string[];
-  allowed_models: string[];  // List of allowed model IDs (for settings UI)
-  allowed_openapi_models: string[];  // Separately curated OpenAPI model list
+  allowed_models: string[]; // List of allowed model IDs (for settings UI)
+  allowed_openapi_models: string[]; // Separately curated OpenAPI model list
   models_loading?: boolean;
   copilot_refresh_in_progress?: boolean;
   provider_states?: ProviderModelState[];
@@ -3777,11 +3881,11 @@ export interface AvailableModelsResponse {
 // =============================================================================
 
 export interface MemoryStats {
-  rss_mb: number;  // Resident Set Size (actual RAM used)
-  vms_mb: number;  // Virtual Memory Size
-  percent: number;  // Percentage of total system RAM
-  available_mb: number;  // Available system RAM
-  total_mb: number;  // Total system RAM
+  rss_mb: number; // Resident Set Size (actual RAM used)
+  vms_mb: number; // Virtual Memory Size
+  percent: number; // Percentage of total system RAM
+  available_mb: number; // Available system RAM
+  total_mb: number; // Total system RAM
 }
 
 export interface IndexLoadingDetail {
@@ -3814,15 +3918,21 @@ export interface HealthResponse {
 // Chat Task Types
 // =============================================================================
 
-export type ChatTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export type ChatTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
 
 export interface ChatTaskStreamingState {
   content: string;
   events: MessageEvent[];
   tool_calls: ToolCallRecord[];
   hit_max_iterations?: boolean;
-  version: number;  // Increments on each update for efficient polling
-  content_length: number;  // Quick change detection
+  version: number; // Increments on each update for efficient polling
+  content_length: number; // Quick change detection
 }
 
 export interface ChatTask {

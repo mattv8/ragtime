@@ -29,7 +29,9 @@ export function UserSpaceSharedView({
   onLoginSuccess,
 }: UserSpaceSharedViewProps) {
   const [sharePasswordDraft, setSharePasswordDraft] = useState('');
-  const [submittedSharePassword, setSubmittedSharePassword] = useState<string | undefined>(undefined);
+  const [submittedSharePassword, setSubmittedSharePassword] = useState<string | undefined>(
+    undefined,
+  );
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,14 +43,23 @@ export function UserSpaceSharedView({
       setLoading(true);
       try {
         const launch = shareToken
-          ? await api.launchUserSpaceSharedPreview(shareToken, {
-            path: '/',
-            parent_origin: window.location.origin,
-          }, submittedSharePassword)
-          : await api.launchUserSpaceSharedPreviewBySlug(ownerUsername as string, shareSlug as string, {
-            path: '/',
-            parent_origin: window.location.origin,
-          }, submittedSharePassword);
+          ? await api.launchUserSpaceSharedPreview(
+              shareToken,
+              {
+                path: '/',
+                parent_origin: window.location.origin,
+              },
+              submittedSharePassword,
+            )
+          : await api.launchUserSpaceSharedPreviewBySlug(
+              ownerUsername as string,
+              shareSlug as string,
+              {
+                path: '/',
+                parent_origin: window.location.origin,
+              },
+              submittedSharePassword,
+            );
         if (cancelled) return;
         setPasswordRequired(false);
         setError(null);
@@ -56,7 +67,10 @@ export function UserSpaceSharedView({
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Failed to load shared preview';
-        if (message.toLowerCase().includes('password required') || message.toLowerCase().includes('invalid password')) {
+        if (
+          message.toLowerCase().includes('password required') ||
+          message.toLowerCase().includes('invalid password')
+        ) {
           setPasswordRequired(true);
         } else {
           setPasswordRequired(false);
@@ -84,8 +98,13 @@ export function UserSpaceSharedView({
       return (
         <div className="userspace-shared-layout">
           <div className="userspace-shared-status">
-            <div className="userspace-share-access-row" style={{ maxWidth: 420, margin: '0 auto', textAlign: 'left' }}>
-              <label htmlFor="userspace-shared-password" className="userspace-share-label">Enter share password</label>
+            <div
+              className="userspace-share-access-row"
+              style={{ maxWidth: 420, margin: '0 auto', textAlign: 'left' }}
+            >
+              <label htmlFor="userspace-shared-password" className="userspace-share-label">
+                Enter share password
+              </label>
               <input
                 id="userspace-shared-password"
                 type="password"
@@ -118,7 +137,11 @@ export function UserSpaceSharedView({
         />
       );
     }
-    return <div className="userspace-shared-status userspace-error">{error || 'Shared dashboard not found'}</div>;
+    return (
+      <div className="userspace-shared-status userspace-error">
+        {error || 'Shared dashboard not found'}
+      </div>
+    );
   }
 
   return <div className="userspace-shared-status">Opening shared preview...</div>;

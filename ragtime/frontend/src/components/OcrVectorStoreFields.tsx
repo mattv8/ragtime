@@ -10,7 +10,14 @@ export const OCR_PROVIDER_LABELS: Record<OcrProvider, string> = {
   llama_cpp: 'llama.cpp',
 };
 
-const OCR_PROVIDERS: OcrProvider[] = ['ollama', 'openai', 'openrouter', 'omlx', 'lmstudio', 'llama_cpp'];
+const OCR_PROVIDERS: OcrProvider[] = [
+  'ollama',
+  'openai',
+  'openrouter',
+  'omlx',
+  'lmstudio',
+  'llama_cpp',
+];
 
 interface OcrVectorStoreFieldsProps {
   isLoading: boolean;
@@ -84,113 +91,113 @@ export function OcrVectorStoreFields({
 
   return (
     <>
-    <div className="form-row" style={{ marginBottom: '16px' }}>
-      <div className="form-group" style={{ flex: 1 }}>
-        <label>OCR Mode</label>
-        <select
-          value={ocrMode}
-          onChange={handleOcrModeChange}
-          disabled={isLoading}
-        >
-          <option value="disabled">Disabled - Skip image files</option>
-          <option value="tesseract">Tesseract - Fast traditional OCR</option>
-          {canUseVision && (
-            <option value="vision">Vision Model - Semantic OCR</option>
-          )}
-        </select>
-        <p className="field-help">
-          {isVisionMode
-            ? 'Uses a vision-capable model for semantic text extraction from images.'
-            : ocrMode === 'tesseract'
-            ? 'Uses Tesseract for fast basic text extraction from images.'
-            : 'Image files (PNG, JPG, etc.) will be skipped during indexing.'}
-        </p>
-      </div>
-
-      <div className="form-group" style={{ flex: 1 }}>
-        <label>Vector Store</label>
-        <select
-          value={vectorStoreType}
-          onChange={handleVectorStoreChange}
-          disabled={isLoading || vectorStoreDisabled}
-        >
-          <option value="faiss">FAISS (In-memory)</option>
-          <option value="pgvector">pgvector (PostgreSQL)</option>
-        </select>
-        <p className="field-help">
-          {vectorStoreType === 'pgvector'
-            ? 'pgvector stores embeddings in PostgreSQL. Persistent and scalable. Recommended for larger indexes.'
-            : 'FAISS stores embeddings in memory with disk persistence. Faster searches but uses more RAM.'}
-          {vectorStoreDisabled && ' (Locked to match existing indexes)'}
-        </p>
-      </div>
-    </div>
-    {isVisionMode && (
       <div className="form-row" style={{ marginBottom: '16px' }}>
         <div className="form-group" style={{ flex: 1 }}>
-          <label>Vision Provider</label>
-          <select
-            value={ocrProvider || ''}
-            onChange={handleProviderChange}
-            disabled={isLoading || !setOcrProvider}
-          >
-            <option value="">Use global default</option>
-            {OCR_PROVIDERS.map((provider) => (
-              <option key={provider} value={provider}>{OCR_PROVIDER_LABELS[provider]}</option>
-            ))}
+          <label>OCR Mode</label>
+          <select value={ocrMode} onChange={handleOcrModeChange} disabled={isLoading}>
+            <option value="disabled">Disabled - Skip image files</option>
+            <option value="tesseract">Tesseract - Fast traditional OCR</option>
+            {canUseVision && <option value="vision">Vision Model - Semantic OCR</option>}
           </select>
           <p className="field-help">
-            {ocrProvider
-              ? 'Override the vision provider for this index only.'
-              : defaultOcrProviderLabel
-                ? `Uses the global default (${defaultOcrProviderLabel}${defaultOcrVisionModelLabel ? ` / ${defaultOcrVisionModelLabel}` : ''}).`
-                : 'Uses the provider and model configured in global OCR settings.'}
+            {isVisionMode
+              ? 'Uses a vision-capable model for semantic text extraction from images.'
+              : ocrMode === 'tesseract'
+                ? 'Uses Tesseract for fast basic text extraction from images.'
+                : 'Image files (PNG, JPG, etc.) will be skipped during indexing.'}
           </p>
         </div>
-        {ocrProvider && (
+
+        <div className="form-group" style={{ flex: 1 }}>
+          <label>Vector Store</label>
+          <select
+            value={vectorStoreType}
+            onChange={handleVectorStoreChange}
+            disabled={isLoading || vectorStoreDisabled}
+          >
+            <option value="faiss">FAISS (In-memory)</option>
+            <option value="pgvector">pgvector (PostgreSQL)</option>
+          </select>
+          <p className="field-help">
+            {vectorStoreType === 'pgvector'
+              ? 'pgvector stores embeddings in PostgreSQL. Persistent and scalable. Recommended for larger indexes.'
+              : 'FAISS stores embeddings in memory with disk persistence. Faster searches but uses more RAM.'}
+            {vectorStoreDisabled && ' (Locked to match existing indexes)'}
+          </p>
+        </div>
+      </div>
+      {isVisionMode && (
+        <div className="form-row" style={{ marginBottom: '16px' }}>
           <div className="form-group" style={{ flex: 1 }}>
-            <label>Vision Model</label>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <select
-                value={ocrVisionModel}
-                onChange={(e) => setOcrVisionModel?.(e.target.value)}
-                disabled={isLoading || !setOcrVisionModel}
-                style={{ flex: 1 }}
-              >
-                <option value="">Use global default</option>
-                {ocrVisionModel && !visionModels.some((model) => model.name === ocrVisionModel) && (
-                  <option value={ocrVisionModel}>{ocrVisionModel}</option>
-                )}
-                {visionModels.map((model) => (
-                  <option key={`${model.provider || ocrProvider}:${model.name}`} value={model.name}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
-              {onRefreshVisionModels && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-secondary"
-                  onClick={onRefreshVisionModels}
-                  disabled={isLoading || visionModelsLoading}
-                >
-                  {visionModelsLoading ? 'Loading...' : 'Load Models'}
-                </button>
-              )}
-            </div>
+            <label>Vision Provider</label>
+            <select
+              value={ocrProvider || ''}
+              onChange={handleProviderChange}
+              disabled={isLoading || !setOcrProvider}
+            >
+              <option value="">Use global default</option>
+              {OCR_PROVIDERS.map((provider) => (
+                <option key={provider} value={provider}>
+                  {OCR_PROVIDER_LABELS[provider]}
+                </option>
+              ))}
+            </select>
             <p className="field-help">
-              {visionModelsError
-                ? visionModelsError
-                : ocrVisionModel
-                  ? 'Custom vision model for this index.'
-                  : defaultOcrVisionModelLabel
-                    ? `Uses the global default model (${defaultOcrVisionModelLabel}).`
-                    : 'Leave blank to use the global OCR model for this provider.'}
+              {ocrProvider
+                ? 'Override the vision provider for this index only.'
+                : defaultOcrProviderLabel
+                  ? `Uses the global default (${defaultOcrProviderLabel}${defaultOcrVisionModelLabel ? ` / ${defaultOcrVisionModelLabel}` : ''}).`
+                  : 'Uses the provider and model configured in global OCR settings.'}
             </p>
           </div>
-        )}
-      </div>
-    )}
+          {ocrProvider && (
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Vision Model</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <select
+                  value={ocrVisionModel}
+                  onChange={(e) => setOcrVisionModel?.(e.target.value)}
+                  disabled={isLoading || !setOcrVisionModel}
+                  style={{ flex: 1 }}
+                >
+                  <option value="">Use global default</option>
+                  {ocrVisionModel &&
+                    !visionModels.some((model) => model.name === ocrVisionModel) && (
+                      <option value={ocrVisionModel}>{ocrVisionModel}</option>
+                    )}
+                  {visionModels.map((model) => (
+                    <option
+                      key={`${model.provider || ocrProvider}:${model.name}`}
+                      value={model.name}
+                    >
+                      {model.name}
+                    </option>
+                  ))}
+                </select>
+                {onRefreshVisionModels && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={onRefreshVisionModels}
+                    disabled={isLoading || visionModelsLoading}
+                  >
+                    {visionModelsLoading ? 'Loading...' : 'Load Models'}
+                  </button>
+                )}
+              </div>
+              <p className="field-help">
+                {visionModelsError
+                  ? visionModelsError
+                  : ocrVisionModel
+                    ? 'Custom vision model for this index.'
+                    : defaultOcrVisionModelLabel
+                      ? `Uses the global default model (${defaultOcrVisionModelLabel}).`
+                      : 'Leave blank to use the global OCR model for this provider.'}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

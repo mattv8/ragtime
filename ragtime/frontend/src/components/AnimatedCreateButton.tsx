@@ -7,7 +7,12 @@ interface AnimatedCreateButtonProps {
   className?: string;
 }
 
-export function AnimatedCreateButton({ isExpanded, onClick, label, className = '' }: AnimatedCreateButtonProps) {
+export function AnimatedCreateButton({
+  isExpanded,
+  onClick,
+  label,
+  className = '',
+}: AnimatedCreateButtonProps) {
   if (isExpanded) {
     return (
       <button
@@ -22,11 +27,7 @@ export function AnimatedCreateButton({ isExpanded, onClick, label, className = '
   }
 
   return (
-    <button
-      type="button"
-      className={`btn ${className}`}
-      onClick={onClick}
-    >
+    <button type="button" className={`btn ${className}`} onClick={onClick}>
       {label}
     </button>
   );

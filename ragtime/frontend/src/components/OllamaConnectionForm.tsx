@@ -85,7 +85,11 @@ export function OllamaConnectionForm({
               {modelInfo.size ? ` (${(modelInfo.size / 1024 / 1024 / 1024).toFixed(1)}GB)` : ''}
               {modelInfo.dimensions ? ` [${modelInfo.dimensions} dims]` : ''}
               {modelInfo.context_limit ? ` [${modelInfo.context_limit.toLocaleString()} ctx]` : ''}
-              {modelInfo.loaded === true ? ' [loaded]' : modelInfo.loaded === false ? ' [not loaded]' : ''}
+              {modelInfo.loaded === true
+                ? ' [loaded]'
+                : modelInfo.loaded === false
+                  ? ' [not loaded]'
+                  : ''}
             </option>
           ))}
         </select>
@@ -154,7 +158,8 @@ export function OllamaConnectionForm({
       )}
       {error && <p className="field-error">{error}</p>}
       <p className="field-help">
-        When running Ragtime in Docker, use <code>host.docker.internal</code> for a {providerLabel} server on the host.
+        When running Ragtime in Docker, use <code>host.docker.internal</code> for a {providerLabel}{' '}
+        server on the host.
       </p>
 
       {/* Model Selection */}
@@ -171,7 +176,7 @@ export function OllamaConnectionForm({
         <p className="field-help">
           {connected
             ? (() => {
-                const selectedModel = models.find(m => (m.id || m.name) === model);
+                const selectedModel = models.find((m) => (m.id || m.name) === model);
                 const dimInfo = selectedModel?.dimensions
                   ? ` Selected model outputs ${selectedModel.dimensions}-dimension vectors.`
                   : '';

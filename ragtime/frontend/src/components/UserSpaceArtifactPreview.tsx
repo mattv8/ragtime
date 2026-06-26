@@ -6,9 +6,7 @@ import {
   USERSPACE_EXEC_BRIDGE,
   USERSPACE_EXEC_MESSAGE_TYPES,
 } from '@/utils/userspacePreview/constants';
-import {
-  buildUserSpacePreviewSandboxAttribute,
-} from '@/utils/userspacePreview/sandbox';
+import { buildUserSpacePreviewSandboxAttribute } from '@/utils/userspacePreview/sandbox';
 
 interface UserSpaceArtifactPreviewProps {
   entryPath: string;
@@ -58,7 +56,9 @@ export function UserSpaceArtifactPreview({
   const [pendingExecutions, setPendingExecutions] = useState(0);
   const [pendingNetworkRequests, setPendingNetworkRequests] = useState(0);
   const [sandboxFlags, setSandboxFlags] = useState<string[]>([]);
-  const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>(
+    'loading',
+  );
   const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
   const [liveDataExecutionError, setLiveDataExecutionError] = useState<string | null>(null);
   const [activePreviewNotice, setActivePreviewNotice] = useState<{
@@ -73,7 +73,10 @@ export function UserSpaceArtifactPreview({
     try {
       const parsed = new URL(raw);
       let port = parsed.port;
-      if ((parsed.protocol === 'https:' && port === '443') || (parsed.protocol === 'http:' && port === '80')) {
+      if (
+        (parsed.protocol === 'https:' && port === '443') ||
+        (parsed.protocol === 'http:' && port === '80')
+      ) {
         port = '';
       }
       return `${parsed.protocol}//${parsed.hostname}${port ? `:${port}` : ''}`;
@@ -99,16 +102,26 @@ export function UserSpaceArtifactPreview({
     [expectedPreviewOrigin, normalizeOrigin],
   );
 
-  const getTimeoutMessage = useCallback((result: { error?: string | null; error_kind?: string | null; timeout_seconds?: number | null } | null | undefined): string | null => {
-    if (!result) return null;
-    const rawError = typeof result.error === 'string' ? result.error.trim() : '';
-    const timeoutSeconds = typeof result.timeout_seconds === 'number' ? result.timeout_seconds : null;
-    const looksTimedOut = result.error_kind === 'timeout'
-      || /(?:timed out|timeout|statement timeout)/i.test(rawError);
-    if (!looksTimedOut) return null;
-    const timeoutText = timeoutSeconds != null ? ` of ${timeoutSeconds}s` : '';
-    return rawError || `Live data query exceeded the platform-configured timeout${timeoutText}.`;
-  }, []);
+  const getTimeoutMessage = useCallback(
+    (
+      result:
+        | { error?: string | null; error_kind?: string | null; timeout_seconds?: number | null }
+        | null
+        | undefined,
+    ): string | null => {
+      if (!result) return null;
+      const rawError = typeof result.error === 'string' ? result.error.trim() : '';
+      const timeoutSeconds =
+        typeof result.timeout_seconds === 'number' ? result.timeout_seconds : null;
+      const looksTimedOut =
+        result.error_kind === 'timeout' ||
+        /(?:timed out|timeout|statement timeout)/i.test(rawError);
+      if (!looksTimedOut) return null;
+      const timeoutText = timeoutSeconds != null ? ` of ${timeoutSeconds}s` : '';
+      return rawError || `Live data query exceeded the platform-configured timeout${timeoutText}.`;
+    },
+    [],
+  );
 
   const handleIframeMessage = useCallback(
     async (event: MessageEvent) => {
@@ -118,8 +131,8 @@ export function UserSpaceArtifactPreview({
       const normalizedEventOrigin = normalizeOrigin(event.origin);
 
       const isExpectedOrigin =
-        event.origin === 'null'
-        || (normalizedExpectedPreviewOrigin
+        event.origin === 'null' ||
+        (normalizedExpectedPreviewOrigin
           ? normalizedEventOrigin === normalizedExpectedPreviewOrigin
           : false);
       if (!isExpectedOrigin) return;
@@ -127,9 +140,7 @@ export function UserSpaceArtifactPreview({
       if (!event.data || event.data.bridge !== USERSPACE_EXEC_BRIDGE) return;
 
       if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.SANDBOX_BLOCKED) {
-        const message = typeof event.data.message === 'string'
-          ? event.data.message.trim()
-          : '';
+        const message = typeof event.data.message === 'string' ? event.data.message.trim() : '';
         setSandboxBlockedMessage(
           message || 'This action was blocked by the current preview sandbox policy.',
         );
@@ -140,14 +151,19 @@ export function UserSpaceArtifactPreview({
         const timeoutMessage = getTimeoutMessage({
           error: typeof event.data.error === 'string' ? event.data.error : null,
           error_kind: typeof event.data.error_kind === 'string' ? event.data.error_kind : null,
-          timeout_seconds: typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null,
+          timeout_seconds:
+            typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null,
         });
-        const warning = typeof event.data.error === 'string' && event.data.error.trim()
-          ? event.data.error.trim()
-          : null;
+        const warning =
+          typeof event.data.error === 'string' && event.data.error.trim()
+            ? event.data.error.trim()
+            : null;
         if (timeoutMessage) {
           setLiveDataExecutionError(timeoutMessage);
-          onLiveDataTimeout?.(timeoutMessage, typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null);
+          onLiveDataTimeout?.(
+            timeoutMessage,
+            typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null,
+          );
         } else {
           setLiveDataExecutionError(null);
         }
@@ -165,9 +181,8 @@ export function UserSpaceArtifactPreview({
       }
 
       if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.NETWORK_ACTIVITY) {
-        const pending = typeof event.data.pending === 'number'
-          ? Math.max(0, event.data.pending)
-          : 0;
+        const pending =
+          typeof event.data.pending === 'number' ? Math.max(0, event.data.pending) : 0;
         setPendingNetworkRequests(pending);
         return;
       }
@@ -213,16 +228,12 @@ export function UserSpaceArtifactPreview({
       try {
         let result: ExecuteComponentResponse;
         if (shareToken) {
-          result = await api.executeUserSpaceSharedComponent(
-            shareToken,
-            { component_id, request },
-          );
+          result = await api.executeUserSpaceSharedComponent(shareToken, { component_id, request });
         } else if (ownerUsername && shareSlug) {
-          result = await api.executeUserSpaceSharedComponentBySlug(
-            ownerUsername,
-            shareSlug,
-            { component_id, request },
-          );
+          result = await api.executeUserSpaceSharedComponentBySlug(ownerUsername, shareSlug, {
+            component_id,
+            request,
+          });
         } else {
           result = await api.executeWorkspaceComponent(workspaceId!, {
             component_id,
@@ -258,7 +269,18 @@ export function UserSpaceArtifactPreview({
         });
       }
     },
-    [normalizeOrigin, normalizedExpectedPreviewOrigin, workspaceId, shareToken, ownerUsername, shareSlug, getTimeoutMessage, onLiveDataWarningChange, onLiveDataTimeout, onPreviewSessionExpired],
+    [
+      normalizeOrigin,
+      normalizedExpectedPreviewOrigin,
+      workspaceId,
+      shareToken,
+      ownerUsername,
+      shareSlug,
+      getTimeoutMessage,
+      onLiveDataWarningChange,
+      onLiveDataTimeout,
+      onPreviewSessionExpired,
+    ],
   );
 
   useEffect(() => {
@@ -274,10 +296,13 @@ export function UserSpaceArtifactPreview({
     onNetworkActivityChange?.(pendingNetworkRequests > 0);
   }, [pendingNetworkRequests, onNetworkActivityChange]);
 
-  useEffect(() => () => {
-    onExecutionStateChange?.(false);
-    onNetworkActivityChange?.(false);
-  }, [onExecutionStateChange, onNetworkActivityChange]);
+  useEffect(
+    () => () => {
+      onExecutionStateChange?.(false);
+      onNetworkActivityChange?.(false);
+    },
+    [onExecutionStateChange, onNetworkActivityChange],
+  );
 
   useEffect(() => {
     setPendingExecutions(0);
@@ -294,9 +319,7 @@ export function UserSpaceArtifactPreview({
 
     setActivePreviewNotice(previewNotice);
     const timer = window.setTimeout(() => {
-      setActivePreviewNotice((current) => (
-        current?.id === previewNotice.id ? null : current
-      ));
+      setActivePreviewNotice((current) => (current?.id === previewNotice.id ? null : current));
     }, 6000);
 
     return () => {
@@ -307,7 +330,8 @@ export function UserSpaceArtifactPreview({
   useEffect(() => {
     let cancelled = false;
 
-    api.getUserSpacePreviewSettings()
+    api
+      .getUserSpacePreviewSettings()
       .then((response) => {
         if (!cancelled) {
           setSandboxFlags(response.userspace_preview_sandbox_flags);
@@ -329,7 +353,10 @@ export function UserSpaceArtifactPreview({
   const unavailableMessage = useMemo(() => {
     if (runtimePreviewUrl) {
       if (runtimeAvailable === false) {
-        return runtimeError || 'Runtime preview is unavailable. Start or restart the workspace runtime and try again.';
+        return (
+          runtimeError ||
+          'Runtime preview is unavailable. Start or restart the workspace runtime and try again.'
+        );
       }
       return null;
     }
@@ -337,11 +364,12 @@ export function UserSpaceArtifactPreview({
   }, [runtimeError, runtimeAvailable, runtimePreviewUrl]);
 
   const sandboxAttribute = useMemo(
-    () => buildUserSpacePreviewSandboxAttribute(
-      sandboxFlags.includes('allow-top-navigation-by-user-activation')
-        ? sandboxFlags
-        : [...sandboxFlags, 'allow-top-navigation-by-user-activation'],
-    ),
+    () =>
+      buildUserSpacePreviewSandboxAttribute(
+        sandboxFlags.includes('allow-top-navigation-by-user-activation')
+          ? sandboxFlags
+          : [...sandboxFlags, 'allow-top-navigation-by-user-activation'],
+      ),
     [sandboxFlags],
   );
 

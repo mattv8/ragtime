@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { AuthStatus } from '@/types';
-import { API_KEY_INFO_HIGHLIGHT, renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
+import {
+  API_KEY_INFO_HIGHLIGHT,
+  renderApiKeySecurityWarning,
+  renderHttpSecurityWarning,
+} from './shared/securityWarnings';
 
 const DISMISS_KEY = 'ragtime_security_banner_dismissed';
 const DISMISSED_NOTICES_KEY = 'ragtime_security_banner_dismissed_notices';
@@ -66,7 +70,12 @@ function NoticeBanner({ notice, onDismiss, onNavigateToSettings }: NoticeBannerP
   );
 }
 
-export function SecurityBanner({ authStatus, isAdmin, hidden, onNavigateToSettings }: SecurityBannerProps) {
+export function SecurityBanner({
+  authStatus,
+  isAdmin,
+  hidden,
+  onNavigateToSettings,
+}: SecurityBannerProps) {
   const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>([]);
   const [showBrandingNotice, setShowBrandingNotice] = useState(false);
 
@@ -142,8 +151,8 @@ export function SecurityBanner({ authStatus, isAdmin, hidden, onNavigateToSettin
       title: 'Security',
       message: (
         <>
-          <code>ALLOWED_ORIGINS=*</code> allows requests from any website.
-          Consider restricting to specific domains.
+          <code>ALLOWED_ORIGINS=*</code> allows requests from any website. Consider restricting to
+          specific domains.
         </>
       ),
       highlightSetting: API_KEY_INFO_HIGHLIGHT,
@@ -169,7 +178,8 @@ export function SecurityBanner({ authStatus, isAdmin, hidden, onNavigateToSettin
           title: 'Branding',
           message: (
             <>
-              Server branding changed: UI updates immediately, but restart Ragtime to fully apply MCP server identity changes.
+              Server branding changed: UI updates immediately, but restart Ragtime to fully apply
+              MCP server identity changes.
             </>
           ),
           highlightSetting: 'server_branding',

@@ -17,7 +17,10 @@ interface MemberManagementModalProps {
   allUsers: UserDirectoryEntry[];
   ownerId: string;
   entityType?: 'workspace' | 'conversation';
-  formatUserLabel: (user?: Pick<UserDirectoryEntry, 'username' | 'display_name'> | null, fallbackId?: string) => string;
+  formatUserLabel: (
+    user?: Pick<UserDirectoryEntry, 'username' | 'display_name'> | null,
+    fallbackId?: string,
+  ) => string;
   saving?: boolean;
 }
 
@@ -42,17 +45,20 @@ export function MemberManagementModal({
     }
   }, [isOpen, members, ownerId]);
 
-  const handleAddMember = useCallback((userId: string) => {
-    if (pendingMembers.some((m) => m.user_id === userId)) return;
-    setPendingMembers((prev) => [...prev, { user_id: userId, role: 'viewer' }]);
-  }, [pendingMembers]);
+  const handleAddMember = useCallback(
+    (userId: string) => {
+      if (pendingMembers.some((m) => m.user_id === userId)) return;
+      setPendingMembers((prev) => [...prev, { user_id: userId, role: 'viewer' }]);
+    },
+    [pendingMembers],
+  );
 
   const handleRemoveMember = useCallback((userId: string) => {
     setPendingMembers((prev) => prev.filter((m) => m.user_id !== userId));
   }, []);
 
   const handleChangeMemberRole = useCallback((userId: string, role: MemberRole) => {
-    setPendingMembers((prev) => prev.map((m) => m.user_id === userId ? { ...m, role } : m));
+    setPendingMembers((prev) => prev.map((m) => (m.user_id === userId ? { ...m, role } : m)));
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -72,10 +78,15 @@ export function MemberManagementModal({
 
   return (
     <div className="modal-overlay" onClick={handleClose}>
-      <div className="modal-content modal-small userspace-members-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content modal-small userspace-members-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <h3>Manage {entityLabel} Members</h3>
-          <button className="modal-close" onClick={handleClose} disabled={saving}>&times;</button>
+          <button className="modal-close" onClick={handleClose} disabled={saving}>
+            &times;
+          </button>
         </div>
         <div className="modal-body">
           <div className="userspace-members-list">
@@ -91,7 +102,11 @@ export function MemberManagementModal({
               return (
                 <div key={member.user_id} className="userspace-member-row">
                   <span>{formatUserLabel(user, member.user_id)}</span>
-                  <div className="userspace-member-role-toggle" role="group" aria-label="Member role">
+                  <div
+                    className="userspace-member-role-toggle"
+                    role="group"
+                    aria-label="Member role"
+                  >
                     <button
                       type="button"
                       className={`userspace-member-role-option ${member.role === 'editor' ? 'active' : ''}`}
@@ -136,11 +151,17 @@ export function MemberManagementModal({
                 }}
                 disabled={saving}
               >
-                <option value="" disabled>Add a member...</option>
+                <option value="" disabled>
+                  Add a member...
+                </option>
                 {allUsers
-                  .filter((u) => u.id !== ownerId && !pendingMembers.some((m) => m.user_id === u.id))
+                  .filter(
+                    (u) => u.id !== ownerId && !pendingMembers.some((m) => m.user_id === u.id),
+                  )
                   .map((u) => (
-                    <option key={u.id} value={u.id}>{formatUserLabel(u, u.id)}</option>
+                    <option key={u.id} value={u.id}>
+                      {formatUserLabel(u, u.id)}
+                    </option>
                   ))}
               </select>
             </div>

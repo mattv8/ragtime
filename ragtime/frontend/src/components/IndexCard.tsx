@@ -123,10 +123,7 @@ export function IndexCard({
   };
 
   return (
-    <Component
-      className={`index-item ${!enabled ? 'index-disabled' : ''} ${className}`}
-      id={id}
-    >
+    <Component className={`index-item ${!enabled ? 'index-disabled' : ''} ${className}`} id={id}>
       <div className="index-info">
         {/* Header Row: Title and Actions */}
         <div className="index-title-row">
@@ -157,7 +154,10 @@ export function IndexCard({
                   <button
                     type="button"
                     className="inline-edit-btn"
-                    onClick={(e) => { e.stopPropagation(); handleStartEdit('title'); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStartEdit('title');
+                    }}
                     title="Edit name"
                   >
                     <Icon name="pencil" size={12} />
@@ -169,20 +169,20 @@ export function IndexCard({
 
           {/* Actions moved here */}
           <div className="index-actions">
-             {actions}
-             <div className="index-toggle">
-                <label
-                  className="toggle-switch"
-                  title={toggleTitle || (enabled ? 'Enabled' : 'Disabled')}
-                >
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={(e) => onToggle(e.target.checked)}
-                  />
-                  <span className="toggle-slider"></span>
-                </label>
-             </div>
+            {actions}
+            <div className="index-toggle">
+              <label
+                className="toggle-switch"
+                title={toggleTitle || (enabled ? 'Enabled' : 'Disabled')}
+              >
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(e) => onToggle(e.target.checked)}
+                />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -212,17 +212,25 @@ export function IndexCard({
                 onClick={onEditDescription ? () => handleStartEdit('description') : undefined}
               >
                 {description ? (
-                  <p className="index-description truncated" title="Click to edit and view full description">
+                  <p
+                    className="index-description truncated"
+                    title="Click to edit and view full description"
+                  >
                     {description}
                   </p>
                 ) : (
-                  onEditDescription && <p className="index-description placeholder">Add description for AI...</p>
+                  onEditDescription && (
+                    <p className="index-description placeholder">Add description for AI...</p>
+                  )
                 )}
                 {onEditDescription && (
                   <button
                     type="button"
                     className="inline-edit-btn"
-                    onClick={(e) => { e.stopPropagation(); handleStartEdit('description'); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStartEdit('description');
+                    }}
                     title="Edit description"
                   >
                     <Icon name="pencil" size={12} />
@@ -236,7 +244,6 @@ export function IndexCard({
         {metaPills && <div className="index-meta-pills">{metaPills}</div>}
         {children}
       </div>
-
     </Component>
   );
 }

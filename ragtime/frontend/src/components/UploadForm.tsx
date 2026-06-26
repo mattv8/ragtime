@@ -34,7 +34,14 @@ function getIndexNameFromFile(filename: string): string {
     .toLowerCase();
 }
 
-export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysisComplete, onNavigateToSettings, existingVectorStoreType }: UploadFormProps) {
+export function UploadForm({
+  onJobCreated,
+  onCancel,
+  onAnalysisStart,
+  onAnalysisComplete,
+  onNavigateToSettings,
+  existingVectorStoreType,
+}: UploadFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [indexName, setIndexName] = useState('');
   const [description, setDescription] = useState('');
@@ -58,10 +65,16 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   const [ocrProvider, setOcrProvider] = useState<OcrProvider | null>(null);
   const [ocrVisionModel, setOcrVisionModel] = useState('');
   // Use existing vector store type if available (locked after first index), otherwise default to 'faiss'
-  const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(existingVectorStoreType ?? 'faiss');
+  const [vectorStoreType, setVectorStoreType] = useState<VectorStoreType>(
+    existingVectorStoreType ?? 'faiss',
+  );
   const [visionOcrAvailable] = useState(true);
-  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(undefined);
-  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(undefined);
+  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(
+    undefined,
+  );
+  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(
+    undefined,
+  );
   const [exclusionsApplied, setExclusionsApplied] = useState(false);
   const [patternsExpanded, setPatternsExpanded] = useState(false);
 
@@ -90,19 +103,22 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
 
   // Fetch global OCR default settings to show in helptext
   useEffect(() => {
-    api.getSettings().then((response) => {
-      const settings = response.settings;
-      if (settings.default_ocr_provider) {
-        setDefaultOcrProviderLabel(
-          OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider
-        );
-      }
-      if (settings.default_ocr_vision_model) {
-        setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
-      }
-    }).catch(() => {
-      // Silently fail - helptext will fall back to generic message
-    });
+    api
+      .getSettings()
+      .then((response) => {
+        const settings = response.settings;
+        if (settings.default_ocr_provider) {
+          setDefaultOcrProviderLabel(
+            OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider,
+          );
+        }
+        if (settings.default_ocr_vision_model) {
+          setDefaultOcrVisionModelLabel(settings.default_ocr_vision_model);
+        }
+      })
+      .catch(() => {
+        // Silently fail - helptext will fall back to generic message
+      });
   }, []);
 
   const handleDragOver = useCallback((e: DragEvent) => {
@@ -164,7 +180,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       setWizardStep('review');
       setStatus({ type: null, message: '' });
     } catch (err) {
-      setStatus({ type: 'error', message: `Analysis failed: ${err instanceof Error ? err.message : 'Request failed'}` });
+      setStatus({
+        type: 'error',
+        message: `Analysis failed: ${err instanceof Error ? err.message : 'Request failed'}`,
+      });
       setWizardStep('upload');
     } finally {
       setIsLoading(false);
@@ -177,7 +196,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       return;
     }
 
-    const currentExcludes = excludePatterns.split(',').map((s) => s.trim()).filter(Boolean);
+    const currentExcludes = excludePatterns
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const newExcludes = [...new Set([...currentExcludes, ...analysisResult.suggested_exclusions])];
     setExcludePatterns(newExcludes.join(','));
     setExclusionsApplied(true);
@@ -230,7 +252,10 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       setStatus({ type: 'success', message: successMessage });
       onJobCreated();
     } catch (err) {
-      setStatus({ type: 'error', message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}` });
+      setStatus({
+        type: 'error',
+        message: `Error: ${err instanceof Error ? err.message : 'Upload failed'}`,
+      });
       setWizardStep('review');
     } finally {
       setIsLoading(false);
@@ -269,7 +294,9 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
       />
 
       <details style={{ marginBottom: '16px' }}>
-        <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>Advanced Options</summary>
+        <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+          Advanced Options
+        </summary>
         <IndexConfigFields
           isLoading={isLoading}
           filePatterns={filePatterns}
@@ -319,18 +346,29 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
         {file && (
           <>
             <p className="field-help" style={{ marginBottom: '16px' }}>
-              Index name will be derived from the archive filename. Click "Analyze" to preview the index before creating.
+              Index name will be derived from the archive filename. Click "Analyze" to preview the
+              index before creating.
             </p>
 
             {renderIndexConfigurationFields()}
 
             <div className="wizard-actions">
               {onCancel && (
-                <button type="button" className="btn btn-secondary" onClick={handleCancel} disabled={isLoading}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={handleCancel}
+                  disabled={isLoading}
+                >
                   Cancel
                 </button>
               )}
-              <button type="button" className="btn" onClick={handleAnalyze} disabled={isLoading || !file}>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleAnalyze}
+                disabled={isLoading || !file}
+              >
                 {isLoading ? 'Analyzing...' : 'Analyze Archive'}
               </button>
             </div>
@@ -346,9 +384,7 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
   if (wizardStep === 'review' && analysisResult) {
     return (
       <div>
-        <h4 style={{ marginBottom: '16px' }}>
-          Analysis Results for: {file?.name || 'Unknown'}
-        </h4>
+        <h4 style={{ marginBottom: '16px' }}>Analysis Results for: {file?.name || 'Unknown'}</h4>
 
         <WarningsBanner warnings={analysisResult.warnings} />
 
@@ -391,27 +427,37 @@ export function UploadForm({ onJobCreated, onCancel, onAnalysisStart, onAnalysis
             />
           </div>
 
-          <DescriptionField
-            value={description}
-            onChange={setDescription}
-            rows={2}
-            compact
-          />
+          <DescriptionField value={description} onChange={setDescription} rows={2} compact />
 
           {renderIndexConfigurationFields()}
         </details>
 
         {/* Wizard actions */}
         <div className="wizard-actions">
-          <button type="button" className="btn btn-secondary" onClick={handleBack} disabled={isLoading}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={handleBack}
+            disabled={isLoading}
+          >
             Back
           </button>
           {exclusionsApplied && (
-            <button type="button" className="btn btn-secondary" onClick={handleReanalyze} disabled={isLoading}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleReanalyze}
+              disabled={isLoading}
+            >
               Re-analyze
             </button>
           )}
-          <button type="button" className="btn" onClick={handleStartIndexing} disabled={isLoading || !indexName.trim()}>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleStartIndexing}
+            disabled={isLoading || !indexName.trim()}
+          >
             {isLoading ? 'Starting...' : 'Create Index'}
           </button>
         </div>

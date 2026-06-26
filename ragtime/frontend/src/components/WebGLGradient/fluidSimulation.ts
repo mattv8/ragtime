@@ -21,9 +21,9 @@
 import { bindFullscreenQuad, createFullscreenQuadBuffer, createProgram } from './glUtils';
 
 const SIM_RESOLUTION = 256;
-const CURL_RADIUS_TEXELS = 7.00;
+const CURL_RADIUS_TEXELS = 7.0;
 const CURL_STRENGTH = 30.0;
-const CURL_FORCE_CLAMP = 0.20;
+const CURL_FORCE_CLAMP = 0.2;
 const FLUID_PROGRAM_LOG_LABELS = {
   shaderCompile: 'Fluid shader compile error:',
   programLink: 'Fluid program link error:',
@@ -128,7 +128,12 @@ interface DoubleFBO {
   swap: () => void;
 }
 
-function createFBO(gl: WebGLRenderingContext, width: number, height: number, internalType: number): FBO | null {
+function createFBO(
+  gl: WebGLRenderingContext,
+  width: number,
+  height: number,
+  internalType: number,
+): FBO | null {
   const texture = gl.createTexture();
   if (!texture) return null;
   gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -157,16 +162,29 @@ function createFBO(gl: WebGLRenderingContext, width: number, height: number, int
   return { texture, framebuffer };
 }
 
-function createDoubleFBO(gl: WebGLRenderingContext, width: number, height: number, type: number): DoubleFBO | null {
+function createDoubleFBO(
+  gl: WebGLRenderingContext,
+  width: number,
+  height: number,
+  type: number,
+): DoubleFBO | null {
   const a = createFBO(gl, width, height, type);
   const b = createFBO(gl, width, height, type);
   if (!a || !b) return null;
   let read = a;
   let write = b;
   return {
-    get read() { return read; },
-    get write() { return write; },
-    swap() { const t = read; read = write; write = t; },
+    get read() {
+      return read;
+    },
+    get write() {
+      return write;
+    },
+    swap() {
+      const t = read;
+      read = write;
+      write = t;
+    },
   };
 }
 
@@ -187,9 +205,25 @@ export class FluidSimulation {
   private curlProgram: WebGLProgram;
   private quadBuffer: WebGLBuffer;
   private uniforms: {
-    advect: { velocity: WebGLUniformLocation | null; dt: WebGLUniformLocation | null; dissipation: WebGLUniformLocation | null };
-    splat: { target: WebGLUniformLocation | null; point: WebGLUniformLocation | null; force: WebGLUniformLocation | null; radius: WebGLUniformLocation | null; aspect: WebGLUniformLocation | null };
-    curl: { velocity: WebGLUniformLocation | null; texelSize: WebGLUniformLocation | null; dt: WebGLUniformLocation | null; strength: WebGLUniformLocation | null; forceClamp: WebGLUniformLocation | null };
+    advect: {
+      velocity: WebGLUniformLocation | null;
+      dt: WebGLUniformLocation | null;
+      dissipation: WebGLUniformLocation | null;
+    };
+    splat: {
+      target: WebGLUniformLocation | null;
+      point: WebGLUniformLocation | null;
+      force: WebGLUniformLocation | null;
+      radius: WebGLUniformLocation | null;
+      aspect: WebGLUniformLocation | null;
+    };
+    curl: {
+      velocity: WebGLUniformLocation | null;
+      texelSize: WebGLUniformLocation | null;
+      dt: WebGLUniformLocation | null;
+      strength: WebGLUniformLocation | null;
+      forceClamp: WebGLUniformLocation | null;
+    };
   };
   private pendingSplats: PointerSplat[] = [];
   /** Aspect ratio (width / height) used to keep splats circular on screen. */

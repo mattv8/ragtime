@@ -117,7 +117,9 @@ export function AuthAdminModalHost({
       const groups = await api.listAuthGroups();
       onAuthGroupsChange(groups);
     } catch (err) {
-      toastRef.current.error(err instanceof Error ? err.message : 'Failed to load Group Memberships');
+      toastRef.current.error(
+        err instanceof Error ? err.message : 'Failed to load Group Memberships',
+      );
     }
   }, [onAuthGroupsChange]);
 
@@ -179,7 +181,7 @@ export function AuthAdminModalHost({
     if (!isLocalManagedAuthGroup(group)) return;
     setInlineEditId(group.id);
     setInlineEditField(field);
-    setInlineEditValue(field === 'display_name' ? group.display_name : (group.description || ''));
+    setInlineEditValue(field === 'display_name' ? group.display_name : group.description || '');
   }, []);
 
   const handleSaveInlineEdit = async () => {
@@ -191,8 +193,10 @@ export function AuthAdminModalHost({
       return;
     }
 
-    const nextDisplayName = inlineEditField === 'display_name' ? inlineEditValue.trim() : group.display_name;
-    const nextDescription = inlineEditField === 'description' ? inlineEditValue : (group.description || '');
+    const nextDisplayName =
+      inlineEditField === 'display_name' ? inlineEditValue.trim() : group.display_name;
+    const nextDescription =
+      inlineEditField === 'description' ? inlineEditValue : group.description || '';
 
     if (nextDisplayName === group.display_name && nextDescription === (group.description || '')) {
       handleCancelInlineEdit();
@@ -207,7 +211,9 @@ export function AuthAdminModalHost({
         role: group.role || null,
         is_logon_group: Boolean(group.is_logon_group),
       });
-      onAuthGroupsChange(sortAuthGroupsByName(authGroups.map((g) => (g.id === updated.id ? updated : g))));
+      onAuthGroupsChange(
+        sortAuthGroupsByName(authGroups.map((g) => (g.id === updated.id ? updated : g))),
+      );
       toast.success('Auth group updated');
       handleCancelInlineEdit();
     } catch (err) {
@@ -266,7 +272,8 @@ export function AuthAdminModalHost({
     updates: Partial<Pick<AuthGroup, 'role' | 'is_logon_group'>>,
   ) => {
     let nextRole = updates.role !== undefined ? updates.role : group.role;
-    let nextIsLogonGroup = updates.is_logon_group !== undefined ? updates.is_logon_group : group.is_logon_group;
+    let nextIsLogonGroup =
+      updates.is_logon_group !== undefined ? updates.is_logon_group : group.is_logon_group;
 
     // Keep assignment state mutually exclusive: admin implies non-logon and vice versa.
     if (updates.role === 'admin') {
@@ -284,7 +291,11 @@ export function AuthAdminModalHost({
         role: nextRole || null,
         is_logon_group: Boolean(nextIsLogonGroup),
       });
-      onAuthGroupsChange(sortAuthGroupsByName(authGroups.map((candidate) => (candidate.id === updated.id ? updated : candidate))));
+      onAuthGroupsChange(
+        sortAuthGroupsByName(
+          authGroups.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+        ),
+      );
       toast.success('Auth group assignment updated');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to update auth group assignment');
@@ -347,22 +358,37 @@ export function AuthAdminModalHost({
           <div className="modal-content modal-medium" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <h3>Create Internal User</h3>
-              <button className="modal-close" onClick={closeCreateUserModal}>&times;</button>
+              <button className="modal-close" onClick={closeCreateUserModal}>
+                &times;
+              </button>
             </div>
             <div className="modal-body">
               <div className="form-row-3" style={{ gridTemplateColumns: '1fr 1.6fr 0.7fr' }}>
                 <div className="form-group">
                   <label>Username</label>
-                  <input type="text" value={localUserForm.username} onChange={(event) => setLocalUserForm({ ...localUserForm, username: event.target.value })} placeholder="jane.doe" autoFocus />
+                  <input
+                    type="text"
+                    value={localUserForm.username}
+                    onChange={(event) =>
+                      setLocalUserForm({ ...localUserForm, username: event.target.value })
+                    }
+                    placeholder="jane.doe"
+                    autoFocus
+                  />
                 </div>
                 <div className="form-group">
                   <label>Password</label>
                   <div className="input-with-button">
-                    <div className="settings-inline-copy-wrap local-user-password-copy-wrap" style={{ flex: 1 }}>
+                    <div
+                      className="settings-inline-copy-wrap local-user-password-copy-wrap"
+                      style={{ flex: 1 }}
+                    >
                       <input
                         type={showLocalUserPassword ? 'text' : 'password'}
                         value={localUserForm.password}
-                        onChange={(event) => setLocalUserForm({ ...localUserForm, password: event.target.value })}
+                        onChange={(event) =>
+                          setLocalUserForm({ ...localUserForm, password: event.target.value })
+                        }
                         placeholder="At least 8 characters"
                         style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
                       />
@@ -376,7 +402,9 @@ export function AuthAdminModalHost({
                         copiedAriaLabel="Password copied"
                         feedbackMs={2000}
                         onCopySuccess={() => toast.success('Password copied')}
-                        onCopyError={() => toast.error('Unable to copy password. Please copy it manually.')}
+                        onCopyError={() =>
+                          toast.error('Unable to copy password. Please copy it manually.')
+                        }
                       />
                       <button
                         type="button"
@@ -391,7 +419,12 @@ export function AuthAdminModalHost({
                     <button
                       type="button"
                       className="btn btn-sm btn-secondary"
-                      onClick={() => setLocalUserForm({ ...localUserForm, password: generateCredentialValue(20) })}
+                      onClick={() =>
+                        setLocalUserForm({
+                          ...localUserForm,
+                          password: generateCredentialValue(20),
+                        })
+                      }
                     >
                       Generate
                     </button>
@@ -399,7 +432,12 @@ export function AuthAdminModalHost({
                 </div>
                 <div className="form-group">
                   <label>Role</label>
-                  <select value={localUserForm.role} onChange={(event) => setLocalUserForm({ ...localUserForm, role: event.target.value as UserRole })}>
+                  <select
+                    value={localUserForm.role}
+                    onChange={(event) =>
+                      setLocalUserForm({ ...localUserForm, role: event.target.value as UserRole })
+                    }
+                  >
                     <option value="user">user</option>
                     <option value="admin">admin</option>
                   </select>
@@ -409,17 +447,47 @@ export function AuthAdminModalHost({
               <div className="form-row">
                 <div className="form-group">
                   <label>Display Name</label>
-                  <input type="text" value={localUserForm.display_name} onChange={(event) => setLocalUserForm({ ...localUserForm, display_name: event.target.value })} placeholder="Jane Doe" />
+                  <input
+                    type="text"
+                    value={localUserForm.display_name}
+                    onChange={(event) =>
+                      setLocalUserForm({ ...localUserForm, display_name: event.target.value })
+                    }
+                    placeholder="Jane Doe"
+                  />
                 </div>
                 <div className="form-group">
                   <label>Email</label>
-                  <input type="email" value={localUserForm.email} onChange={(event) => setLocalUserForm({ ...localUserForm, email: event.target.value })} placeholder="jane@example.com" />
+                  <input
+                    type="email"
+                    value={localUserForm.email}
+                    onChange={(event) =>
+                      setLocalUserForm({ ...localUserForm, email: event.target.value })
+                    }
+                    placeholder="jane@example.com"
+                  />
                 </div>
               </div>
             </div>
             <div className="modal-footer">
-              <button type="button" className="btn btn-secondary" onClick={closeCreateUserModal} disabled={localUserSaving}>Cancel</button>
-              <button type="button" className="btn" onClick={handleCreateLocalUser} disabled={localUserSaving || !localUserForm.username.trim() || localUserForm.password.length < 8}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={closeCreateUserModal}
+                disabled={localUserSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleCreateLocalUser}
+                disabled={
+                  localUserSaving ||
+                  !localUserForm.username.trim() ||
+                  localUserForm.password.length < 8
+                }
+              >
                 {localUserSaving ? 'Creating...' : 'Create Internal User'}
               </button>
             </div>
@@ -429,20 +497,32 @@ export function AuthAdminModalHost({
 
       {manageGroupsOpen && (
         <div className="modal-overlay" onClick={closeManageGroupsModal}>
-          <div className="modal-content modal-large auth-group-manage-modal" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="modal-content modal-large auth-group-manage-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-header">
               <div>
                 <h3>Manage Group Memberships</h3>
-                <p className="auth-group-modal-subtitle">{authGroups.filter(isLocalManagedAuthGroup).length} internal, {authGroups.filter((group) => group.provider === 'ldap').length} LDAP</p>
+                <p className="auth-group-modal-subtitle">
+                  {authGroups.filter(isLocalManagedAuthGroup).length} internal,{' '}
+                  {authGroups.filter((group) => group.provider === 'ldap').length} LDAP
+                </p>
               </div>
-              <button className="modal-close" onClick={closeManageGroupsModal}>&times;</button>
+              <button className="modal-close" onClick={closeManageGroupsModal}>
+                &times;
+              </button>
             </div>
             <div className="modal-body auth-group-manage-body">
               <div className="auth-group-manage-list-panel">
                 <div className="auth-group-panel-header">
                   <h4>Groups</h4>
                   {!newGroupMode && (
-                    <button type="button" className="btn btn-sm btn-secondary" onClick={() => setNewGroupMode(true)}>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => setNewGroupMode(true)}
+                    >
                       <Plus size={14} />
                       New Group
                     </button>
@@ -457,16 +537,32 @@ export function AuthAdminModalHost({
                       onChange={(e) => setNewGroupName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') void handleCreateNewGroup();
-                        if (e.key === 'Escape') { setNewGroupMode(false); setNewGroupName(''); }
+                        if (e.key === 'Escape') {
+                          setNewGroupMode(false);
+                          setNewGroupName('');
+                        }
                       }}
                       placeholder="Group name"
                       disabled={newGroupSaving}
                       autoFocus
                     />
-                    <button type="button" className="btn" onClick={() => void handleCreateNewGroup()} disabled={newGroupSaving || !newGroupName.trim()}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void handleCreateNewGroup()}
+                      disabled={newGroupSaving || !newGroupName.trim()}
+                    >
                       {newGroupSaving ? 'Creating...' : 'Create'}
                     </button>
-                    <button type="button" className="btn btn-secondary" onClick={() => { setNewGroupMode(false); setNewGroupName(''); }} disabled={newGroupSaving}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        setNewGroupMode(false);
+                        setNewGroupName('');
+                      }}
+                      disabled={newGroupSaving}
+                    >
                       Cancel
                     </button>
                   </div>
@@ -480,14 +576,20 @@ export function AuthAdminModalHost({
                       <div key={section.provider} className="auth-group-provider-section">
                         <div className="model-group-header auth-group-provider-section-header">
                           <span>{section.label}</span>
-                          <span className="auth-group-provider-section-count">{section.groups.length}</span>
+                          <span className="auth-group-provider-section-count">
+                            {section.groups.length}
+                          </span>
                         </div>
                         {section.groups.map((group) => {
                           const localGroup = isLocalManagedAuthGroup(group);
-                          const busy = authGroupDeletingId === group.id || authGroupUpdatingId === group.id;
-                          const memberPreviews = (group.member_previews || []).filter((member) => member?.username);
+                          const busy =
+                            authGroupDeletingId === group.id || authGroupUpdatingId === group.id;
+                          const memberPreviews = (group.member_previews || []).filter(
+                            (member) => member?.username,
+                          );
                           const fallbackMemberLabels = !memberPreviews.length
-                            ? ((group as AuthGroup & { member_labels?: string[] }).member_labels || [])
+                            ? (group as AuthGroup & { member_labels?: string[] }).member_labels ||
+                              []
                             : [];
                           const accessMode = getAuthGroupAccessMode(group);
                           return (
@@ -498,23 +600,40 @@ export function AuthAdminModalHost({
                               className="auth-group-row-popover-trigger"
                               content={
                                 <div className="auth-group-members-popover">
-                                  <div className="auth-group-members-popover-header">{group.display_name} members</div>
-                                  {memberPreviews.length === 0 && fallbackMemberLabels.length === 0 ? (
-                                    <div className="auth-group-members-popover-status">No members in this group.</div>
+                                  <div className="auth-group-members-popover-header">
+                                    {group.display_name} members
+                                  </div>
+                                  {memberPreviews.length === 0 &&
+                                  fallbackMemberLabels.length === 0 ? (
+                                    <div className="auth-group-members-popover-status">
+                                      No members in this group.
+                                    </div>
                                   ) : (
                                     <ul className="auth-group-members-popover-list">
                                       {memberPreviews.map((member) => {
                                         const displayName = member.display_name || member.username;
                                         return (
-                                          <li key={`${group.id}-${member.username}`} className="auth-group-members-popover-item">
-                                            <span className="auth-group-member-display-name">{displayName}</span>
-                                            <span className="auth-group-member-handle">@{member.username}</span>
+                                          <li
+                                            key={`${group.id}-${member.username}`}
+                                            className="auth-group-members-popover-item"
+                                          >
+                                            <span className="auth-group-member-display-name">
+                                              {displayName}
+                                            </span>
+                                            <span className="auth-group-member-handle">
+                                              @{member.username}
+                                            </span>
                                           </li>
                                         );
                                       })}
                                       {fallbackMemberLabels.map((label) => (
-                                        <li key={`${group.id}-label-${label}`} className="auth-group-members-popover-item">
-                                          <span className="auth-group-member-display-name">{label}</span>
+                                        <li
+                                          key={`${group.id}-label-${label}`}
+                                          className="auth-group-members-popover-item"
+                                        >
+                                          <span className="auth-group-member-display-name">
+                                            {label}
+                                          </span>
                                         </li>
                                       ))}
                                     </ul>
@@ -522,10 +641,13 @@ export function AuthAdminModalHost({
                                 </div>
                               }
                             >
-                              <div className={`auth-group-manage-row${localGroup ? '' : ' is-synced'}${inlineEditId === group.id ? ' is-editing' : ''}`}>
+                              <div
+                                className={`auth-group-manage-row${localGroup ? '' : ' is-synced'}${inlineEditId === group.id ? ' is-editing' : ''}`}
+                              >
                                 <div className="auth-group-row-main">
                                   <div className="auth-group-row-title-wrap">
-                                    {inlineEditId === group.id && inlineEditField === 'display_name' ? (
+                                    {inlineEditId === group.id &&
+                                    inlineEditField === 'display_name' ? (
                                       <div className="inline-edit-field auth-group-inline-edit-field">
                                         <input
                                           ref={inlineEditInputRef}
@@ -541,10 +663,19 @@ export function AuthAdminModalHost({
                                     ) : (
                                       <div
                                         className={`editable-field-wrapper name-wrapper auth-group-row-editable-title ${localGroup ? 'editable' : ''}`}
-                                        onClick={localGroup ? () => handleStartInlineEdit(group, 'display_name') : undefined}
+                                        onClick={
+                                          localGroup
+                                            ? () => handleStartInlineEdit(group, 'display_name')
+                                            : undefined
+                                        }
                                       >
-                                        <div className="auth-group-row-title">{group.display_name}</div>
-                                        <span className="auth-group-row-title-member-count">{group.member_count} member{group.member_count === 1 ? '' : 's'}</span>
+                                        <div className="auth-group-row-title">
+                                          {group.display_name}
+                                        </div>
+                                        <span className="auth-group-row-title-member-count">
+                                          {group.member_count} member
+                                          {group.member_count === 1 ? '' : 's'}
+                                        </span>
                                         {localGroup && (
                                           <button
                                             type="button"
@@ -567,7 +698,8 @@ export function AuthAdminModalHost({
                                       <span>{group.manual_member_count} manual</span>
                                     </div>
                                   )}
-                                  {inlineEditId === group.id && inlineEditField === 'description' ? (
+                                  {inlineEditId === group.id &&
+                                  inlineEditField === 'description' ? (
                                     <div className="inline-edit-field auth-group-inline-edit-field description-edit">
                                       <input
                                         ref={inlineEditInputRef}
@@ -584,14 +716,25 @@ export function AuthAdminModalHost({
                                   ) : (
                                     <div
                                       className={`editable-field-wrapper auth-group-row-editable-description ${localGroup ? 'editable' : ''}`}
-                                      onClick={localGroup ? () => handleStartInlineEdit(group, 'description') : undefined}
+                                      onClick={
+                                        localGroup
+                                          ? () => handleStartInlineEdit(group, 'description')
+                                          : undefined
+                                      }
                                     >
                                       {group.description || group.source_dn ? (
-                                        <div className="auth-group-row-description" title={group.source_dn || group.description}>
+                                        <div
+                                          className="auth-group-row-description"
+                                          title={group.source_dn || group.description}
+                                        >
                                           {group.description || group.source_dn}
                                         </div>
                                       ) : (
-                                        localGroup && <div className="auth-group-row-description auth-group-row-description-placeholder">Add description</div>
+                                        localGroup && (
+                                          <div className="auth-group-row-description auth-group-row-description-placeholder">
+                                            Add description
+                                          </div>
+                                        )
                                       )}
                                       {localGroup && (
                                         <button
@@ -612,13 +755,27 @@ export function AuthAdminModalHost({
                                 </div>
                                 <div className="auth-group-row-side">
                                   <div className="auth-group-row-status-pills">
-                                    <span className={`auth-group-provider-badge auth-group-provider-${group.provider}`}>{getAuthGroupProviderLabel(group)}</span>
-                                    {group.role && <span className={`auth-group-role-badge${group.role === 'admin' ? ' auth-group-admin-badge' : ''}`}>{group.role}</span>}
-                                    {group.is_logon_group && <span className="auth-group-logon-badge">Logon</span>}
+                                    <span
+                                      className={`auth-group-provider-badge auth-group-provider-${group.provider}`}
+                                    >
+                                      {getAuthGroupProviderLabel(group)}
+                                    </span>
+                                    {group.role && (
+                                      <span
+                                        className={`auth-group-role-badge${group.role === 'admin' ? ' auth-group-admin-badge' : ''}`}
+                                      >
+                                        {group.role}
+                                      </span>
+                                    )}
+                                    {group.is_logon_group && (
+                                      <span className="auth-group-logon-badge">Logon</span>
+                                    )}
                                     {localGroup && (
                                       <div className="auth-group-row-status-actions">
                                         <DeleteConfirmButton
-                                          onDelete={() => { void handleDeleteAuthGroup(group); }}
+                                          onDelete={() => {
+                                            void handleDeleteAuthGroup(group);
+                                          }}
                                           disabled={busy}
                                           deleting={authGroupDeletingId === group.id}
                                           className="btn btn-sm btn-danger auth-group-delete-button"
@@ -629,12 +786,18 @@ export function AuthAdminModalHost({
                                     )}
                                   </div>
                                   <div className="auth-group-row-actions">
-                                    <div className="auth-group-access-segment" role="group" aria-label={`Access mode for ${group.display_name}`}>
+                                    <div
+                                      className="auth-group-access-segment"
+                                      role="group"
+                                      aria-label={`Access mode for ${group.display_name}`}
+                                    >
                                       <button
                                         type="button"
                                         className={`auth-group-access-option${accessMode === 'none' ? ' is-active' : ''}`}
                                         disabled={busy}
-                                        onClick={() => void handleSetAuthGroupAccessMode(group, 'none')}
+                                        onClick={() =>
+                                          void handleSetAuthGroupAccessMode(group, 'none')
+                                        }
                                         title="No role grant and not a logon group"
                                       >
                                         None
@@ -643,7 +806,9 @@ export function AuthAdminModalHost({
                                         type="button"
                                         className={`auth-group-access-option${accessMode === 'logon' ? ' is-active' : ''}`}
                                         disabled={busy}
-                                        onClick={() => void handleSetAuthGroupAccessMode(group, 'logon')}
+                                        onClick={() =>
+                                          void handleSetAuthGroupAccessMode(group, 'logon')
+                                        }
                                         title="Allow members of this group to log in"
                                       >
                                         Logon
@@ -652,7 +817,9 @@ export function AuthAdminModalHost({
                                         type="button"
                                         className={`auth-group-access-option${accessMode === 'admin' ? ' is-active' : ''}`}
                                         disabled={busy}
-                                        onClick={() => void handleSetAuthGroupAccessMode(group, 'admin')}
+                                        onClick={() =>
+                                          void handleSetAuthGroupAccessMode(group, 'admin')
+                                        }
                                         title="Promote members of this group to admin"
                                       >
                                         Admin

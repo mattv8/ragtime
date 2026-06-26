@@ -8,11 +8,15 @@ import type {
 
 const DEFAULT_RUNTIME_RESTART_POLL_MS = 2000;
 
-function isRuntimeRestartTaskActive(task: UserSpaceRuntimeRestartBatchTask | null | undefined): boolean {
+function isRuntimeRestartTaskActive(
+  task: UserSpaceRuntimeRestartBatchTask | null | undefined,
+): boolean {
   return task?.phase === 'queued' || task?.phase === 'restarting';
 }
 
-function formatRuntimeRestartTaskStatus(task: UserSpaceRuntimeRestartBatchTask | null): string | null {
+function formatRuntimeRestartTaskStatus(
+  task: UserSpaceRuntimeRestartBatchTask | null,
+): string | null {
   if (!task) {
     return null;
   }
@@ -23,9 +27,7 @@ function formatRuntimeRestartTaskStatus(task: UserSpaceRuntimeRestartBatchTask |
     case 'restarting':
       return `Restarting ${task.total_workspaces} active runtime${task.total_workspaces === 1 ? '' : 's'} serially.`;
     case 'completed':
-      return task.total_workspaces === 0
-        ? 'No active runtime workspaces needed a restart.'
-        : null;
+      return task.total_workspaces === 0 ? 'No active runtime workspaces needed a restart.' : null;
     case 'completed_with_failures':
       return task.error || null;
     case 'failed':
@@ -35,7 +37,9 @@ function formatRuntimeRestartTaskStatus(task: UserSpaceRuntimeRestartBatchTask |
   }
 }
 
-function formatRuntimeRestartBatchPhaseLabel(phase: UserSpaceRuntimeRestartBatchTask['phase']): string {
+function formatRuntimeRestartBatchPhaseLabel(
+  phase: UserSpaceRuntimeRestartBatchTask['phase'],
+): string {
   switch (phase) {
     case 'queued':
       return 'Queued';
@@ -52,7 +56,9 @@ function formatRuntimeRestartBatchPhaseLabel(phase: UserSpaceRuntimeRestartBatch
   }
 }
 
-function formatRuntimeRestartWorkspacePhaseLabel(phase: UserSpaceRuntimeRestartWorkspaceTask['phase']): string {
+function formatRuntimeRestartWorkspacePhaseLabel(
+  phase: UserSpaceRuntimeRestartWorkspaceTask['phase'],
+): string {
   switch (phase) {
     case 'queued':
       return 'Queued';
@@ -190,7 +196,14 @@ export function UserSpaceRuntimeRestartPanel({
     } finally {
       setQueueing(false);
     }
-  }, [enabled, noTargetsSuccessMessage, notifyError, notifySuccess, queueErrorMessage, queuedSuccessMessage]);
+  }, [
+    enabled,
+    noTargetsSuccessMessage,
+    notifyError,
+    notifySuccess,
+    queueErrorMessage,
+    queuedSuccessMessage,
+  ]);
 
   useEffect(() => {
     if (!enabled) {
@@ -245,11 +258,31 @@ export function UserSpaceRuntimeRestartPanel({
         ...style,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          gap: '0.75rem',
+          alignItems: 'flex-start',
+          flexWrap: 'wrap',
+        }}
+      >
         <div style={{ flex: '1 1 320px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.2rem' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              flexWrap: 'wrap',
+              marginBottom: '0.2rem',
+            }}
+          >
             <strong>{title}</strong>
-            {taskActive && <span className="live-indicator" title="Auto-refreshing">LIVE</span>}
+            {taskActive && (
+              <span className="live-indicator" title="Auto-refreshing">
+                LIVE
+              </span>
+            )}
           </div>
           <p className="field-help" style={{ margin: 0, fontSize: '0.95em' }}>
             {description}
@@ -258,7 +291,9 @@ export function UserSpaceRuntimeRestartPanel({
         <button
           type="button"
           className="btn btn-secondary"
-          onClick={() => { void handleQueueRuntimeRestart(); }}
+          onClick={() => {
+            void handleQueueRuntimeRestart();
+          }}
           disabled={queueing || taskActive}
         >
           {queueing ? queueingButtonLabel : taskActive ? activeButtonLabel : buttonLabel}
@@ -267,7 +302,15 @@ export function UserSpaceRuntimeRestartPanel({
 
       {task && (
         <div style={{ marginTop: '0.625rem' }}>
-          <div style={{ display: 'flex', gap: '0.625rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: taskStatus ? '0.25rem' : 0 }}>
+          <div
+            style={{
+              display: 'flex',
+              gap: '0.625rem',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              marginBottom: taskStatus ? '0.25rem' : 0,
+            }}
+          >
             <span className="badge">{formatRuntimeRestartBatchPhaseLabel(task.phase)}</span>
             <span className="userspace-muted" style={{ fontSize: '0.95em' }}>
               {task.completed_workspaces}/{task.total_workspaces} completed
@@ -286,7 +329,14 @@ export function UserSpaceRuntimeRestartPanel({
             </p>
           )}
           {visibleResults.length > 0 && (
-            <div style={{ maxHeight: '180px', overflowY: 'auto', borderTop: '1px solid var(--border-color)', paddingTop: '0.375rem' }}>
+            <div
+              style={{
+                maxHeight: '180px',
+                overflowY: 'auto',
+                borderTop: '1px solid var(--border-color)',
+                paddingTop: '0.375rem',
+              }}
+            >
               {visibleResults.map((item) => (
                 <div
                   key={item.workspace_id}
@@ -301,11 +351,16 @@ export function UserSpaceRuntimeRestartPanel({
                 >
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 600, lineHeight: 1.25 }}>{item.workspace_name}</div>
-                    <div className="userspace-muted" style={{ fontSize: '0.86em', lineHeight: 1.3, marginTop: '0.1rem' }}>
+                    <div
+                      className="userspace-muted"
+                      style={{ fontSize: '0.86em', lineHeight: 1.3, marginTop: '0.1rem' }}
+                    >
                       {formatRuntimeRestartWorkspaceStatus(item)}
                     </div>
                   </div>
-                  <span className="badge" style={{ whiteSpace: 'nowrap' }}>{formatRuntimeRestartWorkspacePhaseLabel(item.phase)}</span>
+                  <span className="badge" style={{ whiteSpace: 'nowrap' }}>
+                    {formatRuntimeRestartWorkspacePhaseLabel(item.phase)}
+                  </span>
                 </div>
               ))}
             </div>

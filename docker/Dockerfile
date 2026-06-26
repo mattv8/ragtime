@@ -6,9 +6,9 @@
 # Multi-stage build for unified RAG API + Indexer container
 
 # =============================================================================
-# Stage 1: Build frontend
+# Stage 1: Frontend base (deps + source), shared by build and quality checks
 # =============================================================================
-FROM node:24-alpine3.22 AS frontend-builder
+FROM node:24-alpine3.22 AS frontend-base
 
 ARG ENVIRONMENT=main
 ARG APP_VERSION=dev
@@ -22,15 +22,34 @@ RUN npm install -g npm@latest
 # Copy frontend manifest files
 COPY ragtime/frontend/package*.json ./
 
-# Install dependencies with lockfile
+# Install dependencies with lockfile (includes devDeps: eslint, prettier, vite, tsc)
 RUN --mount=type=cache,id=ragtime-npm-cache,target=/root/.npm,sharing=locked \
     npm ci --loglevel=error
 
 # Copy the rest of the frontend
 COPY ragtime/frontend/ ./
 
-# Build the frontend
+# -----------------------------------------------------------------------------
+# Stage 1a: Build frontend (produces /frontend/dist consumed by production)
+# -----------------------------------------------------------------------------
+FROM frontend-base AS frontend-builder
+
 RUN npm run build
+
+# -----------------------------------------------------------------------------
+# Stage 1b: Frontend format gate (Prettier). Blocking in CI.
+# Mirrors VSCode "Format Document" output (Prettier is the default formatter).
+# -----------------------------------------------------------------------------
+FROM frontend-base AS frontend-format-check
+
+RUN npm run format:check
+
+# -----------------------------------------------------------------------------
+# Stage 1c: Frontend ESLint check. Reported (non-blocking) in CI.
+# -----------------------------------------------------------------------------
+FROM frontend-base AS frontend-lint
+
+RUN npm run lint
 
 # =============================================================================
 # Stage 2: Build Python dependencies

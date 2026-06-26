@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import html
 import io
@@ -12,10 +13,9 @@ import re
 import shutil
 import signal
 import socket
+import sys
 import time
-import uuid
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +32,8 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimeMcpToolCallRequest,
+    RuntimeMcpToolCallResponse,
     RuntimePdfReadMatch,
     RuntimePdfReadRequest,
     RuntimePdfReadResponse,
@@ -158,9 +160,6 @@ MAX_USERSPACE_SCREENSHOT_HEIGHT = 1200
 MAX_USERSPACE_SCREENSHOT_PIXELS = 1_440_000
 _SCREENSHOT_WAIT_AFTER_LOAD_FLOOR_MS = 900
 _SCREENSHOT_WAIT_AFTER_LOAD_HMR_FLOOR_MS = 1800
-_PLAYWRIGHT_BROKER_READY_TIMEOUT_SECONDS = 20.0
-_PLAYWRIGHT_BROKER_STDERR_MAX_LINES = 40
-_PLAYWRIGHT_BROKER_POOL_SIZE = 2
 _OBJECT_STORAGE_READY_TIMEOUT_SECONDS = 30.0
 _OBJECT_STORAGE_STDERR_READ_TIMEOUT_SECONDS = 2.0
 _OBJECT_STORAGE_CONFIG_DIRNAME = "s3"
@@ -178,6 +177,14 @@ _RAGTIME_REDACTED_ENV_SENTINEL_MISSING = "__RAGTIME_SECRET_MISSING__"
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _PLAYWRIGHT_BROKER_JS_PATH = _TEMPLATES_DIR / "playwright_broker.js"
+_PLAYWRIGHT_MCP_SERVER_PATH = Path(__file__).parent / "mcp_playwright_server.py"
+_PLAYWRIGHT_MCP_TOOL_NAMES = {
+    "playwright_content_probe",
+    "playwright_console_messages",
+    "playwright_capture_screenshot",
+    "playwright_external_browse",
+    "playwright_debug_steps",
+}
 _S3RVER_RUNNER_JS_PATH = _TEMPLATES_DIR / "s3rver_runner.js"
 _REDACTED_ENV_VIEW_TEMPLATE_PATH = _TEMPLATES_DIR / "redacted_env_view.py"
 
@@ -194,11 +201,10 @@ class DevserverResolution:
 
 
 @dataclass
-class PlaywrightBrokerSlot:
+class McpPlaywrightSlot:
     slot_id: int
-    process: asyncio.subprocess.Process | None = None
-    stderr_task: asyncio.Task[None] | None = None
-    stderr_lines: deque[str] = field(default_factory=lambda: deque(maxlen=_PLAYWRIGHT_BROKER_STDERR_MAX_LINES))
+    exit_stack: contextlib.AsyncExitStack | None = None
+    client: Any | None = None
 
 
 @dataclass
@@ -259,15 +265,11 @@ class WorkerService:
                 2,
             )
         )
-        self._playwright_pool_size = get_positive_int_env(
-            "RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE",
-            _PLAYWRIGHT_BROKER_POOL_SIZE,
-        )
-        self._playwright_slots = [PlaywrightBrokerSlot(slot_id=index) for index in range(self._playwright_pool_size)]
-        self._playwright_available_slots: asyncio.Queue[int] = asyncio.Queue(maxsize=self._playwright_pool_size)
-        for index in range(self._playwright_pool_size):
-            self._playwright_available_slots.put_nowait(index)
-        self._playwright_request_counter = 0
+        self._mcp_playwright_pool_size = get_positive_int_env("RUNTIME_PLAYWRIGHT_BROKER_POOL_SIZE", 2)
+        self._mcp_playwright_slots = [McpPlaywrightSlot(slot_id=i) for i in range(self._mcp_playwright_pool_size)]
+        self._mcp_playwright_available: asyncio.Queue[int] = asyncio.Queue(maxsize=self._mcp_playwright_pool_size)
+        for i in range(self._mcp_playwright_pool_size):
+            self._mcp_playwright_available.put_nowait(i)
 
     def _normalize_file_path(
         self,
@@ -1412,204 +1414,132 @@ class WorkerService:
             return ""
         return self._compact_devserver_log_for_error(content)
 
-    def _playwright_broker_error_tail(self, slot: PlaywrightBrokerSlot) -> str:
-        compact = self._normalize_log_text(" ".join(line for line in slot.stderr_lines if line and line.strip()))
-        if len(compact) > _RUNTIME_DEVSERVER_LOG_TAIL_CHARS:
-            return compact[-_RUNTIME_DEVSERVER_LOG_TAIL_CHARS:]
-        return compact
+    async def _ensure_mcp_slot(self, slot: McpPlaywrightSlot):
+        if slot.client is not None:
+            return slot.client
 
-    async def _drain_playwright_stderr(
-        self,
-        slot: PlaywrightBrokerSlot,
-        stream: asyncio.StreamReader | None,
-    ) -> None:
-        if stream is None:
-            return
         try:
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace").strip()
-                if text:
-                    slot.stderr_lines.append(text)
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Runtime MCP client dependencies are unavailable: {exc}") from exc
+
+        slot.exit_stack = contextlib.AsyncExitStack()
+        try:
+            server_env = {
+                **os.environ,
+                "RAGTIME_PLAYWRIGHT_BROKER_JS_PATH": str(_PLAYWRIGHT_BROKER_JS_PATH),
+            }
+            params = StdioServerParameters(
+                command=sys.executable,
+                args=[str(_PLAYWRIGHT_MCP_SERVER_PATH)],
+                env=server_env,
+            )
+            stdio_ctx = stdio_client(params)
+            read_stream, write_stream = await slot.exit_stack.enter_async_context(stdio_ctx)
+            session_ctx = ClientSession(read_stream, write_stream)
+            slot.client = await slot.exit_stack.enter_async_context(session_ctx)
+            await asyncio.wait_for(slot.client.initialize(), timeout=10)  # type: ignore[union-attr]
+            return slot.client
         except Exception:
-            pass
+            await self._terminate_mcp_slot(slot)
+            raise
 
-    async def _terminate_playwright_broker_slot(
-        self,
-        slot: PlaywrightBrokerSlot,
-    ) -> None:
-        process = slot.process
-        stderr_task = slot.stderr_task
-        slot.process = None
-        slot.stderr_task = None
-
-        if process is not None:
-            stdin = process.stdin
-            if stdin is not None:
-                try:
-                    stdin.close()
-                except Exception:
-                    pass
-            if process.returncode is None:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=3)
-                except Exception:
-                    process.kill()
-                    try:
-                        await process.wait()
-                    except Exception:
-                        pass
-
-        if stderr_task is not None and not stderr_task.done():
-            stderr_task.cancel()
+    async def _terminate_mcp_slot(self, slot: McpPlaywrightSlot):
+        if slot.exit_stack:
             try:
-                await stderr_task
-            except asyncio.CancelledError:
-                pass
+                await slot.exit_stack.aclose()
             except Exception:
                 pass
+        slot.exit_stack = None
+        slot.client = None
 
-    async def _terminate_playwright_brokers(self) -> None:
-        for slot in self._playwright_slots:
-            await self._terminate_playwright_broker_slot(slot)
+    async def _terminate_mcp_brokers(self):
+        for slot in self._mcp_playwright_slots:
+            await self._terminate_mcp_slot(slot)
 
-    async def _ensure_playwright_broker_slot(
+    async def _invoke_playwright_mcp_tool(
         self,
-        slot: PlaywrightBrokerSlot,
-    ) -> asyncio.subprocess.Process:
-        process = slot.process
-        if process is not None and process.returncode is None and process.stdin is not None and process.stdout is not None:
-            return process
-
-        if process is not None:
-            await self._terminate_playwright_broker_slot(slot)
-
-        node_binary = shutil.which("node")
-        if not node_binary:
-            raise HTTPException(
-                status_code=503,
-                detail=("Runtime screenshot/content probe requires Node.js in runtime container but it is not installed."),
-            )
-
-        slot.stderr_lines.clear()
-        node_env = {**os.environ, "NODE_PATH": "/usr/local/lib/node_modules"}
-        process = await asyncio.create_subprocess_exec(
-            node_binary,
-            str(_PLAYWRIGHT_BROKER_JS_PATH),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=node_env,
-        )
-        slot.process = process
-        slot.stderr_task = asyncio.create_task(self._drain_playwright_stderr(slot, process.stderr))
-        stdout = process.stdout
-        if stdout is None:
-            await self._terminate_playwright_broker_slot(slot)
-            raise HTTPException(
-                status_code=503,
-                detail="Playwright broker stdout pipe was not created.",
-            )
-
-        try:
-            ready_line = await asyncio.wait_for(
-                stdout.readline(),
-                timeout=_PLAYWRIGHT_BROKER_READY_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            await self._terminate_playwright_broker_slot(slot)
-            stderr_tail = self._playwright_broker_error_tail(slot)
-            detail = "Timed out starting Playwright broker in runtime container."
-            if stderr_tail:
-                detail = f"{detail} {stderr_tail}"
-            raise HTTPException(status_code=503, detail=detail) from exc
-
-        if not ready_line:
-            await self._terminate_playwright_broker_slot(slot)
-            stderr_tail = self._playwright_broker_error_tail(slot)
-            detail = "Playwright broker exited before becoming ready."
-            if stderr_tail:
-                detail = f"{detail} {stderr_tail}"
-            raise HTTPException(status_code=503, detail=detail)
-
-        try:
-            ready_payload = json.loads(ready_line.decode("utf-8", errors="replace"))
-        except Exception:
-            ready_payload = {}
-
-        if ready_payload.get("type") != "ready":
-            await self._terminate_playwright_broker_slot(slot)
-            detail = str(ready_payload.get("error") or "Invalid Playwright broker handshake")
-            stderr_tail = self._playwright_broker_error_tail(slot)
-            if stderr_tail:
-                detail = f"{detail}. {stderr_tail}"
-            raise HTTPException(status_code=503, detail=detail)
-
-        return process
-
-    async def _invoke_playwright_broker(
-        self,
-        request: dict[str, Any],
+        session: WorkerSession | None,
+        tool_name: str,
+        arguments: dict[str, Any],
         *,
         timeout_ms: int,
-    ) -> dict[str, Any]:
-        slot_index = await self._playwright_available_slots.get()
-        slot = self._playwright_slots[slot_index]
+        screenshot_dir: Path | None = None,
+    ) -> RuntimeMcpToolCallResponse:
+        """Call the runtime Playwright server over MCP stdio transport."""
+        if session is None and tool_name != "playwright_external_browse":
+            raise HTTPException(status_code=404, detail="Runtime session unavailable")
+        if tool_name not in _PLAYWRIGHT_MCP_TOOL_NAMES:
+            raise HTTPException(status_code=400, detail=f"Unknown runtime MCP tool: {tool_name}")
+
+        request_payload = dict(arguments or {})
+
+        if session:
+            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
+            request_payload["__ragtime_preview_base_url"] = upstream_base
+        else:
+            request_payload["__ragtime_preview_base_url"] = "http://127.0.0.1:0"
+
+        if screenshot_dir:
+            request_payload["__ragtime_screenshot_dir"] = str(screenshot_dir)
+
+        slot_index = await self._mcp_playwright_available.get()
+        slot = self._mcp_playwright_slots[slot_index]
         try:
             for attempt in range(2):
                 try:
-                    process = await self._ensure_playwright_broker_slot(slot)
-                    if process.stdin is None or process.stdout is None:
-                        raise RuntimeError("Playwright broker streams are unavailable")
-
-                    self._playwright_request_counter += 1
-                    request_id = f"pw-{slot.slot_id}-{self._playwright_request_counter}"
-                    payload = {"id": request_id, **request}
-                    process.stdin.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
-                    await process.stdin.drain()
-                    response_line = await asyncio.wait_for(
-                        process.stdout.readline(),
-                        timeout=max(5.0, (int(timeout_ms) / 1000.0) + 5.0),
+                    client = await self._ensure_mcp_slot(slot)
+                    result = await asyncio.wait_for(
+                        client.call_tool(tool_name, request_payload),
+                        timeout=max(5.0, timeout_ms / 1000.0 + 10.0),
                     )
-
-                    if not response_line:
-                        raise RuntimeError("Playwright broker closed the response stream")
-
-                    response = json.loads(response_line.decode("utf-8", errors="replace"))
-                    if response.get("id") != request_id:
-                        raise RuntimeError("Playwright broker returned a mismatched response")
-                    if response.get("ok"):
-                        result = response.get("result")
-                        return result if isinstance(result, dict) else {}
-
-                    code = str(response.get("code") or "")
-                    detail = str(response.get("error") or "Playwright request failed")
-                    stderr_tail = self._playwright_broker_error_tail(slot)
-                    if stderr_tail:
-                        detail = f"{detail}. {stderr_tail}"
-                    status_code = 503 if code in {"node_missing", "playwright_missing"} else 502
-                    raise HTTPException(status_code=status_code, detail=detail)
+                    break
                 except HTTPException:
                     raise
                 except Exception as exc:
-                    await self._terminate_playwright_broker_slot(slot)
+                    await self._terminate_mcp_slot(slot)
                     if attempt == 0:
                         continue
-                    stderr_tail = self._playwright_broker_error_tail(slot)
-                    detail = f"Playwright broker request failed: {exc}"
-                    if stderr_tail:
-                        detail = f"{detail}. {stderr_tail}"
-                    raise HTTPException(status_code=502, detail=detail) from exc
-
-            raise HTTPException(status_code=502, detail="Playwright broker request failed")
+                    raise HTTPException(status_code=502, detail=f"Runtime MCP tool call failed: {exc}") from exc
         finally:
             try:
-                self._playwright_available_slots.put_nowait(slot_index)
+                self._mcp_playwright_available.put_nowait(slot_index)
             except asyncio.QueueFull:
                 pass
+
+        request_payload.pop("__ragtime_preview_base_url", None)
+        request_payload.pop("__ragtime_screenshot_dir", None)
+
+        response_payload: dict[str, Any] = {}
+        content_items = list(getattr(result, "content", []) or [])
+        text_items: list[str] = []
+        for item in content_items:
+            text = getattr(item, "text", None)
+            if isinstance(text, str):
+                text_items.append(text)
+        if text_items:
+            try:
+                parsed = json.loads(text_items[0])
+                if isinstance(parsed, dict):
+                    response_payload = parsed
+                else:
+                    response_payload = {"text": text_items[0]}
+            except Exception:
+                response_payload = {"text": "\n".join(text_items)}
+        if bool(getattr(result, "isError", False)) and "error" not in response_payload:
+            response_payload["error"] = response_payload.get("text") or "MCP tool returned an error"
+        if response_payload.get("ok") is False and tool_name != "playwright_debug_steps":
+            raise HTTPException(status_code=502, detail=str(response_payload.get("error") or "Runtime MCP tool returned an error"))
+
+        return RuntimeMcpToolCallResponse(
+            ok=bool(response_payload.get("ok", True)),
+            server_id="runtime-playwright",
+            server_name="Runtime Playwright",
+            tool_name=tool_name,
+            request=request_payload,
+            response=response_payload,
+        )
 
     @staticmethod
     def _probe_looks_like_startup_blank(probe: dict[str, Any]) -> bool:
@@ -2512,35 +2442,29 @@ class WorkerService:
             normalized_preview_path = (payload.path or "").strip().lstrip("/")
             if normalized_preview_path:
                 normalized_preview_path = self._normalize_file_path(normalized_preview_path)
-            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
-            upstream_url = f"{upstream_base}/{normalized_preview_path}" if normalized_preview_path else f"{upstream_base}/"
-            cache_busted_url = f"{upstream_url}{'&' if '?' in upstream_url else '?'}_ragtime_screenshot_ts={int(time.time() * 1000)}"
-
             output_dir = self._workspace_screenshot_dir(session.workspace_root)
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            safe_candidate = f"{uuid.uuid4().hex}.png"
-
-            output_path = output_dir / safe_candidate
-
-        probe = await self._invoke_playwright_broker(
+        mcp_result = await self._invoke_playwright_mcp_tool(
+            session,
+            "playwright_capture_screenshot",
             {
-                "type": "screenshot",
-                "url": cache_busted_url,
-                "output_path": str(output_path),
-                "viewport_width": width,
-                "viewport_height": height,
-                "capture_full_page": bool(payload.full_page),
+                "path": normalized_preview_path,
+                "width": width,
+                "height": height,
+                "full_page": bool(payload.full_page),
                 "timeout_ms": int(payload.timeout_ms),
                 "wait_for_selector": wait_selector,
                 "capture_element": capture_element,
                 "clip_padding_px": requested_clip_padding_px,
                 "wait_after_load_ms": requested_wait_after_load_ms,
                 "refresh_before_capture": bool(payload.refresh_before_capture),
-                "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
             },
             timeout_ms=int(payload.timeout_ms),
+            screenshot_dir=output_dir,
         )
+        probe = mcp_result.response
+        output_path = Path(str(probe.get("output_path") or ""))
 
         startup_retry_attempted = False
         startup_blank_detected = False
@@ -2554,27 +2478,29 @@ class WorkerService:
                 max(requested_wait_after_load_ms + 2000, 1500),
                 12000,
             )
-            retry_url = f"{upstream_url}{'&' if '?' in upstream_url else '?'}_ragtime_screenshot_ts={int(time.time() * 1000)}"
-            retry_probe = await self._invoke_playwright_broker(
+            retry_mcp_result = await self._invoke_playwright_mcp_tool(
+                session,
+                "playwright_capture_screenshot",
                 {
-                    "type": "screenshot",
-                    "url": retry_url,
-                    "output_path": str(output_path),
-                    "viewport_width": width,
-                    "viewport_height": height,
-                    "capture_full_page": bool(payload.full_page),
+                    "path": normalized_preview_path,
+                    "width": width,
+                    "height": height,
+                    "full_page": bool(payload.full_page),
                     "timeout_ms": int(payload.timeout_ms),
                     "wait_for_selector": wait_selector,
                     "capture_element": capture_element,
                     "clip_padding_px": requested_clip_padding_px,
                     "wait_after_load_ms": retry_wait_after_load_ms,
                     "refresh_before_capture": bool(payload.refresh_before_capture),
-                    "max_pixels": MAX_USERSPACE_SCREENSHOT_PIXELS,
                 },
                 timeout_ms=int(payload.timeout_ms),
+                screenshot_dir=output_dir,
             )
+            retry_probe = retry_mcp_result.response
             if isinstance(retry_probe, dict):
                 probe = retry_probe
+                mcp_result = retry_mcp_result
+                output_path = Path(str(probe.get("output_path") or output_path))
 
         if isinstance(probe, dict):
             probe["startup_blank_detected"] = startup_blank_detected
@@ -2607,6 +2533,7 @@ class WorkerService:
                 "refresh_before_capture": bool(payload.refresh_before_capture),
             },
             probe=probe if isinstance(probe, dict) else {},
+            mcp=mcp_result.model_dump(mode="json"),
         )
 
     async def content_probe(
@@ -2633,19 +2560,19 @@ class WorkerService:
             normalized_preview_path = (payload.path or "").strip().lstrip("/")
             if normalized_preview_path:
                 normalized_preview_path = self._normalize_file_path(normalized_preview_path)
-            upstream_base = f"http://127.0.0.1:{session.devserver_port}"
-            upstream_url = f"{upstream_base}/{normalized_preview_path}" if normalized_preview_path else f"{upstream_base}/"
 
-        probe = await self._invoke_playwright_broker(
+        mcp_result = await self._invoke_playwright_mcp_tool(
+            session,
+            "playwright_content_probe",
             {
-                "type": "content_probe",
-                "url": upstream_url,
+                "path": normalized_preview_path,
                 "timeout_ms": int(payload.timeout_ms),
                 "wait_after_load_ms": int(payload.wait_after_load_ms),
                 "inject_mock_context": bool(getattr(payload, "inject_mock_context", False)),
             },
             timeout_ms=int(payload.timeout_ms),
         )
+        probe = mcp_result.response
 
         return RuntimeContentProbeResponse(
             ok=probe.get("ok", False),
@@ -2658,6 +2585,7 @@ class WorkerService:
             title=probe.get("title", ""),
             has_error_indicator=probe.get("has_error_indicator", False),
             console_errors=probe.get("console_errors", []),
+            mcp=mcp_result.model_dump(mode="json"),
         )
 
     def _build_external_browse_response(
@@ -2707,6 +2635,7 @@ class WorkerService:
         workspace devserver. Callers in the control plane validate the URL
         against the chat-diagnostics network policy before invoking this.
         """
+        session: WorkerSession | None = None
         if worker_session_id:
             async with self._lock:
                 session = self._sessions.get(worker_session_id)
@@ -2716,9 +2645,10 @@ class WorkerService:
                     raise HTTPException(status_code=409, detail="Worker session not active")
                 session.updated_at = utc_now()
 
-        probe = await self._invoke_playwright_broker(
+        mcp_result = await self._invoke_playwright_mcp_tool(
+            session,
+            "playwright_external_browse",
             {
-                "type": "external_browse",
                 "url": payload.url,
                 "timeout_ms": int(payload.timeout_ms),
                 "wait_after_load_ms": int(payload.wait_after_load_ms),
@@ -2729,7 +2659,39 @@ class WorkerService:
             },
             timeout_ms=int(payload.timeout_ms),
         )
-        return self._build_external_browse_response(probe, payload)
+        response = self._build_external_browse_response(mcp_result.response, payload)
+        response.mcp = mcp_result.model_dump(mode="json")
+        return response
+
+    async def call_mcp_tool(
+        self,
+        worker_session_id: str,
+        payload: RuntimeMcpToolCallRequest,
+    ) -> RuntimeMcpToolCallResponse:
+        async with self._lock:
+            session = self._sessions.get(worker_session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Worker session not found")
+            if session.state not in {"running", "starting"}:
+                raise HTTPException(status_code=409, detail="Worker session not active")
+            if not session.devserver_running or not session.devserver_port:
+                await self._sync_devserver_state_locked(session)
+            if not session.devserver_running or not session.devserver_port:
+                raise HTTPException(
+                    status_code=503,
+                    detail=session.last_error or "Dev server is starting. Retry when runtime is ready.",
+                )
+            session.updated_at = utc_now()
+            screenshot_dir = self._workspace_screenshot_dir(session.workspace_root)
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+
+        return await self._invoke_playwright_mcp_tool(
+            session,
+            payload.tool_name,
+            payload.arguments,
+            timeout_ms=int(payload.timeout_ms),
+            screenshot_dir=screenshot_dir,
+        )
 
     @staticmethod
     def _is_pdf_content_type(value: str) -> bool:
@@ -3139,7 +3101,6 @@ class WorkerService:
                 await self._terminate_devserver_locked(sid)
             for sid in list(self._object_storage_processes.keys()):
                 await self._terminate_object_storage_locked(sid)
-        await self._terminate_playwright_brokers()
 
     async def health(self) -> WorkerHealthResponse:
         async with self._lock:

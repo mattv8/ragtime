@@ -57,7 +57,9 @@ function FilesystemIndexCard({
     ocr_vision_model?: string | null;
   };
 
-  const isActive = activeJob ? (activeJob.status === 'pending' || activeJob.status === 'indexing') : false;
+  const isActive = activeJob
+    ? activeJob.status === 'pending' || activeJob.status === 'indexing'
+    : false;
   // Check both stats (active index) and config (intended index) for FAISS type
   const isFaiss = stats?.vector_store_type === 'faiss' || config.vector_store_type === 'faiss';
   const [downloading, setDownloading] = useState(false);
@@ -137,7 +139,10 @@ function FilesystemIndexCard({
         </>
       )}
       {stats?.last_indexed && (
-        <span className="meta-pill date" title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}>
+        <span
+          className="meta-pill date"
+          title={`Last indexed: ${new Date(stats.last_indexed).toLocaleString()}`}
+        >
           {`Updated ${new Date(stats.last_indexed).toLocaleString()}`}
         </span>
       )}
@@ -192,7 +197,7 @@ function FilesystemIndexCard({
         className="btn btn-sm"
         onClick={() => onStartIndex(tool.id, true)}
         disabled={indexing || isActive}
-        title={isFaiss ? "Re-index all files from scratch" : "Force full re-index of all files"}
+        title={isFaiss ? 'Re-index all files from scratch' : 'Force full re-index of all files'}
       >
         Full Re-Index
       </button>
@@ -219,14 +224,18 @@ function FilesystemIndexCard({
         tool.disabled_reason
           ? `Disabled: ${tool.disabled_reason}`
           : tool.enabled
-            ? "Enabled for RAG"
-            : "Disabled from RAG"
+            ? 'Enabled for RAG'
+            : 'Disabled from RAG'
       }
     />
   );
 }
 
-export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingDimensions }: FilesystemIndexPanelProps) {
+export function FilesystemIndexPanel({
+  onToolsChanged,
+  onJobsChanged,
+  embeddingDimensions,
+}: FilesystemIndexPanelProps) {
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -237,8 +246,12 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
   const [editingTool, setEditingTool] = useState<ToolConfig | null>(null);
 
   // Job state
-  const [filesystemJobs, setFilesystemJobs] = useState<Record<string, FilesystemIndexJob | null>>({});
-  const [filesystemStats, setFilesystemStats] = useState<Record<string, FilesystemIndexStats | null>>({});
+  const [filesystemJobs, setFilesystemJobs] = useState<Record<string, FilesystemIndexJob | null>>(
+    {},
+  );
+  const [filesystemStats, setFilesystemStats] = useState<
+    Record<string, FilesystemIndexStats | null>
+  >({});
   const [indexingToolId, setIndexingToolId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -250,7 +263,12 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
 
   // Calculate total storage/memory for filesystem indexes
   // For pgvector: show disk storage; for FAISS: show RAM estimate
-  const calculateTotalStorage = (): { totalStorage: number; enabledStorage: number; hasPgvector: boolean; hasFaiss: boolean } | null => {
+  const calculateTotalStorage = (): {
+    totalStorage: number;
+    enabledStorage: number;
+    hasPgvector: boolean;
+    hasFaiss: boolean;
+  } | null => {
     let totalMb = 0;
     let enabledMb = 0;
     let hasData = false;
@@ -308,7 +326,7 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
       setLoading(true);
       const allTools = await api.listToolConfigs();
       // Filter to only filesystem indexers
-      const fsTools = allTools.filter(t => t.tool_type === 'filesystem_indexer');
+      const fsTools = allTools.filter((t) => t.tool_type === 'filesystem_indexer');
       setTools(fsTools);
       setError(null);
     } catch (err) {
@@ -325,24 +343,28 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
     const jobUpdates: Record<string, FilesystemIndexJob | null> = {};
     const statsUpdates: Record<string, FilesystemIndexStats | null> = {};
 
-    await Promise.all(tools.map(async (tool) => {
-      try {
-        const [jobs, stats] = await Promise.all([
-          api.getFilesystemJobs(tool.id),
-          api.getFilesystemStats(tool.id).catch(() => null),
-        ]);
-        // Get the most recent active job, or most recent completed job
-        const activeJob = jobs.find((j: typeof jobs[0]) => j.status === 'pending' || j.status === 'indexing');
-        const recentJob = activeJob || jobs[0] || null;
-        jobUpdates[tool.id] = recentJob;
-        statsUpdates[tool.id] = stats;
-      } catch (err) {
-        console.warn(`Failed to fetch status for ${tool.id}:`, err);
-      }
-    }));
+    await Promise.all(
+      tools.map(async (tool) => {
+        try {
+          const [jobs, stats] = await Promise.all([
+            api.getFilesystemJobs(tool.id),
+            api.getFilesystemStats(tool.id).catch(() => null),
+          ]);
+          // Get the most recent active job, or most recent completed job
+          const activeJob = jobs.find(
+            (j: (typeof jobs)[0]) => j.status === 'pending' || j.status === 'indexing',
+          );
+          const recentJob = activeJob || jobs[0] || null;
+          jobUpdates[tool.id] = recentJob;
+          statsUpdates[tool.id] = stats;
+        } catch (err) {
+          console.warn(`Failed to fetch status for ${tool.id}:`, err);
+        }
+      }),
+    );
 
-    setFilesystemJobs(prev => ({ ...prev, ...jobUpdates }));
-    setFilesystemStats(prev => ({ ...prev, ...statsUpdates }));
+    setFilesystemJobs((prev) => ({ ...prev, ...jobUpdates }));
+    setFilesystemStats((prev) => ({ ...prev, ...statsUpdates }));
   }, [tools]);
 
   // Initial load
@@ -360,7 +382,7 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
   // Fast polling when jobs are active
   useEffect(() => {
     const hasActiveJob = Object.values(filesystemJobs).some(
-      job => job && (job.status === 'pending' || job.status === 'indexing')
+      (job) => job && (job.status === 'pending' || job.status === 'indexing'),
     );
 
     if (hasActiveJob) {
@@ -491,7 +513,9 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Confirm Action</h3>
-              <button className="modal-close" onClick={() => setConfirmation(null)}>x</button>
+              <button className="modal-close" onClick={() => setConfirmation(null)}>
+                x
+              </button>
             </div>
             <div className="modal-body">
               <p>{confirmation.message}</p>
@@ -526,7 +550,7 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
         </div>
         <AnimatedCreateButton
           isExpanded={showWizard}
-          onClick={() => showWizard ? handleWizardClose() : handleAddNew()}
+          onClick={() => (showWizard ? handleWizardClose() : handleAddNew())}
           label="Add Filesystem Index"
         />
       </div>
@@ -542,54 +566,48 @@ export function FilesystemIndexPanel({ onToolsChanged, onJobsChanged, embeddingD
         />
       ) : (
         <>
-      <p className="section-description">
-        Index files from mounted volumes (Docker mounts, SMB shares, NFS) for RAG queries.
-        Uses pgvector for efficient similarity search.
-      </p>
-
-      {error && (
-        <div className="error-banner">
-          {error}
-          <button onClick={() => setError(null)}>x</button>
-        </div>
-      )}
-
-      {success && (
-        <div className="success-banner">
-          {success}
-        </div>
-      )}
-
-      {loading && tools.length === 0 && (
-        <div className="empty-state">Loading...</div>
-      )}
-
-      {!loading && tools.length === 0 && (
-        <div className="empty-state">
-          <p>No filesystem indexes configured yet.</p>
-          <p className="muted">
-            Click "Add Filesystem Index" to set up indexing for files in mounted volumes.
+          <p className="section-description">
+            Index files from mounted volumes (Docker mounts, SMB shares, NFS) for RAG queries. Uses
+            pgvector for efficient similarity search.
           </p>
-        </div>
-      )}
 
-      {tools.map((tool) => (
-        <FilesystemIndexCard
-          key={tool.id}
-          tool={tool}
-          activeJob={filesystemJobs[tool.id] || null}
-          stats={filesystemStats[tool.id] || null}
-          onStartIndex={handleStartIndex}
-          onDeleteIndex={handleDeleteIndex}
-          onEdit={handleEdit}
-          onDelete={handleDeleteTool}
-          onToggle={handleToggleTool}
-          onRename={handleRename}
-          onDescriptionUpdate={handleDescriptionUpdate}
-          indexing={indexingToolId === tool.id}
-          embeddingDimensions={embeddingDimensions}
-        />
-      ))}
+          {error && (
+            <div className="error-banner">
+              {error}
+              <button onClick={() => setError(null)}>x</button>
+            </div>
+          )}
+
+          {success && <div className="success-banner">{success}</div>}
+
+          {loading && tools.length === 0 && <div className="empty-state">Loading...</div>}
+
+          {!loading && tools.length === 0 && (
+            <div className="empty-state">
+              <p>No filesystem indexes configured yet.</p>
+              <p className="muted">
+                Click "Add Filesystem Index" to set up indexing for files in mounted volumes.
+              </p>
+            </div>
+          )}
+
+          {tools.map((tool) => (
+            <FilesystemIndexCard
+              key={tool.id}
+              tool={tool}
+              activeJob={filesystemJobs[tool.id] || null}
+              stats={filesystemStats[tool.id] || null}
+              onStartIndex={handleStartIndex}
+              onDeleteIndex={handleDeleteIndex}
+              onEdit={handleEdit}
+              onDelete={handleDeleteTool}
+              onToggle={handleToggleTool}
+              onRename={handleRename}
+              onDescriptionUpdate={handleDescriptionUpdate}
+              indexing={indexingToolId === tool.id}
+              embeddingDimensions={embeddingDimensions}
+            />
+          ))}
         </>
       )}
     </div>

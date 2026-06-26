@@ -50,8 +50,8 @@ const SYSTEM_MOUNT_PATTERNS = [
 ];
 
 function isSystemMount(containerPath: string): boolean {
-  return SYSTEM_MOUNT_PATTERNS.some(pattern =>
-    containerPath === pattern || containerPath.startsWith(pattern + '/')
+  return SYSTEM_MOUNT_PATTERNS.some(
+    (pattern) => containerPath === pattern || containerPath.startsWith(pattern + '/'),
   );
 }
 
@@ -70,7 +70,11 @@ interface FilesystemBrowserProps {
   forUserspaceMount?: boolean;
 }
 
-function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = false }: FilesystemBrowserProps) {
+function FilesystemBrowser({
+  currentPath,
+  onSelectPath,
+  forUserspaceMount = false,
+}: FilesystemBrowserProps) {
   const [mounts, setMounts] = useState<MountInfo[]>([]);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [browsePath, setBrowsePath] = useState<string>('');
@@ -91,12 +95,12 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
     const loadMounts = async () => {
       try {
         const result = await api.discoverMounts(forUserspaceMount ? 'userspace_mount' : 'indexing');
-        const userMounts = result.mounts.filter(m => !isSystemMount(m.container_path));
+        const userMounts = result.mounts.filter((m) => !isSystemMount(m.container_path));
         setMounts(userMounts);
         setDockerExample(result.docker_compose_example);
         // If editing with existing path, expand that mount
         if (currentPath) {
-          const matchingMount = userMounts.find(m => currentPath.startsWith(m.container_path));
+          const matchingMount = userMounts.find((m) => currentPath.startsWith(m.container_path));
           if (matchingMount) {
             setExpandedMount(matchingMount.container_path);
             setBrowsePath(currentPath);
@@ -121,7 +125,7 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
         setError(result.error);
         setEntries([]);
       } else {
-        const filteredEntries = result.entries.filter(e => !isSystemMount(e.path));
+        const filteredEntries = result.entries.filter((e) => !isSystemMount(e.path));
         setEntries(filteredEntries);
       }
     } catch (err) {
@@ -162,7 +166,7 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
     if (value.endsWith('/')) {
       const dirName = value.slice(0, -1); // Remove trailing slash
       const matchingDir = entries.find(
-        e => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase()
+        (e) => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase(),
       );
       if (matchingDir) {
         // Navigate into the directory
@@ -179,7 +183,7 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
       const restOfPath = segments.slice(1).join('/');
 
       const matchingDir = entries.find(
-        e => e.is_dir && e.name.toLowerCase() === firstSegment.toLowerCase()
+        (e) => e.is_dir && e.name.toLowerCase() === firstSegment.toLowerCase(),
       );
       if (matchingDir) {
         // Navigate into first segment and set remaining as filter
@@ -194,7 +198,7 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
 
   // Filter entries based on current input (only the part before any "/")
   const filterText = pathInput.split('/')[0];
-  const filteredEntries = entries.filter(e => {
+  const filteredEntries = entries.filter((e) => {
     if (!filterText) return true;
     return e.name.toLowerCase().startsWith(filterText.toLowerCase());
   });
@@ -203,7 +207,7 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
   const handlePathInputKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const firstDir = filteredEntries.find(e => e.is_dir);
+      const firstDir = filteredEntries.find((e) => e.is_dir);
       if (firstDir) {
         handleNavigate(firstDir.path);
       }
@@ -216,7 +220,12 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
       parts.pop();
       const newPath = '/' + parts.join('/');
       // Don't go above the mount point
-      if (expandedMount && newPath.startsWith(expandedMount.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/')) {
+      if (
+        expandedMount &&
+        newPath.startsWith(
+          expandedMount.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/',
+        )
+      ) {
         setBrowsePath(newPath);
         setPathInput(''); // Clear filter when navigating
       }
@@ -239,7 +248,7 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
             type="button"
             className="btn btn-sm btn-secondary"
             onClick={() => {
-              const matchingMount = mounts.find(m => currentPath.startsWith(m.container_path));
+              const matchingMount = mounts.find((m) => currentPath.startsWith(m.container_path));
               if (matchingMount) {
                 setExpandedMount(matchingMount.container_path);
                 setBrowsePath(currentPath);
@@ -277,11 +286,13 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
       {/* Mount Guide */}
       {showMountGuide && (
         <div className="mount-guide">
-          <h4>{forUserspaceMount ? 'How to Add a User Space Mount' : 'How to Add a Volume Mount'}</h4>
+          <h4>
+            {forUserspaceMount ? 'How to Add a User Space Mount' : 'How to Add a Volume Mount'}
+          </h4>
           {forUserspaceMount ? (
             <p className="field-help">
-              User Space live mounts are bind-mounted inside the <code>runtime</code> container.
-              You only need to expose the volume on the <code>runtime</code> service—the ragtime
+              User Space live mounts are bind-mounted inside the <code>runtime</code> container. You
+              only need to expose the volume on the <code>runtime</code> service—the ragtime
               container does not need to see this path for User Space workspaces.
             </p>
           ) : (
@@ -294,9 +305,11 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
           <pre className="code-block">{dockerExample}</pre>
           <p className="field-help">
             After modifying docker-compose.yml, restart the container with:
-            <code>{forUserspaceMount
-              ? 'docker compose -f docker/docker-compose.dev.yml restart runtime'
-              : 'docker compose -f docker/docker-compose.dev.yml restart ragtime'}</code>
+            <code>
+              {forUserspaceMount
+                ? 'docker compose -f docker/docker-compose.dev.yml restart runtime'
+                : 'docker compose -f docker/docker-compose.dev.yml restart ragtime'}
+            </code>
           </p>
         </div>
       )}
@@ -305,13 +318,18 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
       {!showMountGuide && mounts.length > 0 && (
         <div className="mounts-accordion">
           {mounts.map((mount, i) => (
-            <div key={i} className={`mount-item ${expandedMount === mount.container_path ? 'expanded' : ''}`}>
+            <div
+              key={i}
+              className={`mount-item ${expandedMount === mount.container_path ? 'expanded' : ''}`}
+            >
               <button
                 type="button"
                 className="mount-header"
                 onClick={() => handleExpandMount(mount.container_path)}
               >
-                <span className="mount-icon">{expandedMount === mount.container_path ? '▼' : '▶'}</span>
+                <span className="mount-icon">
+                  {expandedMount === mount.container_path ? '▼' : '▶'}
+                </span>
                 <span className="mount-path">{mount.container_path}</span>
                 {mount.read_only && <span className="ro-badge">Read Only</span>}
                 {currentPath?.startsWith(mount.container_path) && (
@@ -332,30 +350,32 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
                       ..
                     </button>
                     <div className="browser-path-wrapper">
-                      {browsePath !== mount.container_path && (() => {
-                        const relativePath = getRelativePath(browsePath, mount.container_path);
-                        const segments = relativePath.split('/').filter(Boolean);
-                        return (
-                          <span className="browser-path-breadcrumbs">
-                            {segments.map((segment, idx) => {
-                              // Build the path up to this segment
-                              const pathToSegment = mount.container_path + '/' + segments.slice(0, idx + 1).join('/');
-                              return (
-                                <span key={idx} className="breadcrumb-segment">
-                                  <button
-                                    type="button"
-                                    className="breadcrumb-btn"
-                                    onClick={() => handleNavigate(pathToSegment)}
-                                  >
-                                    {segment}
-                                  </button>
-                                  <span className="breadcrumb-sep">/</span>
-                                </span>
-                              );
-                            })}
-                          </span>
-                        );
-                      })()}
+                      {browsePath !== mount.container_path &&
+                        (() => {
+                          const relativePath = getRelativePath(browsePath, mount.container_path);
+                          const segments = relativePath.split('/').filter(Boolean);
+                          return (
+                            <span className="browser-path-breadcrumbs">
+                              {segments.map((segment, idx) => {
+                                // Build the path up to this segment
+                                const pathToSegment =
+                                  mount.container_path + '/' + segments.slice(0, idx + 1).join('/');
+                                return (
+                                  <span key={idx} className="breadcrumb-segment">
+                                    <button
+                                      type="button"
+                                      className="breadcrumb-btn"
+                                      onClick={() => handleNavigate(pathToSegment)}
+                                    >
+                                      {segment}
+                                    </button>
+                                    <span className="breadcrumb-sep">/</span>
+                                  </span>
+                                );
+                              })}
+                            </span>
+                          );
+                        })()}
                       <input
                         ref={pathInputRef}
                         type="text"
@@ -381,26 +401,35 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
                     <div className="browser-loading">Loading...</div>
                   ) : (
                     <div className="browser-entries">
-                      {filteredEntries.filter(e => e.is_dir).map((entry) => (
-                        <button
-                          key={entry.path}
-                          type="button"
-                          className="browser-entry"
-                          onClick={() => handleNavigate(entry.path)}
-                        >
-                          <span className="entry-icon"><Icon name="folder" size={16} /></span>
-                          <span className="entry-name">{entry.name}</span>
-                        </button>
-                      ))}
-                      {filteredEntries.filter(e => !e.is_dir).slice(0, 3).map((entry) => (
-                        <div key={entry.path} className="browser-entry file">
-                          <span className="entry-icon"><Icon name="file" size={16} /></span>
-                          <span className="entry-name">{entry.name}</span>
-                        </div>
-                      ))}
-                      {filteredEntries.filter(e => !e.is_dir).length > 3 && (
+                      {filteredEntries
+                        .filter((e) => e.is_dir)
+                        .map((entry) => (
+                          <button
+                            key={entry.path}
+                            type="button"
+                            className="browser-entry"
+                            onClick={() => handleNavigate(entry.path)}
+                          >
+                            <span className="entry-icon">
+                              <Icon name="folder" size={16} />
+                            </span>
+                            <span className="entry-name">{entry.name}</span>
+                          </button>
+                        ))}
+                      {filteredEntries
+                        .filter((e) => !e.is_dir)
+                        .slice(0, 3)
+                        .map((entry) => (
+                          <div key={entry.path} className="browser-entry file">
+                            <span className="entry-icon">
+                              <Icon name="file" size={16} />
+                            </span>
+                            <span className="entry-name">{entry.name}</span>
+                          </div>
+                        ))}
+                      {filteredEntries.filter((e) => !e.is_dir).length > 3 && (
                         <div className="browser-more">
-                          +{filteredEntries.filter(e => !e.is_dir).length - 3} more files
+                          +{filteredEntries.filter((e) => !e.is_dir).length - 3} more files
                         </div>
                       )}
                     </div>
@@ -415,7 +444,9 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
       {/* No mounts warning */}
       {!showMountGuide && mounts.length === 0 && (
         <div className="no-mounts-warning">
-          <p>No Docker volumes found. Add a volume mount to your docker-compose.yml to index files.</p>
+          <p>
+            No Docker volumes found. Add a volume mount to your docker-compose.yml to index files.
+          </p>
           <button
             type="button"
             className="btn btn-sm btn-secondary"
@@ -429,7 +460,6 @@ function FilesystemBrowser({ currentPath, onSelectPath, forUserspaceMount = fals
   );
 }
 
-
 // =============================================================================
 // SSH Filesystem Browser Component
 // =============================================================================
@@ -441,7 +471,12 @@ interface SSHFilesystemBrowserProps {
   rootPath?: string;
 }
 
-function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }: SSHFilesystemBrowserProps) {
+function SSHFilesystemBrowser({
+  currentPath,
+  onSelectPath,
+  sshConfig,
+  rootPath,
+}: SSHFilesystemBrowserProps) {
   const normalizePath = (value: string): string => {
     const normalizedParts: string[] = [];
     for (const part of (value || '/').replace(/\\/g, '/').split('/')) {
@@ -469,14 +504,19 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
   };
 
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
-  const [browsePath, setBrowsePath] = useState<string>(clampToRootPath(currentPath || normalizedRootPath || '/'));
+  const [browsePath, setBrowsePath] = useState<string>(
+    clampToRootPath(currentPath || normalizedRootPath || '/'),
+  );
   const [pathInput, setPathInput] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(!currentPath || currentPath === '/' || currentPath === normalizedRootPath); // Start expanded if no selection
+  const [isExpanded, setIsExpanded] = useState(
+    !currentPath || currentPath === '/' || currentPath === normalizedRootPath,
+  ); // Start expanded if no selection
 
   useEffect(() => {
     setBrowsePath(clampToRootPath(currentPath || normalizedRootPath || '/'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- effect intentionally reacts only to path changes, not clampToRootPath identity
   }, [currentPath, normalizedRootPath]);
 
   const browseCurrent = useCallback(async () => {
@@ -523,7 +563,7 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
 
   // Filter entries based on input
   const filterText = pathInput.split('/')[0];
-  const filteredEntries = entries.filter(e => {
+  const filteredEntries = entries.filter((e) => {
     if (!filterText) return true;
     return e.name.toLowerCase().startsWith(filterText.toLowerCase());
   });
@@ -532,7 +572,9 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
   const handleFilterChange = (value: string) => {
     if (value.endsWith('/')) {
       const dirName = value.slice(0, -1);
-      const matchingDir = entries.find(e => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase());
+      const matchingDir = entries.find(
+        (e) => e.is_dir && e.name.toLowerCase() === dirName.toLowerCase(),
+      );
       if (matchingDir) {
         handleNavigate(matchingDir.path);
         return;
@@ -541,7 +583,9 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
     if (value.includes('/')) {
       const segments = value.split('/');
       const first = segments[0];
-      const matchingDir = entries.find(e => e.is_dir && e.name.toLowerCase() === first.toLowerCase());
+      const matchingDir = entries.find(
+        (e) => e.is_dir && e.name.toLowerCase() === first.toLowerCase(),
+      );
       if (matchingDir) {
         handleNavigate(matchingDir.path);
         return;
@@ -553,7 +597,7 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
   const handlePathInputKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const firstDir = filteredEntries.find(e => e.is_dir);
+      const firstDir = filteredEntries.find((e) => e.is_dir);
       if (firstDir) {
         handleNavigate(firstDir.path);
       }
@@ -586,9 +630,7 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
           >
             <span className="mount-icon">{isExpanded ? '▼' : '▶'}</span>
             <span className="mount-path">{displayPath}</span>
-            {currentPath && (
-              <span className="current-badge">Selected</span>
-            )}
+            {currentPath && <span className="current-badge">Selected</span>}
           </button>
 
           {/* Expanded browser */}
@@ -658,17 +700,21 @@ function SSHFilesystemBrowser({ currentPath, onSelectPath, sshConfig, rootPath }
                 <div className="browser-loading">Loading...</div>
               ) : (
                 <div className="browser-entries">
-                  {filteredEntries.filter(e => e.is_dir).map((entry) => (
-                    <button
-                      key={entry.path}
-                      type="button"
-                      className="browser-entry"
-                      onClick={() => handleNavigate(entry.path)}
-                    >
-                      <span className="entry-icon"><Icon name="folder" size={16} /></span>
-                      <span className="entry-name">{entry.name}</span>
-                    </button>
-                  ))}
+                  {filteredEntries
+                    .filter((e) => e.is_dir)
+                    .map((entry) => (
+                      <button
+                        key={entry.path}
+                        type="button"
+                        className="browser-entry"
+                        onClick={() => handleNavigate(entry.path)}
+                      >
+                        <span className="entry-icon">
+                          <Icon name="folder" size={16} />
+                        </span>
+                        <span className="entry-name">{entry.name}</span>
+                      </button>
+                    ))}
                   {filteredEntries.length === 0 && !loading && (
                     <div className="browser-empty">Empty directory</div>
                   )}
@@ -694,7 +740,13 @@ interface NFSBrowserProps {
   onSelectPath: (exportPath: string, relativePath: string) => void;
 }
 
-function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelectPath }: NFSBrowserProps) {
+function NFSBrowser({
+  host,
+  selectedExport,
+  selectedPath,
+  onHostChange,
+  onSelectPath,
+}: NFSBrowserProps) {
   const [exports, setExports] = useState<import('@/types').NFSExport[]>([]);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [discovering, setDiscovering] = useState(false);
@@ -732,27 +784,30 @@ function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelect
   };
 
   // Browse export contents
-  const browseExport = useCallback(async (exportPath: string, path: string = '') => {
-    if (!host) return;
-    setBrowsing(true);
-    setBrowseError(null);
+  const browseExport = useCallback(
+    async (exportPath: string, path: string = '') => {
+      if (!host) return;
+      setBrowsing(true);
+      setBrowseError(null);
 
-    try {
-      const result = await api.browseNfsExport(host, exportPath, path);
-      if (result.error) {
-        // Allow manual path entry on any browse error
-        setBrowseError(result.error);
-        setEntries([]);
-      } else {
-        setEntries(result.entries);
-        setBrowseError(null);
+      try {
+        const result = await api.browseNfsExport(host, exportPath, path);
+        if (result.error) {
+          // Allow manual path entry on any browse error
+          setBrowseError(result.error);
+          setEntries([]);
+        } else {
+          setEntries(result.entries);
+          setBrowseError(null);
+        }
+      } catch (err) {
+        setBrowseError(err instanceof Error ? err.message : 'Browse failed');
+      } finally {
+        setBrowsing(false);
       }
-    } catch (err) {
-      setBrowseError(err instanceof Error ? err.message : 'Browse failed');
-    } finally {
-      setBrowsing(false);
-    }
-  }, [host]);
+    },
+    [host],
+  );
 
   const handleExpandExport = (exportPath: string) => {
     if (expandedExport === exportPath) {
@@ -792,7 +847,10 @@ function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelect
       <div className="filesystem-browser">
         <div className="selected-path-display">
           <span className="selected-label">NFS:</span>
-          <span className="selected-value">{host}:{selectedExport}{selectedPath ? `/${selectedPath}` : ''}</span>
+          <span className="selected-value">
+            {host}:{selectedExport}
+            {selectedPath ? `/${selectedPath}` : ''}
+          </span>
           <button
             type="button"
             className="btn btn-sm btn-secondary"
@@ -836,7 +894,10 @@ function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelect
       {exports.length > 0 && (
         <div className="mounts-accordion">
           {exports.map((exp, i) => (
-            <div key={i} className={`mount-item ${expandedExport === exp.export_path ? 'expanded' : ''}`}>
+            <div
+              key={i}
+              className={`mount-item ${expandedExport === exp.export_path ? 'expanded' : ''}`}
+            >
               <button
                 type="button"
                 className="mount-header"
@@ -865,7 +926,9 @@ function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelect
                         <button
                           type="button"
                           className="btn btn-sm btn-primary"
-                          onClick={() => onSelectPath(exp.export_path, manualPath.replace(/^\/+/, ''))}
+                          onClick={() =>
+                            onSelectPath(exp.export_path, manualPath.replace(/^\/+/, ''))
+                          }
                         >
                           Select Path
                         </button>
@@ -892,7 +955,6 @@ function NFSBrowser({ host, selectedExport, selectedPath, onHostChange, onSelect
   );
 }
 
-
 // =============================================================================
 // SMB Browser Component
 // =============================================================================
@@ -910,9 +972,15 @@ interface SMBBrowserProps {
 }
 
 function SMBBrowser({
-  host, user, password, domain,
-  selectedShare, selectedPath,
-  onHostChange, onCredentialsChange, onSelectPath
+  host,
+  user,
+  password,
+  domain,
+  selectedShare,
+  selectedPath,
+  onHostChange,
+  onCredentialsChange,
+  onSelectPath,
 }: SMBBrowserProps) {
   const [shares, setShares] = useState<import('@/types').SMBShare[]>([]);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
@@ -935,7 +1003,12 @@ function SMBBrowser({
     setShares([]);
 
     try {
-      const result = await api.discoverSmbShares(hostInput.trim(), userInput, passwordInput, domainInput);
+      const result = await api.discoverSmbShares(
+        hostInput.trim(),
+        userInput,
+        passwordInput,
+        domainInput,
+      );
       if (result.success) {
         setShares(result.shares);
         onHostChange(hostInput.trim());
@@ -954,26 +1027,36 @@ function SMBBrowser({
   };
 
   // Browse share contents - use local state for fresh values after discovery
-  const browseShare = useCallback(async (shareName: string, path: string = '') => {
-    const currentHost = hostInput.trim() || host;
-    if (!currentHost) return;
-    setBrowsing(true);
-    setError(null);
+  const browseShare = useCallback(
+    async (shareName: string, path: string = '') => {
+      const currentHost = hostInput.trim() || host;
+      if (!currentHost) return;
+      setBrowsing(true);
+      setError(null);
 
-    try {
-      const result = await api.browseSmbShare(currentHost, shareName, path, userInput || user, passwordInput || password, domainInput || domain);
-      if (result.error) {
-        setError(result.error);
-        setEntries([]);
-      } else {
-        setEntries(result.entries);
+      try {
+        const result = await api.browseSmbShare(
+          currentHost,
+          shareName,
+          path,
+          userInput || user,
+          passwordInput || password,
+          domainInput || domain,
+        );
+        if (result.error) {
+          setError(result.error);
+          setEntries([]);
+        } else {
+          setEntries(result.entries);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Browse failed');
+      } finally {
+        setBrowsing(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Browse failed');
-    } finally {
-      setBrowsing(false);
-    }
-  }, [host, user, password, domain, hostInput, userInput, passwordInput, domainInput]);
+    },
+    [host, user, password, domain, hostInput, userInput, passwordInput, domainInput],
+  );
 
   const handleExpandShare = (shareName: string) => {
     if (expandedShare === shareName) {
@@ -1015,7 +1098,10 @@ function SMBBrowser({
       <div className="filesystem-browser">
         <div className="selected-path-display">
           <span className="selected-label">SMB:</span>
-          <span className="selected-value">//{host}/{selectedShare}{selectedPath ? `/${selectedPath}` : ''}</span>
+          <span className="selected-value">
+            //{host}/{selectedShare}
+            {selectedPath ? `/${selectedPath}` : ''}
+          </span>
           <button
             type="button"
             className="btn btn-sm btn-secondary"
@@ -1120,7 +1206,6 @@ function SMBBrowser({
   );
 }
 
-
 // =============================================================================
 // Shared Docker connection panel props
 // =============================================================================
@@ -1152,15 +1237,9 @@ interface DockerConnectionPanelProps {
 
 function isInfrastructureDockerContainer(container: DockerContainer): boolean {
   const text = `${container.name} ${container.image}`.toLowerCase();
-  return [
-    'postgres',
-    'mysql',
-    'mariadb',
-    'redis',
-    'traefik',
-    'nginx',
-    'caddy',
-  ].some(marker => text.includes(marker));
+  return ['postgres', 'mysql', 'mariadb', 'redis', 'traefik', 'nginx', 'caddy'].some((marker) =>
+    text.includes(marker),
+  );
 }
 
 // Reusable Docker connection panel component
@@ -1186,15 +1265,23 @@ function DockerConnectionPanel({
 }: DockerConnectionPanelProps) {
   const filteredContainers = dockerContainers.filter(containerFilter);
   const networkContainers = dockerContainers.filter(
-    c => currentNetwork && c.networks.includes(currentNetwork) && c.name !== currentContainer
+    (c) => currentNetwork && c.networks.includes(currentNetwork) && c.name !== currentContainer,
   );
   const selectableContainers = remoteDocker
-    ? filteredContainers.filter(c => !selectedNetwork || c.networks.includes(selectedNetwork))
+    ? filteredContainers.filter((c) => !selectedNetwork || c.networks.includes(selectedNetwork))
     : networkContainers;
 
   return (
     <>
-      <div className="form-row-3" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '1rem', alignItems: 'flex-start' }}>
+      <div
+        className="form-row-3"
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'auto 1fr 1fr',
+          gap: '1rem',
+          alignItems: 'flex-start',
+        }}
+      >
         {/* Discover Docker button */}
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label>Docker Environment</label>
@@ -1220,7 +1307,7 @@ function DockerConnectionPanel({
                 style={{ flex: 1 }}
               >
                 <option value="">Select network...</option>
-                {dockerNetworks.map(n => (
+                {dockerNetworks.map((n) => (
                   <option key={n.name} value={n.name}>
                     {n.name} ({n.containers.length})
                     {n.name === currentNetwork ? ' - connected' : ''}
@@ -1238,7 +1325,6 @@ function DockerConnectionPanel({
                 </button>
               )}
             </div>
-
           </div>
         )}
 
@@ -1247,12 +1333,9 @@ function DockerConnectionPanel({
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label>Container Name</label>
             {selectableContainers.length > 0 ? (
-              <select
-                value={selectedContainer}
-                onChange={(e) => onContainerChange(e.target.value)}
-              >
+              <select value={selectedContainer} onChange={(e) => onContainerChange(e.target.value)}>
                 <option value="">Select container...</option>
-                {selectableContainers.map(c => (
+                {selectableContainers.map((c) => (
                   <option key={c.name} value={c.name}>
                     {containerLabel(c)}
                   </option>
@@ -1343,7 +1426,9 @@ function SSHKeyPasswordField({
         onChange={(e) => onChange(e.target.value)}
         placeholder="Leave blank if not required"
       />
-      <p className="field-help">Some servers require both SSH key and password. Fill in both if needed.</p>
+      <p className="field-help">
+        Some servers require both SSH key and password. Fill in both if needed.
+      </p>
     </div>
   );
 }
@@ -1405,9 +1490,19 @@ function PublicKeyDisplay({
           className={`btn ${keyCopied ? 'btn-success' : 'btn-secondary'}`}
           onClick={onCopyPublicKey}
           title="Copy to clipboard"
-          style={keyCopied ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' } : undefined}
+          style={
+            keyCopied
+              ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' }
+              : undefined
+          }
         >
-          {keyCopied ? <><Icon name="check" size={14} /> Copied!</> : 'Copy'}
+          {keyCopied ? (
+            <>
+              <Icon name="check" size={14} /> Copied!
+            </>
+          ) : (
+            'Copy'
+          )}
         </button>
       </div>
     </div>
@@ -1426,7 +1521,7 @@ interface SSHAuthPanelProps {
   keyCopied: boolean;
   onCopyPublicKey: () => void;
   toolName?: string;
-  showHostPort?: boolean;  // Whether to show host/port fields (true for generic SSH, false for Odoo which shows them separately)
+  showHostPort?: boolean; // Whether to show host/port fields (true for generic SSH, false for Odoo which shows them separately)
 }
 
 function SSHAuthPanel({
@@ -1445,7 +1540,10 @@ function SSHAuthPanel({
     <div className="ssh-auth-panel">
       {showHostPort && (
         <>
-          <div className="form-row" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}>
+          <div
+            className="form-row"
+            style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}
+          >
             <div className="form-group" style={{ flex: '3 1 200px', minWidth: '150px' }}>
               <label>SSH Host *</label>
               <input
@@ -1455,12 +1553,17 @@ function SSHAuthPanel({
                 placeholder="server.example.com"
               />
             </div>
-            <div className="form-group" style={{ flex: '1 1 80px', minWidth: '80px', maxWidth: '120px' }}>
+            <div
+              className="form-group"
+              style={{ flex: '1 1 80px', minWidth: '80px', maxWidth: '120px' }}
+            >
               <label>SSH Port</label>
               <input
                 type="number"
                 value={config.port || 22}
-                onChange={(e) => onConfigChange({ ...config, port: parseInt(e.target.value) || 22 })}
+                onChange={(e) =>
+                  onConfigChange({ ...config, port: parseInt(e.target.value) || 22 })
+                }
                 min={1}
                 max={65535}
               />
@@ -1515,16 +1618,19 @@ function SSHAuthPanel({
         {authMode === 'generate' && (
           <div className="ssh-key-panel">
             <p className="field-help">
-              Generate a new SSH keypair. The private key will be stored securely with this tool configuration.
-              Copy the public key to the remote server's <code>~/.ssh/authorized_keys</code>.
+              Generate a new SSH keypair. The private key will be stored securely with this tool
+              configuration. Copy the public key to the remote server's{' '}
+              <code>~/.ssh/authorized_keys</code>.
             </p>
             <KeyPassphraseField
               passphrase={config.key_passphrase || ''}
               onChange={(passphrase) => onConfigChange({ ...config, key_passphrase: passphrase })}
               placeholder="Leave blank for no passphrase"
-              helpText={config.key_content
-                ? 'Enter a new passphrase to regenerate the key, or leave blank for no passphrase.'
-                : 'Optionally encrypt the private key with a passphrase.'}
+              helpText={
+                config.key_content
+                  ? 'Enter a new passphrase to regenerate the key, or leave blank for no passphrase.'
+                  : 'Optionally encrypt the private key with a passphrase.'
+              }
               style={{ marginTop: '0.5rem' }}
             />
             <button
@@ -1534,7 +1640,11 @@ function SSHAuthPanel({
               disabled={generatingKey}
               style={{ marginTop: '0.5rem' }}
             >
-              {generatingKey ? 'Generating...' : (config.key_content ? 'Regenerate SSH Keypair' : 'Generate SSH Keypair')}
+              {generatingKey
+                ? 'Generating...'
+                : config.key_content
+                  ? 'Regenerate SSH Keypair'
+                  : 'Generate SSH Keypair'}
             </button>
             {config.public_key && (
               <PublicKeyDisplay
@@ -1557,7 +1667,9 @@ function SSHAuthPanel({
               <label>Private Key Content</label>
               <textarea
                 value={config.key_content || ''}
-                onChange={(e) => onConfigChange({ ...config, key_content: e.target.value, key_path: '' })}
+                onChange={(e) =>
+                  onConfigChange({ ...config, key_content: e.target.value, key_path: '' })
+                }
                 placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
                 rows={6}
                 style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}
@@ -1592,12 +1704,14 @@ function SSHAuthPanel({
               <input
                 type="text"
                 value={config.key_path || ''}
-                onChange={(e) => onConfigChange({ ...config, key_path: e.target.value, key_content: '' })}
+                onChange={(e) =>
+                  onConfigChange({ ...config, key_path: e.target.value, key_content: '' })
+                }
                 placeholder="/root/.ssh/id_rsa"
               />
               <p className="field-help">
-                Path to SSH private key file inside the ragtime container.
-                Host keys from ~/.ssh are mounted at /root/.ssh/
+                Path to SSH private key file inside the ragtime container. Host keys from ~/.ssh are
+                mounted at /root/.ssh/
               </p>
             </div>
             <KeyPassphraseField
@@ -1619,7 +1733,14 @@ function SSHAuthPanel({
               <input
                 type="password"
                 value={config.password || ''}
-                onChange={(e) => onConfigChange({ ...config, password: e.target.value, key_path: '', key_content: '' })}
+                onChange={(e) =>
+                  onConfigChange({
+                    ...config,
+                    password: e.target.value,
+                    key_path: '',
+                    key_content: '',
+                  })
+                }
                 placeholder="Enter SSH password"
               />
               <p className="field-help">Use password-only authentication (no SSH key).</p>
@@ -1660,7 +1781,16 @@ function RemoteDockerSSHPanel({
 }: RemoteDockerSSHPanelProps) {
   return (
     <div className="ssh-tunnel-section" style={{ marginBottom: '1rem' }}>
-      <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
+      <label
+        className="toggle-container"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          cursor: 'pointer',
+          marginBottom: '0.5rem',
+        }}
+      >
         <input
           type="checkbox"
           checked={enabled}
@@ -1692,7 +1822,10 @@ function RemoteDockerSSHPanel({
                 value={config.docker_ssh_port || 22}
                 onChange={(e) => {
                   const parsedPort = Number.parseInt(e.target.value, 10);
-                  onConfigChange({ ...config, docker_ssh_port: Number.isNaN(parsedPort) ? 22 : parsedPort });
+                  onConfigChange({
+                    ...config,
+                    docker_ssh_port: Number.isNaN(parsedPort) ? 22 : parsedPort,
+                  });
                 }}
                 min={1}
                 max={65535}
@@ -1721,14 +1854,16 @@ function RemoteDockerSSHPanel({
               key_passphrase: config.docker_ssh_key_passphrase || '',
               password: config.docker_ssh_password || '',
             }}
-            onConfigChange={(sshAuthConfig) => onConfigChange({
-              ...config,
-              docker_ssh_key_path: sshAuthConfig.key_path || '',
-              docker_ssh_key_content: sshAuthConfig.key_content || '',
-              docker_ssh_public_key: sshAuthConfig.public_key || '',
-              docker_ssh_key_passphrase: sshAuthConfig.key_passphrase || '',
-              docker_ssh_password: sshAuthConfig.password || '',
-            })}
+            onConfigChange={(sshAuthConfig) =>
+              onConfigChange({
+                ...config,
+                docker_ssh_key_path: sshAuthConfig.key_path || '',
+                docker_ssh_key_content: sshAuthConfig.key_content || '',
+                docker_ssh_public_key: sshAuthConfig.public_key || '',
+                docker_ssh_key_passphrase: sshAuthConfig.key_passphrase || '',
+                docker_ssh_password: sshAuthConfig.password || '',
+              })
+            }
             authMode={authMode}
             onAuthModeChange={onAuthModeChange}
             generatingKey={generatingKey}
@@ -1788,7 +1923,16 @@ function SSHTunnelPanel({
 }: SSHTunnelPanelProps) {
   return (
     <div className="ssh-tunnel-section" style={{ marginBottom: '1rem' }}>
-      <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer', marginBottom: '0.5rem' }}>
+      <label
+        className="toggle-container"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          cursor: 'pointer',
+          marginBottom: '0.5rem',
+        }}
+      >
         <input
           type="checkbox"
           checked={enabled}
@@ -1798,13 +1942,17 @@ function SSHTunnelPanel({
         <span style={{ fontWeight: 500 }}>Connect via SSH Tunnel</span>
       </label>
       <p className="field-help" style={{ marginTop: 0, marginBottom: enabled ? '1rem' : 0 }}>
-        Use an SSH tunnel to connect to {databaseLabel} servers that are not directly accessible (e.g., behind a firewall or bound to localhost).
+        Use an SSH tunnel to connect to {databaseLabel} servers that are not directly accessible
+        (e.g., behind a firewall or bound to localhost).
       </p>
 
       {enabled && (
         <>
           {/* SSH Server Connection - Host, Port, User in one row */}
-          <div className="form-row" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}>
+          <div
+            className="form-row"
+            style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}
+          >
             <div className="form-group" style={{ flex: '3 1 200px', minWidth: '150px' }}>
               <label>SSH Host *</label>
               <input
@@ -1814,12 +1962,17 @@ function SSHTunnelPanel({
                 placeholder="ssh.example.com"
               />
             </div>
-            <div className="form-group" style={{ flex: '1 1 80px', minWidth: '80px', maxWidth: '120px' }}>
+            <div
+              className="form-group"
+              style={{ flex: '1 1 80px', minWidth: '80px', maxWidth: '120px' }}
+            >
               <label>SSH Port</label>
               <input
                 type="number"
                 value={config.ssh_tunnel_port || 22}
-                onChange={(e) => onConfigChange({ ...config, ssh_tunnel_port: parseInt(e.target.value) || 22 })}
+                onChange={(e) =>
+                  onConfigChange({ ...config, ssh_tunnel_port: parseInt(e.target.value) || 22 })
+                }
                 min={1}
                 max={65535}
               />
@@ -1847,14 +2000,16 @@ function SSHTunnelPanel({
               key_passphrase: config.ssh_tunnel_key_passphrase || '',
               password: config.ssh_tunnel_password || '',
             }}
-            onConfigChange={(sshAuthConfig) => onConfigChange({
-              ...config,
-              ssh_tunnel_key_path: sshAuthConfig.key_path || '',
-              ssh_tunnel_key_content: sshAuthConfig.key_content || '',
-              ssh_tunnel_public_key: sshAuthConfig.public_key || '',
-              ssh_tunnel_key_passphrase: sshAuthConfig.key_passphrase || '',
-              ssh_tunnel_password: sshAuthConfig.password || '',
-            })}
+            onConfigChange={(sshAuthConfig) =>
+              onConfigChange({
+                ...config,
+                ssh_tunnel_key_path: sshAuthConfig.key_path || '',
+                ssh_tunnel_key_content: sshAuthConfig.key_content || '',
+                ssh_tunnel_public_key: sshAuthConfig.public_key || '',
+                ssh_tunnel_key_passphrase: sshAuthConfig.key_passphrase || '',
+                ssh_tunnel_password: sshAuthConfig.password || '',
+              })
+            }
             authMode={authMode}
             onAuthModeChange={onAuthModeChange}
             generatingKey={generatingKey}
@@ -1881,20 +2036,51 @@ interface ToolWizardProps {
   mountOnly?: boolean;
 }
 
-type WizardStep = 'type' | 'connection' | 'pdm_filtering' | 'execution_constraints' | 'description' | 'options' | 'review';
-type ToolTypeInfoEntry = [ToolType, typeof TOOL_TYPE_INFO[ToolType]];
+type WizardStep =
+  | 'type'
+  | 'connection'
+  | 'pdm_filtering'
+  | 'execution_constraints'
+  | 'description'
+  | 'options'
+  | 'review';
+type ToolTypeInfoEntry = [ToolType, (typeof TOOL_TYPE_INFO)[ToolType]];
 
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
 const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
-const PDM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'pdm_filtering', 'description', 'options', 'review'];
+const PDM_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'pdm_filtering',
+  'description',
+  'options',
+  'review',
+];
 // SSH tools surface userspace mount controls in the execution_constraints step
-const SSH_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'execution_constraints', 'description', 'review'];
+const SSH_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'execution_constraints',
+  'description',
+  'review',
+];
 // Odoo tools show options before description for logical flow
 const ODOO_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'options', 'description', 'review'];
 // Filesystem indexers use options for userspace mount controls.
-const FILESYSTEM_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
+const FILESYSTEM_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'description',
+  'options',
+  'review',
+];
 // Filesystem mount-only: skip options (no indexing config needed).
-const FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'review'];
+const FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'description',
+  'review',
+];
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -1915,12 +2101,21 @@ function getStepTitle(step: WizardStep): string {
   }
 }
 
-export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, embedded = false, mountOnly = false }: ToolWizardProps) {
+export function ToolWizard({
+  existingTool,
+  onClose,
+  onSave,
+  defaultToolType,
+  embedded = false,
+  mountOnly = false,
+}: ToolWizardProps) {
   const isEditing = existingTool !== null;
   const progressRef = useRef<HTMLDivElement>(null);
 
   // Form state - use defaultToolType if provided
-  const [toolType, setToolType] = useState<ToolType>(existingTool?.tool_type || defaultToolType || 'ssh_shell');
+  const [toolType, setToolType] = useState<ToolType>(
+    existingTool?.tool_type || defaultToolType || 'ssh_shell',
+  );
 
   // Get the appropriate wizard steps based on tool type
   const getWizardSteps = useCallback((): WizardStep[] => {
@@ -1928,11 +2123,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
     else if (toolType === 'ssh_shell') steps = SSH_WIZARD_STEPS;
     else if (toolType === 'odoo_shell') steps = ODOO_WIZARD_STEPS;
-    else if (toolType === 'filesystem_indexer') steps = mountOnly ? FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS : FILESYSTEM_WIZARD_STEPS;
+    else if (toolType === 'filesystem_indexer')
+      steps = mountOnly ? FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS : FILESYSTEM_WIZARD_STEPS;
 
     // Skip description step in edit mode (handled inline)
     if (isEditing) {
-      return steps.filter(step => step !== 'description');
+      return steps.filter((step) => step !== 'description');
     }
     return steps;
   }, [toolType, isEditing, mountOnly]);
@@ -1940,11 +2136,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   // Wizard state - skip type selection if defaultToolType is provided
   const skipTypeStep = !isEditing && defaultToolType !== undefined;
   const [currentStep, setCurrentStep] = useState<WizardStep>(
-    isEditing ? 'connection' : (skipTypeStep ? 'connection' : 'type')
+    isEditing ? 'connection' : skipTypeStep ? 'connection' : 'type',
   );
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: unknown } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+    details?: unknown;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // SQL tools dropdown state
@@ -1960,7 +2160,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [name, setName] = useState(existingTool?.name || '');
   const [description, setDescription] = useState(existingTool?.description || '');
   const [maxResults, setMaxResults] = useState(existingTool?.max_results || 100);
-  const [timeoutMaxSeconds, setTimeoutMaxSeconds] = useState(existingTool?.timeout_max_seconds ?? 300);
+  const [timeoutMaxSeconds, setTimeoutMaxSeconds] = useState(
+    existingTool?.timeout_max_seconds ?? 300,
+  );
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
 
   const parseNumberOrDefault = (value: string, defaultValue: number): number => {
@@ -1970,51 +2172,87 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
   // Connection config state
   const [pgConnectionMode, setPgConnectionMode] = useState<'direct' | 'container'>(
-    existingTool?.tool_type === 'postgres' && (existingTool.connection_config as PostgresConnectionConfig).container
+    existingTool?.tool_type === 'postgres' &&
+      (existingTool.connection_config as PostgresConnectionConfig).container
       ? 'container'
-      : 'direct'
+      : 'direct',
   );
   const [postgresConfig, setPostgresConfig] = useState<PostgresConnectionConfig>(
     existingTool?.tool_type === 'postgres'
       ? (existingTool.connection_config as PostgresConnectionConfig)
-      : { host: '', port: 5432, user: '', password: '', database: '', container: '', docker_network: '' }
+      : {
+          host: '',
+          port: 5432,
+          user: '',
+          password: '',
+          database: '',
+          container: '',
+          docker_network: '',
+        },
   );
 
   // MSSQL config state
   const [mssqlConfig, setMssqlConfig] = useState<MssqlConnectionConfig>(
     existingTool?.tool_type === 'mssql'
       ? (existingTool.connection_config as MssqlConnectionConfig)
-      : { host: '', port: 1433, user: '', password: '', database: '' }
+      : { host: '', port: 1433, user: '', password: '', database: '' },
   );
 
   // MySQL/MariaDB config state
   const [mysqlConnectionMode, setMysqlConnectionMode] = useState<'direct' | 'container'>(
-    existingTool?.tool_type === 'mysql' && (existingTool.connection_config as MysqlConnectionConfig).container
+    existingTool?.tool_type === 'mysql' &&
+      (existingTool.connection_config as MysqlConnectionConfig).container
       ? 'container'
-      : 'direct'
+      : 'direct',
   );
   const [mysqlConfig, setMysqlConfig] = useState<MysqlConnectionConfig>(
     existingTool?.tool_type === 'mysql'
       ? (existingTool.connection_config as MysqlConnectionConfig)
-      : { host: '', port: 3306, user: '', password: '', database: '', container: '', docker_network: '' }
+      : {
+          host: '',
+          port: 3306,
+          user: '',
+          password: '',
+          database: '',
+          container: '',
+          docker_network: '',
+        },
   );
 
   // InfluxDB config state
   const [influxdbConfig, setInfluxdbConfig] = useState<InfluxdbConnectionConfig>(
     existingTool?.tool_type === 'influxdb'
       ? (existingTool.connection_config as InfluxdbConnectionConfig)
-      : { host: '', port: 8086, use_https: false, token: '', org: '', bucket: '' }
+      : { host: '', port: 8086, use_https: false, token: '', org: '', bucket: '' },
   );
 
   const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
-    existingTool?.tool_type === 'odoo_shell' && (existingTool.connection_config as OdooShellConnectionConfig).mode === 'ssh'
+    existingTool?.tool_type === 'odoo_shell' &&
+      (existingTool.connection_config as OdooShellConnectionConfig).mode === 'ssh'
       ? 'ssh'
-      : 'docker'
+      : 'docker',
   );
   const [odooConfig, setOdooConfig] = useState<OdooShellConnectionConfig>(
     existingTool?.tool_type === 'odoo_shell'
       ? (existingTool.connection_config as OdooShellConnectionConfig)
-      : { mode: 'docker', container: '', database: 'odoo', docker_network: '', config_path: '', ssh_host: '', ssh_port: 22, ssh_user: '', ssh_key_path: '', ssh_key_content: '', ssh_public_key: '', ssh_key_passphrase: '', ssh_password: '', odoo_bin_path: '', working_directory: '', run_as_user: '' }
+      : {
+          mode: 'docker',
+          container: '',
+          database: 'odoo',
+          docker_network: '',
+          config_path: '',
+          ssh_host: '',
+          ssh_port: 22,
+          ssh_user: '',
+          ssh_key_path: '',
+          ssh_key_content: '',
+          ssh_public_key: '',
+          ssh_key_passphrase: '',
+          ssh_password: '',
+          odoo_bin_path: '',
+          working_directory: '',
+          run_as_user: '',
+        },
   );
 
   // Docker discovery state
@@ -2031,24 +2269,46 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [databaseDiscoveryError, setDatabaseDiscoveryError] = useState<string | null>(null);
 
   // MSSQL database discovery state
-  const [mssqlDiscoveredDatabases, setMssqlDiscoveredDatabases] = useState<DatabaseDiscoverOption[]>([]);
+  const [mssqlDiscoveredDatabases, setMssqlDiscoveredDatabases] = useState<
+    DatabaseDiscoverOption[]
+  >([]);
   const [mssqlDiscoveringDatabases, setMssqlDiscoveringDatabases] = useState(false);
-  const [mssqlDatabaseDiscoveryError, setMssqlDatabaseDiscoveryError] = useState<string | null>(null);
+  const [mssqlDatabaseDiscoveryError, setMssqlDatabaseDiscoveryError] = useState<string | null>(
+    null,
+  );
 
   // MySQL/MariaDB database discovery state
-  const [mysqlDiscoveredDatabases, setMysqlDiscoveredDatabases] = useState<DatabaseDiscoverOption[]>([]);
+  const [mysqlDiscoveredDatabases, setMysqlDiscoveredDatabases] = useState<
+    DatabaseDiscoverOption[]
+  >([]);
   const [mysqlDiscoveringDatabases, setMysqlDiscoveringDatabases] = useState(false);
-  const [mysqlDatabaseDiscoveryError, setMysqlDatabaseDiscoveryError] = useState<string | null>(null);
+  const [mysqlDatabaseDiscoveryError, setMysqlDatabaseDiscoveryError] = useState<string | null>(
+    null,
+  );
 
   // InfluxDB bucket discovery state
-  const [influxdbDiscoveredBuckets, setInfluxdbDiscoveredBuckets] = useState<DatabaseDiscoverOption[]>([]);
+  const [influxdbDiscoveredBuckets, setInfluxdbDiscoveredBuckets] = useState<
+    DatabaseDiscoverOption[]
+  >([]);
   const [influxdbDiscoveringBuckets, setInfluxdbDiscoveringBuckets] = useState(false);
-  const [influxdbBucketDiscoveryError, setInfluxdbBucketDiscoveryError] = useState<string | null>(null);
+  const [influxdbBucketDiscoveryError, setInfluxdbBucketDiscoveryError] = useState<string | null>(
+    null,
+  );
 
   const [sshConfig, setSshConfig] = useState<SSHShellConnectionConfig>(
     existingTool?.tool_type === 'ssh_shell'
       ? (existingTool.connection_config as SSHShellConnectionConfig)
-      : { host: '', port: 22, user: '', key_path: '', key_content: '', public_key: '', key_passphrase: '', password: '', command_prefix: '' }
+      : {
+          host: '',
+          port: 22,
+          user: '',
+          key_path: '',
+          key_content: '',
+          public_key: '',
+          key_passphrase: '',
+          password: '',
+          command_prefix: '',
+        },
   );
 
   // Filesystem Indexer config state
@@ -2068,8 +2328,32 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         nfs_export: existing.nfs_export ?? '',
         nfs_options: existing.nfs_options ?? 'ro,noatime',
         index_name: existing.index_name ?? '',
-        file_patterns: existing.file_patterns ?? ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.bmp', '**/*.tiff', '**/*.webp'],
-        exclude_patterns: existing.exclude_patterns ?? ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
+        file_patterns: existing.file_patterns ?? [
+          '**/*.txt',
+          '**/*.md',
+          '**/*.pdf',
+          '**/*.docx',
+          '**/*.xlsx',
+          '**/*.pptx',
+          '**/*.py',
+          '**/*.json',
+          '**/*.png',
+          '**/*.jpg',
+          '**/*.jpeg',
+          '**/*.gif',
+          '**/*.bmp',
+          '**/*.tiff',
+          '**/*.webp',
+        ],
+        exclude_patterns: existing.exclude_patterns ?? [
+          '**/node_modules/**',
+          '**/__pycache__/**',
+          '**/venv/**',
+          '**/.git/**',
+          '**/.*',
+          '**/*.cloud',
+          '**/*.icloud',
+        ],
         recursive: existing.recursive ?? true,
         chunk_size: existing.chunk_size ?? 1000,
         chunk_overlap: existing.chunk_overlap ?? 200,
@@ -2096,8 +2380,32 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       nfs_export: '',
       nfs_options: 'ro,noatime',
       index_name: '',
-      file_patterns: ['**/*.txt', '**/*.md', '**/*.pdf', '**/*.docx', '**/*.xlsx', '**/*.pptx', '**/*.py', '**/*.json', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.bmp', '**/*.tiff', '**/*.webp'],
-      exclude_patterns: ['**/node_modules/**', '**/__pycache__/**', '**/venv/**', '**/.git/**', '**/.*', '**/*.cloud', '**/*.icloud'],
+      file_patterns: [
+        '**/*.txt',
+        '**/*.md',
+        '**/*.pdf',
+        '**/*.docx',
+        '**/*.xlsx',
+        '**/*.pptx',
+        '**/*.py',
+        '**/*.json',
+        '**/*.png',
+        '**/*.jpg',
+        '**/*.jpeg',
+        '**/*.gif',
+        '**/*.bmp',
+        '**/*.tiff',
+        '**/*.webp',
+      ],
+      exclude_patterns: [
+        '**/node_modules/**',
+        '**/__pycache__/**',
+        '**/venv/**',
+        '**/.git/**',
+        '**/.*',
+        '**/*.cloud',
+        '**/*.icloud',
+      ],
       recursive: true,
       chunk_size: 1000,
       chunk_overlap: 200,
@@ -2130,7 +2438,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           include_configurations: true,
           max_documents: null,
           last_indexed_at: null,
-        }
+        },
   );
 
   // PDM discovery state
@@ -2146,19 +2454,24 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [pdmVariableFilter, setPdmVariableFilter] = useState('');
 
   const [visionOcrAvailable, setVisionOcrAvailable] = useState(true);
-  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(undefined);
-  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(undefined);
+  const [defaultOcrProviderLabel, setDefaultOcrProviderLabel] = useState<string | undefined>(
+    undefined,
+  );
+  const [defaultOcrVisionModelLabel, setDefaultOcrVisionModelLabel] = useState<string | undefined>(
+    undefined,
+  );
 
   // Fetch settings to use the global OCR provider/model as the default override baseline.
   useEffect(() => {
     if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
-      api.getSettings()
+      api
+        .getSettings()
         .then((response) => {
           const settings = response.settings;
           setVisionOcrAvailable(true);
           if (settings.default_ocr_provider) {
             setDefaultOcrProviderLabel(
-              OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider
+              OCR_PROVIDER_LABELS[settings.default_ocr_provider] || settings.default_ocr_provider,
             );
           }
           if (settings.default_ocr_vision_model) {
@@ -2185,28 +2498,38 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   // Auto-discover PDM schema when entering the pdm_filtering step
   const handleDiscoverPdmSchemaRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => {
-    if (currentStep === 'pdm_filtering' && pdmDiscoveredExtensions.length === 0 && !pdmDiscoveringSchema && handleDiscoverPdmSchemaRef.current) {
+    if (
+      currentStep === 'pdm_filtering' &&
+      pdmDiscoveredExtensions.length === 0 &&
+      !pdmDiscoveringSchema &&
+      handleDiscoverPdmSchemaRef.current
+    ) {
       handleDiscoverPdmSchemaRef.current();
     }
   }, [currentStep, pdmDiscoveredExtensions.length, pdmDiscoveringSchema]);
 
   // Filesystem analysis state
   const [_fsAnalysisJobId, setFsAnalysisJobId] = useState<string | null>(null);
-  const [fsAnalysisJob, setFsAnalysisJob] = useState<import('@/types').FilesystemAnalysisJob | null>(null);
+  const [fsAnalysisJob, setFsAnalysisJob] = useState<
+    import('@/types').FilesystemAnalysisJob | null
+  >(null);
   const [fsAnalyzing, setFsAnalyzing] = useState(false);
   const [fsAnalysisExpanded, setFsAnalysisExpanded] = useState(false);
   const [fsExclusionsApplied, setFsExclusionsApplied] = useState(false);
   const [fsAdvancedOpen, setFsAdvancedOpen] = useState(false);
 
   // Container capabilities state (for showing/hiding SMB/NFS options)
-  const [containerCapabilities, setContainerCapabilities] = useState<import('@/types').ContainerCapabilitiesResponse | null>(null);
+  const [containerCapabilities, setContainerCapabilities] = useState<
+    import('@/types').ContainerCapabilitiesResponse | null
+  >(null);
   const [loadingCapabilities, setLoadingCapabilities] = useState(false);
 
   // Fetch container capabilities on mount (only for filesystem indexer)
   useEffect(() => {
     if (toolType === 'filesystem_indexer' || defaultToolType === 'filesystem_indexer') {
       setLoadingCapabilities(true);
-      api.checkContainerCapabilities()
+      api
+        .checkContainerCapabilities()
         .then(setContainerCapabilities)
         .catch((err) => {
           console.warn('Failed to check container capabilities:', err);
@@ -2226,7 +2549,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [sshKeyMode, setSshKeyMode] = useState<'generate' | 'upload' | 'path' | 'password'>(
     (() => {
       // Determine initial mode based on existing config
-      const config = existingTool?.connection_config as (OdooShellConnectionConfig | SSHShellConnectionConfig) | undefined;
+      const config = existingTool?.connection_config as
+        | (OdooShellConnectionConfig | SSHShellConnectionConfig)
+        | undefined;
       if (config) {
         if ('ssh_key_content' in config && config.ssh_key_content) return 'upload';
         if ('key_content' in config && config.key_content) return 'upload';
@@ -2236,7 +2561,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         if ('password' in config && config.password) return 'password';
       }
       return 'generate';
-    })()
+    })(),
   );
   const [generatingKey, setGeneratingKey] = useState(false);
   const [_generatedPublicKey, setGeneratedPublicKey] = useState<string | null>(null);
@@ -2246,14 +2571,20 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const [sshTunnelAuthMode, setSshTunnelAuthMode] = useState<SSHAuthMode>(
     (() => {
       // Determine initial mode based on existing config
-      const config = existingTool?.connection_config as { ssh_tunnel_key_content?: string; ssh_tunnel_key_path?: string; ssh_tunnel_password?: string } | undefined;
+      const config = existingTool?.connection_config as
+        | {
+            ssh_tunnel_key_content?: string;
+            ssh_tunnel_key_path?: string;
+            ssh_tunnel_password?: string;
+          }
+        | undefined;
       if (config) {
         if (config.ssh_tunnel_key_content) return 'upload';
         if (config.ssh_tunnel_key_path) return 'path';
         if (config.ssh_tunnel_password) return 'password';
       }
       return 'generate';
-    })()
+    })(),
   );
   const [sshTunnelGeneratingKey, setSshTunnelGeneratingKey] = useState(false);
   const [sshTunnelKeyCopied, setSshTunnelKeyCopied] = useState(false);
@@ -2267,7 +2598,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         if (config.docker_ssh_password) return 'password';
       }
       return 'generate';
-    })()
+    })(),
   );
   const [dockerSSHGeneratingKey, setDockerSSHGeneratingKey] = useState(false);
   const [dockerSSHKeyCopied, setDockerSSHKeyCopied] = useState(false);
@@ -2305,23 +2636,33 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   };
 
   const getConnectionConfig = (): ConnectionConfig => {
-    const withSchemaSchedule = <T extends PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig>(config: T): T => ({
+    const withSchemaSchedule = <
+      T extends PostgresConnectionConfig | MysqlConnectionConfig | MssqlConnectionConfig,
+    >(
+      config: T,
+    ): T => ({
       ...config,
-      schema_index_start_minute: config.schema_index_enabled && (config.schema_index_interval_hours ?? 24) > 0
-        ? (config.schema_index_start_minute ?? defaultScheduleStartMinute())
-        : null,
-      schema_index_timezone: config.schema_index_enabled && (config.schema_index_interval_hours ?? 24) > 0
-        ? (config.schema_index_timezone ?? defaultScheduleTimezone())
-        : null,
+      schema_index_start_minute:
+        config.schema_index_enabled && (config.schema_index_interval_hours ?? 24) > 0
+          ? (config.schema_index_start_minute ?? defaultScheduleStartMinute())
+          : null,
+      schema_index_timezone:
+        config.schema_index_enabled && (config.schema_index_interval_hours ?? 24) > 0
+          ? (config.schema_index_timezone ?? defaultScheduleTimezone())
+          : null,
     });
-    const withFilesystemSchedule = (config: FilesystemConnectionConfig): FilesystemConnectionConfig => ({
+    const withFilesystemSchedule = (
+      config: FilesystemConnectionConfig,
+    ): FilesystemConnectionConfig => ({
       ...config,
-      reindex_start_minute: (config.reindex_interval_hours ?? 24) > 0
-        ? (config.reindex_start_minute ?? defaultScheduleStartMinute())
-        : null,
-      reindex_timezone: (config.reindex_interval_hours ?? 24) > 0
-        ? (config.reindex_timezone ?? defaultScheduleTimezone())
-        : null,
+      reindex_start_minute:
+        (config.reindex_interval_hours ?? 24) > 0
+          ? (config.reindex_start_minute ?? defaultScheduleStartMinute())
+          : null,
+      reindex_timezone:
+        (config.reindex_interval_hours ?? 24) > 0
+          ? (config.reindex_timezone ?? defaultScheduleTimezone())
+          : null,
     });
 
     switch (toolType) {
@@ -2339,7 +2680,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         return sshConfig;
       case 'filesystem_indexer':
         // Use the tool name as the index_name (Step 3 Name field)
-        return withFilesystemSchedule({ ...filesystemConfig, index_name: name || filesystemConfig.index_name });
+        return withFilesystemSchedule({
+          ...filesystemConfig,
+          index_name: name || filesystemConfig.index_name,
+        });
       case 'solidworks_pdm':
         return pdmConfig;
     }
@@ -2359,34 +2703,45 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
         // Auto-select first relevant container if none selected
         if (toolType === 'postgres' && !postgresConfig.container) {
-          const firstPg = result.containers.find(c => c.image.toLowerCase().includes('postgres') && c.name !== result.current_container);
+          const firstPg = result.containers.find(
+            (c) =>
+              c.image.toLowerCase().includes('postgres') && c.name !== result.current_container,
+          );
           if (firstPg) {
             setPostgresConfig({
               ...postgresConfig,
               container: firstPg.name,
-              docker_network: firstPg.networks[0] || ''
+              docker_network: firstPg.networks[0] || '',
             });
           }
         } else if (toolType === 'mysql' && !mysqlConfig.container) {
-          const firstMysql = result.containers.find(c => {
+          const firstMysql = result.containers.find((c) => {
             const image = c.image.toLowerCase();
-            return (image.includes('mysql') || image.includes('mariadb')) && c.name !== result.current_container;
+            return (
+              (image.includes('mysql') || image.includes('mariadb')) &&
+              c.name !== result.current_container
+            );
           });
           if (firstMysql) {
             setMysqlConfig({
               ...mysqlConfig,
               container: firstMysql.name,
-              docker_network: firstMysql.networks[0] || ''
+              docker_network: firstMysql.networks[0] || '',
             });
           }
         } else if (toolType === 'odoo_shell' && !odooConfig.container) {
-          const odooCandidates = result.containers.filter(c => c.name !== result.current_container);
-          const firstOdoo = odooCandidates.find(c => c.has_odoo) || odooCandidates.find(c => !isInfrastructureDockerContainer(c)) || odooCandidates[0];
+          const odooCandidates = result.containers.filter(
+            (c) => c.name !== result.current_container,
+          );
+          const firstOdoo =
+            odooCandidates.find((c) => c.has_odoo) ||
+            odooCandidates.find((c) => !isInfrastructureDockerContainer(c)) ||
+            odooCandidates[0];
           if (firstOdoo) {
             setOdooConfig({
               ...odooConfig,
               container: firstOdoo.name,
-              docker_network: firstOdoo.networks[0] || ''
+              docker_network: firstOdoo.networks[0] || '',
             });
           }
         }
@@ -2417,9 +2772,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     });
 
     if (toolType === 'odoo_shell') {
-      return matchingNetworkContainers.find(c => c.has_odoo)
-        || matchingNetworkContainers.find(c => !isInfrastructureDockerContainer(c))
-        || matchingNetworkContainers[0];
+      return (
+        matchingNetworkContainers.find((c) => c.has_odoo) ||
+        matchingNetworkContainers.find((c) => !isInfrastructureDockerContainer(c)) ||
+        matchingNetworkContainers[0]
+      );
     }
 
     return matchingNetworkContainers[0];
@@ -2431,7 +2788,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     if (toolType === 'postgres') {
       const currentContainerStillMatches = Boolean(
         postgresConfig.container &&
-        dockerContainers.some(c => c.name === postgresConfig.container && (!networkName || c.networks.includes(networkName)))
+        dockerContainers.some(
+          (c) =>
+            c.name === postgresConfig.container &&
+            (!networkName || c.networks.includes(networkName)),
+        ),
       );
       setPostgresConfig({
         ...postgresConfig,
@@ -2441,7 +2802,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     } else if (toolType === 'mysql') {
       const currentContainerStillMatches = Boolean(
         mysqlConfig.container &&
-        dockerContainers.some(c => c.name === mysqlConfig.container && (!networkName || c.networks.includes(networkName)))
+        dockerContainers.some(
+          (c) =>
+            c.name === mysqlConfig.container && (!networkName || c.networks.includes(networkName)),
+        ),
       );
       setMysqlConfig({
         ...mysqlConfig,
@@ -2452,7 +2816,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     } else if (toolType === 'odoo_shell') {
       const currentContainerStillMatches = Boolean(
         odooConfig.container &&
-        dockerContainers.some(c => c.name === odooConfig.container && (!networkName || c.networks.includes(networkName)))
+        dockerContainers.some(
+          (c) =>
+            c.name === odooConfig.container && (!networkName || c.networks.includes(networkName)),
+        ),
       );
       setOdooConfig({
         ...odooConfig,
@@ -2582,7 +2949,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     } else {
       // For direct mode, need host, user, password
       if (!mysqlConfig.host || !mysqlConfig.user || !mysqlConfig.password) {
-        setMysqlDatabaseDiscoveryError('Host, user, and password are required to discover databases');
+        setMysqlDatabaseDiscoveryError(
+          'Host, user, and password are required to discover databases',
+        );
         return;
       }
     }
@@ -2612,7 +2981,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               ssh_tunnel_key_path: mysqlConfig.ssh_tunnel_key_path,
               ssh_tunnel_key_content: mysqlConfig.ssh_tunnel_key_content,
               ssh_tunnel_key_passphrase: mysqlConfig.ssh_tunnel_key_passphrase,
-            }
+            },
       );
 
       if (result.success) {
@@ -2636,7 +3005,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   // InfluxDB bucket discovery handler
   const handleDiscoverInfluxdbBuckets = async () => {
     if (!influxdbConfig.host || !influxdbConfig.token || !influxdbConfig.org) {
-      setInfluxdbBucketDiscoveryError('Host, token, and organization are required to discover buckets');
+      setInfluxdbBucketDiscoveryError(
+        'Host, token, and organization are required to discover buckets',
+      );
       return;
     }
 
@@ -2663,9 +3034,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       });
 
       if (result.success) {
-        const options = (result.database_options && result.database_options.length > 0)
-          ? result.database_options
-          : result.buckets.map((name) => ({ name, accessible: true }));
+        const options =
+          result.database_options && result.database_options.length > 0
+            ? result.database_options
+            : result.buckets.map((name) => ({ name, accessible: true }));
         setInfluxdbDiscoveredBuckets(options);
         const firstAccessible = options.find((bucket) => bucket.accessible)?.name;
         if (firstAccessible && !influxdbConfig.bucket) {
@@ -2687,9 +3059,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     setError(null);
     try {
       // Get passphrase from the appropriate config
-      const passphrase = toolType === 'odoo_shell'
-        ? odooConfig.ssh_key_passphrase
-        : sshConfig.key_passphrase;
+      const passphrase =
+        toolType === 'odoo_shell' ? odooConfig.ssh_key_passphrase : sshConfig.key_passphrase;
       const result = await api.generateSSHKeypair(name || 'ragtime', passphrase || undefined);
       // Store the keys in the appropriate config
       if (toolType === 'odoo_shell') {
@@ -2819,7 +3190,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     setError(null);
     try {
       const dockerConfig = getCurrentDockerSSHConfig();
-      const result = await api.generateSSHKeypair(name || 'docker', dockerConfig.docker_ssh_key_passphrase || undefined);
+      const result = await api.generateSSHKeypair(
+        name || 'docker',
+        dockerConfig.docker_ssh_key_passphrase || undefined,
+      );
       updateCurrentDockerSSHConfig({
         docker_ssh_key_content: result.private_key,
         docker_ssh_public_key: result.public_key,
@@ -3000,7 +3374,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
     const currentExclusions = filesystemConfig.exclude_patterns || [];
     const newExclusions = fsAnalysisJob.result.suggested_exclusions.filter(
-      (pattern: string) => !currentExclusions.includes(pattern)
+      (pattern: string) => !currentExclusions.includes(pattern),
     );
 
     if (newExclusions.length > 0) {
@@ -3047,9 +3421,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
       }
 
       // Trigger schema indexing for SQL tools if enabled
-      if ((toolType === 'postgres' || toolType === 'mssql' || toolType === 'mysql') && savedToolId) {
+      if (
+        (toolType === 'postgres' || toolType === 'mssql' || toolType === 'mysql') &&
+        savedToolId
+      ) {
         const config = connectionConfig as { schema_index_enabled?: boolean };
-        const wasEnabled = (existingTool?.connection_config as { schema_index_enabled?: boolean } | undefined)?.schema_index_enabled;
+        const wasEnabled = (
+          existingTool?.connection_config as { schema_index_enabled?: boolean } | undefined
+        )?.schema_index_enabled;
 
         // Trigger indexing if schema_index_enabled is newly enabled or was already enabled (force refresh on save)
         if (config.schema_index_enabled && !wasEnabled) {
@@ -3102,45 +3481,60 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   };
 
   const validateConnection = (): boolean => {
-    const hasRemoteDockerAuth = (config: DockerSSHConfig): boolean => Boolean(
-      config.docker_ssh_host &&
-      config.docker_ssh_user &&
-      (config.docker_ssh_key_content || config.docker_ssh_key_path || config.docker_ssh_password)
-    );
+    const hasRemoteDockerAuth = (config: DockerSSHConfig): boolean =>
+      Boolean(
+        config.docker_ssh_host &&
+        config.docker_ssh_user &&
+        (config.docker_ssh_key_content || config.docker_ssh_key_path || config.docker_ssh_password),
+      );
 
     switch (toolType) {
       case 'postgres':
         // Either host or container must be specified
-        if (postgresConfig.container && postgresConfig.docker_ssh_enabled && !hasRemoteDockerAuth(postgresConfig)) return false;
+        if (
+          postgresConfig.container &&
+          postgresConfig.docker_ssh_enabled &&
+          !hasRemoteDockerAuth(postgresConfig)
+        )
+          return false;
         return Boolean((postgresConfig.host && postgresConfig.user) || postgresConfig.container);
       case 'mysql':
         // Either host or container must be specified
-        if (mysqlConfig.container && mysqlConfig.docker_ssh_enabled && !hasRemoteDockerAuth(mysqlConfig)) return false;
+        if (
+          mysqlConfig.container &&
+          mysqlConfig.docker_ssh_enabled &&
+          !hasRemoteDockerAuth(mysqlConfig)
+        )
+          return false;
         return Boolean((mysqlConfig.host && mysqlConfig.user) || mysqlConfig.container);
       case 'mssql':
         // Host, user, password, and database are required
-        return Boolean(mssqlConfig.host && mssqlConfig.user && mssqlConfig.password && mssqlConfig.database);
+        return Boolean(
+          mssqlConfig.host && mssqlConfig.user && mssqlConfig.password && mssqlConfig.database,
+        );
       case 'influxdb':
         return Boolean(influxdbConfig.host && influxdbConfig.token && influxdbConfig.org);
       case 'odoo_shell':
         // For Docker mode, need container. For SSH mode, need host and user.
         if (odooConnectionMode === 'ssh') {
           const hasAuth = Boolean(
-            odooConfig.ssh_key_content ||
-            odooConfig.ssh_key_path ||
-            odooConfig.ssh_password
+            odooConfig.ssh_key_content || odooConfig.ssh_key_path || odooConfig.ssh_password,
           );
           return Boolean(odooConfig.ssh_host && odooConfig.ssh_user && hasAuth);
         }
-        if (odooConfig.container && odooConfig.docker_ssh_enabled && !hasRemoteDockerAuth(odooConfig)) return false;
+        if (
+          odooConfig.container &&
+          odooConfig.docker_ssh_enabled &&
+          !hasRemoteDockerAuth(odooConfig)
+        )
+          return false;
         return Boolean(odooConfig.container);
-      case 'ssh_shell':
+      case 'ssh_shell': {
         const hasSshAuth = Boolean(
-          sshConfig.key_content ||
-          sshConfig.key_path ||
-          sshConfig.password
+          sshConfig.key_content || sshConfig.key_path || sshConfig.password,
         );
         return Boolean(sshConfig.host && sshConfig.user && hasSshAuth);
+      }
       case 'filesystem_indexer':
         // Validate based on mount type
         if (filesystemConfig.mount_type === 'docker_volume') {
@@ -3153,7 +3547,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         return Boolean(filesystemConfig.base_path);
       case 'solidworks_pdm':
         // Host, user, password, and database are required
-        return Boolean(pdmConfig.host && pdmConfig.user && pdmConfig.password && pdmConfig.database);
+        return Boolean(
+          pdmConfig.host && pdmConfig.user && pdmConfig.password && pdmConfig.database,
+        );
     }
   };
 
@@ -3162,10 +3558,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     const isSqlTool = (type: ToolType) => sqlToolTypes.includes(type);
     const toolEntries = Object.entries(TOOL_TYPE_INFO) as ToolTypeInfoEntry[];
     const primaryTools = toolEntries.filter(([type]) => type === 'ssh_shell');
-    const sqlTools = toolEntries
-      .filter(([type]) => isSqlTool(type));
-    const remainingTools = toolEntries
-      .filter(([type]) => type !== 'ssh_shell' && !isSqlTool(type));
+    const sqlTools = toolEntries.filter(([type]) => isSqlTool(type));
+    const remainingTools = toolEntries.filter(([type]) => type !== 'ssh_shell' && !isSqlTool(type));
 
     // Check if any SQL tool is currently selected
     const sqlToolSelected = isSqlTool(toolType);
@@ -3186,9 +3580,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Select the type of tool connection you want to add:
-        </p>
+        <p className="wizard-help">Select the type of tool connection you want to add:</p>
         <div className="tool-type-selection">
           {primaryTools.map((entry) => renderToolTypeOption(entry))}
 
@@ -3203,9 +3595,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <Icon name="database" size={24} />
               </span>
               <span className="tool-type-option-name">SQL Databases</span>
-              <span className="tool-type-option-desc">PostgreSQL, MySQL/MariaDB, MSSQL/SQL Server, InfluxDB</span>
+              <span className="tool-type-option-desc">
+                PostgreSQL, MySQL/MariaDB, MSSQL/SQL Server, InfluxDB
+              </span>
               <span className="tool-type-group-chevron">
-                <Icon name={sqlToolsExpanded || sqlToolSelected ? 'chevron-up' : 'chevron-down'} size={16} />
+                <Icon
+                  name={sqlToolsExpanded || sqlToolSelected ? 'chevron-up' : 'chevron-down'}
+                  size={16}
+                />
               </span>
             </div>
             {(sqlToolsExpanded || sqlToolSelected) && (
@@ -3225,9 +3622,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderPostgresConnection = () => {
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Choose your connection method:
-        </p>
+        <p className="wizard-help">Choose your connection method:</p>
 
         <div className="connection-tabs">
           <button
@@ -3275,7 +3670,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 ssh_tunnel_key_passphrase: postgresConfig.ssh_tunnel_key_passphrase,
                 ssh_tunnel_public_key: postgresConfig.ssh_tunnel_public_key,
               }}
-              onConfigChange={(tunnelConfig) => setPostgresConfig({ ...postgresConfig, ...tunnelConfig })}
+              onConfigChange={(tunnelConfig) =>
+                setPostgresConfig({ ...postgresConfig, ...tunnelConfig })
+              }
               databaseLabel="PostgreSQL"
               authMode={sshTunnelAuthMode}
               onAuthModeChange={setSshTunnelAuthMode}
@@ -3289,7 +3686,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             {/* Database Host/Port - context changes based on tunnel mode */}
             <div className="form-row">
               <div className="form-group">
-                <label>{postgresConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
+                <label>
+                  {postgresConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *
+                </label>
                 <input
                   type="text"
                   value={postgresConfig.host || ''}
@@ -3297,7 +3696,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   placeholder={postgresConfig.ssh_tunnel_enabled ? 'localhost' : 'db.example.com'}
                 />
                 {postgresConfig.ssh_tunnel_enabled && (
-                  <p className="field-help">Usually "localhost" - the database host as seen from the SSH server</p>
+                  <p className="field-help">
+                    Usually "localhost" - the database host as seen from the SSH server
+                  </p>
                 )}
               </div>
               <div className="form-group form-group-small">
@@ -3305,7 +3706,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <input
                   type="number"
                   value={postgresConfig.port || 5432}
-                  onChange={(e) => setPostgresConfig({ ...postgresConfig, port: parseInt(e.target.value) || 5432 })}
+                  onChange={(e) =>
+                    setPostgresConfig({ ...postgresConfig, port: parseInt(e.target.value) || 5432 })
+                  }
                   min={1}
                   max={65535}
                 />
@@ -3326,7 +3729,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <input
                   type="password"
                   value={postgresConfig.password || ''}
-                  onChange={(e) => setPostgresConfig({ ...postgresConfig, password: e.target.value })}
+                  onChange={(e) =>
+                    setPostgresConfig({ ...postgresConfig, password: e.target.value })
+                  }
                   placeholder="********"
                 />
               </div>
@@ -3337,7 +3742,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 {discoveredDatabases.length > 0 ? (
                   <select
                     value={postgresConfig.database || ''}
-                    onChange={(e) => setPostgresConfig({ ...postgresConfig, database: e.target.value })}
+                    onChange={(e) =>
+                      setPostgresConfig({ ...postgresConfig, database: e.target.value })
+                    }
                     style={{ flex: 1 }}
                   >
                     <option value="">Select database...</option>
@@ -3351,7 +3758,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   <input
                     type="text"
                     value={postgresConfig.database || ''}
-                    onChange={(e) => setPostgresConfig({ ...postgresConfig, database: e.target.value })}
+                    onChange={(e) =>
+                      setPostgresConfig({ ...postgresConfig, database: e.target.value })
+                    }
                     placeholder="mydb"
                     style={{ flex: 1 }}
                   />
@@ -3360,7 +3769,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   type="button"
                   className="btn btn-secondary btn-sm"
                   onClick={handleDiscoverDatabases}
-                  disabled={discoveringDatabases || (!postgresConfig.ssh_tunnel_enabled && !postgresConfig.host) || !postgresConfig.user || !postgresConfig.password}
+                  disabled={
+                    discoveringDatabases ||
+                    (!postgresConfig.ssh_tunnel_enabled && !postgresConfig.host) ||
+                    !postgresConfig.user ||
+                    !postgresConfig.password
+                  }
                   title="Discover available databases"
                 >
                   {discoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -3389,7 +3803,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 setCurrentContainer(null);
               }}
               config={postgresConfig}
-              onConfigChange={(dockerConfig) => setPostgresConfig({ ...postgresConfig, ...dockerConfig })}
+              onConfigChange={(dockerConfig) =>
+                setPostgresConfig({ ...postgresConfig, ...dockerConfig })
+              }
               authMode={dockerSSHAuthMode}
               onAuthModeChange={setDockerSSHAuthMode}
               generatingKey={dockerSSHGeneratingKey}
@@ -3412,7 +3828,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               onNetworkChange={handleDockerNetworkChange}
               onContainerChange={(container) => setPostgresConfig({ ...postgresConfig, container })}
               containerFilter={(c) => c.image.toLowerCase().includes('postgres')}
-              containerLabel={(c) => `${c.name}${c.image.toLowerCase().includes('postgres') ? ' (PostgreSQL)' : ''}`}
+              containerLabel={(c) =>
+                `${c.name}${c.image.toLowerCase().includes('postgres') ? ' (PostgreSQL)' : ''}`
+              }
               containerCountLabel="PostgreSQL container(s)"
               containerHelpText="Uses container's POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB environment variables."
               fallbackPlaceholder="my-postgres-container"
@@ -3432,20 +3850,33 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         ) : null}
 
         {/* Schema Indexing Section */}
-        <div className="schema-indexing-section" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+        <div
+          className="schema-indexing-section"
+          style={{
+            marginTop: '1.5rem',
+            borderTop: '1px solid var(--border-color)',
+            paddingTop: '1rem',
+          }}
+        >
           <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Schema Indexing</h4>
           <p className="field-help" style={{ marginBottom: '1rem' }}>
-            Index database schema for faster AI-powered queries. Requires an embedding provider to be configured.
+            Index database schema for faster AI-powered queries. Requires an embedding provider to
+            be configured.
           </p>
 
-          <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+          <label
+            className="toggle-container"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
+          >
             <input
               type="checkbox"
               checked={postgresConfig.schema_index_enabled ?? false}
-              onChange={(e) => setPostgresConfig({
-                ...postgresConfig,
-                schema_index_enabled: e.target.checked
-              })}
+              onChange={(e) =>
+                setPostgresConfig({
+                  ...postgresConfig,
+                  schema_index_enabled: e.target.checked,
+                })
+              }
               style={{ width: 'auto', margin: 0 }}
             />
             <span>Enable schema indexing</span>
@@ -3454,16 +3885,26 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {postgresConfig.schema_index_enabled && (
             <ReindexIntervalSelect
               value={postgresConfig.schema_index_interval_hours ?? 24}
-              onChange={(val) => setPostgresConfig(prev => ({
-                ...prev,
-                schema_index_interval_hours: val,
-                schema_index_start_minute: val > 0 ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute()) : null,
-                schema_index_timezone: val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
-              }))}
+              onChange={(val) =>
+                setPostgresConfig((prev) => ({
+                  ...prev,
+                  schema_index_interval_hours: val,
+                  schema_index_start_minute:
+                    val > 0
+                      ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute())
+                      : null,
+                  schema_index_timezone:
+                    val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
+                }))
+              }
               startMinute={postgresConfig.schema_index_start_minute ?? null}
               timezone={postgresConfig.schema_index_timezone ?? null}
-              onStartMinuteChange={(val) => setPostgresConfig(prev => ({ ...prev, schema_index_start_minute: val }))}
-              onTimezoneChange={(val) => setPostgresConfig(prev => ({ ...prev, schema_index_timezone: val }))}
+              onStartMinuteChange={(val) =>
+                setPostgresConfig((prev) => ({ ...prev, schema_index_start_minute: val }))
+              }
+              onTimezoneChange={(val) =>
+                setPostgresConfig((prev) => ({ ...prev, schema_index_timezone: val }))
+              }
               label="Schema Index Interval"
               style={{ marginTop: '1rem', marginBottom: '1rem' }}
             />
@@ -3476,9 +3917,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderMssqlConnection = () => {
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Connect to a Microsoft SQL Server or Azure SQL database.
-        </p>
+        <p className="wizard-help">Connect to a Microsoft SQL Server or Azure SQL database.</p>
 
         <div className="connection-panel">
           {/* SSH Tunnel Option - shown first for clear context */}
@@ -3517,7 +3956,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {/* Database Host/Port - context changes based on tunnel mode */}
           <div className="form-row">
             <div className="form-group">
-              <label>{mssqlConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
+              <label>
+                {mssqlConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *
+              </label>
               <input
                 type="text"
                 value={mssqlConfig.host || ''}
@@ -3525,10 +3966,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   setMssqlConfig({ ...mssqlConfig, host: e.target.value });
                   setMssqlDiscoveredDatabases([]);
                 }}
-                placeholder={mssqlConfig.ssh_tunnel_enabled ? 'localhost' : 'server.database.windows.net'}
+                placeholder={
+                  mssqlConfig.ssh_tunnel_enabled ? 'localhost' : 'server.database.windows.net'
+                }
               />
               {mssqlConfig.ssh_tunnel_enabled && (
-                <p className="field-help">Usually "localhost" - the SQL Server host as seen from the SSH server</p>
+                <p className="field-help">
+                  Usually "localhost" - the SQL Server host as seen from the SSH server
+                </p>
               )}
             </div>
             <div className="form-group form-group-small">
@@ -3536,7 +3981,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               <input
                 type="number"
                 value={mssqlConfig.port || 1433}
-                onChange={(e) => setMssqlConfig({ ...mssqlConfig, port: parseInt(e.target.value) || 1433 })}
+                onChange={(e) =>
+                  setMssqlConfig({ ...mssqlConfig, port: parseInt(e.target.value) || 1433 })
+                }
                 min={1}
                 max={65535}
               />
@@ -3597,7 +4044,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 type="button"
                 className="btn btn-secondary btn-sm"
                 onClick={handleDiscoverMssqlDatabases}
-                disabled={mssqlDiscoveringDatabases || (!mssqlConfig.ssh_tunnel_enabled && !mssqlConfig.host) || !mssqlConfig.user || !mssqlConfig.password}
+                disabled={
+                  mssqlDiscoveringDatabases ||
+                  (!mssqlConfig.ssh_tunnel_enabled && !mssqlConfig.host) ||
+                  !mssqlConfig.user ||
+                  !mssqlConfig.password
+                }
                 title="Discover available databases"
               >
                 {mssqlDiscoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -3616,20 +4068,33 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         </div>
 
         {/* Schema Indexing Section */}
-        <div className="schema-indexing-section" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+        <div
+          className="schema-indexing-section"
+          style={{
+            marginTop: '1.5rem',
+            borderTop: '1px solid var(--border-color)',
+            paddingTop: '1rem',
+          }}
+        >
           <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Schema Indexing</h4>
           <p className="field-help" style={{ marginBottom: '1rem' }}>
-            Index database schema for faster AI-powered queries. Requires an embedding provider to be configured.
+            Index database schema for faster AI-powered queries. Requires an embedding provider to
+            be configured.
           </p>
 
-          <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+          <label
+            className="toggle-container"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
+          >
             <input
               type="checkbox"
               checked={mssqlConfig.schema_index_enabled ?? false}
-              onChange={(e) => setMssqlConfig({
-                ...mssqlConfig,
-                schema_index_enabled: e.target.checked
-              })}
+              onChange={(e) =>
+                setMssqlConfig({
+                  ...mssqlConfig,
+                  schema_index_enabled: e.target.checked,
+                })
+              }
               style={{ width: 'auto', margin: 0 }}
             />
             <span>Enable schema indexing</span>
@@ -3638,16 +4103,26 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {mssqlConfig.schema_index_enabled && (
             <ReindexIntervalSelect
               value={mssqlConfig.schema_index_interval_hours ?? 24}
-              onChange={(val) => setMssqlConfig(prev => ({
-                ...prev,
-                schema_index_interval_hours: val,
-                schema_index_start_minute: val > 0 ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute()) : null,
-                schema_index_timezone: val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
-              }))}
+              onChange={(val) =>
+                setMssqlConfig((prev) => ({
+                  ...prev,
+                  schema_index_interval_hours: val,
+                  schema_index_start_minute:
+                    val > 0
+                      ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute())
+                      : null,
+                  schema_index_timezone:
+                    val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
+                }))
+              }
               startMinute={mssqlConfig.schema_index_start_minute ?? null}
               timezone={mssqlConfig.schema_index_timezone ?? null}
-              onStartMinuteChange={(val) => setMssqlConfig(prev => ({ ...prev, schema_index_start_minute: val }))}
-              onTimezoneChange={(val) => setMssqlConfig(prev => ({ ...prev, schema_index_timezone: val }))}
+              onStartMinuteChange={(val) =>
+                setMssqlConfig((prev) => ({ ...prev, schema_index_start_minute: val }))
+              }
+              onTimezoneChange={(val) =>
+                setMssqlConfig((prev) => ({ ...prev, schema_index_timezone: val }))
+              }
               label="Schema Index Interval"
               style={{ marginTop: '1rem', marginBottom: '1rem' }}
             />
@@ -3660,9 +4135,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderMysqlConnection = () => {
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Choose your connection method:
-        </p>
+        <p className="wizard-help">Choose your connection method:</p>
 
         <div className="connection-tabs">
           <button
@@ -3727,7 +4200,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             {/* Database Host/Port - context changes based on tunnel mode */}
             <div className="form-row">
               <div className="form-group">
-                <label>{mysqlConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
+                <label>
+                  {mysqlConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *
+                </label>
                 <input
                   type="text"
                   value={mysqlConfig.host || ''}
@@ -3738,7 +4213,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   placeholder={mysqlConfig.ssh_tunnel_enabled ? 'localhost' : 'db.example.com'}
                 />
                 {mysqlConfig.ssh_tunnel_enabled && (
-                  <p className="field-help">Usually "localhost" - the MySQL host as seen from the SSH server</p>
+                  <p className="field-help">
+                    Usually "localhost" - the MySQL host as seen from the SSH server
+                  </p>
                 )}
               </div>
               <div className="form-group form-group-small">
@@ -3746,7 +4223,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <input
                   type="number"
                   value={mysqlConfig.port || 3306}
-                  onChange={(e) => setMysqlConfig({ ...mysqlConfig, port: parseInt(e.target.value) || 3306 })}
+                  onChange={(e) =>
+                    setMysqlConfig({ ...mysqlConfig, port: parseInt(e.target.value) || 3306 })
+                  }
                   min={1}
                   max={65535}
                 />
@@ -3807,7 +4286,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   type="button"
                   className="btn btn-secondary btn-sm"
                   onClick={handleDiscoverMysqlDatabases}
-                  disabled={mysqlDiscoveringDatabases || (!mysqlConfig.ssh_tunnel_enabled && !mysqlConfig.host) || !mysqlConfig.user || !mysqlConfig.password}
+                  disabled={
+                    mysqlDiscoveringDatabases ||
+                    (!mysqlConfig.ssh_tunnel_enabled && !mysqlConfig.host) ||
+                    !mysqlConfig.user ||
+                    !mysqlConfig.password
+                  }
                   title="Discover available databases"
                 >
                   {mysqlDiscoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -3861,7 +4345,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 setMysqlConfig({ ...mysqlConfig, container });
                 setMysqlDiscoveredDatabases([]);
               }}
-              containerFilter={(c) => c.image.toLowerCase().includes('mysql') || c.image.toLowerCase().includes('mariadb')}
+              containerFilter={(c) =>
+                c.image.toLowerCase().includes('mysql') || c.image.toLowerCase().includes('mariadb')
+              }
               containerLabel={(c) => {
                 const isMysql = c.image.toLowerCase().includes('mysql');
                 const isMariadb = c.image.toLowerCase().includes('mariadb');
@@ -3922,20 +4408,33 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         ) : null}
 
         {/* Schema Indexing Section */}
-        <div className="schema-indexing-section" style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+        <div
+          className="schema-indexing-section"
+          style={{
+            marginTop: '1.5rem',
+            borderTop: '1px solid var(--border-color)',
+            paddingTop: '1rem',
+          }}
+        >
           <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Schema Indexing</h4>
           <p className="field-help" style={{ marginBottom: '1rem' }}>
-            Index database schema for faster AI-powered queries. Requires an embedding provider to be configured.
+            Index database schema for faster AI-powered queries. Requires an embedding provider to
+            be configured.
           </p>
 
-          <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+          <label
+            className="toggle-container"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
+          >
             <input
               type="checkbox"
               checked={mysqlConfig.schema_index_enabled ?? false}
-              onChange={(e) => setMysqlConfig({
-                ...mysqlConfig,
-                schema_index_enabled: e.target.checked
-              })}
+              onChange={(e) =>
+                setMysqlConfig({
+                  ...mysqlConfig,
+                  schema_index_enabled: e.target.checked,
+                })
+              }
               style={{ width: 'auto', margin: 0 }}
             />
             <span>Enable schema indexing</span>
@@ -3944,16 +4443,26 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {mysqlConfig.schema_index_enabled && (
             <ReindexIntervalSelect
               value={mysqlConfig.schema_index_interval_hours ?? 24}
-              onChange={(val) => setMysqlConfig(prev => ({
-                ...prev,
-                schema_index_interval_hours: val,
-                schema_index_start_minute: val > 0 ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute()) : null,
-                schema_index_timezone: val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
-              }))}
+              onChange={(val) =>
+                setMysqlConfig((prev) => ({
+                  ...prev,
+                  schema_index_interval_hours: val,
+                  schema_index_start_minute:
+                    val > 0
+                      ? (prev.schema_index_start_minute ?? defaultScheduleStartMinute())
+                      : null,
+                  schema_index_timezone:
+                    val > 0 ? (prev.schema_index_timezone ?? defaultScheduleTimezone()) : null,
+                }))
+              }
               startMinute={mysqlConfig.schema_index_start_minute ?? null}
               timezone={mysqlConfig.schema_index_timezone ?? null}
-              onStartMinuteChange={(val) => setMysqlConfig(prev => ({ ...prev, schema_index_start_minute: val }))}
-              onTimezoneChange={(val) => setMysqlConfig(prev => ({ ...prev, schema_index_timezone: val }))}
+              onStartMinuteChange={(val) =>
+                setMysqlConfig((prev) => ({ ...prev, schema_index_start_minute: val }))
+              }
+              onTimezoneChange={(val) =>
+                setMysqlConfig((prev) => ({ ...prev, schema_index_timezone: val }))
+              }
               label="Schema Index Interval"
               style={{ marginTop: '1rem', marginBottom: '1rem' }}
             />
@@ -3966,9 +4475,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderInfluxdbConnection = () => {
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Connect to an InfluxDB 2.x instance and run Flux queries.
-        </p>
+        <p className="wizard-help">Connect to an InfluxDB 2.x instance and run Flux queries.</p>
 
         <div className="connection-panel">
           <SSHTunnelPanel
@@ -3991,7 +4498,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               ssh_tunnel_key_passphrase: influxdbConfig.ssh_tunnel_key_passphrase,
               ssh_tunnel_public_key: influxdbConfig.ssh_tunnel_public_key,
             }}
-            onConfigChange={(tunnelConfig) => setInfluxdbConfig({ ...influxdbConfig, ...tunnelConfig })}
+            onConfigChange={(tunnelConfig) =>
+              setInfluxdbConfig({ ...influxdbConfig, ...tunnelConfig })
+            }
             databaseLabel="InfluxDB"
             authMode={sshTunnelAuthMode}
             onAuthModeChange={setSshTunnelAuthMode}
@@ -4004,7 +4513,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
           <div className="form-row">
             <div className="form-group" style={{ flex: 2 }}>
-              <label>{influxdbConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server) *' : 'Host *'}</label>
+              <label>
+                {influxdbConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server) *' : 'Host *'}
+              </label>
               <input
                 type="text"
                 value={influxdbConfig.host || ''}
@@ -4012,7 +4523,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 placeholder="localhost"
               />
               {influxdbConfig.ssh_tunnel_enabled && (
-                <p className="field-help">Usually "localhost" - the InfluxDB host as seen from the SSH server</p>
+                <p className="field-help">
+                  Usually "localhost" - the InfluxDB host as seen from the SSH server
+                </p>
               )}
             </div>
             <div className="form-group form-group-small" style={{ flex: 1 }}>
@@ -4020,7 +4533,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               <input
                 type="number"
                 value={influxdbConfig.port || 8086}
-                onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, port: parseInt(e.target.value) || 8086 })}
+                onChange={(e) =>
+                  setInfluxdbConfig({ ...influxdbConfig, port: parseInt(e.target.value) || 8086 })
+                }
                 min={1}
                 max={65535}
               />
@@ -4028,11 +4543,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </div>
 
           <div className="form-group" style={{ marginTop: '0.25rem' }}>
-            <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+            <label
+              className="toggle-container"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
+            >
               <input
                 type="checkbox"
                 checked={influxdbConfig.use_https ?? false}
-                onChange={(e) => setInfluxdbConfig({ ...influxdbConfig, use_https: e.target.checked })}
+                onChange={(e) =>
+                  setInfluxdbConfig({ ...influxdbConfig, use_https: e.target.checked })
+                }
                 style={{ width: 'auto', margin: 0 }}
               />
               <span>Use HTTPS</span>
@@ -4042,29 +4562,29 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
           <div className="form-row">
             <div className="form-group">
-                <label>Token *</label>
+              <label>Token *</label>
               <input
-                  type="password"
-                  value={influxdbConfig.token || ''}
+                type="password"
+                value={influxdbConfig.token || ''}
                 onChange={(e) => {
-                    setInfluxdbConfig({ ...influxdbConfig, token: e.target.value });
+                  setInfluxdbConfig({ ...influxdbConfig, token: e.target.value });
                   setInfluxdbDiscoveredBuckets([]);
                 }}
-                  placeholder="API token"
+                placeholder="API token"
               />
             </div>
             <div className="form-group">
               <label>Organization *</label>
               <input
-                  type="text"
-                  value={influxdbConfig.org || ''}
+                type="text"
+                value={influxdbConfig.org || ''}
                 onChange={(e) => {
-                    setInfluxdbConfig({ ...influxdbConfig, org: e.target.value });
+                  setInfluxdbConfig({ ...influxdbConfig, org: e.target.value });
                   setInfluxdbDiscoveredBuckets([]);
                 }}
-                  placeholder="my-org"
+                placeholder="my-org"
               />
-                <p className="field-help">Required for queries and bucket discovery</p>
+              <p className="field-help">Required for queries and bucket discovery</p>
             </div>
           </div>
 
@@ -4097,7 +4617,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 type="button"
                 className="btn btn-secondary btn-sm"
                 onClick={handleDiscoverInfluxdbBuckets}
-                disabled={influxdbDiscoveringBuckets || !influxdbConfig.host || !influxdbConfig.token || !influxdbConfig.org}
+                disabled={
+                  influxdbDiscoveringBuckets ||
+                  !influxdbConfig.host ||
+                  !influxdbConfig.token ||
+                  !influxdbConfig.org
+                }
                 title="Discover available buckets"
               >
                 {influxdbDiscoveringBuckets ? 'Discovering...' : 'Discover'}
@@ -4195,11 +4720,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         // Auto-select common SolidWorks extensions if not already configured
         if (!pdmConfig.file_extensions || pdmConfig.file_extensions.length === 0) {
           const defaultExts = ['.SLDPRT', '.SLDASM', '.SLDDRW'];
-          const availableDefaults = defaultExts.filter(ext =>
-            result.file_extensions.some(e => e.toUpperCase() === ext.toUpperCase())
+          const availableDefaults = defaultExts.filter((ext) =>
+            result.file_extensions.some((e) => e.toUpperCase() === ext.toUpperCase()),
           );
           if (availableDefaults.length > 0) {
-            setPdmConfig(prev => ({ ...prev, file_extensions: availableDefaults }));
+            setPdmConfig((prev) => ({ ...prev, file_extensions: availableDefaults }));
           }
         }
       } else {
@@ -4261,7 +4786,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           {/* Database Host/Port - context changes based on tunnel mode */}
           <div className="form-row">
             <div className="form-group">
-              <label>{pdmConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *</label>
+              <label>
+                {pdmConfig.ssh_tunnel_enabled ? 'Database Host (on SSH server)' : 'Host'} *
+              </label>
               <input
                 type="text"
                 value={pdmConfig.host || ''}
@@ -4269,10 +4796,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   setPdmConfig({ ...pdmConfig, host: e.target.value });
                   setPdmDiscoveredDatabases([]);
                 }}
-                placeholder={pdmConfig.ssh_tunnel_enabled ? 'localhost' : 'server.database.windows.net'}
+                placeholder={
+                  pdmConfig.ssh_tunnel_enabled ? 'localhost' : 'server.database.windows.net'
+                }
               />
               {pdmConfig.ssh_tunnel_enabled && (
-                <p className="field-help">Usually "localhost" - the SQL Server host as seen from the SSH server</p>
+                <p className="field-help">
+                  Usually "localhost" - the SQL Server host as seen from the SSH server
+                </p>
               )}
             </div>
             <div className="form-group form-group-small">
@@ -4280,7 +4811,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               <input
                 type="number"
                 value={pdmConfig.port || 1433}
-                onChange={(e) => setPdmConfig({ ...pdmConfig, port: parseInt(e.target.value) || 1433 })}
+                onChange={(e) =>
+                  setPdmConfig({ ...pdmConfig, port: parseInt(e.target.value) || 1433 })
+                }
                 min={1}
                 max={65535}
               />
@@ -4324,8 +4857,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   style={{ flex: 1 }}
                 >
                   <option value="">-- Select Database --</option>
-                  {pdmDiscoveredDatabases.map(db => (
-                    <option key={db} value={db}>{db}</option>
+                  {pdmDiscoveredDatabases.map((db) => (
+                    <option key={db} value={db}>
+                      {db}
+                    </option>
                   ))}
                 </select>
               ) : (
@@ -4341,7 +4876,12 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 type="button"
                 className="btn btn-sm"
                 onClick={handleDiscoverPdmDatabases}
-                disabled={pdmDiscoveringDatabases || (!pdmConfig.ssh_tunnel_enabled && !pdmConfig.host) || !pdmConfig.user || !pdmConfig.password}
+                disabled={
+                  pdmDiscoveringDatabases ||
+                  (!pdmConfig.ssh_tunnel_enabled && !pdmConfig.host) ||
+                  !pdmConfig.user ||
+                  !pdmConfig.password
+                }
                 style={{ whiteSpace: 'nowrap', padding: '12px 16px' }}
               >
                 {pdmDiscoveringDatabases ? 'Discovering...' : 'Discover'}
@@ -4353,9 +4893,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               </p>
             )}
             {pdmDiscoveredDatabases.length > 0 && (
-              <p className="field-help">
-                Found {pdmDiscoveredDatabases.length} database(s).
-              </p>
+              <p className="field-help">Found {pdmDiscoveredDatabases.length} database(s).</p>
             )}
           </div>
         </div>
@@ -4380,7 +4918,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             <p>Discovering PDM schema...</p>
           </div>
         ) : pdmSchemaDiscoveryError ? (
-          <div className="error-panel" style={{ padding: '1rem', backgroundColor: 'rgba(255,0,0,0.1)', borderRadius: '4px', marginBottom: '1rem' }}>
+          <div
+            className="error-panel"
+            style={{
+              padding: '1rem',
+              backgroundColor: 'rgba(255,0,0,0.1)',
+              borderRadius: '4px',
+              marginBottom: '1rem',
+            }}
+          >
             <p style={{ color: 'var(--error-color)', margin: 0 }}>{pdmSchemaDiscoveryError}</p>
             <button
               type="button"
@@ -4397,19 +4943,30 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             <div className="pdm-section" style={{ marginBottom: '1.5rem' }}>
               <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>File Extensions</h4>
               <p className="field-help" style={{ marginBottom: '0.75rem' }}>
-                PDM indexing captures metadata (filenames, variables, BOM) - not file contents.
-                PDM vaults typically store many file types beyond SolidWorks files.
+                PDM indexing captures metadata (filenames, variables, BOM) - not file contents. PDM
+                vaults typically store many file types beyond SolidWorks files.
               </p>
 
               <div style={{ marginBottom: '0.75rem' }}>
-                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                <label
+                  className="toggle-container"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={(pdmConfig.file_extensions || []).length > 0}
                     onChange={(e) => {
                       if (e.target.checked) {
                         // Enable filtering - default to SolidWorks CAD files only
-                        setPdmConfig({ ...pdmConfig, file_extensions: ['.SLDPRT', '.SLDASM', '.SLDDRW'] });
+                        setPdmConfig({
+                          ...pdmConfig,
+                          file_extensions: ['.SLDPRT', '.SLDASM', '.SLDDRW'],
+                        });
                       } else {
                         // Disable filtering - index all file types
                         setPdmConfig({ ...pdmConfig, file_extensions: [] });
@@ -4418,7 +4975,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                     style={{ width: 'auto', margin: 0 }}
                   />
                   <span>Limit to specific extensions</span>
-                  <span className="field-help" style={{ marginLeft: '0.5rem', fontStyle: 'italic' }}>
+                  <span
+                    className="field-help"
+                    style={{ marginLeft: '0.5rem', fontStyle: 'italic' }}
+                  >
                     {(pdmConfig.file_extensions || []).length > 0
                       ? `(${pdmConfig.file_extensions?.length} selected)`
                       : '(indexing all file types)'}
@@ -4426,95 +4986,131 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 </label>
               </div>
 
-              {(pdmConfig.file_extensions || []).length > 0 && pdmDiscoveredExtensions.length > 0 && (
-                <>
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-                    <input
-                      type="text"
-                      value={pdmExtensionFilter}
-                      onChange={(e) => setPdmExtensionFilter(e.target.value)}
-                      placeholder="Filter extensions..."
-                      style={{ maxWidth: '200px', margin: 0, padding: '8px 12px' }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => setPdmConfig({ ...pdmConfig, file_extensions: [...pdmDiscoveredExtensions] })}
-                      style={{ padding: '8px 16px' }}
+              {(pdmConfig.file_extensions || []).length > 0 &&
+                pdmDiscoveredExtensions.length > 0 && (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '0.5rem',
+                        alignItems: 'center',
+                        marginBottom: '0.5rem',
+                        flexWrap: 'wrap',
+                      }}
                     >
-                      Select All
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm"
-                      onClick={() => setPdmConfig({ ...pdmConfig, file_extensions: [] })}
-                      style={{ padding: '8px 16px' }}
+                      <input
+                        type="text"
+                        value={pdmExtensionFilter}
+                        onChange={(e) => setPdmExtensionFilter(e.target.value)}
+                        placeholder="Filter extensions..."
+                        style={{ maxWidth: '200px', margin: 0, padding: '8px 12px' }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() =>
+                          setPdmConfig({
+                            ...pdmConfig,
+                            file_extensions: [...pdmDiscoveredExtensions],
+                          })
+                        }
+                        style={{ padding: '8px 16px' }}
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        onClick={() => setPdmConfig({ ...pdmConfig, file_extensions: [] })}
+                        style={{ padding: '8px 16px' }}
+                      >
+                        Select None
+                      </button>
+                    </div>
+                    <div
+                      className="extension-grid"
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '0.5rem',
+                        maxHeight: '200px',
+                        overflow: 'auto',
+                        padding: '0.5rem',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '4px',
+                        backgroundColor: 'var(--bg-secondary)',
+                      }}
                     >
-                      Select None
-                    </button>
-                  </div>
-                  <div className="extension-grid" style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '0.5rem',
-                    maxHeight: '200px',
-                    overflow: 'auto',
-                    padding: '0.5rem',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    backgroundColor: 'var(--bg-secondary)'
-                  }}>
-                    {pdmDiscoveredExtensions
-                      .filter(ext => ext.toLowerCase().includes(pdmExtensionFilter.toLowerCase()))
-                      .map(ext => {
-                        const isSelected = (pdmConfig.file_extensions || []).some(
-                          e => e.toUpperCase() === ext.toUpperCase()
-                        );
-                        return (
-                          <label
-                            key={ext}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.5rem',
-                              cursor: 'pointer',
-                              padding: '0.25rem 0.5rem',
-                              borderRadius: '4px',
-                              backgroundColor: isSelected ? 'var(--primary-color-light)' : 'var(--bg-primary)',
-                              border: '1px solid var(--border-color)',
-                              whiteSpace: 'nowrap'
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={(e) => {
-                                const current = pdmConfig.file_extensions || [];
-                                if (e.target.checked) {
-                                  setPdmConfig({ ...pdmConfig, file_extensions: [...current, ext] });
-                                } else {
-                                  setPdmConfig({
-                                    ...pdmConfig,
-                                    file_extensions: current.filter(x => x.toUpperCase() !== ext.toUpperCase())
-                                  });
-                                }
+                      {pdmDiscoveredExtensions
+                        .filter((ext) =>
+                          ext.toLowerCase().includes(pdmExtensionFilter.toLowerCase()),
+                        )
+                        .map((ext) => {
+                          const isSelected = (pdmConfig.file_extensions || []).some(
+                            (e) => e.toUpperCase() === ext.toUpperCase(),
+                          );
+                          return (
+                            <label
+                              key={ext}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                                cursor: 'pointer',
+                                padding: '0.25rem 0.5rem',
+                                borderRadius: '4px',
+                                backgroundColor: isSelected
+                                  ? 'var(--primary-color-light)'
+                                  : 'var(--bg-primary)',
+                                border: '1px solid var(--border-color)',
+                                whiteSpace: 'nowrap',
                               }}
-                              style={{ width: 'auto', margin: 0 }}
-                            />
-                            <span style={{ fontSize: '0.9rem' }}>{ext}</span>
-                          </label>
-                        );
-                      })}
-                  </div>
-                </>
-              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  const current = pdmConfig.file_extensions || [];
+                                  if (e.target.checked) {
+                                    setPdmConfig({
+                                      ...pdmConfig,
+                                      file_extensions: [...current, ext],
+                                    });
+                                  } else {
+                                    setPdmConfig({
+                                      ...pdmConfig,
+                                      file_extensions: current.filter(
+                                        (x) => x.toUpperCase() !== ext.toUpperCase(),
+                                      ),
+                                    });
+                                  }
+                                }}
+                                style={{ width: 'auto', margin: 0 }}
+                              />
+                              <span style={{ fontSize: '0.9rem' }}>{ext}</span>
+                            </label>
+                          );
+                        })}
+                    </div>
+                  </>
+                )}
 
               <div style={{ marginTop: '0.75rem' }}>
-                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                <label
+                  className="toggle-container"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={pdmConfig.exclude_deleted ?? true}
-                    onChange={(e) => setPdmConfig({ ...pdmConfig, exclude_deleted: e.target.checked })}
+                    onChange={(e) =>
+                      setPdmConfig({ ...pdmConfig, exclude_deleted: e.target.checked })
+                    }
                     style={{ width: 'auto', margin: 0 }}
                   />
                   <span>Exclude deleted documents</span>
@@ -4523,21 +5119,39 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             </div>
 
             {/* Variable Names Section */}
-            <div className="pdm-section" style={{ marginBottom: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+            <div
+              className="pdm-section"
+              style={{
+                marginBottom: '1.5rem',
+                borderTop: '1px solid var(--border-color)',
+                paddingTop: '1rem',
+              }}
+            >
               <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>PDM Variables</h4>
               <p className="field-help" style={{ marginBottom: '0.75rem' }}>
                 Variables are custom properties stored in PDM for each document.
               </p>
 
               <div style={{ marginBottom: '0.75rem' }}>
-                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                <label
+                  className="toggle-container"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={(pdmConfig.variable_names || []).length > 0}
                     onChange={(e) => {
                       if (e.target.checked) {
                         // Enable filtering with common PDM variables as default
-                        setPdmConfig({ ...pdmConfig, variable_names: ['Description', 'Revision', 'Material', 'Status'] });
+                        setPdmConfig({
+                          ...pdmConfig,
+                          variable_names: ['Description', 'Revision', 'Material', 'Status'],
+                        });
                       } else {
                         // Disable filtering - extract all variables
                         setPdmConfig({ ...pdmConfig, variable_names: [] });
@@ -4546,7 +5160,10 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                     style={{ width: 'auto', margin: 0 }}
                   />
                   <span>Limit to specific variables</span>
-                  <span className="field-help" style={{ marginLeft: '0.5rem', fontStyle: 'italic' }}>
+                  <span
+                    className="field-help"
+                    style={{ marginLeft: '0.5rem', fontStyle: 'italic' }}
+                  >
                     {(pdmConfig.variable_names || []).length > 0
                       ? `(${pdmConfig.variable_names?.length} selected)`
                       : '(extracting all variables)'}
@@ -4556,7 +5173,15 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
               {(pdmConfig.variable_names || []).length > 0 && pdmDiscoveredVariables.length > 0 && (
                 <>
-                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: '0.5rem',
+                      alignItems: 'center',
+                      marginBottom: '0.5rem',
+                      flexWrap: 'wrap',
+                    }}
+                  >
                     <input
                       type="text"
                       value={pdmVariableFilter}
@@ -4567,7 +5192,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                     <button
                       type="button"
                       className="btn btn-sm"
-                      onClick={() => setPdmConfig({ ...pdmConfig, variable_names: [...pdmDiscoveredVariables] })}
+                      onClick={() =>
+                        setPdmConfig({ ...pdmConfig, variable_names: [...pdmDiscoveredVariables] })
+                      }
                       style={{ padding: '8px 16px' }}
                     >
                       Select All
@@ -4581,20 +5208,25 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                       Select None
                     </button>
                   </div>
-                  <div className="variable-grid" style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '0.5rem',
-                    maxHeight: '250px',
-                    overflow: 'auto',
-                    padding: '0.5rem',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    backgroundColor: 'var(--bg-secondary)'
-                  }}>
+                  <div
+                    className="variable-grid"
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '0.5rem',
+                      maxHeight: '250px',
+                      overflow: 'auto',
+                      padding: '0.5rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '4px',
+                      backgroundColor: 'var(--bg-secondary)',
+                    }}
+                  >
                     {pdmDiscoveredVariables
-                      .filter(varName => varName.toLowerCase().includes(pdmVariableFilter.toLowerCase()))
-                      .map(varName => {
+                      .filter((varName) =>
+                        varName.toLowerCase().includes(pdmVariableFilter.toLowerCase()),
+                      )
+                      .map((varName) => {
                         const isSelected = (pdmConfig.variable_names || []).includes(varName);
                         return (
                           <label
@@ -4606,9 +5238,11 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                               cursor: 'pointer',
                               padding: '0.25rem 0.5rem',
                               borderRadius: '4px',
-                              backgroundColor: isSelected ? 'var(--primary-color-light)' : 'var(--bg-primary)',
+                              backgroundColor: isSelected
+                                ? 'var(--primary-color-light)'
+                                : 'var(--bg-primary)',
                               border: '1px solid var(--border-color)',
-                              whiteSpace: 'nowrap'
+                              whiteSpace: 'nowrap',
                             }}
                           >
                             <input
@@ -4617,11 +5251,14 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                               onChange={(e) => {
                                 const current = pdmConfig.variable_names || [];
                                 if (e.target.checked) {
-                                  setPdmConfig({ ...pdmConfig, variable_names: [...current, varName] });
+                                  setPdmConfig({
+                                    ...pdmConfig,
+                                    variable_names: [...current, varName],
+                                  });
                                 } else {
                                   setPdmConfig({
                                     ...pdmConfig,
-                                    variable_names: current.filter(x => x !== varName)
+                                    variable_names: current.filter((x) => x !== varName),
                                   });
                                 }
                               }}
@@ -4637,11 +5274,22 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
             </div>
 
             {/* Metadata Options Section */}
-            <div className="pdm-section" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+            <div
+              className="pdm-section"
+              style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}
+            >
               <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Indexing Options</h4>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                <label
+                  className="toggle-container"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={pdmConfig.include_bom ?? true}
@@ -4651,21 +5299,41 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   <span>Include BOM (Bill of Materials)</span>
                 </label>
 
-                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                <label
+                  className="toggle-container"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={pdmConfig.include_folder_path ?? true}
-                    onChange={(e) => setPdmConfig({ ...pdmConfig, include_folder_path: e.target.checked })}
+                    onChange={(e) =>
+                      setPdmConfig({ ...pdmConfig, include_folder_path: e.target.checked })
+                    }
                     style={{ width: 'auto', margin: 0 }}
                   />
                   <span>Include folder path</span>
                 </label>
 
-                <label className="toggle-container" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                <label
+                  className="toggle-container"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    cursor: 'pointer',
+                  }}
+                >
                   <input
                     type="checkbox"
                     checked={pdmConfig.include_configurations ?? true}
-                    onChange={(e) => setPdmConfig({ ...pdmConfig, include_configurations: e.target.checked })}
+                    onChange={(e) =>
+                      setPdmConfig({ ...pdmConfig, include_configurations: e.target.checked })
+                    }
                     style={{ width: 'auto', margin: 0 }}
                   />
                   <span>Include configurations</span>
@@ -4677,16 +5345,19 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <input
                   type="number"
                   value={pdmConfig.max_documents ?? ''}
-                  onChange={(e) => setPdmConfig({
-                    ...pdmConfig,
-                    max_documents: e.target.value ? parseInt(e.target.value) : null
-                  })}
+                  onChange={(e) =>
+                    setPdmConfig({
+                      ...pdmConfig,
+                      max_documents: e.target.value ? parseInt(e.target.value) : null,
+                    })
+                  }
                   placeholder="No limit"
                   min={1}
                   style={{ maxWidth: '150px' }}
                 />
                 <p className="field-help">
-                  Limit the number of documents to index. Useful for testing. Leave empty to index all matching documents.
+                  Limit the number of documents to index. Useful for testing. Leave empty to index
+                  all matching documents.
                 </p>
               </div>
             </div>
@@ -4699,9 +5370,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderOdooConnection = () => {
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Connect to an Odoo instance via Docker container or SSH.
-        </p>
+        <p className="wizard-help">Connect to an Odoo instance via Docker container or SSH.</p>
 
         {/* Connection mode tabs */}
         <div className="connection-tabs">
@@ -4773,9 +5442,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   onChange={(e) => setOdooConfig({ ...odooConfig, database: e.target.value })}
                   placeholder="odoo"
                 />
-                <p className="field-help">
-                  The Odoo database to connect to.
-                </p>
+                <p className="field-help">The Odoo database to connect to.</p>
               </div>
               <div className="form-group">
                 <label>Config Path (optional)</label>
@@ -4785,9 +5452,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                   onChange={(e) => setOdooConfig({ ...odooConfig, config_path: e.target.value })}
                   placeholder="Leave empty to use container defaults"
                 />
-                <p className="field-help">
-                  Path to odoo.conf inside the container.
-                </p>
+                <p className="field-help">Path to odoo.conf inside the container.</p>
               </div>
             </div>
           </div>
@@ -4810,7 +5475,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <input
                   type="number"
                   value={odooConfig.ssh_port || 22}
-                  onChange={(e) => setOdooConfig({ ...odooConfig, ssh_port: parseInt(e.target.value) || 22 })}
+                  onChange={(e) =>
+                    setOdooConfig({ ...odooConfig, ssh_port: parseInt(e.target.value) || 22 })
+                  }
                   placeholder="22"
                 />
               </div>
@@ -4839,14 +5506,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 key_passphrase: odooConfig.ssh_key_passphrase,
                 password: odooConfig.ssh_password,
               }}
-              onConfigChange={(sshAuthConfig) => setOdooConfig({
-                ...odooConfig,
-                ssh_key_path: sshAuthConfig.key_path || '',
-                ssh_key_content: sshAuthConfig.key_content || '',
-                ssh_public_key: sshAuthConfig.public_key || '',
-                ssh_key_passphrase: sshAuthConfig.key_passphrase || '',
-                ssh_password: sshAuthConfig.password || '',
-              })}
+              onConfigChange={(sshAuthConfig) =>
+                setOdooConfig({
+                  ...odooConfig,
+                  ssh_key_path: sshAuthConfig.key_path || '',
+                  ssh_key_content: sshAuthConfig.key_content || '',
+                  ssh_public_key: sshAuthConfig.public_key || '',
+                  ssh_key_passphrase: sshAuthConfig.key_passphrase || '',
+                  ssh_password: sshAuthConfig.password || '',
+                })
+              }
               authMode={sshKeyMode}
               onAuthModeChange={setSshKeyMode}
               generatingKey={generatingKey}
@@ -4909,7 +5578,9 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
               <input
                 type="text"
                 value={odooConfig.working_directory || ''}
-                onChange={(e) => setOdooConfig({ ...odooConfig, working_directory: e.target.value })}
+                onChange={(e) =>
+                  setOdooConfig({ ...odooConfig, working_directory: e.target.value })
+                }
                 placeholder="/var/odoo/staging-odoo.example.com"
               />
               <p className="field-help">Directory to cd into before running Odoo shell.</p>
@@ -4922,9 +5593,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
   const renderSSHConnection = () => (
     <div className="wizard-content">
-      <p className="wizard-help">
-        Connect to a remote server via SSH to run shell commands.
-      </p>
+      <p className="wizard-help">Connect to a remote server via SSH to run shell commands.</p>
 
       {/* SSH Connection using reusable component with host/port */}
       <div className="form-row">
@@ -4971,14 +5640,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           key_passphrase: sshConfig.key_passphrase,
           password: sshConfig.password,
         }}
-        onConfigChange={(sshAuthConfig) => setSshConfig({
-          ...sshConfig,
-          key_path: sshAuthConfig.key_path || '',
-          key_content: sshAuthConfig.key_content || '',
-          public_key: sshAuthConfig.public_key || '',
-          key_passphrase: sshAuthConfig.key_passphrase || '',
-          password: sshAuthConfig.password || '',
-        })}
+        onConfigChange={(sshAuthConfig) =>
+          setSshConfig({
+            ...sshConfig,
+            key_path: sshAuthConfig.key_path || '',
+            key_content: sshAuthConfig.key_content || '',
+            public_key: sshAuthConfig.public_key || '',
+            key_passphrase: sshAuthConfig.key_passphrase || '',
+            password: sshAuthConfig.password || '',
+          })
+        }
         authMode={sshKeyMode}
         onAuthModeChange={setSshKeyMode}
         generatingKey={generatingKey}
@@ -5007,345 +5678,444 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderFilesystemConnection = () => {
     // Filter mount types based on container capabilities
     // SMB and NFS require privileged mode or CAP_SYS_ADMIN
-    const availableMountTypes = (Object.keys(MOUNT_TYPE_INFO) as FilesystemMountType[]).filter((type) => {
-      if (type === 'smb' || type === 'nfs') {
-        // Show SMB/NFS only if container has mount capabilities
-        return containerCapabilities?.can_mount ?? false;
-      }
-      return true; // Always show docker_volume
-    });
+    const availableMountTypes = (Object.keys(MOUNT_TYPE_INFO) as FilesystemMountType[]).filter(
+      (type) => {
+        if (type === 'smb' || type === 'nfs') {
+          // Show SMB/NFS only if container has mount capabilities
+          return containerCapabilities?.can_mount ?? false;
+        }
+        return true; // Always show docker_volume
+      },
+    );
 
     return (
-    <div className="connection-panel">
-      {/* Mount Type Selection */}
-      <div className="form-group">
-        <label>Mount Type</label>
-        {loadingCapabilities ? (
-          <div className="mount-type-tabs">
-            <span className="loading-text">Checking container capabilities...</span>
-          </div>
-        ) : (
-        <div className="mount-type-tabs">
-          {availableMountTypes.map((type) => (
-            <button
-              key={type}
-              type="button"
-              className={`mount-type-tab ${filesystemConfig.mount_type === type ? 'active' : ''}`}
-              onClick={() => {
-                // Clear path and mount-type-specific fields when switching
-                if (filesystemConfig.mount_type !== type) {
-                  setFilesystemConfig({
-                    ...filesystemConfig,
-                    mount_type: type,
-                    base_path: '',
-                    // Clear other mount type fields to avoid mixing
-                    smb_host: type === 'smb' ? filesystemConfig.smb_host : '',
-                    smb_share: type === 'smb' ? filesystemConfig.smb_share : '',
-                    smb_user: type === 'smb' ? filesystemConfig.smb_user : '',
-                    smb_password: type === 'smb' ? filesystemConfig.smb_password : '',
-                    smb_domain: type === 'smb' ? filesystemConfig.smb_domain : '',
-                    nfs_host: type === 'nfs' ? filesystemConfig.nfs_host : '',
-                    nfs_export: type === 'nfs' ? filesystemConfig.nfs_export : '',
-                  });
-                }
-              }}
-            >
-              {MOUNT_TYPE_INFO[type].name}
-              {MOUNT_TYPE_INFO[type].recommended && <span className="recommended-badge">Recommended</span>}
-            </button>
-          ))}
-        </div>
-        )}
-        <p className="field-help">{MOUNT_TYPE_INFO[filesystemConfig.mount_type]?.description ?? 'Select a mount type'}</p>
-        {/* Show message when SMB/NFS are not available */}
-        {!loadingCapabilities && containerCapabilities && !containerCapabilities.can_mount && (
-          <p className="field-help info-message" style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}>
-            SMB/NFS options are hidden because the container lacks mount privileges.
-            To enable, uncomment <code>privileged: true</code> and <code>cap_add: SYS_ADMIN</code> in docker-compose.yml and restart.
+      <div className="connection-panel">
+        {/* Mount Type Selection */}
+        <div className="form-group">
+          <label>Mount Type</label>
+          {loadingCapabilities ? (
+            <div className="mount-type-tabs">
+              <span className="loading-text">Checking container capabilities...</span>
+            </div>
+          ) : (
+            <div className="mount-type-tabs">
+              {availableMountTypes.map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  className={`mount-type-tab ${filesystemConfig.mount_type === type ? 'active' : ''}`}
+                  onClick={() => {
+                    // Clear path and mount-type-specific fields when switching
+                    if (filesystemConfig.mount_type !== type) {
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        mount_type: type,
+                        base_path: '',
+                        // Clear other mount type fields to avoid mixing
+                        smb_host: type === 'smb' ? filesystemConfig.smb_host : '',
+                        smb_share: type === 'smb' ? filesystemConfig.smb_share : '',
+                        smb_user: type === 'smb' ? filesystemConfig.smb_user : '',
+                        smb_password: type === 'smb' ? filesystemConfig.smb_password : '',
+                        smb_domain: type === 'smb' ? filesystemConfig.smb_domain : '',
+                        nfs_host: type === 'nfs' ? filesystemConfig.nfs_host : '',
+                        nfs_export: type === 'nfs' ? filesystemConfig.nfs_export : '',
+                      });
+                    }
+                  }}
+                >
+                  {MOUNT_TYPE_INFO[type].name}
+                  {MOUNT_TYPE_INFO[type].recommended && (
+                    <span className="recommended-badge">Recommended</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="field-help">
+            {MOUNT_TYPE_INFO[filesystemConfig.mount_type]?.description ?? 'Select a mount type'}
           </p>
-        )}
-      </div>
-
-      {/* Docker Volume Settings */}
-      {filesystemConfig.mount_type === 'docker_volume' && (
-        <FilesystemBrowser
-          currentPath={filesystemConfig.base_path}
-          onSelectPath={(path) => setFilesystemConfig({ ...filesystemConfig, base_path: path })}
-          forUserspaceMount={mountOnly}
-        />
-      )}
-
-      {/* SMB Settings */}
-      {filesystemConfig.mount_type === 'smb' && (
-        <>
-          <div className="form-group">
-            <label>SMB Share</label>
-            <p className="field-help" style={{ marginBottom: '0.5rem' }}>
-              Enter server hostname and credentials, then click Discover to browse available shares.
-            </p>
-            <SMBBrowser
-              host={filesystemConfig.smb_host || ''}
-              user={filesystemConfig.smb_user || ''}
-              password={filesystemConfig.smb_password || ''}
-              domain={filesystemConfig.smb_domain || ''}
-              selectedShare={filesystemConfig.smb_share || ''}
-              selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/smb\/?/, '') || ''}
-              onHostChange={(host) => setFilesystemConfig(prev => ({ ...prev, smb_host: host }))}
-              onCredentialsChange={(user, password, domain) => setFilesystemConfig(prev => ({
-                ...prev,
-                smb_user: user,
-                smb_password: password,
-                smb_domain: domain
-              }))}
-              onSelectPath={(share, path) => setFilesystemConfig(prev => ({
-                ...prev,
-                smb_share: share,
-                base_path: path ? `/${path}` : '/'
-              }))}
-            />
-          </div>
-        </>
-      )}
-
-      {/* NFS Settings */}
-      {filesystemConfig.mount_type === 'nfs' && (
-        <>
-          <div className="form-group">
-            <label>NFS Export</label>
-            <p className="field-help" style={{ marginBottom: '0.5rem' }}>
-              Enter NFS server hostname, then click Discover to browse available exports.
-            </p>
-            <NFSBrowser
-              host={filesystemConfig.nfs_host || ''}
-              selectedExport={filesystemConfig.nfs_export || ''}
-              selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/nfs\/?/, '') || ''}
-              onHostChange={(host) => setFilesystemConfig({ ...filesystemConfig, nfs_host: host })}
-              onSelectPath={(exportPath, path) => setFilesystemConfig({
-                ...filesystemConfig,
-                nfs_export: exportPath,
-                base_path: path ? `/${path}` : '/'
-              })}
-            />
-          </div>
-          <div className="form-group">
-            <label>Mount Options</label>
-            <input
-              type="text"
-              value={filesystemConfig.nfs_options || 'ro,noatime'}
-              onChange={(e) => setFilesystemConfig({ ...filesystemConfig, nfs_options: e.target.value })}
-              placeholder="ro,noatime"
-            />
-            <p className="field-help">NFS mount options (ro = read-only recommended).</p>
-          </div>
-        </>
-      )}
-
-      {!mountOnly && (
-      <div className="analysis-section" style={{ marginTop: '1.5rem' }}>
-        <h4 style={{ marginBottom: '1rem' }}>Pre-Index Analysis</h4>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
-          <DisabledPopover
-            disabled={!fsAnalyzing && !filesystemConfig.base_path}
-            message="Select a path above first"
-            position="top"
-          >
-            <button
-              type="button"
-              className="btn"
-              onClick={handleStartFilesystemAnalysis}
-              disabled={fsAnalyzing || !filesystemConfig.base_path}
+          {/* Show message when SMB/NFS are not available */}
+          {!loadingCapabilities && containerCapabilities && !containerCapabilities.can_mount && (
+            <p
+              className="field-help info-message"
+              style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}
             >
-              {fsAnalyzing ? 'Analyzing...' : 'Analyze Filesystem'}
-            </button>
-          </DisabledPopover>
-
-          {fsAnalysisJob && fsAnalyzing && (
-            <span className="analysis-progress">
-              {fsAnalysisJob.status === 'scanning' && (
-                <>Scanning: {fsAnalysisJob.files_scanned} files found ({fsAnalysisJob.dirs_scanned}/{fsAnalysisJob.total_dirs_to_scan} dirs)</>
-              )}
-              {fsAnalysisJob.status === 'analyzing' && 'Generating suggestions...'}
-              {fsAnalysisJob.current_directory && (
-                <span style={{ opacity: 0.7, marginLeft: '0.5rem' }}>
-                  {fsAnalysisJob.current_directory}
-                </span>
-              )}
-            </span>
+              SMB/NFS options are hidden because the container lacks mount privileges. To enable,
+              uncomment <code>privileged: true</code> and <code>cap_add: SYS_ADMIN</code> in
+              docker-compose.yml and restart.
+            </p>
           )}
         </div>
 
-        {fsAnalysisJob?.status === 'failed' && (
-          <div className="analysis-error" style={{ color: 'var(--error)', marginBottom: '1rem' }}>
-            Analysis failed: {fsAnalysisJob.error_message}
-          </div>
+        {/* Docker Volume Settings */}
+        {filesystemConfig.mount_type === 'docker_volume' && (
+          <FilesystemBrowser
+            currentPath={filesystemConfig.base_path}
+            onSelectPath={(path) => setFilesystemConfig({ ...filesystemConfig, base_path: path })}
+            forUserspaceMount={mountOnly}
+          />
         )}
 
-        {fsAnalysisJob?.status === 'completed' && fsAnalysisJob.result && (
-          <details open={fsAnalysisExpanded} onToggle={(e) => setFsAnalysisExpanded((e.target as HTMLDetailsElement).open)}>
-            <summary style={{ cursor: 'pointer', fontWeight: 500, marginBottom: '0.5rem' }}>
-              Analysis Results ({fsAnalysisJob.result.total_files} files, {fsAnalysisJob.result.total_size_mb} MB, ~{fsAnalysisJob.result.estimated_chunks} chunks)
-            </summary>
-
-            <div className="analysis-results" style={{ padding: '1rem', backgroundColor: 'var(--panel-bg)', borderRadius: '4px', marginTop: '0.5rem' }}>
-              {/* Warnings */}
-              <WarningsBanner warnings={fsAnalysisJob.result.warnings} />
-
-              {/* File Type Stats Table */}
-              <div style={{ marginBottom: '1rem' }}>
-                <strong>File Types:</strong>
-                <FileTypeStatsTable stats={fsAnalysisJob.result.file_type_stats} maxRows={10} />
-              </div>
-
-              {/* Suggested Exclusions */}
-              <SuggestedExclusionsBanner
-                exclusions={fsAnalysisJob.result.suggested_exclusions}
-                applied={fsExclusionsApplied}
-                onApply={handleApplyFsExclusions}
+        {/* SMB Settings */}
+        {filesystemConfig.mount_type === 'smb' && (
+          <>
+            <div className="form-group">
+              <label>SMB Share</label>
+              <p className="field-help" style={{ marginBottom: '0.5rem' }}>
+                Enter server hostname and credentials, then click Discover to browse available
+                shares.
+              </p>
+              <SMBBrowser
+                host={filesystemConfig.smb_host || ''}
+                user={filesystemConfig.smb_user || ''}
+                password={filesystemConfig.smb_password || ''}
+                domain={filesystemConfig.smb_domain || ''}
+                selectedShare={filesystemConfig.smb_share || ''}
+                selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/smb\/?/, '') || ''}
+                onHostChange={(host) =>
+                  setFilesystemConfig((prev) => ({ ...prev, smb_host: host }))
+                }
+                onCredentialsChange={(user, password, domain) =>
+                  setFilesystemConfig((prev) => ({
+                    ...prev,
+                    smb_user: user,
+                    smb_password: password,
+                    smb_domain: domain,
+                  }))
+                }
+                onSelectPath={(share, path) =>
+                  setFilesystemConfig((prev) => ({
+                    ...prev,
+                    smb_share: share,
+                    base_path: path ? `/${path}` : '/',
+                  }))
+                }
               />
-
-              <div style={{ marginTop: '1rem', fontSize: '0.85rem', opacity: 0.7 }}>
-                Analysis completed in {fsAnalysisJob.result.analysis_duration_seconds}s ({fsAnalysisJob.result.directories_scanned} directories scanned)
-              </div>
             </div>
-          </details>
+          </>
         )}
 
-        {/* OCR Mode and Vector Store - always visible */}
-        <OcrVectorStoreFields
-          isLoading={false}
-          ocrMode={filesystemConfig.ocr_mode || 'disabled'}
-          setOcrMode={(mode) => setFilesystemConfig((prev) => ({ ...prev, ocr_mode: mode }))}
-          ocrProvider={filesystemConfig.ocr_provider ?? null}
-          setOcrProvider={(provider: OcrProvider | null) => setFilesystemConfig((prev) => ({ ...prev, ocr_provider: provider }))}
-          ocrVisionModel={filesystemConfig.ocr_vision_model || ''}
-          setOcrVisionModel={(model) => setFilesystemConfig((prev) => ({ ...prev, ocr_vision_model: model || undefined }))}
-          visionOcrAvailable={visionOcrAvailable}
-          defaultOcrProviderLabel={defaultOcrProviderLabel}
-          defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
-          vectorStoreType={filesystemConfig.vector_store_type || 'pgvector'}
-          setVectorStoreType={(type) => setFilesystemConfig((prev) => ({ ...prev, vector_store_type: type }))}
-          vectorStoreDisabled={isEditing}
-        />
-
-        {/* Auto Re-index Interval - visible outside Advanced section */}
-        <ReindexIntervalSelect
-          value={filesystemConfig.reindex_interval_hours ?? 24}
-          onChange={(val) => setFilesystemConfig(prev => ({
-            ...prev,
-            reindex_interval_hours: val,
-            reindex_start_minute: val > 0 ? (prev.reindex_start_minute ?? defaultScheduleStartMinute()) : null,
-            reindex_timezone: val > 0 ? (prev.reindex_timezone ?? defaultScheduleTimezone()) : null,
-          }))}
-          startMinute={filesystemConfig.reindex_start_minute ?? null}
-          timezone={filesystemConfig.reindex_timezone ?? null}
-          onStartMinuteChange={(val) => setFilesystemConfig(prev => ({ ...prev, reindex_start_minute: val }))}
-          onTimezoneChange={(val) => setFilesystemConfig(prev => ({ ...prev, reindex_timezone: val }))}
-          style={{ marginTop: '1rem', marginBottom: '1rem', maxWidth: '300px' }}
-        />
-
-        {/* Advanced Indexing & Safety - appears after analysis results so "Apply All" can reveal updated exclusions */}
-        <details open={fsAdvancedOpen} onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)} style={{ marginTop: '1rem' }}>
-          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '0.5rem' }}>
-            Advanced Indexing & Safety
-          </summary>
-          <div className="form-row" style={{ marginTop: '0.5rem' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>File Patterns</label>
+        {/* NFS Settings */}
+        {filesystemConfig.mount_type === 'nfs' && (
+          <>
+            <div className="form-group">
+              <label>NFS Export</label>
+              <p className="field-help" style={{ marginBottom: '0.5rem' }}>
+                Enter NFS server hostname, then click Discover to browse available exports.
+              </p>
+              <NFSBrowser
+                host={filesystemConfig.nfs_host || ''}
+                selectedExport={filesystemConfig.nfs_export || ''}
+                selectedPath={filesystemConfig.base_path?.replace(/^\/mnt\/nfs\/?/, '') || ''}
+                onHostChange={(host) =>
+                  setFilesystemConfig({ ...filesystemConfig, nfs_host: host })
+                }
+                onSelectPath={(exportPath, path) =>
+                  setFilesystemConfig({
+                    ...filesystemConfig,
+                    nfs_export: exportPath,
+                    base_path: path ? `/${path}` : '/',
+                  })
+                }
+              />
+            </div>
+            <div className="form-group">
+              <label>Mount Options</label>
               <input
                 type="text"
-                value={(filesystemConfig.file_patterns || []).join(', ')}
-                onChange={(e) => setFilesystemConfig({
-                  ...filesystemConfig,
-                  file_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
-                })}
-                placeholder="**/*.txt, **/*.md, **/*.pdf"
+                value={filesystemConfig.nfs_options || 'ro,noatime'}
+                onChange={(e) =>
+                  setFilesystemConfig({ ...filesystemConfig, nfs_options: e.target.value })
+                }
+                placeholder="ro,noatime"
               />
-              <p className="field-help">Glob patterns for files to include.</p>
+              <p className="field-help">NFS mount options (ro = read-only recommended).</p>
             </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Exclude Patterns</label>
-              <input
-                type="text"
-                value={(filesystemConfig.exclude_patterns || []).join(', ')}
-                onChange={(e) => setFilesystemConfig({
-                  ...filesystemConfig,
-                  exclude_patterns: e.target.value.split(',').map(p => p.trim()).filter(Boolean)
-                })}
-                placeholder="**/node_modules/**, **/.git/**"
-              />
-              <p className="field-help">Glob patterns to exclude.</p>
-            </div>
-          </div>
+          </>
+        )}
 
-          <div className="form-row" style={{ marginTop: '0.75rem' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Chunk Size</label>
-              <input
-                type="number"
-                value={filesystemConfig.chunk_size || 1000}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_size: parseInt(e.target.value) || 1000 })}
-                min={100}
-                max={4000}
-              />
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Chunk Overlap</label>
-              <input
-                type="number"
-                value={filesystemConfig.chunk_overlap || 200}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, chunk_overlap: parseInt(e.target.value) || 200 })}
-                min={0}
-                max={1000}
-              />
-            </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={filesystemConfig.recursive !== false}
-                  onChange={(e) => setFilesystemConfig({ ...filesystemConfig, recursive: e.target.checked })}
-                  style={{ marginRight: '0.5rem' }}
-                />
-                Recursive
-              </label>
-            </div>
-          </div>
+        {!mountOnly && (
+          <div className="analysis-section" style={{ marginTop: '1.5rem' }}>
+            <h4 style={{ marginBottom: '1rem' }}>Pre-Index Analysis</h4>
 
-          <div className="cloud-sync-warning" style={{ marginTop: '0.75rem' }}>
-            <strong>Note:</strong> Indexing cloud-synced folders (OneDrive, Dropbox, Google Drive)
-            may trigger downloads of "online-only" files. Consider indexing local copies or
-            specific subfolders to avoid unwanted downloads.
-          </div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '1rem',
+                marginBottom: '0.75rem',
+              }}
+            >
+              <DisabledPopover
+                disabled={!fsAnalyzing && !filesystemConfig.base_path}
+                message="Select a path above first"
+                position="top"
+              >
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleStartFilesystemAnalysis}
+                  disabled={fsAnalyzing || !filesystemConfig.base_path}
+                >
+                  {fsAnalyzing ? 'Analyzing...' : 'Analyze Filesystem'}
+                </button>
+              </DisabledPopover>
 
-          <div className="form-row" style={{ marginTop: '0.75rem' }}>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Max File Size (MB)</label>
-              <input
-                type="number"
-                value={filesystemConfig.max_file_size_mb || 10}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_file_size_mb: parseInt(e.target.value) || 10 })}
-                min={1}
-                max={100}
-              />
+              {fsAnalysisJob && fsAnalyzing && (
+                <span className="analysis-progress">
+                  {fsAnalysisJob.status === 'scanning' && (
+                    <>
+                      Scanning: {fsAnalysisJob.files_scanned} files found (
+                      {fsAnalysisJob.dirs_scanned}/{fsAnalysisJob.total_dirs_to_scan} dirs)
+                    </>
+                  )}
+                  {fsAnalysisJob.status === 'analyzing' && 'Generating suggestions...'}
+                  {fsAnalysisJob.current_directory && (
+                    <span style={{ opacity: 0.7, marginLeft: '0.5rem' }}>
+                      {fsAnalysisJob.current_directory}
+                    </span>
+                  )}
+                </span>
+              )}
             </div>
-            <div className="form-group" style={{ flex: 1 }}>
-              <label>Max Total Files</label>
-              <input
-                type="number"
-                value={filesystemConfig.max_total_files || 10000}
-                onChange={(e) => setFilesystemConfig({ ...filesystemConfig, max_total_files: parseInt(e.target.value) || 10000 })}
-                min={1}
-                max={100000}
-              />
-            </div>
-          </div>
 
-        </details>
+            {fsAnalysisJob?.status === 'failed' && (
+              <div
+                className="analysis-error"
+                style={{ color: 'var(--error)', marginBottom: '1rem' }}
+              >
+                Analysis failed: {fsAnalysisJob.error_message}
+              </div>
+            )}
+
+            {fsAnalysisJob?.status === 'completed' && fsAnalysisJob.result && (
+              <details
+                open={fsAnalysisExpanded}
+                onToggle={(e) => setFsAnalysisExpanded((e.target as HTMLDetailsElement).open)}
+              >
+                <summary style={{ cursor: 'pointer', fontWeight: 500, marginBottom: '0.5rem' }}>
+                  Analysis Results ({fsAnalysisJob.result.total_files} files,{' '}
+                  {fsAnalysisJob.result.total_size_mb} MB, ~{fsAnalysisJob.result.estimated_chunks}{' '}
+                  chunks)
+                </summary>
+
+                <div
+                  className="analysis-results"
+                  style={{
+                    padding: '1rem',
+                    backgroundColor: 'var(--panel-bg)',
+                    borderRadius: '4px',
+                    marginTop: '0.5rem',
+                  }}
+                >
+                  {/* Warnings */}
+                  <WarningsBanner warnings={fsAnalysisJob.result.warnings} />
+
+                  {/* File Type Stats Table */}
+                  <div style={{ marginBottom: '1rem' }}>
+                    <strong>File Types:</strong>
+                    <FileTypeStatsTable stats={fsAnalysisJob.result.file_type_stats} maxRows={10} />
+                  </div>
+
+                  {/* Suggested Exclusions */}
+                  <SuggestedExclusionsBanner
+                    exclusions={fsAnalysisJob.result.suggested_exclusions}
+                    applied={fsExclusionsApplied}
+                    onApply={handleApplyFsExclusions}
+                  />
+
+                  <div style={{ marginTop: '1rem', fontSize: '0.85rem', opacity: 0.7 }}>
+                    Analysis completed in {fsAnalysisJob.result.analysis_duration_seconds}s (
+                    {fsAnalysisJob.result.directories_scanned} directories scanned)
+                  </div>
+                </div>
+              </details>
+            )}
+
+            {/* OCR Mode and Vector Store - always visible */}
+            <OcrVectorStoreFields
+              isLoading={false}
+              ocrMode={filesystemConfig.ocr_mode || 'disabled'}
+              setOcrMode={(mode) => setFilesystemConfig((prev) => ({ ...prev, ocr_mode: mode }))}
+              ocrProvider={filesystemConfig.ocr_provider ?? null}
+              setOcrProvider={(provider: OcrProvider | null) =>
+                setFilesystemConfig((prev) => ({ ...prev, ocr_provider: provider }))
+              }
+              ocrVisionModel={filesystemConfig.ocr_vision_model || ''}
+              setOcrVisionModel={(model) =>
+                setFilesystemConfig((prev) => ({ ...prev, ocr_vision_model: model || undefined }))
+              }
+              visionOcrAvailable={visionOcrAvailable}
+              defaultOcrProviderLabel={defaultOcrProviderLabel}
+              defaultOcrVisionModelLabel={defaultOcrVisionModelLabel}
+              vectorStoreType={filesystemConfig.vector_store_type || 'pgvector'}
+              setVectorStoreType={(type) =>
+                setFilesystemConfig((prev) => ({ ...prev, vector_store_type: type }))
+              }
+              vectorStoreDisabled={isEditing}
+            />
+
+            {/* Auto Re-index Interval - visible outside Advanced section */}
+            <ReindexIntervalSelect
+              value={filesystemConfig.reindex_interval_hours ?? 24}
+              onChange={(val) =>
+                setFilesystemConfig((prev) => ({
+                  ...prev,
+                  reindex_interval_hours: val,
+                  reindex_start_minute:
+                    val > 0 ? (prev.reindex_start_minute ?? defaultScheduleStartMinute()) : null,
+                  reindex_timezone:
+                    val > 0 ? (prev.reindex_timezone ?? defaultScheduleTimezone()) : null,
+                }))
+              }
+              startMinute={filesystemConfig.reindex_start_minute ?? null}
+              timezone={filesystemConfig.reindex_timezone ?? null}
+              onStartMinuteChange={(val) =>
+                setFilesystemConfig((prev) => ({ ...prev, reindex_start_minute: val }))
+              }
+              onTimezoneChange={(val) =>
+                setFilesystemConfig((prev) => ({ ...prev, reindex_timezone: val }))
+              }
+              style={{ marginTop: '1rem', marginBottom: '1rem', maxWidth: '300px' }}
+            />
+
+            {/* Advanced Indexing & Safety - appears after analysis results so "Apply All" can reveal updated exclusions */}
+            <details
+              open={fsAdvancedOpen}
+              onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)}
+              style={{ marginTop: '1rem' }}
+            >
+              <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '0.5rem' }}>
+                Advanced Indexing & Safety
+              </summary>
+              <div className="form-row" style={{ marginTop: '0.5rem' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>File Patterns</label>
+                  <input
+                    type="text"
+                    value={(filesystemConfig.file_patterns || []).join(', ')}
+                    onChange={(e) =>
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        file_patterns: e.target.value
+                          .split(',')
+                          .map((p) => p.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    placeholder="**/*.txt, **/*.md, **/*.pdf"
+                  />
+                  <p className="field-help">Glob patterns for files to include.</p>
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Exclude Patterns</label>
+                  <input
+                    type="text"
+                    value={(filesystemConfig.exclude_patterns || []).join(', ')}
+                    onChange={(e) =>
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        exclude_patterns: e.target.value
+                          .split(',')
+                          .map((p) => p.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    placeholder="**/node_modules/**, **/.git/**"
+                  />
+                  <p className="field-help">Glob patterns to exclude.</p>
+                </div>
+              </div>
+
+              <div className="form-row" style={{ marginTop: '0.75rem' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Chunk Size</label>
+                  <input
+                    type="number"
+                    value={filesystemConfig.chunk_size || 1000}
+                    onChange={(e) =>
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        chunk_size: parseInt(e.target.value) || 1000,
+                      })
+                    }
+                    min={100}
+                    max={4000}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Chunk Overlap</label>
+                  <input
+                    type="number"
+                    value={filesystemConfig.chunk_overlap || 200}
+                    onChange={(e) =>
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        chunk_overlap: parseInt(e.target.value) || 200,
+                      })
+                    }
+                    min={0}
+                    max={1000}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={filesystemConfig.recursive !== false}
+                      onChange={(e) =>
+                        setFilesystemConfig({ ...filesystemConfig, recursive: e.target.checked })
+                      }
+                      style={{ marginRight: '0.5rem' }}
+                    />
+                    Recursive
+                  </label>
+                </div>
+              </div>
+
+              <div className="cloud-sync-warning" style={{ marginTop: '0.75rem' }}>
+                <strong>Note:</strong> Indexing cloud-synced folders (OneDrive, Dropbox, Google
+                Drive) may trigger downloads of "online-only" files. Consider indexing local copies
+                or specific subfolders to avoid unwanted downloads.
+              </div>
+
+              <div className="form-row" style={{ marginTop: '0.75rem' }}>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Max File Size (MB)</label>
+                  <input
+                    type="number"
+                    value={filesystemConfig.max_file_size_mb || 10}
+                    onChange={(e) =>
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        max_file_size_mb: parseInt(e.target.value) || 10,
+                      })
+                    }
+                    min={1}
+                    max={100}
+                  />
+                </div>
+                <div className="form-group" style={{ flex: 1 }}>
+                  <label>Max Total Files</label>
+                  <input
+                    type="number"
+                    value={filesystemConfig.max_total_files || 10000}
+                    onChange={(e) =>
+                      setFilesystemConfig({
+                        ...filesystemConfig,
+                        max_total_files: parseInt(e.target.value) || 10000,
+                      })
+                    }
+                    min={1}
+                    max={100000}
+                  />
+                </div>
+              </div>
+            </details>
+          </div>
+        )}
       </div>
-      )}
-    </div>
-  );
+    );
   };
 
   const renderConnectionConfig = () => {
@@ -5389,29 +6159,33 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 <span className={`test-result ${testResult.success ? 'success' : 'error'}`}>
                   {testResult.message}
                 </span>
-                {!testResult.success && testResult.details !== undefined && testResult.details !== null && (
-                  <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
-                    <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
-                      Show error details
-                    </summary>
-                    <pre style={{
-                      marginTop: '0.5rem',
-                      padding: '0.75rem',
-                      backgroundColor: '#1e1e1e',
-                      color: '#f8f8f2',
-                      borderRadius: '4px',
-                      fontSize: '0.75rem',
-                      overflow: 'auto',
-                      maxHeight: '200px',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word'
-                    }}>
-                      {typeof testResult.details === 'string'
-                        ? testResult.details
-                        : String(JSON.stringify(testResult.details, null, 2))}
-                    </pre>
-                  </details>
-                )}
+                {!testResult.success &&
+                  testResult.details !== undefined &&
+                  testResult.details !== null && (
+                    <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
+                      <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
+                        Show error details
+                      </summary>
+                      <pre
+                        style={{
+                          marginTop: '0.5rem',
+                          padding: '0.75rem',
+                          backgroundColor: '#1e1e1e',
+                          color: '#f8f8f2',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem',
+                          overflow: 'auto',
+                          maxHeight: '200px',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {typeof testResult.details === 'string'
+                          ? testResult.details
+                          : String(JSON.stringify(testResult.details, null, 2))}
+                      </pre>
+                    </details>
+                  )}
               </div>
             )}
           </div>
@@ -5424,12 +6198,16 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
     if (toolType !== 'ssh_shell') return null;
 
     // Check if we have enough config to connect
-    const canConnect = sshConfig.host && sshConfig.user && (sshConfig.password || sshConfig.key_content || sshConfig.key_path);
+    const canConnect =
+      sshConfig.host &&
+      sshConfig.user &&
+      (sshConfig.password || sshConfig.key_content || sshConfig.key_path);
 
     return (
       <div className="wizard-content">
         <p className="wizard-help">
-          Configure execution limits, security options, and optionally constrain the AI agent to a specific directory.
+          Configure execution limits, security options, and optionally constrain the AI agent to a
+          specific directory.
         </p>
 
         <div className="timeout-row">
@@ -5453,9 +6231,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 style={{ width: '100px' }}
               />
             </div>
-            <p className="field-help">
-              Maximum time a command can run. Use 0 for no timeout.
-            </p>
+            <p className="field-help">Maximum time a command can run. Use 0 for no timeout.</p>
           </div>
         </div>
 
@@ -5471,37 +6247,40 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           </label>
           {allowWrite && (
             <p className="warning-text">
-              Warning: Write operations are enabled. The AI will be able to modify files and run destructive commands.
+              Warning: Write operations are enabled. The AI will be able to modify files and run
+              destructive commands.
             </p>
           )}
         </fieldset>
 
         <div className="form-group" style={{ marginTop: '1rem' }}>
-           <label>Working Directory (optional)</label>
-           {!canConnect ? (
-              <>
-                 <input
-                    type="text"
-                    value={sshConfig.working_directory || ''}
-                    onChange={e => setSshConfig({...sshConfig, working_directory: e.target.value})}
-                    placeholder="/var/www/html"
-                 />
-                 <p className="field-help warning" style={{color: '#f0ad4e'}}>
-                    Enter directory manually. Configure authentication in the previous step to enable file browsing.
-                 </p>
-              </>
-           ) : (
-              <>
-                 <SSHFilesystemBrowser
-                    currentPath={sshConfig.working_directory || '/'}
-                    onSelectPath={(path) => setSshConfig({...sshConfig, working_directory: path})}
-                    sshConfig={sshConfig}
-                 />
-                 <p className="field-help">
-                    Constrain the AI agent to a specific directory. It will not be able to interact with files outside this path.
-                 </p>
-              </>
-           )}
+          <label>Working Directory (optional)</label>
+          {!canConnect ? (
+            <>
+              <input
+                type="text"
+                value={sshConfig.working_directory || ''}
+                onChange={(e) => setSshConfig({ ...sshConfig, working_directory: e.target.value })}
+                placeholder="/var/www/html"
+              />
+              <p className="field-help warning" style={{ color: '#f0ad4e' }}>
+                Enter directory manually. Configure authentication in the previous step to enable
+                file browsing.
+              </p>
+            </>
+          ) : (
+            <>
+              <SSHFilesystemBrowser
+                currentPath={sshConfig.working_directory || '/'}
+                onSelectPath={(path) => setSshConfig({ ...sshConfig, working_directory: path })}
+                sshConfig={sshConfig}
+              />
+              <p className="field-help">
+                Constrain the AI agent to a specific directory. It will not be able to interact with
+                files outside this path.
+              </p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -5510,8 +6289,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
   const renderDescription = () => (
     <div className="wizard-content">
       <p className="wizard-help">
-        Give this tool a name and description. The description is provided to the AI model
-        to help it understand when and how to use this tool.
+        Give this tool a name and description. The description is provided to the AI model to help
+        it understand when and how to use this tool.
       </p>
 
       <div className="form-group">
@@ -5523,7 +6302,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           placeholder="e.g., Production Database, Staging Odoo"
         />
         <p className="field-help">
-          A short, descriptive name for this tool instance. A tool-safe name will be derived from this name.
+          A short, descriptive name for this tool instance. A tool-safe name will be derived from
+          this name.
         </p>
       </div>
 
@@ -5536,8 +6316,8 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
           rows={4}
         />
         <p className="field-help">
-          This description is included in the system prompt to help the AI understand
-          what this tool is for and when to use it. Be specific about the data available.
+          This description is included in the system prompt to help the AI understand what this tool
+          is for and when to use it. Be specific about the data available.
         </p>
       </div>
     </div>
@@ -5545,13 +6325,13 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
   const renderOptions = () => {
     // SQL-based tools need Max Results for query limiting
-    const showMaxResults = ['postgres', 'mysql', 'mssql', 'influxdb', 'solidworks_pdm'].includes(toolType);
+    const showMaxResults = ['postgres', 'mysql', 'mssql', 'influxdb', 'solidworks_pdm'].includes(
+      toolType,
+    );
 
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Configure limits and security options for this tool.
-        </p>
+        <p className="wizard-help">Configure limits and security options for this tool.</p>
 
         <div className="form-row">
           {showMaxResults && (
@@ -5564,9 +6344,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 min={1}
                 max={1000}
               />
-              <p className="field-help">
-                Maximum number of rows/results returned per query.
-              </p>
+              <p className="field-help">Maximum number of rows/results returned per query.</p>
             </div>
           )}
         </div>
@@ -5592,9 +6370,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
                 style={{ width: '100px' }}
               />
             </div>
-            <p className="field-help">
-              Maximum time a tool call can run. Use 0 for no timeout.
-            </p>
+            <p className="field-help">Maximum time a tool call can run. Use 0 for no timeout.</p>
           </div>
         </div>
 
@@ -5623,9 +6399,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
     return (
       <div className="wizard-content">
-        <p className="wizard-help">
-          Review your tool configuration before saving.
-        </p>
+        <p className="wizard-help">Review your tool configuration before saving.</p>
 
         <div className="review-section">
           <h4>Tool Type</h4>
@@ -5651,9 +6425,7 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
 
         <div className="review-section">
           <h4>Connection</h4>
-          <pre className="review-config">
-            {JSON.stringify(getConnectionConfig(), null, 2)}
-          </pre>
+          <pre className="review-config">{JSON.stringify(getConnectionConfig(), null, 2)}</pre>
         </div>
 
         <div className="review-section">
@@ -5729,27 +6501,23 @@ export function ToolWizard({ existingTool, onClose, onSave, defaultToolType, emb
         <button
           type="button"
           className="btn btn-secondary"
-          onClick={getCurrentStepIndex() === 0 || (isEditing && currentStep === 'connection') ? onClose : goToPreviousStep}
+          onClick={
+            getCurrentStepIndex() === 0 || (isEditing && currentStep === 'connection')
+              ? onClose
+              : goToPreviousStep
+          }
         >
-          {getCurrentStepIndex() === 0 || (isEditing && currentStep === 'connection') ? 'Cancel' : 'Back'}
+          {getCurrentStepIndex() === 0 || (isEditing && currentStep === 'connection')
+            ? 'Cancel'
+            : 'Back'}
         </button>
 
         {currentStep === 'review' ? (
-          <button
-            type="button"
-            className="btn"
-            onClick={handleSave}
-            disabled={saving}
-          >
+          <button type="button" className="btn" onClick={handleSave} disabled={saving}>
             {saving ? 'Saving...' : isEditing ? 'Save Changes' : 'Create Tool'}
           </button>
         ) : (
-          <button
-            type="button"
-            className="btn"
-            onClick={goToNextStep}
-            disabled={!canProceed()}
-          >
+          <button type="button" className="btn" onClick={goToNextStep} disabled={!canProceed()}>
             Continue
           </button>
         )}

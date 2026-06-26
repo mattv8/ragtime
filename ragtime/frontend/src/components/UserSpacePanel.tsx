@@ -1,7 +1,57 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AlertCircle, ArrowLeft, ArrowLeftRight, ArrowRight, AtSign, Check, ChevronDown, ChevronRight, CopyPlus, Crown, Database, ExternalLink, File, FolderGit2Icon, HardDrive, HardDriveDownload, HardDriveUpload, History, Info, KeyRound, Link2, Maximize2, Minimize2, Pencil, Play, Plus, RefreshCw, RotateCw, Save, Shield, Square, Terminal, Trash2, Users, X } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowLeftRight,
+  ArrowRight,
+  AtSign,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CopyPlus,
+  Crown,
+  Database,
+  ExternalLink,
+  File,
+  FolderGit2Icon,
+  HardDrive,
+  HardDriveDownload,
+  HardDriveUpload,
+  History,
+  Info,
+  KeyRound,
+  Link2,
+  Maximize2,
+  Minimize2,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  RotateCw,
+  Save,
+  Shield,
+  Square,
+  Terminal,
+  Trash2,
+  Users,
+  X,
+} from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
-import { Decoration, EditorView, keymap, type DecorationSet, type ViewUpdate } from '@codemirror/view';
+import {
+  Decoration,
+  EditorView,
+  keymap,
+  type DecorationSet,
+  type ViewUpdate,
+} from '@codemirror/view';
 import { StateEffect, StateField, type Extension } from '@codemirror/state';
 import { openSearchPanel } from '@codemirror/search';
 
@@ -20,7 +70,11 @@ import {
 } from '@/utils';
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
-import { fetchUserSpaceToolCatalog, resolveDefaultSelectedToolIds, type UserSpaceToolSelection } from '@/utils/userSpaceTools';
+import {
+  fetchUserSpaceToolCatalog,
+  resolveDefaultSelectedToolIds,
+  type UserSpaceToolSelection,
+} from '@/utils/userSpaceTools';
 import { useUserSpaceToolHealthEvents } from '@/utils/useUserSpaceToolHealthEvents';
 import AdminWorkspaceModal from './shared/AdminWorkspaceModal';
 import { AgentAccessButton } from './shared/AgentAccessButton';
@@ -29,9 +83,66 @@ import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
-import { defaultScheduleStartMinute, defaultScheduleTimezone, ScheduleStartTimeInput } from './ScheduleStartTimeInput';
-import type { BrowseResponse, ChatContextReference, CloudOAuthProviderStatus, DirectoryEntry, MountableSource, UpsertUserSpaceWorkspaceEnvVarRequest, UpsertWorkspaceAgentGrantRequest, User, UserCloudOAuthAccount, UserCloudOAuthProvider, UserDirectoryEntry, UserSpaceArtifactType, UserSpaceAvailableTool, UserSpaceBrowserSurface, UserSpaceCollabMessage, UserSpaceCollabPresenceUser, UserSpaceFileInfo, UserSpaceLiveDataConnection, UserSpaceObjectStorageBucket, UserSpaceObjectStorageConfig, UserSpacePreviewWarning, UserSpaceRuntimeStatusResponse, UserSpaceShareAccessMode, UserSpaceSnapshot, UserSpaceSnapshotBranch, UserSpaceSnapshotDiffSummary, UserSpaceSnapshotFileDiff, UserSpaceSnapshotTimeline, UserSpaceWorkspace, UserSpaceWorkspaceCreateTask, UserSpaceWorkspaceCreateTaskPhase, UserSpaceWorkspaceDeleteTask, UserSpaceWorkspaceDeleteTaskPhase, UserSpaceWorkspaceDuplicateTask, UserSpaceWorkspaceDuplicateTaskPhase, UserSpaceWorkspaceEnvVar, UserSpaceWorkspaceMember, UserSpaceWorkspaceShareLinkStatus, UserSpaceWorkspaceScmStatus, UserSpaceWorkspaceScmSyncResponse, UserspaceMountSource, WorkspaceAgentGrant, WorkspaceChatStateResponse, WorkspaceMount, WorkspaceMountSyncMode, WorkspaceMountSyncPreviewResponse, WorkspaceRole } from '@/types';
-import { buildUserSpaceTree, collectFilePaths, getAncestorFolderPaths, listFolderPaths } from '@/utils/userspaceTree';
+import {
+  defaultScheduleStartMinute,
+  defaultScheduleTimezone,
+  ScheduleStartTimeInput,
+} from './ScheduleStartTimeInput';
+import type {
+  BrowseResponse,
+  ChatContextReference,
+  CloudOAuthProviderStatus,
+  DirectoryEntry,
+  MountableSource,
+  UpsertUserSpaceWorkspaceEnvVarRequest,
+  UpsertWorkspaceAgentGrantRequest,
+  User,
+  UserCloudOAuthAccount,
+  UserCloudOAuthProvider,
+  UserDirectoryEntry,
+  UserSpaceArtifactType,
+  UserSpaceAvailableTool,
+  UserSpaceBrowserSurface,
+  UserSpaceCollabMessage,
+  UserSpaceCollabPresenceUser,
+  UserSpaceFileInfo,
+  UserSpaceLiveDataConnection,
+  UserSpaceObjectStorageBucket,
+  UserSpaceObjectStorageConfig,
+  UserSpacePreviewWarning,
+  UserSpaceRuntimeStatusResponse,
+  UserSpaceShareAccessMode,
+  UserSpaceSnapshot,
+  UserSpaceSnapshotBranch,
+  UserSpaceSnapshotDiffSummary,
+  UserSpaceSnapshotFileDiff,
+  UserSpaceSnapshotTimeline,
+  UserSpaceWorkspace,
+  UserSpaceWorkspaceCreateTask,
+  UserSpaceWorkspaceCreateTaskPhase,
+  UserSpaceWorkspaceDeleteTask,
+  UserSpaceWorkspaceDeleteTaskPhase,
+  UserSpaceWorkspaceDuplicateTask,
+  UserSpaceWorkspaceDuplicateTaskPhase,
+  UserSpaceWorkspaceEnvVar,
+  UserSpaceWorkspaceMember,
+  UserSpaceWorkspaceShareLinkStatus,
+  UserSpaceWorkspaceScmStatus,
+  UserSpaceWorkspaceScmSyncResponse,
+  UserspaceMountSource,
+  WorkspaceAgentGrant,
+  WorkspaceChatStateResponse,
+  WorkspaceMount,
+  WorkspaceMountSyncMode,
+  WorkspaceMountSyncPreviewResponse,
+  WorkspaceRole,
+} from '@/types';
+import {
+  buildUserSpaceTree,
+  collectFilePaths,
+  getAncestorFolderPaths,
+  listFolderPaths,
+} from '@/utils/userspaceTree';
 import {
   createBrowserPathDisplayMap,
   mergeBrowserPathDisplayMapFromBrowseResponse,
@@ -42,10 +153,7 @@ import {
   browserPathToWorkspaceMountTargetPath,
   type BrowserPathDisplayMap,
 } from '@/utils/mountPaths';
-import {
-  formatMountSyncInterval,
-  MOUNT_SYNC_DEFAULT_SECONDS,
-} from '@/utils/mountSyncIntervals';
+import { formatMountSyncInterval, MOUNT_SYNC_DEFAULT_SECONDS } from '@/utils/mountSyncIntervals';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
@@ -162,7 +270,9 @@ function isWorkspaceDuplicateTaskTerminal(phase: UserSpaceWorkspaceDuplicateTask
   return phase === 'completed' || phase === 'failed';
 }
 
-function formatWorkspaceDuplicateTaskStatus(task: UserSpaceWorkspaceDuplicateTask | null): string | null {
+function formatWorkspaceDuplicateTaskStatus(
+  task: UserSpaceWorkspaceDuplicateTask | null,
+): string | null {
   if (!task) {
     return null;
   }
@@ -184,7 +294,9 @@ function formatWorkspaceDuplicateTaskStatus(task: UserSpaceWorkspaceDuplicateTas
   }
 }
 
-function formatWorkspaceDuplicateTasksStatus(tasks: UserSpaceWorkspaceDuplicateTask[]): string | null {
+function formatWorkspaceDuplicateTasksStatus(
+  tasks: UserSpaceWorkspaceDuplicateTask[],
+): string | null {
   if (tasks.length === 0) {
     return null;
   }
@@ -239,10 +351,16 @@ function formatWorkspaceDeleteTasksStatus(tasks: UserSpaceWorkspaceDeleteTask[])
 }
 
 function normalizeWorkspacePath(value: string): string {
-  return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+  return value
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\/+/g, '/');
 }
 
-function normalizeWorkspaceFileListPath(value: string, workspaceId: string | null | undefined): string {
+function normalizeWorkspaceFileListPath(
+  value: string,
+  workspaceId: string | null | undefined,
+): string {
   const normalized = normalizeWorkspacePath(value);
   if (!normalized) return '';
   if (normalized === 'workspace') return '';
@@ -270,7 +388,10 @@ function normalizeWorkspaceFileListPath(value: string, workspaceId: string | nul
   return normalized;
 }
 
-function normalizeWorkspaceFileListEntries(entries: UserSpaceFileInfo[], workspaceId: string | null | undefined): UserSpaceFileInfo[] {
+function normalizeWorkspaceFileListEntries(
+  entries: UserSpaceFileInfo[],
+  workspaceId: string | null | undefined,
+): UserSpaceFileInfo[] {
   return entries
     .map((entry) => ({
       ...entry,
@@ -285,25 +406,25 @@ const WORKSPACE_MOUNT_SYNC_MODE_OPTIONS: Array<{
   icon: typeof ArrowRight;
   description: string;
 }> = [
-    {
-      value: 'merge',
-      label: 'Merge',
-      icon: ArrowLeftRight,
-      description: 'Bidirectional merge. Newer files win and nothing is deleted.',
-    },
-    {
-      value: 'source_authoritative',
-      label: 'Source',
-      icon: ArrowRight,
-      description: 'Remote source is authoritative. Target-only files are deleted on sync.',
-    },
-    {
-      value: 'target_authoritative',
-      label: 'Target',
-      icon: ArrowLeft,
-      description: 'Workspace target is authoritative. Source-only files are deleted on sync.',
-    },
-  ];
+  {
+    value: 'merge',
+    label: 'Merge',
+    icon: ArrowLeftRight,
+    description: 'Bidirectional merge. Newer files win and nothing is deleted.',
+  },
+  {
+    value: 'source_authoritative',
+    label: 'Source',
+    icon: ArrowRight,
+    description: 'Remote source is authoritative. Target-only files are deleted on sync.',
+  },
+  {
+    value: 'target_authoritative',
+    label: 'Target',
+    icon: ArrowLeft,
+    description: 'Workspace target is authoritative. Source-only files are deleted on sync.',
+  },
+];
 
 function isDestructiveMountSyncMode(syncMode: WorkspaceMountSyncMode): boolean {
   return syncMode !== 'merge';
@@ -314,16 +435,23 @@ function isWorkspaceMountSyncCapableSourceType(sourceType?: string | null): bool
 }
 
 function getMountSyncModeLabel(syncMode: WorkspaceMountSyncMode): string {
-  return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.label ?? 'Merge';
+  return (
+    WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.label ?? 'Merge'
+  );
 }
 
 function getMountSyncModeIcon(syncMode: WorkspaceMountSyncMode): typeof ArrowRight {
-  return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.icon ?? ArrowLeftRight;
+  return (
+    WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.icon ??
+    ArrowLeftRight
+  );
 }
 
 function getMountSyncModeDescription(syncMode: WorkspaceMountSyncMode): string {
-  return WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.description
-    ?? WORKSPACE_MOUNT_SYNC_MODE_OPTIONS[0].description;
+  return (
+    WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.find((option) => option.value === syncMode)?.description ??
+    WORKSPACE_MOUNT_SYNC_MODE_OPTIONS[0].description
+  );
 }
 
 const WORKSPACE_MOUNT_INTERVAL_OPTIONS = [5, 15, 30, 60, 300, 900, 3600, 86400];
@@ -335,13 +463,21 @@ function mountIntervalSelectValue(seconds: number | null | undefined): string {
 }
 
 function getMountIntervalLabel(seconds: number | null | undefined): string {
-  return seconds == null ? `Default (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})` : `Every ${formatMountSyncInterval(seconds)}`;
+  return seconds == null
+    ? `Default (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})`
+    : `Every ${formatMountSyncInterval(seconds)}`;
 }
 
-function formatMountSyncProgress(mount: Pick<WorkspaceMount, 'sync_progress_files_done' | 'sync_progress_files_total' | 'sync_progress_message'>): string {
+function formatMountSyncProgress(
+  mount: Pick<
+    WorkspaceMount,
+    'sync_progress_files_done' | 'sync_progress_files_total' | 'sync_progress_message'
+  >,
+): string {
   const done = Math.max(0, mount.sync_progress_files_done ?? 0);
   const total = mount.sync_progress_files_total;
-  const countText = typeof total === 'number' && total > 0 ? `${done}/${total}` : done > 0 ? `${done}` : '';
+  const countText =
+    typeof total === 'number' && total > 0 ? `${done}/${total}` : done > 0 ? `${done}` : '';
   const message = mount.sync_progress_message?.trim();
   if (message && countText) return `${message} (${countText})`;
   if (message) return message;
@@ -356,7 +492,10 @@ function formatMountSyncPreviewPath(path: string): string {
 function isMountBrowserPathEqualOrDescendant(path: string, candidateAncestorPath: string): boolean {
   const normalizedPath = normalizeMountBrowserPath(path);
   const normalizedAncestorPath = normalizeMountBrowserPath(candidateAncestorPath);
-  return normalizedPath === normalizedAncestorPath || normalizedPath.startsWith(`${normalizedAncestorPath}/`);
+  return (
+    normalizedPath === normalizedAncestorPath ||
+    normalizedPath.startsWith(`${normalizedAncestorPath}/`)
+  );
 }
 
 function resolveMountDirectoryToCreate(
@@ -370,12 +509,16 @@ function resolveMountDirectoryToCreate(
 
   const normalizedSelectedPath = normalizeMountBrowserPath(selectedBrowserPath);
   const requiresCreation = stagedBrowserPaths.some((stagedPath) =>
-    isMountBrowserPathEqualOrDescendant(normalizedSelectedPath, stagedPath)
+    isMountBrowserPathEqualOrDescendant(normalizedSelectedPath, stagedPath),
   );
   return requiresCreation ? toRequestPath(normalizedSelectedPath) : null;
 }
 
-function getMountSourceBrowserStageKey(sourceScope: 'global' | 'user', mountSourceId: string, rootSourcePath: string): string {
+function getMountSourceBrowserStageKey(
+  sourceScope: 'global' | 'user',
+  mountSourceId: string,
+  rootSourcePath: string,
+): string {
   return `${sourceScope}::${mountSourceId}::${rootSourcePath}`;
 }
 
@@ -394,7 +537,10 @@ function fileEntriesFingerprint(entries: UserSpaceFileInfo[]): string {
  */
 const LAST_WORKSPACE_COOKIE_PREFIX = 'userspace_last_workspace_id_';
 const LAST_WORKSPACE_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
-const CLOUD_MOUNT_PROVIDERS: readonly UserCloudOAuthProvider[] = ['microsoft_drive', 'google_drive'];
+const CLOUD_MOUNT_PROVIDERS: readonly UserCloudOAuthProvider[] = [
+  'microsoft_drive',
+  'google_drive',
+];
 
 function isCloudMountProvider(value: string | null | undefined): value is UserCloudOAuthProvider {
   return value === 'microsoft_drive' || value === 'google_drive';
@@ -429,7 +575,9 @@ const SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES = 20;
 
 const setContextLineHighlightEffect = StateEffect.define<Array<{ from: number }>>();
 const clearContextLineHighlightEffect = StateEffect.define<null>();
-const contextLineHighlightDecoration = Decoration.line({ class: 'userspace-context-highlight-line' });
+const contextLineHighlightDecoration = Decoration.line({
+  class: 'userspace-context-highlight-line',
+});
 
 const contextLineHighlightField = StateField.define<DecorationSet>({
   create() {
@@ -439,7 +587,9 @@ const contextLineHighlightField = StateField.define<DecorationSet>({
     let decorations = value.map(transaction.changes);
     for (const effect of transaction.effects) {
       if (effect.is(setContextLineHighlightEffect)) {
-        decorations = Decoration.set(effect.value.map(({ from }) => contextLineHighlightDecoration.range(from)));
+        decorations = Decoration.set(
+          effect.value.map(({ from }) => contextLineHighlightDecoration.range(from)),
+        );
       } else if (effect.is(clearContextLineHighlightEffect)) {
         decorations = Decoration.none;
       }
@@ -449,8 +599,12 @@ const contextLineHighlightField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
-function buildChatContextReferenceId(reference: Pick<ChatContextReference, 'path' | 'startLine' | 'endLine' | 'source'>): string {
-  const range = reference.startLine ? `${reference.startLine}-${reference.endLine ?? reference.startLine}` : 'file';
+function buildChatContextReferenceId(
+  reference: Pick<ChatContextReference, 'path' | 'startLine' | 'endLine' | 'source'>,
+): string {
+  const range = reference.startLine
+    ? `${reference.startLine}-${reference.endLine ?? reference.startLine}`
+    : 'file';
   return `${reference.source}:${reference.path}:${range}`;
 }
 
@@ -574,7 +728,8 @@ function readStoredUserSpaceLayout(cookieName: string): StoredUserSpaceLayout | 
       leftPaneFraction: typeof parsed.leftPaneFraction === 'number' ? parsed.leftPaneFraction : 0.5,
       rightPaneCollapsed: Boolean(parsed.rightPaneCollapsed),
       editorFraction: typeof parsed.editorFraction === 'number' ? parsed.editorFraction : 0.6,
-      editorChatCollapsedSide: collapsedSide === 'before' || collapsedSide === 'after' ? collapsedSide : null,
+      editorChatCollapsedSide:
+        collapsedSide === 'before' || collapsedSide === 'after' ? collapsedSide : null,
     };
   } catch {
     return null;
@@ -646,8 +801,10 @@ function getUnsupportedEditorFileMessage(error: unknown): string | null {
     return null;
   }
 
-  return formatUserSpaceErrorMessage(error.detail ?? error.message)
-    ?? 'This file cannot be opened in the text editor.';
+  return (
+    formatUserSpaceErrorMessage(error.detail ?? error.message) ??
+    'This file cannot be opened in the text editor.'
+  );
 }
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
@@ -662,14 +819,16 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
 
 function sortWorkspaceAgentGrants(grants: WorkspaceAgentGrant[]): WorkspaceAgentGrant[] {
   return [...grants].sort((left, right) => {
-    const leftLabel = left.target_workspace_name?.trim()
-      || left.target_workspace_id
-      || left.source_workspace_name?.trim()
-      || left.source_workspace_id;
-    const rightLabel = right.target_workspace_name?.trim()
-      || right.target_workspace_id
-      || right.source_workspace_name?.trim()
-      || right.source_workspace_id;
+    const leftLabel =
+      left.target_workspace_name?.trim() ||
+      left.target_workspace_id ||
+      left.source_workspace_name?.trim() ||
+      left.source_workspace_id;
+    const rightLabel =
+      right.target_workspace_name?.trim() ||
+      right.target_workspace_id ||
+      right.source_workspace_name?.trim() ||
+      right.source_workspace_id;
     return leftLabel.localeCompare(rightLabel);
   });
 }
@@ -685,7 +844,14 @@ function canEditUserSpaceWorkspace(workspace: UserSpaceWorkspace, user: User): b
   return role === 'owner' || role === 'editor';
 }
 
-export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRequest = null, onFullscreenChange, onNavigateToTools, onPreviewWarningChange }: UserSpacePanelProps) {
+export function UserSpacePanel({
+  currentUser,
+  debugMode = false,
+  openWorkspaceRequest = null,
+  onFullscreenChange,
+  onNavigateToTools,
+  onPreviewWarningChange,
+}: UserSpacePanelProps) {
   const [toasts, toast] = useToast();
   const previewEntryPath = 'dashboard/main.ts';
   const [workspaces, setWorkspaces] = useState<UserSpaceWorkspace[]>([]);
@@ -700,9 +866,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
-  const [activeWorkspaceConversationId, setActiveWorkspaceConversationId] = useState<string | null>(null);
-  const [activeWorkspaceChatSnapshot, setActiveWorkspaceChatSnapshot] = useState<WorkspaceChatStateResponse | null>(null);
-  const [workspaceChatStates, setWorkspaceChatStates] = useState<Record<string, WorkspaceChatState>>({});
+  const [activeWorkspaceConversationId, setActiveWorkspaceConversationId] = useState<string | null>(
+    null,
+  );
+  const [activeWorkspaceChatSnapshot, setActiveWorkspaceChatSnapshot] =
+    useState<WorkspaceChatStateResponse | null>(null);
+  const [workspaceChatStates, setWorkspaceChatStates] = useState<
+    Record<string, WorkspaceChatState>
+  >({});
   const [fileBrowserEntries, setFileBrowserEntries] = useState<UserSpaceFileInfo[]>([]);
   const [files, setFiles] = useState<UserSpaceFileInfo[]>([]);
   const [snapshots, setSnapshots] = useState<UserSpaceSnapshot[]>([]);
@@ -729,17 +900,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [selectedFilePath, setSelectedFilePath] = useState<string>('dashboard/main.ts');
   const [fileContent, setFileContent] = useState<string>('');
   const [fileDirty, setFileDirty] = useState(false);
-  const [selectedFileArtifactType, setSelectedFileArtifactType] = useState<UserSpaceArtifactType | null>(null);
+  const [selectedFileArtifactType, setSelectedFileArtifactType] =
+    useState<UserSpaceArtifactType | null>(null);
   const [fileContentCache, setFileContentCache] = useState<Record<string, CachedUserSpaceFile>>({});
-  const [selectedFileUnsupportedMessage, setSelectedFileUnsupportedMessage] = useState<string | null>(null);
-  const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<UserSpaceLiveDataConnection[]>([]);
+  const [selectedFileUnsupportedMessage, setSelectedFileUnsupportedMessage] = useState<
+    string | null
+  >(null);
+  const [previewLiveDataConnections, setPreviewLiveDataConnections] = useState<
+    UserSpaceLiveDataConnection[]
+  >([]);
   const [previewExecuting, setPreviewExecuting] = useState(false);
   const [previewNetworkActivity, setPreviewNetworkActivity] = useState(false);
   const [previewRefreshCounter, setPreviewRefreshCounter] = useState(0);
   const lastPreviewSessionExpiredRefreshRef = useRef<number>(0);
   const lastLiveDataTimeoutToastRef = useRef<string>('');
   const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null);
-  const [chatContextReferencePaths, setChatContextReferencePaths] = useState<Set<string>>(new Set());
+  const [chatContextReferencePaths, setChatContextReferencePaths] = useState<Set<string>>(
+    new Set(),
+  );
   const [previewOrigin, setPreviewOrigin] = useState<string | null>(null);
   const [previewAuthorizationPending, setPreviewAuthorizationPending] = useState(false);
   const [previewNotice, setPreviewNotice] = useState<{
@@ -763,19 +941,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const activeSelectionResetTimerRef = useRef<number | null>(null);
   // The chat composer registers its caret-inserter here so editor selections
   // and file actions can weave reference chips into the message in place.
-  const insertContextReferenceRef = useRef<((reference: ChatContextReference) => void) | null>(null);
+  const insertContextReferenceRef = useRef<((reference: ChatContextReference) => void) | null>(
+    null,
+  );
   const [collabReconnectNonce, setCollabReconnectNonce] = useState(0);
   const [workspaceEventsReconnectNonce, setWorkspaceEventsReconnectNonce] = useState(0);
   const [terminalReadOnly, setTerminalReadOnly] = useState(false);
   const [terminalReconnectNonce, setTerminalReconnectNonce] = useState(0);
   const [isPageVisible, setIsPageVisible] = useState(
-    typeof document === 'undefined' ? true : document.visibilityState !== 'hidden'
+    typeof document === 'undefined' ? true : document.visibilityState !== 'hidden',
   );
-  const [creatingWorkspaceTasks, setCreatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceCreateTask>>({});
+  const [creatingWorkspaceTasks, setCreatingWorkspaceTasks] = useState<
+    Record<string, UserSpaceWorkspaceCreateTask>
+  >({});
   const creatingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceCreateTask>>({});
-  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDeleteTask>>({});
+  const [deletingWorkspaceTasks, setDeletingWorkspaceTasks] = useState<
+    Record<string, UserSpaceWorkspaceDeleteTask>
+  >({});
   const deletingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDeleteTask>>({});
-  const [duplicatingWorkspaceTasks, setDuplicatingWorkspaceTasks] = useState<Record<string, UserSpaceWorkspaceDuplicateTask>>({});
+  const [duplicatingWorkspaceTasks, setDuplicatingWorkspaceTasks] = useState<
+    Record<string, UserSpaceWorkspaceDuplicateTask>
+  >({});
   const duplicatingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDuplicateTask>>({});
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
@@ -783,7 +969,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLinks, setShareLinks] = useState<UserSpaceWorkspaceShareLinkStatus[]>([]);
   const [selectedShareId, setSelectedShareId] = useState<string | null>(null);
-  const [shareLinkStatus, setShareLinkStatus] = useState<UserSpaceWorkspaceShareLinkStatus | null>(null);
+  const [shareLinkStatus, setShareLinkStatus] = useState<UserSpaceWorkspaceShareLinkStatus | null>(
+    null,
+  );
   const [loadingShareStatus, setLoadingShareStatus] = useState(false);
   const [rotatingShareLink, setRotatingShareLink] = useState(false);
   const [revokingShareLink, setRevokingShareLink] = useState(false);
@@ -797,7 +985,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [shareSelectedUserIdsDraft, setShareSelectedUserIdsDraft] = useState<string[]>([]);
   const [shareSelectedLdapGroupsDraft, setShareSelectedLdapGroupsDraft] = useState<string[]>([]);
   const [shareLdapGroupDraft, setShareLdapGroupDraft] = useState('');
-  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>([]);
+  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>(
+    [],
+  );
   const [loadingLdapGroups, setLoadingLdapGroups] = useState(false);
   const [savingShareAccess, setSavingShareAccess] = useState(false);
   const [savingShareLabel, setSavingShareLabel] = useState(false);
@@ -828,7 +1018,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [deleteConfirmWorkspaceId, setDeleteConfirmWorkspaceId] = useState<string | null>(null);
   const [isWorkspaceMenuOpen, setIsWorkspaceMenuOpen] = useState(false);
-  const [workspaceDropdownPosition, setWorkspaceDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const [workspaceDropdownPosition, setWorkspaceDropdownPosition] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const [workspacePickerSearch, setWorkspacePickerSearch] = useState('');
   const workspacePickerSearchInputRef = useRef<HTMLInputElement>(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
@@ -845,11 +1038,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [showEnvVarsModal, setShowEnvVarsModal] = useState(false);
   const [envVars, setEnvVars] = useState<UserSpaceWorkspaceEnvVar[]>([]);
   const [envVarsLoading, setEnvVarsLoading] = useState(false);
-  const [objectStorageConfig, setObjectStorageConfig] = useState<UserSpaceObjectStorageConfig | null>(null);
+  const [objectStorageConfig, setObjectStorageConfig] =
+    useState<UserSpaceObjectStorageConfig | null>(null);
   const [objectStorageLoading, setObjectStorageLoading] = useState(false);
   const [showObjectStorageWizard, setShowObjectStorageWizard] = useState(false);
-  const [editingObjectStorageBucket, setEditingObjectStorageBucket] = useState<UserSpaceObjectStorageBucket | null>(null);
-  const [deletingObjectStorageBucket, setDeletingObjectStorageBucket] = useState<string | null>(null);
+  const [editingObjectStorageBucket, setEditingObjectStorageBucket] =
+    useState<UserSpaceObjectStorageBucket | null>(null);
+  const [deletingObjectStorageBucket, setDeletingObjectStorageBucket] = useState<string | null>(
+    null,
+  );
   const [savingEnvVar, setSavingEnvVar] = useState(false);
   const [showMountsModal, setShowMountsModal] = useState(false);
   const [mountsModalTab, setMountsModalTab] = useState<'mounts' | 'object-storage'>('mounts');
@@ -857,11 +1054,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [mounts, setMounts] = useState<WorkspaceMount[]>([]);
   const [mountsLoading, setMountsLoading] = useState(false);
   const [mountableSources, setMountableSources] = useState<MountableSource[]>([]);
-  const [cloudProviderStatuses, setCloudProviderStatuses] = useState<CloudOAuthProviderStatus[]>([]);
+  const [cloudProviderStatuses, setCloudProviderStatuses] = useState<CloudOAuthProviderStatus[]>(
+    [],
+  );
   const [cloudOAuthAccounts, setCloudOAuthAccounts] = useState<UserCloudOAuthAccount[]>([]);
   const [personalMountSources, setPersonalMountSources] = useState<UserspaceMountSource[]>([]);
-  const [globalCloudMountSources, setGlobalCloudMountSources] = useState<UserspaceMountSource[]>([]);
-  const [savingCloudProvider, setSavingCloudProvider] = useState<UserCloudOAuthProvider | null>(null);
+  const [globalCloudMountSources, setGlobalCloudMountSources] = useState<UserspaceMountSource[]>(
+    [],
+  );
+  const [savingCloudProvider, setSavingCloudProvider] = useState<UserCloudOAuthProvider | null>(
+    null,
+  );
   const [deletingCloudAccountId, setDeletingCloudAccountId] = useState<string | null>(null);
   const [createMountSourceId, setCreateMountSourceId] = useState('');
   const [createMountSourceScope, setCreateMountSourceScope] = useState<'global' | 'user'>('global');
@@ -870,27 +1073,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [createMountBrowserPath, setCreateMountBrowserPath] = useState('');
   const [createMountTargetBrowserPath, setCreateMountTargetBrowserPath] = useState('');
   const [createMountTargetPath, setCreateMountTargetPath] = useState('');
-  const [createMountStagedSourceDirectories, setCreateMountStagedSourceDirectories] = useState<Record<string, string[]>>({});
-  const [createMountStagedTargetDirectories, setCreateMountStagedTargetDirectories] = useState<string[]>([]);
+  const [createMountStagedSourceDirectories, setCreateMountStagedSourceDirectories] = useState<
+    Record<string, string[]>
+  >({});
+  const [createMountStagedTargetDirectories, setCreateMountStagedTargetDirectories] = useState<
+    string[]
+  >([]);
   const [createMountDescription, setCreateMountDescription] = useState('');
   const [createMountSyncMode, setCreateMountSyncMode] = useState<WorkspaceMountSyncMode>('merge');
-  const [createMountSyncIntervalSeconds, setCreateMountSyncIntervalSeconds] = useState<number | null>(null);
+  const [createMountSyncIntervalSeconds, setCreateMountSyncIntervalSeconds] = useState<
+    number | null
+  >(null);
   const [createMountSyncStartMinute, setCreateMountSyncStartMinute] = useState<number | null>(null);
   const [createMountSyncTimezone, setCreateMountSyncTimezone] = useState<string | null>(null);
   const [createMountActiveSourceTab, setCreateMountActiveSourceTab] = useState('');
-  const [createMountBrowserPathDisplayMap, setCreateMountBrowserPathDisplayMap] = useState<BrowserPathDisplayMap>(createBrowserPathDisplayMap());
+  const [createMountBrowserPathDisplayMap, setCreateMountBrowserPathDisplayMap] =
+    useState<BrowserPathDisplayMap>(createBrowserPathDisplayMap());
   const [savingMount, setSavingMount] = useState(false);
   const [deletingMountId, setDeletingMountId] = useState<string | null>(null);
 
   const [syncingMountId, setSyncingMountId] = useState<string | null>(null);
   const [previewingMountId, setPreviewingMountId] = useState<string | null>(null);
-  const [mountSyncPreview, setMountSyncPreview] = useState<WorkspaceMountSyncPreviewResponse | null>(null);
+  const [mountSyncPreview, setMountSyncPreview] =
+    useState<WorkspaceMountSyncPreviewResponse | null>(null);
   const [mountSyncPreviewMount, setMountSyncPreviewMount] = useState<WorkspaceMount | null>(null);
-  const [mountSyncPreviewIntent, setMountSyncPreviewIntent] = useState<MountSyncPreviewIntent | null>(null);
-  const [mountSyncPreviewNextSyncMode, setMountSyncPreviewNextSyncMode] = useState<WorkspaceMountSyncMode | null>(null);
-  const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<{ id: string | null; mode: 'hover' | 'pinned' } | null>(null);
-  const [expandedMountIntervalMenuId, setExpandedMountIntervalMenuId] = useState<string | null>(null);
-  const [mountIntervalMenuRect, setMountIntervalMenuRect] = useState<{ top: number; left: number } | null>(null);
+  const [mountSyncPreviewIntent, setMountSyncPreviewIntent] =
+    useState<MountSyncPreviewIntent | null>(null);
+  const [mountSyncPreviewNextSyncMode, setMountSyncPreviewNextSyncMode] =
+    useState<WorkspaceMountSyncMode | null>(null);
+  const [expandedSyncModeInfo, setExpandedSyncModeInfo] = useState<{
+    id: string | null;
+    mode: 'hover' | 'pinned';
+  } | null>(null);
+  const [expandedMountIntervalMenuId, setExpandedMountIntervalMenuId] = useState<string | null>(
+    null,
+  );
+  const [mountIntervalMenuRect, setMountIntervalMenuRect] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   const [savingMountWatchId, setSavingMountWatchId] = useState<string | null>(null);
   const [savingMountIntervalId, setSavingMountIntervalId] = useState<string | null>(null);
   const [editingMountDescriptionId, setEditingMountDescriptionId] = useState<string | null>(null);
@@ -899,26 +1120,37 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [showStaleBranches, setShowStaleBranches] = useState(false);
-  const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(null);
+  const [snapshotsLoadedForWorkspace, setSnapshotsLoadedForWorkspace] = useState<string | null>(
+    null,
+  );
   const [expandedSnapshotIds, setExpandedSnapshotIds] = useState<Set<string>>(new Set());
-  const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<Record<string, UserSpaceSnapshotDiffSummary>>({});
+  const [snapshotDiffSummaries, setSnapshotDiffSummaries] = useState<
+    Record<string, UserSpaceSnapshotDiffSummary>
+  >({});
   const snapshotDiffSummariesRef = useRef(snapshotDiffSummaries);
   snapshotDiffSummariesRef.current = snapshotDiffSummaries;
 
-  const {
-    refresh: refreshAvailableModels,
-    awaitReady: awaitAvailableModelsReady,
-  } = useAvailableModels();
-  const [loadingSnapshotDiffSummaryIds, setLoadingSnapshotDiffSummaryIds] = useState<Record<string, boolean>>({});
-  const [snapshotDiffSummaryErrors, setSnapshotDiffSummaryErrors] = useState<Record<string, string>>({});
+  const { refresh: refreshAvailableModels, awaitReady: awaitAvailableModelsReady } =
+    useAvailableModels();
+  const [loadingSnapshotDiffSummaryIds, setLoadingSnapshotDiffSummaryIds] = useState<
+    Record<string, boolean>
+  >({});
+  const [snapshotDiffSummaryErrors, setSnapshotDiffSummaryErrors] = useState<
+    Record<string, string>
+  >({});
   const snapshotFileDiffCacheRef = useRef<Map<string, UserSpaceSnapshotFileDiff>>(new Map());
-  const [activeSnapshotFileDiff, setActiveSnapshotFileDiff] = useState<UserSpaceSnapshotFileDiff | null>(null);
+  const [activeSnapshotFileDiff, setActiveSnapshotFileDiff] =
+    useState<UserSpaceSnapshotFileDiff | null>(null);
   const [activeSnapshotFileDiffKey, setActiveSnapshotFileDiffKey] = useState<string | null>(null);
   const [activeSnapshotFileDiffLoading, setActiveSnapshotFileDiffLoading] = useState(false);
-  const [activeSnapshotFileDiffError, setActiveSnapshotFileDiffError] = useState<string | null>(null);
+  const [activeSnapshotFileDiffError, setActiveSnapshotFileDiffError] = useState<string | null>(
+    null,
+  );
   const [activeSnapshotFileDiffTitle, setActiveSnapshotFileDiffTitle] = useState('Snapshot Diff');
-  const [activeSnapshotFileDiffBeforeLabel, setActiveSnapshotFileDiffBeforeLabel] = useState('Snapshot');
-  const [activeSnapshotFileDiffAfterLabel, setActiveSnapshotFileDiffAfterLabel] = useState('Current Workspace');
+  const [activeSnapshotFileDiffBeforeLabel, setActiveSnapshotFileDiffBeforeLabel] =
+    useState('Snapshot');
+  const [activeSnapshotFileDiffAfterLabel, setActiveSnapshotFileDiffAfterLabel] =
+    useState('Current Workspace');
 
   const toolPickerRef = useRef<HTMLDivElement>(null);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
@@ -962,9 +1194,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
   const workspacesRef = useRef(workspaces);
   const lastWorkspaceCookieNameRef = useRef('');
-  const lastWorkspaceCookieName = useMemo(() => getLastWorkspaceCookieName(currentUser.id), [currentUser.id]);
-  const userSpaceLayoutCookieName = useMemo(() => getUserSpaceLayoutCookieName(currentUser.id), [currentUser.id]);
-  const userSpaceFullscreenCookieName = useMemo(() => getUserSpaceFullscreenCookieName(currentUser.id), [currentUser.id]);
+  const lastWorkspaceCookieName = useMemo(
+    () => getLastWorkspaceCookieName(currentUser.id),
+    [currentUser.id],
+  );
+  const userSpaceLayoutCookieName = useMemo(
+    () => getUserSpaceLayoutCookieName(currentUser.id),
+    [currentUser.id],
+  );
+  const userSpaceFullscreenCookieName = useMemo(
+    () => getUserSpaceFullscreenCookieName(currentUser.id),
+    [currentUser.id],
+  );
 
   useEffect(() => {
     if (!expandedMountIntervalMenuId) {
@@ -976,79 +1217,89 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [expandedMountIntervalMenuId, mounts]);
 
-  const authorizeBrowserSurfaces = useCallback(async (
-    workspaceId: string,
-    surfaces: UserSpaceBrowserSurface[],
-    options?: { force?: boolean },
-  ) => {
-    const force = options?.force === true;
-    const uniqueSurfaces = Array.from(new Set(surfaces));
-    const now = Date.now();
-    const surfacesToAuthorize = force
-      ? uniqueSurfaces
-      : uniqueSurfaces.filter((surface) => {
-        const expiresAtMs = browserSurfaceAuthExpiryRef.current[surface] ?? 0;
-        return expiresAtMs <= (now + USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS);
-      });
+  const authorizeBrowserSurfaces = useCallback(
+    async (
+      workspaceId: string,
+      surfaces: UserSpaceBrowserSurface[],
+      options?: { force?: boolean },
+    ) => {
+      const force = options?.force === true;
+      const uniqueSurfaces = Array.from(new Set(surfaces));
+      const now = Date.now();
+      const surfacesToAuthorize = force
+        ? uniqueSurfaces
+        : uniqueSurfaces.filter((surface) => {
+            const expiresAtMs = browserSurfaceAuthExpiryRef.current[surface] ?? 0;
+            return expiresAtMs <= now + USERSPACE_BROWSER_AUTH_REFRESH_LEAD_MS;
+          });
 
-    if (surfacesToAuthorize.length === 0) {
-      return;
-    }
-
-    const response = await api.authorizeUserSpaceBrowserSurfaces(workspaceId, surfacesToAuthorize);
-    for (const authorization of response.authorizations) {
-      browserSurfaceAuthExpiryRef.current[authorization.surface] = parseUtcTimestampMs(authorization.expires_at);
-    }
-  }, []);
-
-  const launchPreviewSurface = useCallback(async (
-    workspaceId: string,
-    options?: { clearOnError?: boolean; updateFrameUrl?: boolean },
-  ): Promise<string> => {
-    const requestId = ++previewLaunchRequestIdRef.current;
-    const clearOnError = options?.clearOnError !== false;
-    // updateFrameUrl=false is used by routine session-warming refreshes so we
-    // mint a fresh bootstrap grant (preview cookie) without changing the
-    // iframe `src`/key, which would remount the iframe and destroy any
-    // in-flight live-data executions inside the running workspace app.
-    const updateFrameUrl = options?.updateFrameUrl !== false;
-    const isCurrentRequest = () => (
-      requestId === previewLaunchRequestIdRef.current
-      && activeWorkspaceIdRef.current === workspaceId
-    );
-
-    if (isCurrentRequest() && updateFrameUrl) {
-      setPreviewAuthorizationPending(true);
-    }
-
-    try {
-      const response = await api.launchUserSpacePreview(workspaceId, {
-        path: '/',
-        parent_origin: window.location.origin,
-      });
-      if (!isCurrentRequest()) {
-        return '';
+      if (surfacesToAuthorize.length === 0) {
+        return;
       }
-      previewLaunchExpiresAtMsRef.current = parseUtcTimestampMs(response.expires_at);
-      if (updateFrameUrl) {
-        setPreviewFrameUrl(response.preview_url);
-        setPreviewOrigin(response.preview_origin);
+
+      const response = await api.authorizeUserSpaceBrowserSurfaces(
+        workspaceId,
+        surfacesToAuthorize,
+      );
+      for (const authorization of response.authorizations) {
+        browserSurfaceAuthExpiryRef.current[authorization.surface] = parseUtcTimestampMs(
+          authorization.expires_at,
+        );
       }
-      onPreviewWarningChange?.(response.preview_warning ?? null);
-      return response.preview_url;
-    } catch (err) {
-      previewLaunchExpiresAtMsRef.current = 0;
-      if (clearOnError && updateFrameUrl && isCurrentRequest()) {
-        setPreviewFrameUrl(null);
-        setPreviewOrigin(null);
-      }
-      throw err;
-    } finally {
+    },
+    [],
+  );
+
+  const launchPreviewSurface = useCallback(
+    async (
+      workspaceId: string,
+      options?: { clearOnError?: boolean; updateFrameUrl?: boolean },
+    ): Promise<string> => {
+      const requestId = ++previewLaunchRequestIdRef.current;
+      const clearOnError = options?.clearOnError !== false;
+      // updateFrameUrl=false is used by routine session-warming refreshes so we
+      // mint a fresh bootstrap grant (preview cookie) without changing the
+      // iframe `src`/key, which would remount the iframe and destroy any
+      // in-flight live-data executions inside the running workspace app.
+      const updateFrameUrl = options?.updateFrameUrl !== false;
+      const isCurrentRequest = () =>
+        requestId === previewLaunchRequestIdRef.current &&
+        activeWorkspaceIdRef.current === workspaceId;
+
       if (isCurrentRequest() && updateFrameUrl) {
-        setPreviewAuthorizationPending(false);
+        setPreviewAuthorizationPending(true);
       }
-    }
-  }, [onPreviewWarningChange]);
+
+      try {
+        const response = await api.launchUserSpacePreview(workspaceId, {
+          path: '/',
+          parent_origin: window.location.origin,
+        });
+        if (!isCurrentRequest()) {
+          return '';
+        }
+        previewLaunchExpiresAtMsRef.current = parseUtcTimestampMs(response.expires_at);
+        if (updateFrameUrl) {
+          setPreviewFrameUrl(response.preview_url);
+          setPreviewOrigin(response.preview_origin);
+        }
+        onPreviewWarningChange?.(response.preview_warning ?? null);
+        return response.preview_url;
+      } catch (err) {
+        previewLaunchExpiresAtMsRef.current = 0;
+        if (clearOnError && updateFrameUrl && isCurrentRequest()) {
+          setPreviewFrameUrl(null);
+          setPreviewOrigin(null);
+        }
+        throw err;
+      } finally {
+        if (isCurrentRequest() && updateFrameUrl) {
+          setPreviewAuthorizationPending(false);
+        }
+      }
+    },
+    [onPreviewWarningChange],
+  );
 
   const handleSelectPreviewTab = useCallback(() => {
     if (activeRightTab === 'preview') {
@@ -1111,7 +1362,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false);
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
-  const [editorChatCollapsedSide, setEditorChatCollapsedSide] = useState<'before' | 'after' | null>(null);
+  const [editorChatCollapsedSide, setEditorChatCollapsedSide] = useState<'before' | 'after' | null>(
+    null,
+  );
   const prevSidebarWidth = useRef(180);
   const prevLeftPaneFraction = useRef(0.5);
   const prevEditorFraction = useRef(0.6);
@@ -1180,11 +1433,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
 
     leftPaneFractionLiveRef.current = next;
-    el.style.gridTemplateColumns = next === 1
-      ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
-      : next === 0
-        ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
-        : `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
+    el.style.gridTemplateColumns =
+      next === 1
+        ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
+        : next === 0
+          ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
+          : `minmax(0, ${next}fr) 4px minmax(0, ${1 - next}fr)`;
 
     if (next === 0 && leftPaneRef.current) leftPaneRef.current.style.display = 'none';
     else if (leftPaneRef.current) leftPaneRef.current.style.display = '';
@@ -1236,13 +1490,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const chatEl = chatSectionRef.current;
     if (next === 0) {
       if (editorEl) editorEl.style.display = 'none';
-      if (chatEl) { chatEl.style.display = ''; chatEl.style.flex = '1'; }
+      if (chatEl) {
+        chatEl.style.display = '';
+        chatEl.style.flex = '1';
+      }
     } else if (next === 1) {
-      if (editorEl) { editorEl.style.display = ''; editorEl.style.flex = '1'; }
+      if (editorEl) {
+        editorEl.style.display = '';
+        editorEl.style.flex = '1';
+      }
       if (chatEl) chatEl.style.display = 'none';
     } else {
-      if (editorEl) { editorEl.style.display = ''; editorEl.style.flex = String(next); }
-      if (chatEl) { chatEl.style.display = ''; chatEl.style.flex = String(1 - next); }
+      if (editorEl) {
+        editorEl.style.display = '';
+        editorEl.style.flex = String(next);
+      }
+      if (chatEl) {
+        chatEl.style.display = '';
+        chatEl.style.flex = String(1 - next);
+      }
     }
   }, []);
 
@@ -1271,7 +1537,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const fraction = prevLeftPaneFraction.current || 0.5;
     leftPaneFractionLiveRef.current = fraction;
     const root = contentRef.current;
-    if (root) root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+    if (root)
+      root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
     if (leftPaneRef.current) leftPaneRef.current.style.display = '';
     setLeftPaneCollapsed(false);
     setLeftPaneFraction(fraction);
@@ -1281,7 +1548,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const fraction = prevLeftPaneFraction.current || 0.5;
     leftPaneFractionLiveRef.current = fraction;
     const root = contentRef.current;
-    if (root) root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
+    if (root)
+      root.style.gridTemplateColumns = `minmax(0, ${fraction}fr) 4px minmax(0, ${1 - fraction}fr)`;
     if (rightPaneRef.current) rightPaneRef.current.style.display = '';
     setRightPaneCollapsed(false);
     setLeftPaneFraction(fraction);
@@ -1333,9 +1601,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     sidebarWidthLiveRef.current = stored.sidebarCollapsed ? 0 : restoredSidebarWidth;
     leftPaneFractionLiveRef.current = stored.rightPaneCollapsed ? 1 : restoredLeftPaneFraction;
-    editorFractionLiveRef.current = stored.editorChatCollapsedSide === 'before' ? 0
-      : stored.editorChatCollapsedSide === 'after' ? 1
-        : restoredEditorFraction;
+    editorFractionLiveRef.current =
+      stored.editorChatCollapsedSide === 'before'
+        ? 0
+        : stored.editorChatCollapsedSide === 'after'
+          ? 1
+          : restoredEditorFraction;
 
     setSidebarCollapsed(stored.sidebarCollapsed);
     setSidebarWidth(stored.sidebarCollapsed ? 0 : restoredSidebarWidth);
@@ -1408,14 +1679,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const activeWorkspace = useMemo(
     () => workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null,
-    [workspaces, activeWorkspaceId]
+    [workspaces, activeWorkspaceId],
   );
   const activeWorkspaceChatState = useMemo(
-    () => (activeWorkspaceId ? (workspaceChatStates[activeWorkspaceId] ?? DEFAULT_WORKSPACE_CHAT_STATE) : DEFAULT_WORKSPACE_CHAT_STATE),
-    [activeWorkspaceId, workspaceChatStates]
+    () =>
+      activeWorkspaceId
+        ? (workspaceChatStates[activeWorkspaceId] ?? DEFAULT_WORKSPACE_CHAT_STATE)
+        : DEFAULT_WORKSPACE_CHAT_STATE,
+    [activeWorkspaceId, workspaceChatStates],
   );
   const workspacePickerHasSearch = workspacePickerSearch.trim().length > 0;
-  const workspacePickerIds = useMemo(() => workspaces.map((workspace) => workspace.id), [workspaces]);
+  const workspacePickerIds = useMemo(
+    () => workspaces.map((workspace) => workspace.id),
+    [workspaces],
+  );
   const workspacePickerChatSearch = useWorkspaceChatSearch({
     workspaceIds: workspacePickerIds,
     query: workspacePickerSearch,
@@ -1426,10 +1703,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     if (!needle) {
       return workspaces;
     }
-    return workspaces.filter((workspace) => (
-      workspace.name.toLowerCase().includes(needle)
-      || workspacePickerChatSearch.matchedWorkspaceIds.has(workspace.id)
-    ));
+    return workspaces.filter(
+      (workspace) =>
+        workspace.name.toLowerCase().includes(needle) ||
+        workspacePickerChatSearch.matchedWorkspaceIds.has(workspace.id),
+    );
   }, [workspaces, workspacePickerSearch, workspacePickerChatSearch.matchedWorkspaceIds]);
 
   const previewWorkspaceFiles = useMemo(() => {
@@ -1451,35 +1729,44 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     const storedGroupIds = activeWorkspace?.selected_tool_group_ids ?? [];
     const storedMode = activeWorkspace?.tool_selection_mode;
     return {
-      mode: storedMode ?? (storedToolIds.length === 0 && storedGroupIds.length === 0 ? 'default_all' : 'custom'),
+      mode:
+        storedMode ??
+        (storedToolIds.length === 0 && storedGroupIds.length === 0 ? 'default_all' : 'custom'),
       toolIds: storedToolIds,
       toolGroupIds: storedGroupIds,
     };
-  }, [activeWorkspace?.selected_tool_group_ids, activeWorkspace?.selected_tool_ids, activeWorkspace?.tool_selection_mode]);
-  const effectiveWorkspaceToolSelection = pendingWorkspaceToolSelection && pendingWorkspaceToolSelection.workspaceId === activeWorkspace?.id
-    ? pendingWorkspaceToolSelection.selection
-    : activeWorkspaceToolSelection;
+  }, [
+    activeWorkspace?.selected_tool_group_ids,
+    activeWorkspace?.selected_tool_ids,
+    activeWorkspace?.tool_selection_mode,
+  ]);
+  const effectiveWorkspaceToolSelection =
+    pendingWorkspaceToolSelection &&
+    pendingWorkspaceToolSelection.workspaceId === activeWorkspace?.id
+      ? pendingWorkspaceToolSelection.selection
+      : activeWorkspaceToolSelection;
 
   const resolvedSelectedToolIds = useMemo(
-    () => resolveDefaultSelectedToolIds(
-      effectiveWorkspaceToolSelection.toolIds,
-      effectiveWorkspaceToolSelection.toolGroupIds,
-      availableTools,
-      effectiveWorkspaceToolSelection.mode,
-    ),
-    [availableTools, effectiveWorkspaceToolSelection]
+    () =>
+      resolveDefaultSelectedToolIds(
+        effectiveWorkspaceToolSelection.toolIds,
+        effectiveWorkspaceToolSelection.toolGroupIds,
+        availableTools,
+        effectiveWorkspaceToolSelection.mode,
+      ),
+    [availableTools, effectiveWorkspaceToolSelection],
   );
   const selectedToolIds = useMemo(
     () => new Set(resolvedSelectedToolIds),
-    [resolvedSelectedToolIds]
+    [resolvedSelectedToolIds],
   );
   const resolvedSelectedToolGroupIds = useMemo(
     () => effectiveWorkspaceToolSelection.toolGroupIds,
-    [effectiveWorkspaceToolSelection.toolGroupIds]
+    [effectiveWorkspaceToolSelection.toolGroupIds],
   );
   const selectedToolGroupIds = useMemo(
     () => new Set(resolvedSelectedToolGroupIds),
-    [resolvedSelectedToolGroupIds]
+    [resolvedSelectedToolGroupIds],
   );
   useUserSpaceToolHealthEvents({
     availableTools,
@@ -1495,7 +1782,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const mountTargetPaths = useMemo(() => {
     const paths = new Map<
       string,
-      { id: string; enabled: boolean; sourceType: WorkspaceMount['source_type']; syncStatus: WorkspaceMount['sync_status']; lastSyncError: string | null; sourceAvailable: boolean; progressText: string }
+      {
+        id: string;
+        enabled: boolean;
+        sourceType: WorkspaceMount['source_type'];
+        syncStatus: WorkspaceMount['sync_status'];
+        lastSyncError: string | null;
+        sourceAvailable: boolean;
+        progressText: string;
+      }
     >();
     for (const mount of mounts) {
       const target = mount.target_path?.replace(/^\/workspace\//, '')?.replace(/^\/+|\/+$/g, '');
@@ -1513,23 +1808,32 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
     return paths;
   }, [mounts]);
-  const isPathInMountTarget = useCallback((path: string) => {
-    const normalized = normalizeWorkspacePath(path);
-    if (!normalized) return false;
-    for (const targetPath of mountTargetPaths.keys()) {
-      if (normalized === targetPath || normalized.startsWith(`${targetPath}/`)) {
-        return true;
+  const isPathInMountTarget = useCallback(
+    (path: string) => {
+      const normalized = normalizeWorkspacePath(path);
+      if (!normalized) return false;
+      for (const targetPath of mountTargetPaths.keys()) {
+        if (normalized === targetPath || normalized.startsWith(`${targetPath}/`)) {
+          return true;
+        }
       }
-    }
-    return false;
-  }, [mountTargetPaths]);
+      return false;
+    },
+    [mountTargetPaths],
+  );
   const workspaceMountTargetBrowserCacheKey = useMemo(
     () => `${activeWorkspaceId ?? 'no-workspace'}:${fileEntriesFingerprint(fileBrowserEntries)}`,
-    [activeWorkspaceId, fileBrowserEntries]
+    [activeWorkspaceId, fileBrowserEntries],
   );
   const hasActiveMountSync = useMemo(
-    () => mounts.some((mount) => mount.sync_status === 'syncing' || syncingMountId === mount.id || previewingMountId === mount.id),
-    [mounts, previewingMountId, syncingMountId]
+    () =>
+      mounts.some(
+        (mount) =>
+          mount.sync_status === 'syncing' ||
+          syncingMountId === mount.id ||
+          previewingMountId === mount.id,
+      ),
+    [mounts, previewingMountId, syncingMountId],
   );
 
   // Files that are changed but not yet acknowledged via per-file Save.
@@ -1554,22 +1858,29 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [activeWorkspace, currentUser]);
   const isOwner = activeWorkspaceRole === 'owner';
   const showPersonalCloudDrives = currentUser.role === 'admin';
-  const isAdminImpersonating = currentUser.role === 'admin' && activeWorkspace != null && activeWorkspace.owner_user_id !== currentUser.id;
+  const isAdminImpersonating =
+    currentUser.role === 'admin' &&
+    activeWorkspace != null &&
+    activeWorkspace.owner_user_id !== currentUser.id;
   const archiveExportInProgress = Boolean(
-    activeWorkspace?.archive_export_task_id
-    && activeWorkspace.archive_export_task_phase
-    && !['completed', 'failed'].includes(activeWorkspace.archive_export_task_phase)
+    activeWorkspace?.archive_export_task_id &&
+    activeWorkspace.archive_export_task_phase &&
+    !['completed', 'failed'].includes(activeWorkspace.archive_export_task_phase),
   );
   const archiveImportInProgress = Boolean(
-    activeWorkspace?.archive_import_task_id
-    && activeWorkspace.archive_import_task_phase
-    && !['completed', 'failed'].includes(activeWorkspace.archive_import_task_phase)
+    activeWorkspace?.archive_import_task_id &&
+    activeWorkspace.archive_import_task_phase &&
+    !['completed', 'failed'].includes(activeWorkspace.archive_import_task_phase),
   );
   const workspaceScmWizardActivity = useWorkspaceScmWizardActivity(activeWorkspace);
   const scmImportInProgress = Boolean(
-    workspaceScmWizardActivity
-    && workspaceScmWizardActivity.status === 'running'
+    workspaceScmWizardActivity && workspaceScmWizardActivity.status === 'running',
   );
+
+  const workspaceScmWizardActivityTaskId =
+    workspaceScmWizardActivity && 'taskId' in workspaceScmWizardActivity
+      ? workspaceScmWizardActivity.taskId
+      : null;
 
   useEffect(() => {
     if (!activeWorkspaceId || workspaceScmWizardActivity?.kind !== 'import-task') {
@@ -1585,9 +1896,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       try {
         const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
         if (cancelled) return;
-        setWorkspaces((current) => current.map((workspace) => (
-          workspace.id === refreshedWorkspace.id ? refreshedWorkspace : workspace
-        )));
+        setWorkspaces((current) =>
+          current.map((workspace) =>
+            workspace.id === refreshedWorkspace.id ? refreshedWorkspace : workspace,
+          ),
+        );
       } catch {
         // Best-effort status refresh; the wizard poll handles detailed errors when open.
       } finally {
@@ -1596,19 +1909,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     };
 
     void refreshWorkspace();
-    const intervalId = window.setInterval(() => { void refreshWorkspace(); }, 1000);
+    const intervalId = window.setInterval(() => {
+      void refreshWorkspace();
+    }, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeWorkspaceId, workspaceScmWizardActivity?.kind, workspaceScmWizardActivity && 'taskId' in workspaceScmWizardActivity ? workspaceScmWizardActivity.taskId : null]);
+  }, [activeWorkspaceId, workspaceScmWizardActivity?.kind, workspaceScmWizardActivityTaskId]);
 
   const workspaceChatShareableUserIds = useMemo(() => {
     if (!activeWorkspace) return [];
-    return Array.from(new Set([
-      activeWorkspace.owner_user_id,
-      ...activeWorkspace.members.map((member) => member.user_id),
-    ]));
+    return Array.from(
+      new Set([
+        activeWorkspace.owner_user_id,
+        ...activeWorkspace.members.map((member) => member.user_id),
+      ]),
+    );
   }, [activeWorkspace]);
 
   const snapshotsByBranch = useMemo(() => {
@@ -1648,9 +1965,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const staleBranches = useMemo(() => {
     const visibleIds = new Set(snapshotsByBranch.map(({ branch }) => branch.id));
-    return snapshotBranches.filter(
-      (branch) => branch.is_stale && !visibleIds.has(branch.id)
-    );
+    return snapshotBranches.filter((branch) => branch.is_stale && !visibleIds.has(branch.id));
   }, [snapshotBranches, snapshotsByBranch]);
 
   const snapshotTimelineRows = useMemo(() => {
@@ -1677,13 +1992,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       branchById.set(branch.id, branch);
     });
 
-    const laneMetaByBranchId = new Map<string, {
-      laneIndex: number;
-      startRow: number;
-      endRow: number;
-      forkRow: number | null;
-      forkFromLaneIndex: number | null;
-    }>();
+    const laneMetaByBranchId = new Map<
+      string,
+      {
+        laneIndex: number;
+        startRow: number;
+        endRow: number;
+        forkRow: number | null;
+        forkFromLaneIndex: number | null;
+      }
+    >();
 
     snapshotsByBranch.forEach(({ branch, snapshots: branchSnapshots }, index) => {
       const branchRows = branchSnapshots
@@ -1695,7 +2013,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         return;
       }
 
-      let startRow = branchRows[0];
+      const startRow = branchRows[0];
       let endRow = branchRows[branchRows.length - 1];
       let forkRow: number | null = null;
       let forkFromLaneIndex: number | null = null;
@@ -1703,7 +2021,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       if (branch.branched_from_snapshot_id) {
         const parentRow = rowIndexBySnapshotId.get(branch.branched_from_snapshot_id);
         const parentSnapshot = snapshotById.get(branch.branched_from_snapshot_id);
-        const parentLaneIndex = parentSnapshot ? branchIndexById.get(parentSnapshot.branch_id) : undefined;
+        const parentLaneIndex = parentSnapshot
+          ? branchIndexById.get(parentSnapshot.branch_id)
+          : undefined;
         if (typeof parentRow === 'number') {
           endRow = Math.max(endRow, parentRow);
           forkRow = parentRow;
@@ -1748,7 +2068,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             toLaneIndex: Math.max(meta.forkFromLaneIndex, meta.laneIndex),
           };
         })
-        .filter((value): value is { branchId: string; fromLaneIndex: number; toLaneIndex: number } => value !== null);
+        .filter(
+          (value): value is { branchId: string; fromLaneIndex: number; toLaneIndex: number } =>
+            value !== null,
+        );
 
       return {
         snapshot,
@@ -1770,82 +2093,87 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const snapshotUiLocked = navigatingSnapshots || restoringSnapshotId !== null;
   const codeMirrorLanguageExtension = useCodeMirrorLanguageExtension(selectedFilePath);
 
-  const handleCodeMirrorSelectionUpdate = useCallback((update: ViewUpdate) => {
-    if (!update.selectionSet) return;
+  const handleCodeMirrorSelectionUpdate = useCallback(
+    (update: ViewUpdate) => {
+      if (!update.selectionSet) return;
 
-    const selectedPath = selectedFilePathRef.current;
-    if (!selectedPath || selectedFileUnsupportedMessage) return;
+      const selectedPath = selectedFilePathRef.current;
+      if (!selectedPath || selectedFileUnsupportedMessage) return;
 
-    const selection = update.state.selection.main;
-    if (selection.empty) return;
+      const selection = update.state.selection.main;
+      if (selection.empty) return;
 
-    const selectionStart = Math.min(selection.from, selection.to);
-    const selectionEnd = Math.max(selection.from, selection.to);
-    const selectedText = update.state.sliceDoc(selectionStart, selectionEnd).trim();
-    if (!selectedText) return;
+      const selectionStart = Math.min(selection.from, selection.to);
+      const selectionEnd = Math.max(selection.from, selection.to);
+      const selectedText = update.state.sliceDoc(selectionStart, selectionEnd).trim();
+      if (!selectedText) return;
 
-    const startLine = update.state.doc.lineAt(selectionStart);
-    const rawEndLine = update.state.doc.lineAt(selectionEnd);
-    const endLineNumber = selectionEnd === rawEndLine.from && rawEndLine.number > startLine.number
-      ? rawEndLine.number - 1
-      : rawEndLine.number;
-    const endLine = update.state.doc.line(Math.max(startLine.number, endLineNumber));
-    const doc = update.state.doc;
+      const startLine = update.state.doc.lineAt(selectionStart);
+      const rawEndLine = update.state.doc.lineAt(selectionEnd);
+      const endLineNumber =
+        selectionEnd === rawEndLine.from && rawEndLine.number > startLine.number
+          ? rawEndLine.number - 1
+          : rawEndLine.number;
+      const endLine = update.state.doc.line(Math.max(startLine.number, endLineNumber));
+      const doc = update.state.doc;
 
-    const trimmed = trimContextContent(doc.sliceString(startLine.from, endLine.to));
-    const baseReference = {
-      path: selectedPath,
-      startLine: startLine.number,
-      endLine: endLine.number,
-      source: 'selection' as const,
-    };
-    // Coalesce a single drag gesture onto one chip id so the chip updates in
-    // place while the user is still selecting, instead of spawning duplicates.
-    const referenceId = activeSelectionContextIdRef.current ?? buildChatContextReferenceId(baseReference);
-    activeSelectionContextIdRef.current = referenceId;
+      const trimmed = trimContextContent(doc.sliceString(startLine.from, endLine.to));
+      const baseReference = {
+        path: selectedPath,
+        startLine: startLine.number,
+        endLine: endLine.number,
+        source: 'selection' as const,
+      };
+      // Coalesce a single drag gesture onto one chip id so the chip updates in
+      // place while the user is still selecting, instead of spawning duplicates.
+      const referenceId =
+        activeSelectionContextIdRef.current ?? buildChatContextReferenceId(baseReference);
+      activeSelectionContextIdRef.current = referenceId;
 
-    insertContextReferenceRef.current?.({
-      ...baseReference,
-      id: referenceId,
-      content: trimmed.content,
-      contentTruncated: trimmed.truncated,
-    });
+      insertContextReferenceRef.current?.({
+        ...baseReference,
+        id: referenceId,
+        content: trimmed.content,
+        contentTruncated: trimmed.truncated,
+      });
 
-    if (activeSelectionResetTimerRef.current !== null) {
-      window.clearTimeout(activeSelectionResetTimerRef.current);
-    }
-    activeSelectionResetTimerRef.current = window.setTimeout(() => {
-      activeSelectionContextIdRef.current = null;
-      activeSelectionResetTimerRef.current = null;
-    }, 700);
-  }, [selectedFileUnsupportedMessage]);
-
-  const codeMirrorExtensions = useMemo(
-    () => {
-      const extensions: Extension[] = [
-        contextLineHighlightField,
-        EditorView.updateListener.of(handleCodeMirrorSelectionUpdate),
-        keymap.of([
-          {
-            key: 'Mod-f',
-            run: openSearchPanel,
-            preventDefault: true,
-          },
-        ]),
-      ];
-      if (codeMirrorLanguageExtension) {
-        extensions.unshift(codeMirrorLanguageExtension);
+      if (activeSelectionResetTimerRef.current !== null) {
+        window.clearTimeout(activeSelectionResetTimerRef.current);
       }
-      return extensions;
+      activeSelectionResetTimerRef.current = window.setTimeout(() => {
+        activeSelectionContextIdRef.current = null;
+        activeSelectionResetTimerRef.current = null;
+      }, 700);
     },
-    [codeMirrorLanguageExtension, handleCodeMirrorSelectionUpdate]
+    [selectedFileUnsupportedMessage],
   );
 
-  useEffect(() => () => {
-    if (activeSelectionResetTimerRef.current !== null) {
-      window.clearTimeout(activeSelectionResetTimerRef.current);
+  const codeMirrorExtensions = useMemo(() => {
+    const extensions: Extension[] = [
+      contextLineHighlightField,
+      EditorView.updateListener.of(handleCodeMirrorSelectionUpdate),
+      keymap.of([
+        {
+          key: 'Mod-f',
+          run: openSearchPanel,
+          preventDefault: true,
+        },
+      ]),
+    ];
+    if (codeMirrorLanguageExtension) {
+      extensions.unshift(codeMirrorLanguageExtension);
     }
-  }, []);
+    return extensions;
+  }, [codeMirrorLanguageExtension, handleCodeMirrorSelectionUpdate]);
+
+  useEffect(
+    () => () => {
+      if (activeSelectionResetTimerRef.current !== null) {
+        window.clearTimeout(activeSelectionResetTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const selectedFileDisplayName = useMemo(() => {
     const parts = selectedFilePath.split('/').filter(Boolean);
@@ -1882,9 +2210,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [runtimeDisplayState, runtimeOperationLabel]);
 
   const activeWorkspaceCreateTasks = useMemo(
-    () => Object.values(creatingWorkspaceTasks)
-      .filter((task) => !isWorkspaceCreateTaskTerminal(task.phase))
-      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    () =>
+      Object.values(creatingWorkspaceTasks)
+        .filter((task) => !isWorkspaceCreateTaskTerminal(task.phase))
+        .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
     [creatingWorkspaceTasks],
   );
 
@@ -1896,16 +2225,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   );
 
   const activeWorkspaceDeleteTasks = useMemo(
-    () => Object.values(deletingWorkspaceTasks)
-      .filter((task) => !isWorkspaceDeleteTaskTerminal(task.phase))
-      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    () =>
+      Object.values(deletingWorkspaceTasks)
+        .filter((task) => !isWorkspaceDeleteTaskTerminal(task.phase))
+        .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
     [deletingWorkspaceTasks],
   );
 
   const activeWorkspaceDuplicateTasks = useMemo(
-    () => Object.values(duplicatingWorkspaceTasks)
-      .filter((task) => !isWorkspaceDuplicateTaskTerminal(task.phase))
-      .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
+    () =>
+      Object.values(duplicatingWorkspaceTasks)
+        .filter((task) => !isWorkspaceDuplicateTaskTerminal(task.phase))
+        .sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at)),
     [duplicatingWorkspaceTasks],
   );
 
@@ -1915,7 +2246,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     () => formatWorkspaceDeleteTasksStatus(activeWorkspaceDeleteTasks),
     [activeWorkspaceDeleteTasks],
   );
-  const duplicatingWorkspaceSourceId = activeWorkspaceDuplicateTasks[0]?.source_workspace_id ?? null;
+  const duplicatingWorkspaceSourceId =
+    activeWorkspaceDuplicateTasks[0]?.source_workspace_id ?? null;
   const activeWorkspaceDuplicateTaskCount = activeWorkspaceDuplicateTasks.length;
   const duplicatingWorkspaceStatus = useMemo(
     () => formatWorkspaceDuplicateTasksStatus(activeWorkspaceDuplicateTasks),
@@ -1931,22 +2263,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return next;
   }, [activeWorkspaceDuplicateTasks]);
 
-  const showStartRuntimeButton = runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
+  const showStartRuntimeButton =
+    runtimeDisplayState === 'stopped' || runtimeDisplayState === 'error';
   const showRestartRuntimeButton = runtimeDisplayState === 'running';
-  const showStopRuntimeButton = runtimeDisplayState === 'running' || runtimeDisplayState === 'starting';
-  const allUsersById = useMemo(
-    () => new Map(allUsers.map((user) => [user.id, user])),
-    [allUsers],
-  );
+  const showStopRuntimeButton =
+    runtimeDisplayState === 'running' || runtimeDisplayState === 'starting';
+  const allUsersById = useMemo(() => new Map(allUsers.map((user) => [user.id, user])), [allUsers]);
 
-  const formatUserLabel = useCallback((user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
-    const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
-    const displayName = user?.display_name?.trim();
-    if (displayName && displayName !== username) {
-      return `${displayName} (@${username})`;
-    }
-    return `@${username}`;
-  }, []);
+  const formatUserLabel = useCallback(
+    (user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
+      const username = user?.username?.trim() || fallbackId?.trim() || 'unknown';
+      const displayName = user?.display_name?.trim();
+      if (displayName && displayName !== username) {
+        return `${displayName} (@${username})`;
+      }
+      return `@${username}`;
+    },
+    [],
+  );
 
   const getCollabUserLabel = useCallback(
     (presenceUser: UserSpaceCollabPresenceUser) => {
@@ -1979,16 +2313,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     try {
       const response = await api.getUserSpaceWorkspaceCollabPresence(workspaceId);
       if (
-        collabPresenceRequestRef.current !== requestId
-        || collabPresenceWorkspaceRef.current !== workspaceId
+        collabPresenceRequestRef.current !== requestId ||
+        collabPresenceWorkspaceRef.current !== workspaceId
       ) {
         return;
       }
       setCollabPresenceUsers(response.users || []);
     } catch (err) {
       if (
-        collabPresenceRequestRef.current !== requestId
-        || collabPresenceWorkspaceRef.current !== workspaceId
+        collabPresenceRequestRef.current !== requestId ||
+        collabPresenceWorkspaceRef.current !== workspaceId
       ) {
         return;
       }
@@ -1996,8 +2330,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setCollabPresenceUsers([]);
     } finally {
       if (
-        collabPresenceRequestRef.current === requestId
-        && collabPresenceWorkspaceRef.current === workspaceId
+        collabPresenceRequestRef.current === requestId &&
+        collabPresenceWorkspaceRef.current === workspaceId
       ) {
         setCollabPresenceLoading(false);
       }
@@ -2009,87 +2343,96 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setActiveWorkspaceConversationId(conversationId);
   }, []);
 
-  const selectActiveWorkspace = useCallback((workspaceId: string | null) => {
-    const nextWorkspaceId = workspaceId ?? null;
-    const workspaceChanged = activeWorkspaceIdRef.current !== nextWorkspaceId;
+  const selectActiveWorkspace = useCallback(
+    (workspaceId: string | null) => {
+      const nextWorkspaceId = workspaceId ?? null;
+      const workspaceChanged = activeWorkspaceIdRef.current !== nextWorkspaceId;
 
-    activeWorkspaceIdRef.current = nextWorkspaceId;
-    if (workspaceChanged) {
-      updateActiveWorkspaceConversationId(null);
-      setActiveWorkspaceChatSnapshot(null);
-      setRuntimeStatus(null);
-    }
-    setActiveWorkspaceId(nextWorkspaceId);
-  }, [updateActiveWorkspaceConversationId]);
+      activeWorkspaceIdRef.current = nextWorkspaceId;
+      if (workspaceChanged) {
+        updateActiveWorkspaceConversationId(null);
+        setActiveWorkspaceChatSnapshot(null);
+        setRuntimeStatus(null);
+      }
+      setActiveWorkspaceId(nextWorkspaceId);
+    },
+    [updateActiveWorkspaceConversationId],
+  );
 
-  const loadWorkspaces = useCallback(async (append = false) => {
-    if (append) {
-      setLoadingMore(true);
-    } else {
-      setLoading(true);
-    }
-    try {
-      const offset = append ? workspaces.length : 0;
-      const page = await api.listUserSpaceWorkspaces(offset, 50);
+  const loadWorkspaces = useCallback(
+    async (append = false) => {
       if (append) {
-        setWorkspaces((prev) => [
-          ...prev,
-          ...page.items.filter((workspace) => !prev.some((existing) => existing.id === workspace.id)),
-        ]);
+        setLoadingMore(true);
       } else {
-        let nextItems = page.items;
+        setLoading(true);
+      }
+      try {
+        const offset = append ? workspaces.length : 0;
+        const page = await api.listUserSpaceWorkspaces(offset, 50);
+        if (append) {
+          setWorkspaces((prev) => [
+            ...prev,
+            ...page.items.filter(
+              (workspace) => !prev.some((existing) => existing.id === workspace.id),
+            ),
+          ]);
+        } else {
+          let nextItems = page.items;
 
-        if (
-          activeWorkspaceId
-          && !nextItems.some((workspace) => workspace.id === activeWorkspaceId)
-        ) {
-          try {
-            const activeWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
-            nextItems = [activeWorkspace, ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id)];
-          } catch {
-            // Ignore fetch errors for active workspace backfill.
-          }
-        }
-
-        setWorkspaces(nextItems);
-        if (nextItems.length === 0) {
-          selectActiveWorkspace(null);
-          clearCookieValue(lastWorkspaceCookieName);
-        } else if (!activeWorkspaceId) {
-          const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
-          const restorableWorkspaceId = lastWorkspaceId;
-          const matchingWorkspace = restorableWorkspaceId
-            ? nextItems.find((workspace) => workspace.id === restorableWorkspaceId)
-            : null;
-
-          if (matchingWorkspace) {
-            selectActiveWorkspace(matchingWorkspace.id);
-          } else if (restorableWorkspaceId) {
+          if (
+            activeWorkspaceId &&
+            !nextItems.some((workspace) => workspace.id === activeWorkspaceId)
+          ) {
             try {
-              const workspace = await api.getUserSpaceWorkspace(restorableWorkspaceId);
-              setWorkspaces((prev) => (
-                prev.some((item) => item.id === workspace.id)
-                  ? prev
-                  : [workspace, ...prev]
-              ));
-              selectActiveWorkspace(workspace.id);
+              const activeWorkspace = await api.getUserSpaceWorkspace(activeWorkspaceId);
+              nextItems = [
+                activeWorkspace,
+                ...nextItems.filter((workspace) => workspace.id !== activeWorkspace.id),
+              ];
             } catch {
+              // Ignore fetch errors for active workspace backfill.
+            }
+          }
+
+          setWorkspaces(nextItems);
+          if (nextItems.length === 0) {
+            selectActiveWorkspace(null);
+            clearCookieValue(lastWorkspaceCookieName);
+          } else if (!activeWorkspaceId) {
+            const lastWorkspaceId = getCookieValue(lastWorkspaceCookieName);
+            const restorableWorkspaceId = lastWorkspaceId;
+            const matchingWorkspace = restorableWorkspaceId
+              ? nextItems.find((workspace) => workspace.id === restorableWorkspaceId)
+              : null;
+
+            if (matchingWorkspace) {
+              selectActiveWorkspace(matchingWorkspace.id);
+            } else if (restorableWorkspaceId) {
+              try {
+                const workspace = await api.getUserSpaceWorkspace(restorableWorkspaceId);
+                setWorkspaces((prev) =>
+                  prev.some((item) => item.id === workspace.id) ? prev : [workspace, ...prev],
+                );
+                selectActiveWorkspace(workspace.id);
+              } catch {
+                selectActiveWorkspace(nextItems[0].id);
+              }
+            } else {
               selectActiveWorkspace(nextItems[0].id);
             }
-          } else {
-            selectActiveWorkspace(nextItems[0].id);
           }
         }
+        setWorkspacesTotal(page.total);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load User Space workspaces');
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
       }
-      setWorkspacesTotal(page.total);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load User Space workspaces');
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, [activeWorkspaceId, lastWorkspaceCookieName, selectActiveWorkspace, workspaces.length]);
+    },
+    [activeWorkspaceId, lastWorkspaceCookieName, selectActiveWorkspace, workspaces.length],
+  );
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -2105,7 +2448,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     const selectWorkspace = async () => {
       const requestedWorkspaceId = openWorkspaceRequest.workspaceId;
-      const existingWorkspace = workspacesRef.current.find((workspace) => workspace.id === requestedWorkspaceId);
+      const existingWorkspace = workspacesRef.current.find(
+        (workspace) => workspace.id === requestedWorkspaceId,
+      );
 
       if (!existingWorkspace) {
         try {
@@ -2113,11 +2458,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           if (cancelled) {
             return;
           }
-          setWorkspaces((prev) => (
-            prev.some((item) => item.id === workspace.id)
-              ? prev
-              : [workspace, ...prev]
-          ));
+          setWorkspaces((prev) =>
+            prev.some((item) => item.id === workspace.id) ? prev : [workspace, ...prev],
+          );
         } catch (err) {
           if (!cancelled) {
             toast.error(err instanceof Error ? err.message : 'Failed to open workspace');
@@ -2138,13 +2481,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return () => {
       cancelled = true;
     };
-  }, [openWorkspaceRequest?.requestId, openWorkspaceRequest?.workspaceId, selectActiveWorkspace, toast]);
+  }, [
+    openWorkspaceRequest?.requestId,
+    openWorkspaceRequest?.workspaceId,
+    selectActiveWorkspace,
+    toast,
+  ]);
 
   useEffect(() => {
     if (
-      !branchRestoreSnapshotId
-      || !activeWorkspaceId
-      || snapshotsLoadedForWorkspace !== activeWorkspaceId
+      !branchRestoreSnapshotId ||
+      !activeWorkspaceId ||
+      snapshotsLoadedForWorkspace !== activeWorkspaceId
     ) {
       return;
     }
@@ -2153,21 +2501,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, branchRestoreSnapshotId, snapshots, snapshotsLoadedForWorkspace]);
 
-  const handleConversationStateChange = useCallback((hasLive: boolean, hasInterrupted: boolean) => {
-    if (!activeWorkspaceId) return;
-    // The active workspace should reflect the live chat state from ChatPanel
-    // immediately. If a task is running, live state takes precedence over any
-    // stale interrupted badge for this workspace.
-    setWorkspaceChatStates((prev) => ({
-      ...prev,
-      [activeWorkspaceId]: {
-        ...DEFAULT_WORKSPACE_CHAT_STATE,
-        ...prev[activeWorkspaceId],
-        hasInterrupted,
-        hasLive,
-      },
-    }));
-  }, [activeWorkspaceId]);
+  const handleConversationStateChange = useCallback(
+    (hasLive: boolean, hasInterrupted: boolean) => {
+      if (!activeWorkspaceId) return;
+      // The active workspace should reflect the live chat state from ChatPanel
+      // immediately. If a task is running, live state takes precedence over any
+      // stale interrupted badge for this workspace.
+      setWorkspaceChatStates((prev) => ({
+        ...prev,
+        [activeWorkspaceId]: {
+          ...DEFAULT_WORKSPACE_CHAT_STATE,
+          ...prev[activeWorkspaceId],
+          hasInterrupted,
+          hasLive,
+        },
+      }));
+    },
+    [activeWorkspaceId],
+  );
 
   useEffect(() => {
     if (workspaces.length === 0) {
@@ -2254,9 +2605,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       if (cancelled) {
         return;
       }
-      timer = window.setTimeout(() => {
-        void pollWorkspaceConversationStates();
-      }, isPageVisible ? 5000 : USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS);
+      timer = window.setTimeout(
+        () => {
+          void pollWorkspaceConversationStates();
+        },
+        isPageVisible ? 5000 : USERSPACE_WORKSPACE_BADGE_BACKGROUND_POLL_INTERVAL_MS,
+      );
     };
 
     const runPollingLoop = async () => {
@@ -2274,231 +2628,255 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     };
   }, [workspaces, activeWorkspaceId, currentUser.id, isPageVisible]);
 
-  const reconcileWorkspaceFileTree = useCallback((nextEntries: UserSpaceFileInfo[], workspaceId: string) => {
-    const normalizedEntries = normalizeWorkspaceFileListEntries(nextEntries, workspaceId);
-    const nextFiles = normalizedEntries.filter((entry) => entry.entry_type !== 'directory');
-    const currentSelectedPath = selectedFilePathRef.current;
-    const selectedExists = nextFiles.some((file) => file.path === currentSelectedPath);
-    const preferredPath = selectedExists
-      ? currentSelectedPath
-      : nextFiles.some((file) => file.path === previewEntryPath)
-        ? previewEntryPath
-        : nextFiles[0]?.path ?? previewEntryPath;
-    const treeChanged = fileEntriesFingerprint(normalizedEntries) !== fileEntriesFingerprint(fileBrowserEntriesRef.current);
+  const reconcileWorkspaceFileTree = useCallback(
+    (nextEntries: UserSpaceFileInfo[], workspaceId: string) => {
+      const normalizedEntries = normalizeWorkspaceFileListEntries(nextEntries, workspaceId);
+      const nextFiles = normalizedEntries.filter((entry) => entry.entry_type !== 'directory');
+      const currentSelectedPath = selectedFilePathRef.current;
+      const selectedExists = nextFiles.some((file) => file.path === currentSelectedPath);
+      const preferredPath = selectedExists
+        ? currentSelectedPath
+        : nextFiles.some((file) => file.path === previewEntryPath)
+          ? previewEntryPath
+          : (nextFiles[0]?.path ?? previewEntryPath);
+      const treeChanged =
+        fileEntriesFingerprint(normalizedEntries) !==
+        fileEntriesFingerprint(fileBrowserEntriesRef.current);
 
-    if (treeChanged) {
-      setFileBrowserEntries(normalizedEntries);
-      setFiles(nextFiles);
+      if (treeChanged) {
+        setFileBrowserEntries(normalizedEntries);
+        setFiles(nextFiles);
 
-      const validPaths = new Set(nextFiles.map((file) => file.path));
-      setFileContentCache((current) => {
-        const next: Record<string, CachedUserSpaceFile> = {};
-        for (const [path, value] of Object.entries(current)) {
-          if (validPaths.has(path)) {
-            next[path] = value;
+        const validPaths = new Set(nextFiles.map((file) => file.path));
+        setFileContentCache((current) => {
+          const next: Record<string, CachedUserSpaceFile> = {};
+          for (const [path, value] of Object.entries(current)) {
+            if (validPaths.has(path)) {
+              next[path] = value;
+            }
           }
+          return next;
+        });
+      }
+
+      if (selectedFilePathRef.current !== preferredPath) {
+        selectedFilePathRef.current = preferredPath;
+        setSelectedFilePath(preferredPath);
+      }
+
+      return {
+        changed: treeChanged,
+        nextFiles,
+        preferredPath,
+      };
+    },
+    [previewEntryPath],
+  );
+
+  const warmWorkspaceFileCache = useCallback(
+    async (
+      workspaceId: string,
+      nextFiles: UserSpaceFileInfo[],
+      options?: {
+        excludePaths?: string[];
+      },
+    ) => {
+      const excludedPaths = new Set(options?.excludePaths ?? []);
+      const staleFiles = nextFiles.filter((file) => {
+        if (excludedPaths.has(file.path)) {
+          return false;
+        }
+        const cached = fileContentCacheRef.current[file.path];
+        return !cached || cached.updatedAt !== (file.updated_at ?? '');
+      });
+
+      if (staleFiles.length === 0) {
+        return;
+      }
+
+      const fetched = await Promise.all(
+        staleFiles.map(async (file) => {
+          try {
+            const loaded = await api.getUserSpaceFile(workspaceId, file.path);
+            return {
+              path: loaded.path,
+              content: loaded.content,
+              updatedAt: file.updated_at ?? '',
+              artifactType: loaded.artifact_type ?? null,
+            };
+          } catch (err) {
+            const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+            if (unsupportedMessage) {
+              return {
+                path: file.path,
+                content: '',
+                updatedAt: file.updated_at ?? '',
+                artifactType: null,
+                unsupportedMessage,
+              };
+            }
+            throw err;
+          }
+        }),
+      );
+
+      setFileContentCache((current) => {
+        const next: Record<string, CachedUserSpaceFile> = { ...current };
+        for (const file of fetched) {
+          next[file.path] = {
+            content: file.content,
+            updatedAt: file.updatedAt,
+            artifactType: file.artifactType,
+            unsupportedMessage: file.unsupportedMessage,
+          };
         }
         return next;
       });
-    }
-
-    if (selectedFilePathRef.current !== preferredPath) {
-      selectedFilePathRef.current = preferredPath;
-      setSelectedFilePath(preferredPath);
-    }
-
-    return {
-      changed: treeChanged,
-      nextFiles,
-      preferredPath,
-    };
-  }, [previewEntryPath]);
-
-  const warmWorkspaceFileCache = useCallback(async (
-    workspaceId: string,
-    nextFiles: UserSpaceFileInfo[],
-    options?: {
-      excludePaths?: string[];
     },
-  ) => {
-    const excludedPaths = new Set(options?.excludePaths ?? []);
-    const staleFiles = nextFiles.filter((file) => {
-      if (excludedPaths.has(file.path)) {
-        return false;
-      }
-      const cached = fileContentCacheRef.current[file.path];
-      return !cached || cached.updatedAt !== (file.updated_at ?? '');
-    });
+    [],
+  );
 
-    if (staleFiles.length === 0) {
-      return;
-    }
-
-    const fetched = await Promise.all(
-      staleFiles.map(async (file) => {
-        try {
-          const loaded = await api.getUserSpaceFile(workspaceId, file.path);
-          return {
-            path: loaded.path,
-            content: loaded.content,
-            updatedAt: file.updated_at ?? '',
-            artifactType: loaded.artifact_type ?? null,
-          };
-        } catch (err) {
-          const unsupportedMessage = getUnsupportedEditorFileMessage(err);
-          if (unsupportedMessage) {
-            return {
-              path: file.path,
-              content: '',
-              updatedAt: file.updated_at ?? '',
-              artifactType: null,
-              unsupportedMessage,
-            };
-          }
-          throw err;
-        }
-      })
-    );
-
-    setFileContentCache((current) => {
-      const next: Record<string, CachedUserSpaceFile> = { ...current };
-      for (const file of fetched) {
-        next[file.path] = {
-          content: file.content,
-          updatedAt: file.updatedAt,
-          artifactType: file.artifactType,
-          unsupportedMessage: file.unsupportedMessage,
-        };
-      }
-      return next;
-    });
-  }, []);
-
-  const refreshWorkspaceFileTree = useCallback(async (
-    workspaceId: string,
-  ) => {
-    const nextEntries = await api.listUserSpaceFiles(workspaceId, {
-      includeDirs: true,
-    });
-
-    const { changed } = reconcileWorkspaceFileTree(nextEntries, workspaceId);
-    setError(null);
-    return changed;
-  }, [reconcileWorkspaceFileTree]);
-
-  const loadWorkspaceData = useCallback(async (
-    workspaceId: string,
-    options?: {
-      skipSelectedFileReload?: boolean;
-    },
-  ) => {
-    const requestId = ++loadWorkspaceDataRequestIdRef.current;
-
-    try {
+  const refreshWorkspaceFileTree = useCallback(
+    async (workspaceId: string) => {
       const nextEntries = await api.listUserSpaceFiles(workspaceId, {
         includeDirs: true,
       });
 
-      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
-        return;
-      }
+      const { changed } = reconcileWorkspaceFileTree(nextEntries, workspaceId);
+      setError(null);
+      return changed;
+    },
+    [reconcileWorkspaceFileTree],
+  );
 
-      const { changed, nextFiles, preferredPath } = reconcileWorkspaceFileTree(nextEntries, workspaceId);
+  const loadWorkspaceData = useCallback(
+    async (
+      workspaceId: string,
+      options?: {
+        skipSelectedFileReload?: boolean;
+      },
+    ) => {
+      const requestId = ++loadWorkspaceDataRequestIdRef.current;
 
-      if (!changed) {
-        return;
-      }
+      try {
+        const nextEntries = await api.listUserSpaceFiles(workspaceId, {
+          includeDirs: true,
+        });
 
-      const selectedExists = nextFiles.some((file) => file.path === preferredPath);
-      const skipSelectedFileReload = Boolean(
-        options?.skipSelectedFileReload
-        && selectedExists
-        && selectedFilePathRef.current === preferredPath,
-      );
-
-      await warmWorkspaceFileCache(workspaceId, nextFiles, {
-        excludePaths: selectedExists ? [preferredPath] : [],
-      });
-
-      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
-        return;
-      }
-
-      if (selectedExists) {
-        if (skipSelectedFileReload) {
-          setError(null);
+        if (requestId !== loadWorkspaceDataRequestIdRef.current) {
           return;
         }
 
-        const preferredMeta = nextFiles.find((file) => file.path === preferredPath);
-        const preferredUpdatedAt = preferredMeta?.updated_at ?? '';
-        const cached = fileContentCacheRef.current[preferredPath];
+        const { changed, nextFiles, preferredPath } = reconcileWorkspaceFileTree(
+          nextEntries,
+          workspaceId,
+        );
 
-        if (cached && cached.updatedAt === preferredUpdatedAt) {
-          if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
+        if (!changed) {
+          return;
+        }
+
+        const selectedExists = nextFiles.some((file) => file.path === preferredPath);
+        const skipSelectedFileReload = Boolean(
+          options?.skipSelectedFileReload &&
+          selectedExists &&
+          selectedFilePathRef.current === preferredPath,
+        );
+
+        await warmWorkspaceFileCache(workspaceId, nextFiles, {
+          excludePaths: selectedExists ? [preferredPath] : [],
+        });
+
+        if (requestId !== loadWorkspaceDataRequestIdRef.current) {
+          return;
+        }
+
+        if (selectedExists) {
+          if (skipSelectedFileReload) {
+            setError(null);
             return;
           }
-          setFileContent(cached.content);
-          setSelectedFileArtifactType(cached.artifactType ?? null);
-          setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
-        } else {
-          try {
-            const file = await api.getUserSpaceFile(workspaceId, preferredPath);
 
-            if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
+          const preferredMeta = nextFiles.find((file) => file.path === preferredPath);
+          const preferredUpdatedAt = preferredMeta?.updated_at ?? '';
+          const cached = fileContentCacheRef.current[preferredPath];
+
+          if (cached && cached.updatedAt === preferredUpdatedAt) {
+            if (
+              requestId !== loadWorkspaceDataRequestIdRef.current ||
+              selectedFilePathRef.current !== preferredPath
+            ) {
               return;
             }
+            setFileContent(cached.content);
+            setSelectedFileArtifactType(cached.artifactType ?? null);
+            setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
+          } else {
+            try {
+              const file = await api.getUserSpaceFile(workspaceId, preferredPath);
 
-            setFileContent(file.content);
-            setSelectedFileArtifactType(file.artifact_type ?? null);
-            setFileContentCache((current) => ({
-              ...current,
-              [file.path]: {
-                content: file.content,
-                updatedAt: preferredUpdatedAt,
-                artifactType: file.artifact_type ?? null,
-              },
-            }));
-            setSelectedFileUnsupportedMessage(null);
-          } catch (err) {
-            if (requestId !== loadWorkspaceDataRequestIdRef.current || selectedFilePathRef.current !== preferredPath) {
-              return;
+              if (
+                requestId !== loadWorkspaceDataRequestIdRef.current ||
+                selectedFilePathRef.current !== preferredPath
+              ) {
+                return;
+              }
+
+              setFileContent(file.content);
+              setSelectedFileArtifactType(file.artifact_type ?? null);
+              setFileContentCache((current) => ({
+                ...current,
+                [file.path]: {
+                  content: file.content,
+                  updatedAt: preferredUpdatedAt,
+                  artifactType: file.artifact_type ?? null,
+                },
+              }));
+              setSelectedFileUnsupportedMessage(null);
+            } catch (err) {
+              if (
+                requestId !== loadWorkspaceDataRequestIdRef.current ||
+                selectedFilePathRef.current !== preferredPath
+              ) {
+                return;
+              }
+
+              const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+              if (!unsupportedMessage) {
+                throw err;
+              }
+
+              setFileContent('');
+              setSelectedFileArtifactType(null);
+              setSelectedFileUnsupportedMessage(unsupportedMessage);
+              setFileContentCache((current) => ({
+                ...current,
+                [preferredPath]: {
+                  content: '',
+                  updatedAt: preferredUpdatedAt,
+                  artifactType: null,
+                  unsupportedMessage,
+                },
+              }));
             }
-
-            const unsupportedMessage = getUnsupportedEditorFileMessage(err);
-            if (!unsupportedMessage) {
-              throw err;
-            }
-
-            setFileContent('');
-            setSelectedFileArtifactType(null);
-            setSelectedFileUnsupportedMessage(unsupportedMessage);
-            setFileContentCache((current) => ({
-              ...current,
-              [preferredPath]: {
-                content: '',
-                updatedAt: preferredUpdatedAt,
-                artifactType: null,
-                unsupportedMessage,
-              },
-            }));
           }
+        } else {
+          setFileContent('');
+          setSelectedFileArtifactType(null);
+          setSelectedFileUnsupportedMessage(null);
         }
-      } else {
-        setFileContent('');
-        setSelectedFileArtifactType(null);
-        setSelectedFileUnsupportedMessage(null);
-      }
 
-      setFileDirty(false);
-      setError(null);
-    } catch (err) {
-      if (requestId !== loadWorkspaceDataRequestIdRef.current) {
-        return;
+        setFileDirty(false);
+        setError(null);
+      } catch (err) {
+        if (requestId !== loadWorkspaceDataRequestIdRef.current) {
+          return;
+        }
+        setError(err instanceof Error ? err.message : 'Failed to load workspace data');
       }
-      setError(err instanceof Error ? err.message : 'Failed to load workspace data');
-    }
-  }, [reconcileWorkspaceFileTree, warmWorkspaceFileCache]);
+    },
+    [reconcileWorkspaceFileTree, warmWorkspaceFileCache],
+  );
 
   const loadChangedFileState = useCallback(async (workspaceId: string) => {
     if (changedFileStateInFlightRef.current) {
@@ -2558,20 +2936,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, []);
 
-  const loadSnapshots = useCallback(async (workspaceId: string): Promise<UserSpaceSnapshotTimeline | null> => {
-    try {
-      const result = await api.getUserSpaceSnapshotTimeline(workspaceId);
-      setSnapshots(result.snapshots);
-      setSnapshotBranches(result.branches);
-      setCurrentSnapshotId(result.current_snapshot_id ?? null);
-      setCurrentSnapshotBranchId(result.current_branch_id ?? null);
-      setSnapshotsLoadedForWorkspace(workspaceId);
-      return result;
-    } catch {
-      // Snapshot list is non-critical; keep UI functional.
-      return null;
-    }
-  }, []);
+  const loadSnapshots = useCallback(
+    async (workspaceId: string): Promise<UserSpaceSnapshotTimeline | null> => {
+      try {
+        const result = await api.getUserSpaceSnapshotTimeline(workspaceId);
+        setSnapshots(result.snapshots);
+        setSnapshotBranches(result.branches);
+        setCurrentSnapshotId(result.current_snapshot_id ?? null);
+        setCurrentSnapshotBranchId(result.current_branch_id ?? null);
+        setSnapshotsLoadedForWorkspace(workspaceId);
+        return result;
+      } catch {
+        // Snapshot list is non-critical; keep UI functional.
+        return null;
+      }
+    },
+    [],
+  );
 
   const loadSnapshotDiffSummary = useCallback(async (workspaceId: string, snapshotId: string) => {
     if (snapshotDiffSummariesRef.current[snapshotId]) {
@@ -2624,126 +3005,147 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const diffHover = useDiffHoverTimers({ onDismiss: clearFileDiffState });
 
-  const loadSnapshotFileDiff = useCallback(async (workspaceId: string, snapshotId: string, filePath: string) => {
-    const cacheKey = getSnapshotDiffFileKey(snapshotId, filePath);
-    diffHover.cancelDismiss();
+  const loadSnapshotFileDiff = useCallback(
+    async (workspaceId: string, snapshotId: string, filePath: string) => {
+      const cacheKey = getSnapshotDiffFileKey(snapshotId, filePath);
+      diffHover.cancelDismiss();
 
-    const cached = snapshotFileDiffCacheRef.current.get(cacheKey);
-    setActiveSnapshotFileDiffKey(cacheKey);
-    setActiveSnapshotFileDiffError(null);
-    if (cached) {
-      setActiveSnapshotFileDiffLoading(false);
-      setActiveSnapshotFileDiff(cached);
-      return cached;
-    }
-
-    const requestId = ++snapshotFileDiffRequestIdRef.current;
-    setActiveSnapshotFileDiffLoading(true);
-    setActiveSnapshotFileDiff(null);
-
-    try {
-      const diff = await api.getUserSpaceSnapshotFileDiff(workspaceId, snapshotId, filePath);
-      if (requestId !== snapshotFileDiffRequestIdRef.current) {
-        return null;
-      }
-      const cache = snapshotFileDiffCacheRef.current;
-      cache.delete(cacheKey);
-      cache.set(cacheKey, diff);
-      while (cache.size > SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES) {
-        const oldest = cache.keys().next().value;
-        if (oldest !== undefined) cache.delete(oldest);
-        else break;
-      }
-      setActiveSnapshotFileDiff(diff);
-      return diff;
-    } catch (err) {
-      if (requestId === snapshotFileDiffRequestIdRef.current) {
-        setActiveSnapshotFileDiffError(err instanceof Error ? err.message : 'Failed to load file diff');
-      }
-      return null;
-    } finally {
-      if (requestId === snapshotFileDiffRequestIdRef.current) {
+      const cached = snapshotFileDiffCacheRef.current.get(cacheKey);
+      setActiveSnapshotFileDiffKey(cacheKey);
+      setActiveSnapshotFileDiffError(null);
+      if (cached) {
         setActiveSnapshotFileDiffLoading(false);
+        setActiveSnapshotFileDiff(cached);
+        return cached;
       }
-    }
-  }, [diffHover]);
 
-  const handleToggleSnapshotExpanded = useCallback((snapshotId: string) => {
-    setExpandedSnapshotIds((current) => {
-      const next = new Set(current);
-      if (next.has(snapshotId)) {
-        next.delete(snapshotId);
-      } else {
-        next.add(snapshotId);
-        if (activeWorkspaceId) {
-          void loadSnapshotDiffSummary(activeWorkspaceId, snapshotId);
+      const requestId = ++snapshotFileDiffRequestIdRef.current;
+      setActiveSnapshotFileDiffLoading(true);
+      setActiveSnapshotFileDiff(null);
+
+      try {
+        const diff = await api.getUserSpaceSnapshotFileDiff(workspaceId, snapshotId, filePath);
+        if (requestId !== snapshotFileDiffRequestIdRef.current) {
+          return null;
+        }
+        const cache = snapshotFileDiffCacheRef.current;
+        cache.delete(cacheKey);
+        cache.set(cacheKey, diff);
+        while (cache.size > SNAPSHOT_FILE_DIFF_CACHE_MAX_ENTRIES) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+          else break;
+        }
+        setActiveSnapshotFileDiff(diff);
+        return diff;
+      } catch (err) {
+        if (requestId === snapshotFileDiffRequestIdRef.current) {
+          setActiveSnapshotFileDiffError(
+            err instanceof Error ? err.message : 'Failed to load file diff',
+          );
+        }
+        return null;
+      } finally {
+        if (requestId === snapshotFileDiffRequestIdRef.current) {
+          setActiveSnapshotFileDiffLoading(false);
         }
       }
-      return next;
-    });
-  }, [activeWorkspaceId, loadSnapshotDiffSummary]);
+    },
+    [diffHover],
+  );
 
-  const handleSnapshotFileHoverStart = useCallback((snapshotId: string, filePath: string) => {
-    if (!activeWorkspaceId) return;
-    diffHover.startHover(() => {
-      setActiveSnapshotFileDiffTitle('Snapshot Diff');
-      setActiveSnapshotFileDiffBeforeLabel('Snapshot');
-      setActiveSnapshotFileDiffAfterLabel('Current Workspace');
-      void loadSnapshotFileDiff(activeWorkspaceId, snapshotId, filePath);
-    });
-  }, [activeWorkspaceId, diffHover, loadSnapshotFileDiff]);
+  const handleToggleSnapshotExpanded = useCallback(
+    (snapshotId: string) => {
+      setExpandedSnapshotIds((current) => {
+        const next = new Set(current);
+        if (next.has(snapshotId)) {
+          next.delete(snapshotId);
+        } else {
+          next.add(snapshotId);
+          if (activeWorkspaceId) {
+            void loadSnapshotDiffSummary(activeWorkspaceId, snapshotId);
+          }
+        }
+        return next;
+      });
+    },
+    [activeWorkspaceId, loadSnapshotDiffSummary],
+  );
+
+  const handleSnapshotFileHoverStart = useCallback(
+    (snapshotId: string, filePath: string) => {
+      if (!activeWorkspaceId) return;
+      diffHover.startHover(() => {
+        setActiveSnapshotFileDiffTitle('Snapshot Diff');
+        setActiveSnapshotFileDiffBeforeLabel('Snapshot');
+        setActiveSnapshotFileDiffAfterLabel('Current Workspace');
+        void loadSnapshotFileDiff(activeWorkspaceId, snapshotId, filePath);
+      });
+    },
+    [activeWorkspaceId, diffHover, loadSnapshotFileDiff],
+  );
 
   const handleSnapshotFileHoverEnd = useCallback(() => {
     diffHover.endHover();
   }, [diffHover]);
 
-  const handleTreeFileHoverStart = useCallback((filePath: string) => {
-    if (!activeWorkspaceId) return;
-    if (treeFileHoverSuppressRef.current === filePath) return;
-    diffHover.startHover(() => {
-      void (async () => {
-        let snapshotId = currentSnapshotId;
-        if (!snapshotId) {
-          const timeline: UserSpaceSnapshotTimeline | null = await loadSnapshots(activeWorkspaceId);
-          if (timeline) {
-            snapshotId = timeline.current_snapshot_id ?? null;
+  const handleTreeFileHoverStart = useCallback(
+    (filePath: string) => {
+      if (!activeWorkspaceId) return;
+      if (treeFileHoverSuppressRef.current === filePath) return;
+      diffHover.startHover(() => {
+        void (async () => {
+          let snapshotId = currentSnapshotId;
+          if (!snapshotId) {
+            const timeline: UserSpaceSnapshotTimeline | null =
+              await loadSnapshots(activeWorkspaceId);
+            if (timeline) {
+              snapshotId = timeline.current_snapshot_id ?? null;
+            }
           }
-        }
-        if (!snapshotId) {
-          return;
-        }
-        setActiveSnapshotFileDiffTitle('Unsaved Changes');
-        setActiveSnapshotFileDiffBeforeLabel('Last Snapshot');
-        setActiveSnapshotFileDiffAfterLabel('Current');
-        await loadSnapshotFileDiff(activeWorkspaceId, snapshotId, filePath);
-      })();
-    });
-  }, [activeWorkspaceId, currentSnapshotId, diffHover, loadSnapshotFileDiff, loadSnapshots]);
+          if (!snapshotId) {
+            return;
+          }
+          setActiveSnapshotFileDiffTitle('Unsaved Changes');
+          setActiveSnapshotFileDiffBeforeLabel('Last Snapshot');
+          setActiveSnapshotFileDiffAfterLabel('Current');
+          await loadSnapshotFileDiff(activeWorkspaceId, snapshotId, filePath);
+        })();
+      });
+    },
+    [activeWorkspaceId, currentSnapshotId, diffHover, loadSnapshotFileDiff, loadSnapshots],
+  );
 
   const handleTreeFileHoverEnd = useCallback(() => {
     treeFileHoverSuppressRef.current = null;
     diffHover.endHover();
   }, [diffHover]);
 
-  const debouncedLoadWorkspaceData = useCallback((workspaceId: string) => {
-    if (loadWorkspaceDataDebounceRef.current !== null) {
-      window.clearTimeout(loadWorkspaceDataDebounceRef.current);
-    }
-    loadWorkspaceDataDebounceRef.current = window.setTimeout(() => {
-      loadWorkspaceDataDebounceRef.current = null;
-      void loadWorkspaceData(workspaceId);
-    }, 300);
-  }, [loadWorkspaceData]);
+  const debouncedLoadWorkspaceData = useCallback(
+    (workspaceId: string) => {
+      if (loadWorkspaceDataDebounceRef.current !== null) {
+        window.clearTimeout(loadWorkspaceDataDebounceRef.current);
+      }
+      loadWorkspaceDataDebounceRef.current = window.setTimeout(() => {
+        loadWorkspaceDataDebounceRef.current = null;
+        void loadWorkspaceData(workspaceId);
+      }, 300);
+    },
+    [loadWorkspaceData],
+  );
 
-  const debouncedLoadChangedFileState = useCallback((workspaceId: string) => {
-    if (loadChangedFileStateDebounceRef.current !== null) {
-      window.clearTimeout(loadChangedFileStateDebounceRef.current);
-    }
-    loadChangedFileStateDebounceRef.current = window.setTimeout(() => {
-      loadChangedFileStateDebounceRef.current = null;
-      void loadChangedFileState(workspaceId);
-    }, 300);
-  }, [loadChangedFileState]);
+  const debouncedLoadChangedFileState = useCallback(
+    (workspaceId: string) => {
+      if (loadChangedFileStateDebounceRef.current !== null) {
+        window.clearTimeout(loadChangedFileStateDebounceRef.current);
+      }
+      loadChangedFileStateDebounceRef.current = window.setTimeout(() => {
+        loadChangedFileStateDebounceRef.current = null;
+        void loadChangedFileState(workspaceId);
+      }, 300);
+    },
+    [loadChangedFileState],
+  );
 
   useEffect(() => {
     loadWorkspaces();
@@ -2773,7 +3175,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
     let cancelled = false;
 
-    api.getUserSpaceFile(activeWorkspaceId, previewEntryPath)
+    api
+      .getUserSpaceFile(activeWorkspaceId, previewEntryPath)
       .then((file) => {
         if (cancelled) return;
         setPreviewLiveDataConnections(file.live_data_connections ?? []);
@@ -2830,7 +3233,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     void Promise.all([
       loadWorkspaceData(activeWorkspaceId),
       loadChangedFileState(activeWorkspaceId),
-      api.listWorkspaceMounts(activeWorkspaceId).then(setMounts).catch(() => setMounts([])),
+      api
+        .listWorkspaceMounts(activeWorkspaceId)
+        .then(setMounts)
+        .catch(() => setMounts([])),
     ]);
   }, [activeWorkspaceId, diffHover, loadChangedFileState, loadWorkspaceData]);
 
@@ -2957,70 +3363,63 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     activeWorkspaceConversationIdRef.current = activeWorkspaceConversationId;
   }, [activeWorkspaceConversationId]);
 
-  const runRefreshActiveWorkspaceState = useCallback(async (
-    workspaceId: string | null,
-    conversationId: string | null,
-  ) => {
-    if (!workspaceId) {
-      setRuntimeStatus(null);
-      setActiveWorkspaceChatSnapshot(null);
-      return;
-    }
-
-    refreshRuntimeStatusInflightRef.current = true;
-    const requestId = ++loadRuntimeStatusRequestIdRef.current;
-    const requestedConversationId = conversationId ?? null;
-
-    try {
-      const state = await api.getUserSpaceWorkspaceTabState(
-        workspaceId,
-        conversationId,
-      );
-
-      const isCurrentWorkspaceRequest = (
-        requestId === loadRuntimeStatusRequestIdRef.current
-        && activeWorkspaceIdRef.current === workspaceId
-      );
-      const isCurrentConversationRequest = (
-        isCurrentWorkspaceRequest
-        && activeWorkspaceConversationIdRef.current === requestedConversationId
-      );
-
-      if (isCurrentWorkspaceRequest) {
-        setRuntimeStatus(state.runtime_status);
-        // Ignore tab-state chat snapshots for a conversation that is no longer selected.
-        if (isCurrentConversationRequest) {
-          setActiveWorkspaceChatSnapshot(state.chat_state);
-        }
-      }
-    } catch {
-      const isCurrentWorkspaceRequest = (
-        requestId === loadRuntimeStatusRequestIdRef.current
-        && activeWorkspaceIdRef.current === workspaceId
-      );
-      const isCurrentConversationRequest = (
-        isCurrentWorkspaceRequest
-        && activeWorkspaceConversationIdRef.current === requestedConversationId
-      );
-
-      if (isCurrentWorkspaceRequest) {
+  const runRefreshActiveWorkspaceState = useCallback(
+    async (workspaceId: string | null, conversationId: string | null) => {
+      if (!workspaceId) {
         setRuntimeStatus(null);
-        if (isCurrentConversationRequest) {
-          setActiveWorkspaceChatSnapshot(null);
+        setActiveWorkspaceChatSnapshot(null);
+        return;
+      }
+
+      refreshRuntimeStatusInflightRef.current = true;
+      const requestId = ++loadRuntimeStatusRequestIdRef.current;
+      const requestedConversationId = conversationId ?? null;
+
+      try {
+        const state = await api.getUserSpaceWorkspaceTabState(workspaceId, conversationId);
+
+        const isCurrentWorkspaceRequest =
+          requestId === loadRuntimeStatusRequestIdRef.current &&
+          activeWorkspaceIdRef.current === workspaceId;
+        const isCurrentConversationRequest =
+          isCurrentWorkspaceRequest &&
+          activeWorkspaceConversationIdRef.current === requestedConversationId;
+
+        if (isCurrentWorkspaceRequest) {
+          setRuntimeStatus(state.runtime_status);
+          // Ignore tab-state chat snapshots for a conversation that is no longer selected.
+          if (isCurrentConversationRequest) {
+            setActiveWorkspaceChatSnapshot(state.chat_state);
+          }
+        }
+      } catch {
+        const isCurrentWorkspaceRequest =
+          requestId === loadRuntimeStatusRequestIdRef.current &&
+          activeWorkspaceIdRef.current === workspaceId;
+        const isCurrentConversationRequest =
+          isCurrentWorkspaceRequest &&
+          activeWorkspaceConversationIdRef.current === requestedConversationId;
+
+        if (isCurrentWorkspaceRequest) {
+          setRuntimeStatus(null);
+          if (isCurrentConversationRequest) {
+            setActiveWorkspaceChatSnapshot(null);
+          }
+        }
+      } finally {
+        refreshRuntimeStatusInflightRef.current = false;
+
+        if (refreshRuntimeStatusPendingRef.current) {
+          refreshRuntimeStatusPendingRef.current = false;
+          void runRefreshActiveWorkspaceState(
+            activeWorkspaceIdRef.current,
+            activeWorkspaceConversationIdRef.current,
+          );
         }
       }
-    } finally {
-      refreshRuntimeStatusInflightRef.current = false;
-
-      if (refreshRuntimeStatusPendingRef.current) {
-        refreshRuntimeStatusPendingRef.current = false;
-        void runRefreshActiveWorkspaceState(
-          activeWorkspaceIdRef.current,
-          activeWorkspaceConversationIdRef.current,
-        );
-      }
-    }
-  }, []);
+    },
+    [],
+  );
 
   const refreshActiveWorkspaceState = useCallback(async () => {
     if (refreshRuntimeStatusInflightRef.current) {
@@ -3052,7 +3451,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     source.onmessage = (event) => {
       consecutiveErrors = 0; // reset on successful message
       try {
-        const data = JSON.parse(event.data) as { generation: number; event_type?: string; path?: string; old_path?: string; new_path?: string };
+        const data = JSON.parse(event.data) as {
+          generation: number;
+          event_type?: string;
+          path?: string;
+          old_path?: string;
+          new_path?: string;
+        };
         if (data.generation > lastGeneration) {
           lastGeneration = data.generation;
           const eventType = data.event_type ?? 'update';
@@ -3063,21 +3468,43 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
           // Mark files changed by agent tools (SSE events carry a path when originating from agent tools).
           if (data.path && (eventType === 'file_upsert' || eventType === 'file_patch')) {
-            setChangedFiles((prev) => { const next = new Set(prev); next.add(data.path!); return next; });
-            setAcknowledgedFiles((prev) => { const next = new Set(prev); next.delete(data.path!); return next; });
+            setChangedFiles((prev) => {
+              const next = new Set(prev);
+              next.add(data.path!);
+              return next;
+            });
+            setAcknowledgedFiles((prev) => {
+              const next = new Set(prev);
+              next.delete(data.path!);
+              return next;
+            });
           }
           if (data.path && eventType === 'file_delete') {
-            setChangedFiles((prev) => { const next = new Set(prev); next.delete(data.path!); return next; });
-            setAcknowledgedFiles((prev) => { const next = new Set(prev); next.delete(data.path!); return next; });
+            setChangedFiles((prev) => {
+              const next = new Set(prev);
+              next.delete(data.path!);
+              return next;
+            });
+            setAcknowledgedFiles((prev) => {
+              const next = new Set(prev);
+              next.delete(data.path!);
+              return next;
+            });
           }
           if (eventType === 'file_move' && data.old_path && data.new_path) {
             setChangedFiles((prev) => {
               if (!prev.has(data.old_path!)) return prev;
-              const next = new Set(prev); next.delete(data.old_path!); next.add(data.new_path!); return next;
+              const next = new Set(prev);
+              next.delete(data.old_path!);
+              next.add(data.new_path!);
+              return next;
             });
             setAcknowledgedFiles((prev) => {
               if (!prev.has(data.old_path!)) return prev;
-              const next = new Set(prev); next.delete(data.old_path!); next.add(data.new_path!); return next;
+              const next = new Set(prev);
+              next.delete(data.old_path!);
+              next.add(data.new_path!);
+              return next;
             });
           }
           if (eventType === 'snapshot') {
@@ -3175,7 +3602,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     if (!isWorkspaceMenuOpen) return;
 
     function handleClickOutside(event: MouseEvent) {
-      if (workspaceDropdownRef.current && !workspaceDropdownRef.current.contains(event.target as Node)) {
+      if (
+        workspaceDropdownRef.current &&
+        !workspaceDropdownRef.current.contains(event.target as Node)
+      ) {
         setIsWorkspaceMenuOpen(false);
       }
     }
@@ -3243,7 +3673,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         return;
       }
 
-      setExpandedFolders(new Set(parsed.filter((value): value is string => typeof value === 'string')));
+      setExpandedFolders(
+        new Set(parsed.filter((value): value is string => typeof value === 'string')),
+      );
     } catch {
       setExpandedFolders(new Set());
     }
@@ -3261,7 +3693,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    window.localStorage.setItem(getExpandedFoldersStorageKey(activeWorkspaceId), JSON.stringify(Array.from(expandedFolders)));
+    window.localStorage.setItem(
+      getExpandedFoldersStorageKey(activeWorkspaceId),
+      JSON.stringify(Array.from(expandedFolders)),
+    );
   }, [activeWorkspaceId, expandedFolders]);
 
   useEffect(() => {
@@ -3336,14 +3771,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       pollInFlight = true;
 
       try {
-        const results = await Promise.all(tasks.map(async (task) => {
-          try {
-            const status = await api.getUserSpaceWorkspaceCreateTask(task.task_id);
-            return { task, status, error: null as Error | null };
-          } catch (error) {
-            return { task, status: null as UserSpaceWorkspaceCreateTask | null, error: error as Error };
-          }
-        }));
+        const results = await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const status = await api.getUserSpaceWorkspaceCreateTask(task.task_id);
+              return { task, status, error: null as Error | null };
+            } catch (error) {
+              return {
+                task,
+                status: null as UserSpaceWorkspaceCreateTask | null,
+                error: error as Error,
+              };
+            }
+          }),
+        );
 
         if (cancelled) {
           return;
@@ -3362,7 +3803,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 completedTasks.push(result.status);
               }
               if (result.status.phase === 'failed' && !nextError) {
-                nextError = result.status.error?.trim() || `Failed to create ${result.status.workspace_name || 'workspace'}`;
+                nextError =
+                  result.status.error?.trim() ||
+                  `Failed to create ${result.status.workspace_name || 'workspace'}`;
               }
             } else {
               updatedTasks[result.status.task_id] = result.status;
@@ -3409,9 +3852,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           return;
         }
 
-        completedTasks.sort((left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at));
-        const autoSelectTask = completedTasks.find((task) => task.task_id === latestQueuedWorkspaceCreateTaskIdRef.current)
-          ?? (!activeWorkspaceIdRef.current ? completedTasks[completedTasks.length - 1] : null);
+        completedTasks.sort(
+          (left, right) => Date.parse(left.queued_at) - Date.parse(right.queued_at),
+        );
+        const autoSelectTask =
+          completedTasks.find(
+            (task) => task.task_id === latestQueuedWorkspaceCreateTaskIdRef.current,
+          ) ?? (!activeWorkspaceIdRef.current ? completedTasks[completedTasks.length - 1] : null);
 
         if (autoSelectTask?.workspace_id) {
           if (latestQueuedWorkspaceCreateTaskIdRef.current === autoSelectTask.task_id) {
@@ -3462,14 +3909,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       pollInFlight = true;
 
       try {
-        const results = await Promise.all(tasks.map(async (task) => {
-          try {
-            const status = await api.getUserSpaceWorkspaceDuplicateTask(task.task_id);
-            return { task, status, error: null as Error | null };
-          } catch (error) {
-            return { task, status: null as UserSpaceWorkspaceDuplicateTask | null, error: error as Error };
-          }
-        }));
+        const results = await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const status = await api.getUserSpaceWorkspaceDuplicateTask(task.task_id);
+              return { task, status, error: null as Error | null };
+            } catch (error) {
+              return {
+                task,
+                status: null as UserSpaceWorkspaceDuplicateTask | null,
+                error: error as Error,
+              };
+            }
+          }),
+        );
 
         if (cancelled) {
           return;
@@ -3484,7 +3937,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             if (isWorkspaceDuplicateTaskTerminal(result.status.phase)) {
               terminalTaskIds.add(result.status.task_id);
               if (result.status.phase === 'failed' && !nextError) {
-                nextError = result.status.error?.trim() || `Failed to duplicate ${result.status.workspace_name || 'workspace'}`;
+                nextError =
+                  result.status.error?.trim() ||
+                  `Failed to duplicate ${result.status.workspace_name || 'workspace'}`;
               }
             } else {
               updatedTasks[result.status.task_id] = result.status;
@@ -3540,122 +3995,134 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     };
   }, [activeWorkspaceDuplicateTaskCount, loadWorkspaces]);
 
-  const handleSelectFile = useCallback(async (path: string) => {
-    if (!activeWorkspaceId) return;
+  const handleSelectFile = useCallback(
+    async (path: string) => {
+      if (!activeWorkspaceId) return;
 
-    selectedFilePathRef.current = path;
-    setSelectedFilePath(path);
+      selectedFilePathRef.current = path;
+      setSelectedFilePath(path);
 
-    try {
-      const selectedMeta = files.find((file) => file.path === path);
-      const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
-      const cached = fileContentCacheRef.current[path];
-
-      if (cached && cached.updatedAt === selectedUpdatedAt) {
-        setFileContent(cached.content);
-        setFileDirty(false);
-        setSelectedFileArtifactType(cached.artifactType ?? null);
-        setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
-        setError(null);
-        return;
-      }
-
-      const file = await api.getUserSpaceFile(activeWorkspaceId, path);
-      setFileContent(file.content);
-      setSelectedFileArtifactType(file.artifact_type ?? null);
-      setFileContentCache((current) => ({
-        ...current,
-        [file.path]: {
-          content: file.content,
-          updatedAt: selectedUpdatedAt,
-          artifactType: file.artifact_type ?? null,
-        },
-      }));
-      setFileDirty(false);
-      setSelectedFileUnsupportedMessage(null);
-      setError(null);
-    } catch (err) {
-      const unsupportedMessage = getUnsupportedEditorFileMessage(err);
-      if (unsupportedMessage) {
+      try {
         const selectedMeta = files.find((file) => file.path === path);
-        setFileContent('');
+        const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
+        const cached = fileContentCacheRef.current[path];
+
+        if (cached && cached.updatedAt === selectedUpdatedAt) {
+          setFileContent(cached.content);
+          setFileDirty(false);
+          setSelectedFileArtifactType(cached.artifactType ?? null);
+          setSelectedFileUnsupportedMessage(cached.unsupportedMessage ?? null);
+          setError(null);
+          return;
+        }
+
+        const file = await api.getUserSpaceFile(activeWorkspaceId, path);
+        setFileContent(file.content);
+        setSelectedFileArtifactType(file.artifact_type ?? null);
+        setFileContentCache((current) => ({
+          ...current,
+          [file.path]: {
+            content: file.content,
+            updatedAt: selectedUpdatedAt,
+            artifactType: file.artifact_type ?? null,
+          },
+        }));
         setFileDirty(false);
+        setSelectedFileUnsupportedMessage(null);
+        setError(null);
+      } catch (err) {
+        const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+        if (unsupportedMessage) {
+          const selectedMeta = files.find((file) => file.path === path);
+          setFileContent('');
+          setFileDirty(false);
+          setSelectedFileArtifactType(null);
+          setSelectedFileUnsupportedMessage(unsupportedMessage);
+          setFileContentCache((current) => ({
+            ...current,
+            [path]: {
+              content: '',
+              updatedAt: selectedMeta?.updated_at ?? '',
+              artifactType: null,
+              unsupportedMessage,
+            },
+          }));
+          setError(null);
+          return;
+        }
+
         setSelectedFileArtifactType(null);
-        setSelectedFileUnsupportedMessage(unsupportedMessage);
-        setFileContentCache((current) => ({
-          ...current,
-          [path]: {
-            content: '',
-            updatedAt: selectedMeta?.updated_at ?? '',
-            artifactType: null,
-            unsupportedMessage,
-          },
-        }));
-        setError(null);
-        return;
+        setSelectedFileUnsupportedMessage(null);
+        setError(err instanceof Error ? err.message : 'Failed to open file');
       }
+    },
+    [activeWorkspaceId, files],
+  );
 
-      setSelectedFileArtifactType(null);
-      setSelectedFileUnsupportedMessage(null);
-      setError(err instanceof Error ? err.message : 'Failed to open file');
-    }
-  }, [activeWorkspaceId, files]);
+  const handleTreeFileSelect = useCallback(
+    (filePath: string) => {
+      treeFileHoverSuppressRef.current = filePath;
+      diffHover.dismiss();
+      void handleSelectFile(filePath);
+    },
+    [diffHover, handleSelectFile],
+  );
 
-  const handleTreeFileSelect = useCallback((filePath: string) => {
-    treeFileHoverSuppressRef.current = filePath;
-    diffHover.dismiss();
-    void handleSelectFile(filePath);
-  }, [diffHover, handleSelectFile]);
+  const handleAddFileContextReference = useCallback(
+    async (path: string) => {
+      if (!activeWorkspaceId) return;
 
-  const handleAddFileContextReference = useCallback(async (path: string) => {
-    if (!activeWorkspaceId) return;
-
-    try {
-      const selectedMeta = files.find((file) => file.path === path);
-      const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
-      const cached = fileContentCacheRef.current[path];
-      if (cached?.unsupportedMessage && cached.updatedAt === selectedUpdatedAt) {
-        setError(cached.unsupportedMessage);
-        return;
-      }
-      const content = path === selectedFilePath
-        ? fileContent
-        : cached && cached.updatedAt === selectedUpdatedAt
-          ? cached.content
-          : (await api.getUserSpaceFile(activeWorkspaceId, path)).content;
-      const trimmed = trimContextContent(content);
-      const referenceBase = {
-        path,
-        source: 'file' as const,
-      };
-      const fileReference: ChatContextReference = {
-        ...referenceBase,
-        id: buildChatContextReferenceId(referenceBase),
-        content: trimmed.content,
-        contentTruncated: trimmed.truncated,
-      };
-
-      // Focus the composer so the chip inserts at the caret, then insert. The
-      // composer itself dedupes a file reference for a path already present.
-      insertContextReferenceRef.current?.(fileReference);
-      setError(null);
-    } catch (err) {
-      const unsupportedMessage = getUnsupportedEditorFileMessage(err);
-      if (unsupportedMessage) {
+      try {
         const selectedMeta = files.find((file) => file.path === path);
-        setFileContentCache((current) => ({
-          ...current,
-          [path]: {
-            content: '',
-            updatedAt: selectedMeta?.updated_at ?? '',
-            artifactType: null,
-            unsupportedMessage,
-          },
-        }));
+        const selectedUpdatedAt = selectedMeta?.updated_at ?? '';
+        const cached = fileContentCacheRef.current[path];
+        if (cached?.unsupportedMessage && cached.updatedAt === selectedUpdatedAt) {
+          setError(cached.unsupportedMessage);
+          return;
+        }
+        const content =
+          path === selectedFilePath
+            ? fileContent
+            : cached && cached.updatedAt === selectedUpdatedAt
+              ? cached.content
+              : (await api.getUserSpaceFile(activeWorkspaceId, path)).content;
+        const trimmed = trimContextContent(content);
+        const referenceBase = {
+          path,
+          source: 'file' as const,
+        };
+        const fileReference: ChatContextReference = {
+          ...referenceBase,
+          id: buildChatContextReferenceId(referenceBase),
+          content: trimmed.content,
+          contentTruncated: trimmed.truncated,
+        };
+
+        // Focus the composer so the chip inserts at the caret, then insert. The
+        // composer itself dedupes a file reference for a path already present.
+        insertContextReferenceRef.current?.(fileReference);
+        setError(null);
+      } catch (err) {
+        const unsupportedMessage = getUnsupportedEditorFileMessage(err);
+        if (unsupportedMessage) {
+          const selectedMeta = files.find((file) => file.path === path);
+          setFileContentCache((current) => ({
+            ...current,
+            [path]: {
+              content: '',
+              updatedAt: selectedMeta?.updated_at ?? '',
+              artifactType: null,
+              unsupportedMessage,
+            },
+          }));
+        }
+        setError(
+          unsupportedMessage ?? (err instanceof Error ? err.message : 'Failed to add file context'),
+        );
       }
-      setError(unsupportedMessage ?? (err instanceof Error ? err.message : 'Failed to add file context'));
-    }
-  }, [activeWorkspaceId, fileContent, files, selectedFilePath]);
+    },
+    [activeWorkspaceId, fileContent, files, selectedFilePath],
+  );
 
   const handleRegisterContextReferenceInserter = useCallback(
     (insert: ((reference: ChatContextReference) => void) | null) => {
@@ -3674,37 +4141,43 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     });
   }, []);
 
-  const handleOpenChatContextReference = useCallback(async (reference: ChatContextReference) => {
-    await handleSelectFile(reference.path);
+  const handleOpenChatContextReference = useCallback(
+    async (reference: ChatContextReference) => {
+      await handleSelectFile(reference.path);
 
-    window.requestAnimationFrame(() => {
-      const view = codeMirrorViewRef.current;
-      if (!view || selectedFilePathRef.current !== reference.path) return;
-      if (!reference.startLine) {
-        view.dispatch({ effects: clearContextLineHighlightEffect.of(null) });
+      window.requestAnimationFrame(() => {
+        const view = codeMirrorViewRef.current;
+        if (!view || selectedFilePathRef.current !== reference.path) return;
+        if (!reference.startLine) {
+          view.dispatch({ effects: clearContextLineHighlightEffect.of(null) });
+          view.focus();
+          return;
+        }
+
+        const startLineNumber = Math.min(reference.startLine, view.state.doc.lines);
+        const endLineNumber = Math.min(
+          reference.endLine ?? reference.startLine,
+          view.state.doc.lines,
+        );
+        const startLine = view.state.doc.line(startLineNumber);
+        const endLine = view.state.doc.line(Math.max(startLineNumber, endLineNumber));
+        const lineRanges = [];
+        for (let lineNumber = startLine.number; lineNumber <= endLine.number; lineNumber += 1) {
+          lineRanges.push({ from: view.state.doc.line(lineNumber).from });
+        }
+
+        view.dispatch({
+          selection: { anchor: startLine.from, head: endLine.to },
+          effects: [
+            setContextLineHighlightEffect.of(lineRanges),
+            EditorView.scrollIntoView(startLine.from, { y: 'center' }),
+          ],
+        });
         view.focus();
-        return;
-      }
-
-      const startLineNumber = Math.min(reference.startLine, view.state.doc.lines);
-      const endLineNumber = Math.min(reference.endLine ?? reference.startLine, view.state.doc.lines);
-      const startLine = view.state.doc.line(startLineNumber);
-      const endLine = view.state.doc.line(Math.max(startLineNumber, endLineNumber));
-      const lineRanges = [];
-      for (let lineNumber = startLine.number; lineNumber <= endLine.number; lineNumber += 1) {
-        lineRanges.push({ from: view.state.doc.line(lineNumber).from });
-      }
-
-      view.dispatch({
-        selection: { anchor: startLine.from, head: endLine.to },
-        effects: [
-          setContextLineHighlightEffect.of(lineRanges),
-          EditorView.scrollIntoView(startLine.from, { y: 'center' }),
-        ],
       });
-      view.focus();
-    });
-  }, [handleSelectFile]);
+    },
+    [handleSelectFile],
+  );
 
   const handleCreateSnapshot = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -3712,7 +4185,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     try {
       await api.createUserSpaceSnapshot(activeWorkspaceId, {
         message: 'Manual snapshot',
-        ...(activeWorkspaceConversationId ? { conversation_id: activeWorkspaceConversationId } : {}),
+        ...(activeWorkspaceConversationId
+          ? { conversation_id: activeWorkspaceConversationId }
+          : {}),
       });
       // Reset all per-file changed/acknowledged markers after snapshot baseline resets.
       setChangedFiles(new Set());
@@ -3730,69 +4205,97 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setCreatingSnapshot(false);
     }
-  }, [activeWorkspaceId, activeWorkspaceConversationId, canEditWorkspace, loadChangedFileState, loadSnapshots, refreshActiveWorkspaceState, showSnapshots]);
+  }, [
+    activeWorkspaceId,
+    activeWorkspaceConversationId,
+    canEditWorkspace,
+    loadChangedFileState,
+    loadSnapshots,
+    refreshActiveWorkspaceState,
+    showSnapshots,
+  ]);
 
-  const handleSaveTreeFile = useCallback(async (filePath: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    setSavingTreeFile(filePath);
-    try {
-      // Determine content: if the file is currently selected, use editor state;
-      // otherwise fall back to the file content cache.
-      const content = filePath === selectedFilePath
-        ? fileContent
-        : (fileContentCacheRef.current[filePath]?.content ?? '');
-      const artifactType = filePath === selectedFilePath
-        ? (selectedFileArtifactType ?? undefined)
-        : (fileContentCacheRef.current[filePath]?.artifactType ?? undefined);
-      await api.upsertUserSpaceFile(activeWorkspaceId, filePath, {
-        content,
-        artifact_type: artifactType,
-      });
-      const changedFileState = await api.acknowledgeUserSpaceChangedFilePath(activeWorkspaceId, { path: filePath });
-      setChangedFiles(new Set(changedFileState.changed_file_paths));
-      setAcknowledgedFiles(new Set(changedFileState.acknowledged_changed_file_paths));
-      // If saving the currently selected file, clear its editor dirty flag too.
-      if (filePath === selectedFilePath) {
-        setFileDirty(false);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save file');
-    } finally {
-      setSavingTreeFile(null);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, fileContent, selectedFileArtifactType, selectedFilePath]);
-
-  const handleWorkspaceToolSelectionChange = useCallback((selection: UserSpaceToolSelection) => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    const workspaceId = activeWorkspace.id;
-    setPendingWorkspaceToolSelection({ workspaceId, selection });
-    setSavingWorkspaceTools(true);
-
-    if (workspaceToolSelectionSaveTimerRef.current) {
-      clearTimeout(workspaceToolSelectionSaveTimerRef.current);
-    }
-    const seq = ++workspaceToolSelectionSaveSeqRef.current;
-    workspaceToolSelectionSaveTimerRef.current = setTimeout(() => {
-      workspaceToolSelectionSaveTimerRef.current = null;
-      void api.updateUserSpaceWorkspace(workspaceId, {
-        tool_selection_mode: selection.mode,
-        selected_tool_ids: selection.toolIds,
-        selected_tool_group_ids: selection.toolGroupIds,
-      }).then((updated) => {
-        if (workspaceToolSelectionSaveSeqRef.current !== seq) return;
-        setWorkspaces((current) => current.map((workspace) => workspace.id === updated.id ? updated : workspace));
-        setPendingWorkspaceToolSelection((current) => current?.workspaceId === workspaceId ? null : current);
-      }).catch((err) => {
-        if (workspaceToolSelectionSaveSeqRef.current !== seq) return;
-        setPendingWorkspaceToolSelection((current) => current?.workspaceId === workspaceId ? null : current);
-        setError(err instanceof Error ? err.message : 'Failed to update tool selection');
-      }).finally(() => {
-        if (workspaceToolSelectionSaveSeqRef.current === seq) {
-          setSavingWorkspaceTools(false);
+  const handleSaveTreeFile = useCallback(
+    async (filePath: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      setSavingTreeFile(filePath);
+      try {
+        // Determine content: if the file is currently selected, use editor state;
+        // otherwise fall back to the file content cache.
+        const content =
+          filePath === selectedFilePath
+            ? fileContent
+            : (fileContentCacheRef.current[filePath]?.content ?? '');
+        const artifactType =
+          filePath === selectedFilePath
+            ? (selectedFileArtifactType ?? undefined)
+            : (fileContentCacheRef.current[filePath]?.artifactType ?? undefined);
+        await api.upsertUserSpaceFile(activeWorkspaceId, filePath, {
+          content,
+          artifact_type: artifactType,
+        });
+        const changedFileState = await api.acknowledgeUserSpaceChangedFilePath(activeWorkspaceId, {
+          path: filePath,
+        });
+        setChangedFiles(new Set(changedFileState.changed_file_paths));
+        setAcknowledgedFiles(new Set(changedFileState.acknowledged_changed_file_paths));
+        // If saving the currently selected file, clear its editor dirty flag too.
+        if (filePath === selectedFilePath) {
+          setFileDirty(false);
         }
-      });
-    }, 200);
-  }, [activeWorkspace, canEditWorkspace]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to save file');
+      } finally {
+        setSavingTreeFile(null);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, fileContent, selectedFileArtifactType, selectedFilePath],
+  );
+
+  const handleWorkspaceToolSelectionChange = useCallback(
+    (selection: UserSpaceToolSelection) => {
+      if (!activeWorkspace || !canEditWorkspace) return;
+      const workspaceId = activeWorkspace.id;
+      setPendingWorkspaceToolSelection({ workspaceId, selection });
+      setSavingWorkspaceTools(true);
+
+      if (workspaceToolSelectionSaveTimerRef.current) {
+        clearTimeout(workspaceToolSelectionSaveTimerRef.current);
+      }
+      const seq = ++workspaceToolSelectionSaveSeqRef.current;
+      workspaceToolSelectionSaveTimerRef.current = setTimeout(() => {
+        workspaceToolSelectionSaveTimerRef.current = null;
+        void api
+          .updateUserSpaceWorkspace(workspaceId, {
+            tool_selection_mode: selection.mode,
+            selected_tool_ids: selection.toolIds,
+            selected_tool_group_ids: selection.toolGroupIds,
+          })
+          .then((updated) => {
+            if (workspaceToolSelectionSaveSeqRef.current !== seq) return;
+            setWorkspaces((current) =>
+              current.map((workspace) => (workspace.id === updated.id ? updated : workspace)),
+            );
+            setPendingWorkspaceToolSelection((current) =>
+              current?.workspaceId === workspaceId ? null : current,
+            );
+          })
+          .catch((err) => {
+            if (workspaceToolSelectionSaveSeqRef.current !== seq) return;
+            setPendingWorkspaceToolSelection((current) =>
+              current?.workspaceId === workspaceId ? null : current,
+            );
+            setError(err instanceof Error ? err.message : 'Failed to update tool selection');
+          })
+          .finally(() => {
+            if (workspaceToolSelectionSaveSeqRef.current === seq) {
+              setSavingWorkspaceTools(false);
+            }
+          });
+      }, 200);
+    },
+    [activeWorkspace, canEditWorkspace],
+  );
 
   useEffect(() => {
     return () => {
@@ -3839,210 +4342,242 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     if (!activeWorkspaceId) return;
     setWorkspaces((current) =>
       current.map((ws) =>
-        ws.id === activeWorkspaceId
-          ? { ...ws, sqlite_persistence_mode: 'include' }
-          : ws,
+        ws.id === activeWorkspaceId ? { ...ws, sqlite_persistence_mode: 'include' } : ws,
       ),
     );
   }, [activeWorkspaceId]);
 
-  const handleWorkspaceScmSyncComplete = useCallback(async (response: UserSpaceWorkspaceScmSyncResponse) => {
-    setWorkspaces((current) => current.map((ws) => (
-      ws.id === response.workspace_id
-        ? { ...ws, scm: response.scm as UserSpaceWorkspaceScmStatus }
-        : ws
-    )));
-    if (activeWorkspaceId === response.workspace_id) {
-      await Promise.all([
-        loadWorkspaceData(response.workspace_id),
-        loadChangedFileState(response.workspace_id),
-        loadSnapshots(response.workspace_id),
-      ]);
-    }
-  }, [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+  const handleWorkspaceScmSyncComplete = useCallback(
+    async (response: UserSpaceWorkspaceScmSyncResponse) => {
+      setWorkspaces((current) =>
+        current.map((ws) =>
+          ws.id === response.workspace_id
+            ? { ...ws, scm: response.scm as UserSpaceWorkspaceScmStatus }
+            : ws,
+        ),
+      );
+      if (activeWorkspaceId === response.workspace_id) {
+        await Promise.all([
+          loadWorkspaceData(response.workspace_id),
+          loadChangedFileState(response.workspace_id),
+          loadSnapshots(response.workspace_id),
+        ]);
+      }
+    },
+    [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData],
+  );
 
-  const handleAskAgentToPrepareWorkspace = useCallback(async (prompt: string) => {
-    if (!activeWorkspaceId) return;
-    expandChat();
-    setError(null);
+  const handleAskAgentToPrepareWorkspace = useCallback(
+    async (prompt: string) => {
+      if (!activeWorkspaceId) return;
+      expandChat();
+      setError(null);
 
-    // Serialize after available-models to avoid a false-positive "no models configured" error.
-    refreshAvailableModels();
-    const readyState = await awaitAvailableModelsReady();
+      // Serialize after available-models to avoid a false-positive "no models configured" error.
+      refreshAvailableModels();
+      const readyState = await awaitAvailableModelsReady();
 
-    const hasAnyModel = readyState.models.length > 0;
-    if (!hasAnyModel) {
-      setError('No LLM configured. Please configure an LLM in Settings.');
-      return;
-    }
+      const hasAnyModel = readyState.models.length > 0;
+      if (!hasAnyModel) {
+        setError('No LLM configured. Please configure an LLM in Settings.');
+        return;
+      }
 
-    try {
-      const conversation = await api.createConversation(undefined, activeWorkspaceId);
+      try {
+        const conversation = await api.createConversation(undefined, activeWorkspaceId);
 
-      updateActiveWorkspaceConversationId(conversation.id);
-      setActiveWorkspaceChatSnapshot((current) => ({
-        conversations: [
-          conversation,
-          ...(current?.conversations.filter((item) => item.id !== conversation.id) ?? []),
-        ],
-        interrupted_conversation_ids: current?.interrupted_conversation_ids ?? [],
-        selected_conversation_id: conversation.id,
-        active_task: null,
-        interrupted_task: null,
-      }));
+        updateActiveWorkspaceConversationId(conversation.id);
+        setActiveWorkspaceChatSnapshot((current) => ({
+          conversations: [
+            conversation,
+            ...(current?.conversations.filter((item) => item.id !== conversation.id) ?? []),
+          ],
+          interrupted_conversation_ids: current?.interrupted_conversation_ids ?? [],
+          selected_conversation_id: conversation.id,
+          active_task: null,
+          interrupted_task: null,
+        }));
 
-      await api.sendMessageBackground(conversation.id, prompt, activeWorkspaceId);
-    } catch (err) {
-      setError(getApiErrorMessage(err, 'Failed to ask the agent to prepare the workspace'));
-    }
-  }, [activeWorkspaceId, awaitAvailableModelsReady, expandChat, refreshAvailableModels, updateActiveWorkspaceConversationId]);
+        await api.sendMessageBackground(conversation.id, prompt, activeWorkspaceId);
+      } catch (err) {
+        setError(getApiErrorMessage(err, 'Failed to ask the agent to prepare the workspace'));
+      }
+    },
+    [
+      activeWorkspaceId,
+      awaitAvailableModelsReady,
+      expandChat,
+      refreshAvailableModels,
+      updateActiveWorkspaceConversationId,
+    ],
+  );
 
-  const handleUserMessageSubmitted = useCallback(async (_message: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    await loadWorkspaceData(activeWorkspaceId);
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData]);
+  const handleUserMessageSubmitted = useCallback(
+    async (_message: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      await loadWorkspaceData(activeWorkspaceId);
+    },
+    [activeWorkspaceId, canEditWorkspace, loadWorkspaceData],
+  );
 
   const handleLiveDataWarningChange = useCallback((warning: string | null) => {
-    setRuntimeStatus((prev) => (
-      prev ? { ...prev, live_data_warning: warning } : prev
-    ));
+    setRuntimeStatus((prev) => (prev ? { ...prev, live_data_warning: warning } : prev));
   }, []);
 
-  const handleLiveDataTimeout = useCallback((message: string, timeoutSeconds?: number | null) => {
-    const normalized = message.trim();
-    if (!normalized) return;
-    const signature = `${activeWorkspaceId ?? ''}:${timeoutSeconds ?? ''}:${normalized}`;
-    setRuntimeStatus((prev) => (
-      prev ? { ...prev, live_data_warning: normalized } : prev
-    ));
-    setPreviewNotice({
-      id: Date.now(),
-      message: normalized,
-      tone: 'error',
-    });
-    if (lastLiveDataTimeoutToastRef.current === signature) return;
-    lastLiveDataTimeoutToastRef.current = signature;
+  const handleLiveDataTimeout = useCallback(
+    (message: string, timeoutSeconds?: number | null) => {
+      const normalized = message.trim();
+      if (!normalized) return;
+      const signature = `${activeWorkspaceId ?? ''}:${timeoutSeconds ?? ''}:${normalized}`;
+      setRuntimeStatus((prev) => (prev ? { ...prev, live_data_warning: normalized } : prev));
+      setPreviewNotice({
+        id: Date.now(),
+        message: normalized,
+        tone: 'error',
+      });
+      if (lastLiveDataTimeoutToastRef.current === signature) return;
+      lastLiveDataTimeoutToastRef.current = signature;
 
-    if (currentUser.role === 'admin' && onNavigateToTools) {
-      toast.error(
-        <>
-          {normalized}{' '}
-          <a
-            href="#"
-            onClick={(event) => {
-              event.preventDefault();
-              onNavigateToTools('connections');
-            }}
-            style={{ color: 'inherit', textDecoration: 'underline' }}
-          >
-            Open Tool Connections
-          </a>
-        </>,
-        12000,
-      );
-      return;
-    }
+      if (currentUser.role === 'admin' && onNavigateToTools) {
+        toast.error(
+          <>
+            {normalized}{' '}
+            <a
+              href="#"
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigateToTools('connections');
+              }}
+              style={{ color: 'inherit', textDecoration: 'underline' }}
+            >
+              Open Tool Connections
+            </a>
+          </>,
+          12000,
+        );
+        return;
+      }
 
-    toast.error(normalized, 12000);
-  }, [activeWorkspaceId, currentUser.role, onNavigateToTools, toast]);
+      toast.error(normalized, 12000);
+    },
+    [activeWorkspaceId, currentUser.role, onNavigateToTools, toast],
+  );
 
-  const handleRestoreSnapshot = useCallback(async (snapshotId: string, snapshotBranchId?: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+  const handleRestoreSnapshot = useCallback(
+    async (snapshotId: string, snapshotBranchId?: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
-    const waitForRestoredCursor = async (workspaceId: string, expectedSnapshotId: string): Promise<void> => {
-      const maxAttempts = 18;
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        try {
-          const timeline = await api.getUserSpaceSnapshotTimeline(workspaceId);
+      const waitForRestoredCursor = async (
+        workspaceId: string,
+        expectedSnapshotId: string,
+      ): Promise<void> => {
+        const maxAttempts = 18;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+          try {
+            const timeline = await api.getUserSpaceSnapshotTimeline(workspaceId);
+            setSnapshots(timeline.snapshots);
+            setSnapshotBranches(timeline.branches);
+            setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+            setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+            setSnapshotsLoadedForWorkspace(workspaceId);
+            if (timeline.current_snapshot_id === expectedSnapshotId) {
+              return;
+            }
+          } catch {
+            // Keep polling; final refresh happens below regardless.
+          }
+          await wait(250);
+        }
+      };
+
+      setNavigatingSnapshots(true);
+      setRestoringSnapshotId(snapshotId);
+      try {
+        if (snapshotBranchId && snapshotBranchId !== currentSnapshotBranchId) {
+          const timeline = await api.switchUserSpaceSnapshotBranch(activeWorkspaceId, {
+            branch_id: snapshotBranchId,
+          });
           setSnapshots(timeline.snapshots);
           setSnapshotBranches(timeline.branches);
           setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
           setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
-          setSnapshotsLoadedForWorkspace(workspaceId);
-          if (timeline.current_snapshot_id === expectedSnapshotId) {
-            return;
-          }
-        } catch {
-          // Keep polling; final refresh happens below regardless.
         }
-        await wait(250);
-      }
-    };
 
-    setNavigatingSnapshots(true);
-    setRestoringSnapshotId(snapshotId);
-    try {
-      if (snapshotBranchId && snapshotBranchId !== currentSnapshotBranchId) {
-        const timeline = await api.switchUserSpaceSnapshotBranch(activeWorkspaceId, { branch_id: snapshotBranchId });
-        setSnapshots(timeline.snapshots);
-        setSnapshotBranches(timeline.branches);
-        setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
-        setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+        const restoreResult = await api.restoreUserSpaceSnapshot(activeWorkspaceId, snapshotId);
+        await waitForRestoredCursor(
+          activeWorkspaceId,
+          restoreResult.restored_snapshot_id || snapshotId,
+        );
+        setChangedFiles(new Set());
+        setAcknowledgedFiles(new Set());
+        setFileDirty(false);
+        setSnapshotsLoadedForWorkspace(null);
+        await Promise.all([
+          loadWorkspaceData(activeWorkspaceId),
+          loadChangedFileState(activeWorkspaceId),
+          loadSnapshots(activeWorkspaceId),
+        ]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
+      } finally {
+        setRestoringSnapshotId(null);
+        setNavigatingSnapshots(false);
       }
+    },
+    [
+      activeWorkspaceId,
+      canEditWorkspace,
+      currentSnapshotBranchId,
+      loadChangedFileState,
+      loadSnapshots,
+      loadWorkspaceData,
+    ],
+  );
 
-      const restoreResult = await api.restoreUserSpaceSnapshot(activeWorkspaceId, snapshotId);
-      await waitForRestoredCursor(activeWorkspaceId, restoreResult.restored_snapshot_id || snapshotId);
+  const handleMessageSnapshotRestored = useCallback(
+    async (details?: { rolledBackSnapshot?: boolean; requiresRuntimeRestart?: boolean }) => {
+      if (!activeWorkspaceId) return;
+      // The chat panel already updated the conversation. Refresh workspace data,
+      // changed-file markers, and the snapshots timeline (cursor moves).
       setChangedFiles(new Set());
       setAcknowledgedFiles(new Set());
       setFileDirty(false);
       setSnapshotsLoadedForWorkspace(null);
-      await Promise.all([
-        loadWorkspaceData(activeWorkspaceId),
-        loadChangedFileState(activeWorkspaceId),
-        loadSnapshots(activeWorkspaceId),
-      ]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to restore snapshot');
-    } finally {
-      setRestoringSnapshotId(null);
-      setNavigatingSnapshots(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, currentSnapshotBranchId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
+      if (details?.rolledBackSnapshot && details.requiresRuntimeRestart) {
+        setPreviewNotice({
+          id: Date.now(),
+          tone: 'success',
+          message: 'Snapshot rolled back. Restart the runtime container to reload the preview.',
+        });
+      }
+      try {
+        await Promise.all([
+          loadWorkspaceData(activeWorkspaceId),
+          loadChangedFileState(activeWorkspaceId),
+          loadSnapshots(activeWorkspaceId),
+        ]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to refresh after snapshot restore');
+      }
+    },
+    [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData],
+  );
 
-  const handleMessageSnapshotRestored = useCallback(async (details?: {
-    rolledBackSnapshot?: boolean;
-    requiresRuntimeRestart?: boolean;
-  }) => {
-    if (!activeWorkspaceId) return;
-    // The chat panel already updated the conversation. Refresh workspace data,
-    // changed-file markers, and the snapshots timeline (cursor moves).
-    setChangedFiles(new Set());
-    setAcknowledgedFiles(new Set());
-    setFileDirty(false);
-    setSnapshotsLoadedForWorkspace(null);
-    if (details?.rolledBackSnapshot && details.requiresRuntimeRestart) {
-      setPreviewNotice({
-        id: Date.now(),
-        tone: 'success',
-        message: 'Snapshot rolled back. Restart the runtime container to reload the preview.',
-      });
-    }
-    try {
-      await Promise.all([
-        loadWorkspaceData(activeWorkspaceId),
-        loadChangedFileState(activeWorkspaceId),
-        loadSnapshots(activeWorkspaceId),
-      ]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to refresh after snapshot restore');
-    }
-  }, [activeWorkspaceId, loadChangedFileState, loadSnapshots, loadWorkspaceData]);
-
-  const handleBranchSwitch = useCallback((
-    _branchId: string | null,
-    associatedSnapshotId: string | null,
-  ) => {
-    // Switching branches MUST always prompt the user before restoring the
-    // associated workspace snapshot, even when the active user can edit the
-    // workspace. The snapshot restore is destructive (overwrites uncommitted
-    // workspace state) so we never auto-apply it.
-    if (!associatedSnapshotId) {
-      setBranchRestoreSnapshotId(null);
-      return;
-    }
-    setBranchRestoreSnapshotId(associatedSnapshotId);
-  }, []);
+  const handleBranchSwitch = useCallback(
+    (_branchId: string | null, associatedSnapshotId: string | null) => {
+      // Switching branches MUST always prompt the user before restoring the
+      // associated workspace snapshot, even when the active user can edit the
+      // workspace. The snapshot restore is destructive (overwrites uncommitted
+      // workspace state) so we never auto-apply it.
+      if (!associatedSnapshotId) {
+        setBranchRestoreSnapshotId(null);
+        return;
+      }
+      setBranchRestoreSnapshotId(associatedSnapshotId);
+    },
+    [],
+  );
 
   // Triggered by the chat panel whenever something happens that may have
   // produced or moved a userspace snapshot (chat-branch auto-snapshot,
@@ -4066,56 +4601,73 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setBranchRestoreSnapshotId(null);
   }, []);
 
-  const handleStartSnapshotRename = useCallback((snapshot: UserSpaceSnapshot) => {
-    if (!canEditWorkspace) return;
-    setRenamingSnapshotId(snapshot.id);
-    setSnapshotEditValue(snapshot.message ?? '');
-  }, [canEditWorkspace]);
+  const handleStartSnapshotRename = useCallback(
+    (snapshot: UserSpaceSnapshot) => {
+      if (!canEditWorkspace) return;
+      setRenamingSnapshotId(snapshot.id);
+      setSnapshotEditValue(snapshot.message ?? '');
+    },
+    [canEditWorkspace],
+  );
 
   const handleCancelSnapshotRename = useCallback(() => {
     setRenamingSnapshotId(null);
     setSnapshotEditValue('');
   }, []);
 
-  const handleSaveSnapshotRename = useCallback(async (snapshotId: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    const next = snapshotEditValue.trim();
-    if (!next) {
-      handleCancelSnapshotRename();
-      return;
-    }
-    setSavingSnapshotRename(true);
-    try {
-      await api.updateUserSpaceSnapshot(activeWorkspaceId, snapshotId, { message: next });
-      await loadSnapshots(activeWorkspaceId);
-      setRenamingSnapshotId(null);
-      setSnapshotEditValue('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename snapshot');
-    } finally {
-      setSavingSnapshotRename(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, handleCancelSnapshotRename, loadSnapshots, snapshotEditValue]);
+  const handleSaveSnapshotRename = useCallback(
+    async (snapshotId: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      const next = snapshotEditValue.trim();
+      if (!next) {
+        handleCancelSnapshotRename();
+        return;
+      }
+      setSavingSnapshotRename(true);
+      try {
+        await api.updateUserSpaceSnapshot(activeWorkspaceId, snapshotId, { message: next });
+        await loadSnapshots(activeWorkspaceId);
+        setRenamingSnapshotId(null);
+        setSnapshotEditValue('');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to rename snapshot');
+      } finally {
+        setSavingSnapshotRename(false);
+      }
+    },
+    [
+      activeWorkspaceId,
+      canEditWorkspace,
+      handleCancelSnapshotRename,
+      loadSnapshots,
+      snapshotEditValue,
+    ],
+  );
 
-  const handleSwitchSnapshotBranch = useCallback(async (branchId: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    setNavigatingSnapshots(true);
-    try {
-      const timeline = await api.switchUserSpaceSnapshotBranch(activeWorkspaceId, { branch_id: branchId });
-      setSnapshots(timeline.snapshots);
-      setSnapshotBranches(timeline.branches);
-      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
-      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
-      await Promise.all([
-        loadWorkspaceData(activeWorkspaceId),
-        loadChangedFileState(activeWorkspaceId),
-      ]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to switch snapshot branch');
-    } finally {
-      setNavigatingSnapshots(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadWorkspaceData]);
+  const handleSwitchSnapshotBranch = useCallback(
+    async (branchId: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      setNavigatingSnapshots(true);
+      try {
+        const timeline = await api.switchUserSpaceSnapshotBranch(activeWorkspaceId, {
+          branch_id: branchId,
+        });
+        setSnapshots(timeline.snapshots);
+        setSnapshotBranches(timeline.branches);
+        setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+        setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+        await Promise.all([
+          loadWorkspaceData(activeWorkspaceId),
+          loadChangedFileState(activeWorkspaceId),
+        ]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to switch snapshot branch');
+      } finally {
+        setNavigatingSnapshots(false);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, loadChangedFileState, loadWorkspaceData],
+  );
 
   const handleCreateSnapshotBranch = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -4133,44 +4685,59 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, canEditWorkspace]);
 
-  const handlePromoteBranchToMain = useCallback(async (branchId: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    setNavigatingSnapshots(true);
-    try {
-      const timeline = await api.promoteBranchToMain(activeWorkspaceId, { branch_id: branchId });
-      setSnapshots(timeline.snapshots);
-      setSnapshotBranches(timeline.branches);
-      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
-      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to promote branch to main');
-    } finally {
-      setNavigatingSnapshots(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace]);
+  const handlePromoteBranchToMain = useCallback(
+    async (branchId: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      setNavigatingSnapshots(true);
+      try {
+        const timeline = await api.promoteBranchToMain(activeWorkspaceId, { branch_id: branchId });
+        setSnapshots(timeline.snapshots);
+        setSnapshotBranches(timeline.branches);
+        setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+        setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to promote branch to main');
+      } finally {
+        setNavigatingSnapshots(false);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace],
+  );
 
-  const handleDeleteSnapshot = useCallback(async (snapshotId: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    setDeletingSnapshotId(snapshotId);
-    try {
-      const timeline = await api.deleteUserSpaceSnapshot(activeWorkspaceId, snapshotId);
-      setSnapshots(timeline.snapshots);
-      setSnapshotBranches(timeline.branches);
-      setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
-      setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
-      setSnapshotsLoadedForWorkspace(activeWorkspaceId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete snapshot');
-    } finally {
-      setDeletingSnapshotId(null);
-      setDeleteConfirmSnapshotId(null);
-    }
-  }, [activeWorkspaceId, canEditWorkspace]);
+  const handleDeleteSnapshot = useCallback(
+    async (snapshotId: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      setDeletingSnapshotId(snapshotId);
+      try {
+        const timeline = await api.deleteUserSpaceSnapshot(activeWorkspaceId, snapshotId);
+        setSnapshots(timeline.snapshots);
+        setSnapshotBranches(timeline.branches);
+        setCurrentSnapshotId(timeline.current_snapshot_id ?? null);
+        setCurrentSnapshotBranchId(timeline.current_branch_id ?? null);
+        setSnapshotsLoadedForWorkspace(activeWorkspaceId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete snapshot');
+      } finally {
+        setDeletingSnapshotId(null);
+        setDeleteConfirmSnapshotId(null);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace],
+  );
 
   const handleStartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
-    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting', runtime_operation_phase: 'queued', last_error: null } : prev);
+    setRuntimeStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            session_state: 'starting',
+            runtime_operation_phase: 'queued',
+            last_error: null,
+          }
+        : prev,
+    );
     try {
       await api.startUserSpaceRuntimeSession(activeWorkspaceId);
       await refreshActiveWorkspaceState();
@@ -4185,7 +4752,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const handleStopRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
-    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'stopping' } : prev);
+    setRuntimeStatus((prev) => (prev ? { ...prev, session_state: 'stopping' } : prev));
     try {
       await api.stopUserSpaceRuntimeSession(activeWorkspaceId);
       await refreshActiveWorkspaceState();
@@ -4200,7 +4767,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   const handleRestartRuntime = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
     setRuntimeBusy(true);
-    setRuntimeStatus((prev) => prev ? { ...prev, session_state: 'starting', runtime_operation_phase: 'queued', last_error: null } : prev);
+    setRuntimeStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            session_state: 'starting',
+            runtime_operation_phase: 'queued',
+            last_error: null,
+          }
+        : prev,
+    );
     try {
       await api.restartUserSpaceRuntimeDevserver(activeWorkspaceId);
       await refreshActiveWorkspaceState();
@@ -4352,12 +4928,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setPreviewFrameUrl(null);
       setPreviewOrigin(null);
     }
-  }, [
-    activeWorkspaceId,
-    launchPreviewSurface,
-    previewFrameUrl,
-    runtimeDisplayState,
-  ]);
+  }, [activeWorkspaceId, launchPreviewSurface, previewFrameUrl, runtimeDisplayState]);
 
   useEffect(() => {
     if (!activeWorkspaceId) {
@@ -4378,7 +4949,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           return;
         }
 
-        const shouldRefreshPreviewLaunch = previewLaunchExpiresAtMsRef.current <= (Date.now() + USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS);
+        const shouldRefreshPreviewLaunch =
+          previewLaunchExpiresAtMsRef.current <=
+          Date.now() + USERSPACE_PREVIEW_LAUNCH_REFRESH_LEAD_MS;
         if (shouldRefreshPreviewLaunch) {
           // Session-warming only: keep the existing iframe alive instead of
           // remounting it, which would tear down the running workspace app
@@ -4390,7 +4963,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to refresh workspace browser authorization');
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Failed to refresh workspace browser authorization',
+          );
         }
       }
     };
@@ -4399,7 +4976,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return () => {
       cancelled = true;
     };
-  }, [activeRightTab, activeWorkspaceId, authorizeBrowserSurfaces, launchPreviewSurface, previewFrameUrl]);
+  }, [
+    activeRightTab,
+    activeWorkspaceId,
+    authorizeBrowserSurfaces,
+    launchPreviewSurface,
+    previewFrameUrl,
+  ]);
 
   // Reset reconnect attempts when workspace or file changes (not on reconnect nonce)
   useEffect(() => {
@@ -4558,7 +5141,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         collabSocketRef.current = null;
       }
     };
-  }, [activeWorkspaceId, authorizeBrowserSurfaces, loadWorkspaceData, selectedFilePath, collabReconnectNonce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedFileArtifactType is read via closure and must not retrigger this workspace-load effect
+  }, [
+    activeWorkspaceId,
+    authorizeBrowserSurfaces,
+    loadWorkspaceData,
+    selectedFilePath,
+    collabReconnectNonce,
+  ]);
 
   useEffect(() => {
     if (terminalReconnectTimerRef.current !== null) {
@@ -4613,7 +5203,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       convertEol: true,
       cursorBlink: !isReadOnlyInitial,
       disableStdin: isReadOnlyInitial,
-      fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
+      fontFamily:
+        'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
       fontSize: 12,
     });
     terminal.loadAddon(fitAddon);
@@ -4684,7 +5275,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             // ignore
           }
           try {
-            socket?.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+            socket?.send(
+              JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }),
+            );
           } catch {
             // ignore
           }
@@ -4693,7 +5286,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
         socket.onmessage = (event) => {
           try {
-            const payload = JSON.parse(event.data) as { type?: string; data?: string; read_only?: boolean; message?: string };
+            const payload = JSON.parse(event.data) as {
+              type?: string;
+              data?: string;
+              read_only?: boolean;
+              message?: string;
+            };
             if (payload.type === 'status') {
               const isReadOnly = Boolean(payload.read_only);
               terminalReadOnlyRef.current = isReadOnly;
@@ -4703,7 +5301,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               if (!isReadOnly) {
                 setTimeout(() => terminal.focus(), 50);
               }
-              const statusMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
+              const statusMessage =
+                typeof payload.message === 'string' ? payload.message.trim() : '';
               if (statusMessage) {
                 terminal.writeln(`[status] ${statusMessage}`);
               }
@@ -4731,7 +5330,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             return;
           }
           if ([4401, 4403, 4404].includes(closeEvent.code)) {
-            terminal.writeln('\r\n[status] Terminal access was rejected. Refresh runtime access and try again.');
+            terminal.writeln(
+              '\r\n[status] Terminal access was rejected. Refresh runtime access and try again.',
+            );
             return;
           }
           if (reconnectEnabled) {
@@ -4775,7 +5376,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       terminalRef.current?.dispose();
       terminalRef.current = null;
     };
-  }, [activeRightTab, activeWorkspaceId, authorizeBrowserSurfaces, canEditWorkspace, runtimeStatus?.session_state, terminalReconnectNonce]);
+  }, [
+    activeRightTab,
+    activeWorkspaceId,
+    authorizeBrowserSurfaces,
+    canEditWorkspace,
+    runtimeStatus?.session_state,
+    terminalReconnectNonce,
+  ]);
 
   useEffect(() => {
     const socket = collabSocketRef.current;
@@ -4797,7 +5405,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             file_path: selectedFilePath,
             version: collabVersion,
             content: fileContent,
-          })
+          }),
         );
       } catch {
         // Ignore send errors; reconnect happens on workspace/file changes.
@@ -4805,7 +5413,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [activeWorkspaceId, canEditWorkspace, collabReadOnly, collabVersion, fileContent, selectedFilePath]);
+  }, [
+    activeWorkspaceId,
+    canEditWorkspace,
+    collabReadOnly,
+    collabVersion,
+    fileContent,
+    selectedFilePath,
+  ]);
 
   const handleStartCreateFile = useCallback((parentPath = '') => {
     const normalizedParent = normalizeWorkspacePath(parentPath);
@@ -4817,262 +5432,321 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setRenamingFolderPath(null);
   }, []);
 
-  const handleCreateNewFile = useCallback(async (path: string, parentPath: string = '') => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
+  const handleCreateNewFile = useCallback(
+    async (path: string, parentPath: string = '') => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
 
-    const normalizedParent = normalizeWorkspacePath(parentPath);
-    const normalizedInput = normalizeWorkspacePath(path);
-    const nextPath = (() => {
-      if (!normalizedInput) return '';
-      if (!normalizedParent) return normalizedInput;
-      if (normalizedInput === normalizedParent || normalizedInput.startsWith(`${normalizedParent}/`)) {
+      const normalizedParent = normalizeWorkspacePath(parentPath);
+      const normalizedInput = normalizeWorkspacePath(path);
+      const nextPath = (() => {
+        if (!normalizedInput) return '';
+        if (!normalizedParent) return normalizedInput;
+        if (
+          normalizedInput === normalizedParent ||
+          normalizedInput.startsWith(`${normalizedParent}/`)
+        ) {
+          return normalizedInput;
+        }
+        if (!normalizedInput.includes('/')) {
+          return `${normalizedParent}/${normalizedInput}`;
+        }
         return normalizedInput;
-      }
-      if (!normalizedInput.includes('/')) {
-        return `${normalizedParent}/${normalizedInput}`;
-      }
-      return normalizedInput;
-    })();
+      })();
 
-    if (!nextPath) {
-      setError('File path is required');
-      return;
-    }
-
-    try {
-      await api.upsertUserSpaceFile(activeWorkspaceId, nextPath, {
-        content: '',
-        artifact_type: undefined,
-      });
-      setFileContentCache((current) => ({
-        ...current,
-        [nextPath]: {
-          content: '',
-          updatedAt: current[nextPath]?.updatedAt ?? '',
-          artifactType: current[nextPath]?.artifactType ?? null,
-        },
-      }));
-      setNewFileName(null);
-      setNewFileParentPath('');
-      await loadWorkspaceData(activeWorkspaceId);
-      handleSelectFile(nextPath);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create file');
-    }
-  }, [activeWorkspaceId, canEditWorkspace, handleSelectFile, loadWorkspaceData]);
-
-  const handleRenameFile = useCallback(async (oldPath: string, newPath: string) => {
-    const normalizedNewPath = normalizeWorkspacePath(newPath);
-    if (!activeWorkspaceId || !canEditWorkspace || !normalizedNewPath || normalizedNewPath === oldPath) {
-      setRenamingFilePath(null);
-      return;
-    }
-    try {
-      const file = await api.getUserSpaceFile(activeWorkspaceId, oldPath);
-      await api.upsertUserSpaceFile(activeWorkspaceId, normalizedNewPath, {
-        content: file.content,
-        artifact_type: file.artifact_type || undefined,
-      });
-      await api.deleteUserSpaceFile(activeWorkspaceId, oldPath);
-      setRenamingFilePath(null);
-      setFileContentCache((current) => {
-        const next = { ...current };
-        const currentValue = next[oldPath];
-        if (currentValue) {
-          next[normalizedNewPath] = currentValue;
-        }
-        delete next[oldPath];
-        return next;
-      });
-      // Transfer changed/acknowledged markers from old path to new path.
-      setChangedFiles((prev) => {
-        if (!prev.has(oldPath)) return prev;
-        const next = new Set(prev);
-        next.delete(oldPath);
-        next.add(normalizedNewPath);
-        return next;
-      });
-      setAcknowledgedFiles((prev) => {
-        if (!prev.has(oldPath)) return prev;
-        const next = new Set(prev);
-        next.delete(oldPath);
-        next.add(normalizedNewPath);
-        return next;
-      });
-      if (selectedFilePath === oldPath) {
-        setSelectedFilePath(normalizedNewPath);
-      }
-      await loadWorkspaceData(activeWorkspaceId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename file');
-    }
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath]);
-
-  const handleRenameFolder = useCallback(async (oldFolderPath: string, newFolderPath: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) {
-      setRenamingFolderPath(null);
-      return;
-    }
-
-    const oldPrefix = normalizeWorkspacePath(oldFolderPath);
-    const newPrefix = normalizeWorkspacePath(newFolderPath);
-
-    if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
-      setRenamingFolderPath(null);
-      return;
-    }
-
-    if (newPrefix.startsWith(`${oldPrefix}/`)) {
-      setError('Cannot rename a folder into one of its own descendants');
-      return;
-    }
-
-    const descendants = files.filter((file) => file.path.startsWith(`${oldPrefix}/`));
-    if (descendants.length === 0) {
-      setError('Folder is empty; no files to rename');
-      setRenamingFolderPath(null);
-      return;
-    }
-
-    const descendantPaths = new Set(descendants.map((file) => file.path));
-    const existingPaths = new Set(files.map((file) => file.path));
-    const moves = descendants.map((file) => ({
-      oldPath: file.path,
-      newPath: `${newPrefix}/${file.path.slice(oldPrefix.length + 1)}`,
-    }));
-
-    const conflictingPath = moves.find((move) => existingPaths.has(move.newPath) && !descendantPaths.has(move.newPath));
-    if (conflictingPath) {
-      setError(`Cannot rename folder because target file already exists: ${conflictingPath.newPath}`);
-      return;
-    }
-
-    const createdPaths: string[] = [];
-    try {
-      for (const move of moves) {
-        const sourceFile = await api.getUserSpaceFile(activeWorkspaceId, move.oldPath);
-        await api.upsertUserSpaceFile(activeWorkspaceId, move.newPath, {
-          content: sourceFile.content,
-          artifact_type: sourceFile.artifact_type || undefined,
-        });
-        createdPaths.push(move.newPath);
-      }
-    } catch (err) {
-      await Promise.allSettled(createdPaths.map((path) => api.deleteUserSpaceFile(activeWorkspaceId, path)));
-      setError(err instanceof Error ? `Failed to rename folder: ${err.message}` : 'Failed to rename folder');
-      return;
-    }
-
-    const deleteResults = await Promise.allSettled(moves.map((move) => api.deleteUserSpaceFile(activeWorkspaceId, move.oldPath)));
-    const deleteFailures = deleteResults.filter((result) => result.status === 'rejected').length;
-
-    setRenamingFolderPath(null);
-    setRenameValue('');
-    setExpandedFolders((current) => {
-      const next = new Set<string>();
-      for (const path of current) {
-        if (path === oldPrefix || path.startsWith(`${oldPrefix}/`)) {
-          const suffix = path.slice(oldPrefix.length);
-          next.add(`${newPrefix}${suffix}`);
-        } else {
-          next.add(path);
-        }
-      }
-      return next;
-    });
-
-    if (selectedFilePath.startsWith(`${oldPrefix}/`)) {
-      setSelectedFilePath(`${newPrefix}/${selectedFilePath.slice(oldPrefix.length + 1)}`);
-    }
-
-    // Transfer changed/acknowledged markers from old paths to new paths.
-    setChangedFiles((prev) => {
-      const next = new Set(prev);
-      for (const move of moves) {
-        if (next.has(move.oldPath)) { next.delete(move.oldPath); next.add(move.newPath); }
-      }
-      return next;
-    });
-    setAcknowledgedFiles((prev) => {
-      const next = new Set(prev);
-      for (const move of moves) {
-        if (next.has(move.oldPath)) { next.delete(move.oldPath); next.add(move.newPath); }
-      }
-      return next;
-    });
-
-    await loadWorkspaceData(activeWorkspaceId);
-
-    if (deleteFailures > 0) {
-      setError(`Folder renamed, but ${deleteFailures} source file(s) could not be removed`);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath]);
-
-  const handleDeleteFile = useCallback(async (filePath: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    try {
-      await api.deleteUserSpaceFile(activeWorkspaceId, filePath);
-      setFileContentCache((current) => {
-        const next = { ...current };
-        delete next[filePath];
-        return next;
-      });
-      setDeleteConfirmFileId(null);
-      setChangedFiles((prev) => { const next = new Set(prev); next.delete(filePath); return next; });
-      setAcknowledgedFiles((prev) => { const next = new Set(prev); next.delete(filePath); return next; });
-      if (selectedFilePath === filePath) {
-        setSelectedFilePath('');
-        setFileContent('');
-        setFileDirty(false);
-      }
-      await loadWorkspaceData(activeWorkspaceId);
-    } catch (err) {
-      const message = getApiErrorMessage(err, 'Failed to delete file');
-      setError(message);
-      toast.error(message, 8000);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath, toast]);
-
-  const handleDeleteFolder = useCallback(async (folderPath: string) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-
-    try {
-      const normalizedFolderPath = normalizeWorkspacePath(folderPath);
-      const descendants = files.filter((file) => file.path.startsWith(`${normalizedFolderPath}/`));
-      if (descendants.length === 0) {
-        setDeleteConfirmFolderPath(null);
-        setError('Folder is empty; no files to delete');
+      if (!nextPath) {
+        setError('File path is required');
         return;
       }
 
-      const results = await Promise.allSettled(
-        descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path))
-      );
-      const failures = results.filter((result) => result.status === 'rejected').length;
-
-      setDeleteConfirmFolderPath(null);
-      // Clean up changed/acknowledged markers for all deleted descendants.
-      const deletedPaths = new Set(descendants.map((file) => file.path));
-      setChangedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
-      setAcknowledgedFiles((prev) => { const next = new Set(prev); for (const p of deletedPaths) next.delete(p); return next; });
-      if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
-        setSelectedFilePath('');
-        setFileContent('');
-        setFileDirty(false);
+      try {
+        await api.upsertUserSpaceFile(activeWorkspaceId, nextPath, {
+          content: '',
+          artifact_type: undefined,
+        });
+        setFileContentCache((current) => ({
+          ...current,
+          [nextPath]: {
+            content: '',
+            updatedAt: current[nextPath]?.updatedAt ?? '',
+            artifactType: current[nextPath]?.artifactType ?? null,
+          },
+        }));
+        setNewFileName(null);
+        setNewFileParentPath('');
+        await loadWorkspaceData(activeWorkspaceId);
+        handleSelectFile(nextPath);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to create file');
       }
+    },
+    [activeWorkspaceId, canEditWorkspace, handleSelectFile, loadWorkspaceData],
+  );
+
+  const handleRenameFile = useCallback(
+    async (oldPath: string, newPath: string) => {
+      const normalizedNewPath = normalizeWorkspacePath(newPath);
+      if (
+        !activeWorkspaceId ||
+        !canEditWorkspace ||
+        !normalizedNewPath ||
+        normalizedNewPath === oldPath
+      ) {
+        setRenamingFilePath(null);
+        return;
+      }
+      try {
+        const file = await api.getUserSpaceFile(activeWorkspaceId, oldPath);
+        await api.upsertUserSpaceFile(activeWorkspaceId, normalizedNewPath, {
+          content: file.content,
+          artifact_type: file.artifact_type || undefined,
+        });
+        await api.deleteUserSpaceFile(activeWorkspaceId, oldPath);
+        setRenamingFilePath(null);
+        setFileContentCache((current) => {
+          const next = { ...current };
+          const currentValue = next[oldPath];
+          if (currentValue) {
+            next[normalizedNewPath] = currentValue;
+          }
+          delete next[oldPath];
+          return next;
+        });
+        // Transfer changed/acknowledged markers from old path to new path.
+        setChangedFiles((prev) => {
+          if (!prev.has(oldPath)) return prev;
+          const next = new Set(prev);
+          next.delete(oldPath);
+          next.add(normalizedNewPath);
+          return next;
+        });
+        setAcknowledgedFiles((prev) => {
+          if (!prev.has(oldPath)) return prev;
+          const next = new Set(prev);
+          next.delete(oldPath);
+          next.add(normalizedNewPath);
+          return next;
+        });
+        if (selectedFilePath === oldPath) {
+          setSelectedFilePath(normalizedNewPath);
+        }
+        await loadWorkspaceData(activeWorkspaceId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to rename file');
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath],
+  );
+
+  const handleRenameFolder = useCallback(
+    async (oldFolderPath: string, newFolderPath: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) {
+        setRenamingFolderPath(null);
+        return;
+      }
+
+      const oldPrefix = normalizeWorkspacePath(oldFolderPath);
+      const newPrefix = normalizeWorkspacePath(newFolderPath);
+
+      if (!oldPrefix || !newPrefix || oldPrefix === newPrefix) {
+        setRenamingFolderPath(null);
+        return;
+      }
+
+      if (newPrefix.startsWith(`${oldPrefix}/`)) {
+        setError('Cannot rename a folder into one of its own descendants');
+        return;
+      }
+
+      const descendants = files.filter((file) => file.path.startsWith(`${oldPrefix}/`));
+      if (descendants.length === 0) {
+        setError('Folder is empty; no files to rename');
+        setRenamingFolderPath(null);
+        return;
+      }
+
+      const descendantPaths = new Set(descendants.map((file) => file.path));
+      const existingPaths = new Set(files.map((file) => file.path));
+      const moves = descendants.map((file) => ({
+        oldPath: file.path,
+        newPath: `${newPrefix}/${file.path.slice(oldPrefix.length + 1)}`,
+      }));
+
+      const conflictingPath = moves.find(
+        (move) => existingPaths.has(move.newPath) && !descendantPaths.has(move.newPath),
+      );
+      if (conflictingPath) {
+        setError(
+          `Cannot rename folder because target file already exists: ${conflictingPath.newPath}`,
+        );
+        return;
+      }
+
+      const createdPaths: string[] = [];
+      try {
+        for (const move of moves) {
+          const sourceFile = await api.getUserSpaceFile(activeWorkspaceId, move.oldPath);
+          await api.upsertUserSpaceFile(activeWorkspaceId, move.newPath, {
+            content: sourceFile.content,
+            artifact_type: sourceFile.artifact_type || undefined,
+          });
+          createdPaths.push(move.newPath);
+        }
+      } catch (err) {
+        await Promise.allSettled(
+          createdPaths.map((path) => api.deleteUserSpaceFile(activeWorkspaceId, path)),
+        );
+        setError(
+          err instanceof Error
+            ? `Failed to rename folder: ${err.message}`
+            : 'Failed to rename folder',
+        );
+        return;
+      }
+
+      const deleteResults = await Promise.allSettled(
+        moves.map((move) => api.deleteUserSpaceFile(activeWorkspaceId, move.oldPath)),
+      );
+      const deleteFailures = deleteResults.filter((result) => result.status === 'rejected').length;
+
+      setRenamingFolderPath(null);
+      setRenameValue('');
+      setExpandedFolders((current) => {
+        const next = new Set<string>();
+        for (const path of current) {
+          if (path === oldPrefix || path.startsWith(`${oldPrefix}/`)) {
+            const suffix = path.slice(oldPrefix.length);
+            next.add(`${newPrefix}${suffix}`);
+          } else {
+            next.add(path);
+          }
+        }
+        return next;
+      });
+
+      if (selectedFilePath.startsWith(`${oldPrefix}/`)) {
+        setSelectedFilePath(`${newPrefix}/${selectedFilePath.slice(oldPrefix.length + 1)}`);
+      }
+
+      // Transfer changed/acknowledged markers from old paths to new paths.
+      setChangedFiles((prev) => {
+        const next = new Set(prev);
+        for (const move of moves) {
+          if (next.has(move.oldPath)) {
+            next.delete(move.oldPath);
+            next.add(move.newPath);
+          }
+        }
+        return next;
+      });
+      setAcknowledgedFiles((prev) => {
+        const next = new Set(prev);
+        for (const move of moves) {
+          if (next.has(move.oldPath)) {
+            next.delete(move.oldPath);
+            next.add(move.newPath);
+          }
+        }
+        return next;
+      });
+
       await loadWorkspaceData(activeWorkspaceId);
 
-      if (failures > 0) {
-        const message = `Deleted folder contents with ${failures} failure(s)`;
+      if (deleteFailures > 0) {
+        setError(`Folder renamed, but ${deleteFailures} source file(s) could not be removed`);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath],
+  );
+
+  const handleDeleteFile = useCallback(
+    async (filePath: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+      try {
+        await api.deleteUserSpaceFile(activeWorkspaceId, filePath);
+        setFileContentCache((current) => {
+          const next = { ...current };
+          delete next[filePath];
+          return next;
+        });
+        setDeleteConfirmFileId(null);
+        setChangedFiles((prev) => {
+          const next = new Set(prev);
+          next.delete(filePath);
+          return next;
+        });
+        setAcknowledgedFiles((prev) => {
+          const next = new Set(prev);
+          next.delete(filePath);
+          return next;
+        });
+        if (selectedFilePath === filePath) {
+          setSelectedFilePath('');
+          setFileContent('');
+          setFileDirty(false);
+        }
+        await loadWorkspaceData(activeWorkspaceId);
+      } catch (err) {
+        const message = getApiErrorMessage(err, 'Failed to delete file');
         setError(message);
         toast.error(message, 8000);
       }
-    } catch (err) {
-      const message = getApiErrorMessage(err, 'Failed to delete folder');
-      setError(message);
-      toast.error(message, 8000);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath, toast]);
+    },
+    [activeWorkspaceId, canEditWorkspace, loadWorkspaceData, selectedFilePath, toast],
+  );
+
+  const handleDeleteFolder = useCallback(
+    async (folderPath: string) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return;
+
+      try {
+        const normalizedFolderPath = normalizeWorkspacePath(folderPath);
+        const descendants = files.filter((file) =>
+          file.path.startsWith(`${normalizedFolderPath}/`),
+        );
+        if (descendants.length === 0) {
+          setDeleteConfirmFolderPath(null);
+          setError('Folder is empty; no files to delete');
+          return;
+        }
+
+        const results = await Promise.allSettled(
+          descendants.map((file) => api.deleteUserSpaceFile(activeWorkspaceId, file.path)),
+        );
+        const failures = results.filter((result) => result.status === 'rejected').length;
+
+        setDeleteConfirmFolderPath(null);
+        // Clean up changed/acknowledged markers for all deleted descendants.
+        const deletedPaths = new Set(descendants.map((file) => file.path));
+        setChangedFiles((prev) => {
+          const next = new Set(prev);
+          for (const p of deletedPaths) next.delete(p);
+          return next;
+        });
+        setAcknowledgedFiles((prev) => {
+          const next = new Set(prev);
+          for (const p of deletedPaths) next.delete(p);
+          return next;
+        });
+        if (selectedFilePath.startsWith(`${normalizedFolderPath}/`)) {
+          setSelectedFilePath('');
+          setFileContent('');
+          setFileDirty(false);
+        }
+        await loadWorkspaceData(activeWorkspaceId);
+
+        if (failures > 0) {
+          const message = `Deleted folder contents with ${failures} failure(s)`;
+          setError(message);
+          toast.error(message, 8000);
+        }
+      } catch (err) {
+        const message = getApiErrorMessage(err, 'Failed to delete folder');
+        setError(message);
+        toast.error(message, 8000);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, files, loadWorkspaceData, selectedFilePath, toast],
+  );
 
   const handleToggleFolder = useCallback((folderPath: string) => {
     setExpandedFolders((current) => {
@@ -5126,14 +5800,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       pollInFlight = true;
 
       try {
-        const results = await Promise.all(tasks.map(async (task) => {
-          try {
-            const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
-            return { task, status, error: null as Error | null };
-          } catch (error) {
-            return { task, status: null as UserSpaceWorkspaceDeleteTask | null, error: error as Error };
-          }
-        }));
+        const results = await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const status = await api.getUserSpaceWorkspaceDeleteTask(task.task_id);
+              return { task, status, error: null as Error | null };
+            } catch (error) {
+              return {
+                task,
+                status: null as UserSpaceWorkspaceDeleteTask | null,
+                error: error as Error,
+              };
+            }
+          }),
+        );
 
         if (cancelled) {
           return;
@@ -5148,7 +5828,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             if (isWorkspaceDeleteTaskTerminal(result.status.phase)) {
               terminalWorkspaceIds.add(result.status.workspace_id);
               if (result.status.phase === 'failed' && !nextError) {
-                nextError = result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
+                nextError =
+                  result.status.error?.trim() || `Failed to delete ${result.status.workspace_name}`;
               }
             } else {
               updatedTasks[result.status.workspace_id] = result.status;
@@ -5199,8 +5880,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               (r) => r.status?.workspace_id === deletedId || r.task.workspace_id === deletedId,
             );
             const wasDeleted =
-              matchingResult?.status?.phase === 'completed'
-              || (matchingResult?.error instanceof ApiError && matchingResult.error.status === 404);
+              matchingResult?.status?.phase === 'completed' ||
+              (matchingResult?.error instanceof ApiError && matchingResult.error.status === 404);
             if (!wasDeleted) {
               continue;
             }
@@ -5244,7 +5925,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
   const handleOpenMembersModal = useCallback(async () => {
     if (!activeWorkspace || !isOwner) return;
-    setPendingMembers(activeWorkspace.members.filter((m) => m.user_id !== activeWorkspace.owner_user_id));
+    setPendingMembers(
+      activeWorkspace.members.filter((m) => m.user_id !== activeWorkspace.owner_user_id),
+    );
     try {
       const users = await api.listUsersDirectory();
       setAllUsers(users);
@@ -5254,20 +5937,23 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setShowMembersModal(true);
   }, [activeWorkspace, isOwner]);
 
-  const handleSaveMembers = useCallback(async (members: Member[]) => {
-    if (!activeWorkspace || !isOwner) return;
-    setSavingMembers(true);
-    try {
-      const updated = await api.updateUserSpaceWorkspaceMembers(activeWorkspace.id, { members });
-      setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
-      setShowMembersModal(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update members');
-      throw err;
-    } finally {
-      setSavingMembers(false);
-    }
-  }, [activeWorkspace, isOwner]);
+  const handleSaveMembers = useCallback(
+    async (members: Member[]) => {
+      if (!activeWorkspace || !isOwner) return;
+      setSavingMembers(true);
+      try {
+        const updated = await api.updateUserSpaceWorkspaceMembers(activeWorkspace.id, { members });
+        setWorkspaces((current) => current.map((ws) => (ws.id === updated.id ? updated : ws)));
+        setShowMembersModal(false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update members');
+        throw err;
+      } finally {
+        setSavingMembers(false);
+      }
+    },
+    [activeWorkspace, isOwner],
+  );
 
   const handleOpenAgentAccessModal = useCallback(async () => {
     if (!activeWorkspace) return;
@@ -5280,7 +5966,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         api.listUserSpaceWorkspaces(0, limit),
       ]);
       setAgentGrants(sortWorkspaceAgentGrants(grants));
-      setAgentGrantWorkspaces(workspacePage.items.filter((workspace) => workspace.id !== activeWorkspace.id));
+      setAgentGrantWorkspaces(
+        workspacePage.items.filter((workspace) => workspace.id !== activeWorkspace.id),
+      );
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load agent access settings');
@@ -5289,38 +5977,48 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspace, workspaces.length, workspacesTotal]);
 
-  const handleUpsertAgentGrant = useCallback(async (request: UpsertWorkspaceAgentGrantRequest) => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    setSavingAgentGrantTargetId(request.target_workspace_id);
-    try {
-      const updated = await api.upsertUserSpaceWorkspaceAgentGrant(activeWorkspace.id, request);
-      setAgentGrants((current) => sortWorkspaceAgentGrants([
-        ...current.filter((grant) => grant.target_workspace_id !== updated.target_workspace_id),
-        updated,
-      ]));
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save agent access');
-      throw err;
-    } finally {
-      setSavingAgentGrantTargetId(null);
-    }
-  }, [activeWorkspace, canEditWorkspace]);
+  const handleUpsertAgentGrant = useCallback(
+    async (request: UpsertWorkspaceAgentGrantRequest) => {
+      if (!activeWorkspace || !canEditWorkspace) return;
+      setSavingAgentGrantTargetId(request.target_workspace_id);
+      try {
+        const updated = await api.upsertUserSpaceWorkspaceAgentGrant(activeWorkspace.id, request);
+        setAgentGrants((current) =>
+          sortWorkspaceAgentGrants([
+            ...current.filter((grant) => grant.target_workspace_id !== updated.target_workspace_id),
+            updated,
+          ]),
+        );
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to save agent access');
+        throw err;
+      } finally {
+        setSavingAgentGrantTargetId(null);
+      }
+    },
+    [activeWorkspace, canEditWorkspace],
+  );
 
-  const handleRevokeAgentGrant = useCallback(async (targetWorkspaceId: string) => {
-    if (!activeWorkspace || !canEditWorkspace) return;
-    setRevokingAgentGrantTargetId(targetWorkspaceId);
-    try {
-      await api.revokeUserSpaceWorkspaceAgentGrant(activeWorkspace.id, targetWorkspaceId);
-      setAgentGrants((current) => current.filter((grant) => grant.target_workspace_id !== targetWorkspaceId));
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke agent access');
-      throw err;
-    } finally {
-      setRevokingAgentGrantTargetId(null);
-    }
-  }, [activeWorkspace, canEditWorkspace]);
+  const handleRevokeAgentGrant = useCallback(
+    async (targetWorkspaceId: string) => {
+      if (!activeWorkspace || !canEditWorkspace) return;
+      setRevokingAgentGrantTargetId(targetWorkspaceId);
+      try {
+        await api.revokeUserSpaceWorkspaceAgentGrant(activeWorkspace.id, targetWorkspaceId);
+        setAgentGrants((current) =>
+          current.filter((grant) => grant.target_workspace_id !== targetWorkspaceId),
+        );
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to revoke agent access');
+        throw err;
+      } finally {
+        setRevokingAgentGrantTargetId(null);
+      }
+    },
+    [activeWorkspace, canEditWorkspace],
+  );
 
   const loadWorkspaceEnvVars = useCallback(async (workspaceId: string) => {
     const vars = await api.listUserSpaceWorkspaceEnvVars(workspaceId);
@@ -5328,13 +6026,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return vars;
   }, []);
 
-  const mergeWorkspaceEnvVar = useCallback((envVar: UserSpaceWorkspaceEnvVar, previousKey?: string) => {
-    setEnvVars((current) => {
-      const keysToReplace = new Set([previousKey, envVar.key].filter(Boolean));
-      const next = current.filter((item) => !keysToReplace.has(item.key));
-      return [...next, envVar].sort((a, b) => a.key.localeCompare(b.key));
-    });
-  }, []);
+  const mergeWorkspaceEnvVar = useCallback(
+    (envVar: UserSpaceWorkspaceEnvVar, previousKey?: string) => {
+      setEnvVars((current) => {
+        const keysToReplace = new Set([previousKey, envVar.key].filter(Boolean));
+        const next = current.filter((item) => !keysToReplace.has(item.key));
+        return [...next, envVar].sort((a, b) => a.key.localeCompare(b.key));
+      });
+    },
+    [],
+  );
 
   const handleOpenEnvVarsModal = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -5363,75 +6064,87 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setTimeout(() => setSuccess(null), 3000);
   }, []);
 
-  const handleDeleteObjectStorageBucket = useCallback(async (bucketName: string) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setDeletingObjectStorageBucket(bucketName);
-    try {
-      await api.deleteUserSpaceObjectStorageBucket(activeWorkspaceId, bucketName);
-      const next = await loadObjectStorageConfig(activeWorkspaceId);
-      setObjectStorageConfig(next);
-      setSuccess('Bucket deleted.');
-      setTimeout(() => setSuccess(null), 3000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete bucket');
-    } finally {
-      setDeletingObjectStorageBucket(null);
-    }
-  }, [activeWorkspaceId, isOwner, loadObjectStorageConfig]);
-
-  const handleCreateEnvVar = useCallback(async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingEnvVar(true);
-    try {
-      const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, request);
+  const handleDeleteObjectStorageBucket = useCallback(
+    async (bucketName: string) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setDeletingObjectStorageBucket(bucketName);
       try {
-        await loadWorkspaceEnvVars(activeWorkspaceId);
-      } catch {
-        mergeWorkspaceEnvVar(upserted, request.key);
+        await api.deleteUserSpaceObjectStorageBucket(activeWorkspaceId, bucketName);
+        const next = await loadObjectStorageConfig(activeWorkspaceId);
+        setObjectStorageConfig(next);
+        setSuccess('Bucket deleted.');
+        setTimeout(() => setSuccess(null), 3000);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete bucket');
+      } finally {
+        setDeletingObjectStorageBucket(null);
       }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save environment variable');
-    } finally {
-      setSavingEnvVar(false);
-    }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars, mergeWorkspaceEnvVar]);
+    },
+    [activeWorkspaceId, isOwner, loadObjectStorageConfig],
+  );
 
-  const handleUpdateEnvVar = useCallback(async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingEnvVar(true);
-    try {
-      const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, request);
+  const handleCreateEnvVar = useCallback(
+    async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setSavingEnvVar(true);
       try {
-        await loadWorkspaceEnvVars(activeWorkspaceId);
-      } catch {
-        mergeWorkspaceEnvVar(upserted, request.key);
+        const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, request);
+        try {
+          await loadWorkspaceEnvVars(activeWorkspaceId);
+        } catch {
+          mergeWorkspaceEnvVar(upserted, request.key);
+        }
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to save environment variable');
+      } finally {
+        setSavingEnvVar(false);
       }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update environment variable');
-    } finally {
-      setSavingEnvVar(false);
-    }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars, mergeWorkspaceEnvVar]);
+    },
+    [activeWorkspaceId, isOwner, loadWorkspaceEnvVars, mergeWorkspaceEnvVar],
+  );
 
-  const handleDeleteEnvVar = useCallback(async (key: string) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingEnvVar(true);
-    try {
-      await api.deleteUserSpaceWorkspaceEnvVar(activeWorkspaceId, key);
+  const handleUpdateEnvVar = useCallback(
+    async (request: UpsertUserSpaceWorkspaceEnvVarRequest) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setSavingEnvVar(true);
       try {
-        await loadWorkspaceEnvVars(activeWorkspaceId);
-      } catch {
-        setEnvVars((current) => current.filter((item) => item.key !== key));
+        const upserted = await api.upsertUserSpaceWorkspaceEnvVar(activeWorkspaceId, request);
+        try {
+          await loadWorkspaceEnvVars(activeWorkspaceId);
+        } catch {
+          mergeWorkspaceEnvVar(upserted, request.key);
+        }
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update environment variable');
+      } finally {
+        setSavingEnvVar(false);
       }
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete environment variable');
-    } finally {
-      setSavingEnvVar(false);
-    }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceEnvVars]);
+    },
+    [activeWorkspaceId, isOwner, loadWorkspaceEnvVars, mergeWorkspaceEnvVar],
+  );
+
+  const handleDeleteEnvVar = useCallback(
+    async (key: string) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setSavingEnvVar(true);
+      try {
+        await api.deleteUserSpaceWorkspaceEnvVar(activeWorkspaceId, key);
+        try {
+          await loadWorkspaceEnvVars(activeWorkspaceId);
+        } catch {
+          setEnvVars((current) => current.filter((item) => item.key !== key));
+        }
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete environment variable');
+      } finally {
+        setSavingEnvVar(false);
+      }
+    },
+    [activeWorkspaceId, isOwner, loadWorkspaceEnvVars],
+  );
 
   const handleOpenMountsModal = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner) return;
@@ -5458,13 +6171,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setEditingObjectStorageBucket(null);
     setObjectStorageLoading(true);
     try {
-      const [mountList, sources, cloudProviders, cloudAccounts, userMountSources, globalMountSources] = await Promise.all([
+      const [
+        mountList,
+        sources,
+        cloudProviders,
+        cloudAccounts,
+        userMountSources,
+        globalMountSources,
+      ] = await Promise.all([
         api.listWorkspaceMounts(activeWorkspaceId),
         api.listMountableSources(activeWorkspaceId),
-        showPersonalCloudDrives ? api.listCloudOAuthProviders().catch(() => []) : Promise.resolve([]),
-        showPersonalCloudDrives ? api.listUserCloudOAuthAccounts().catch(() => []) : Promise.resolve([]),
-        showPersonalCloudDrives ? api.listUserUserspaceMountSources().catch(() => []) : Promise.resolve([]),
-        showPersonalCloudDrives ? api.listUserspaceMountSources().catch(() => []) : Promise.resolve([]),
+        showPersonalCloudDrives
+          ? api.listCloudOAuthProviders().catch(() => [])
+          : Promise.resolve([]),
+        showPersonalCloudDrives
+          ? api.listUserCloudOAuthAccounts().catch(() => [])
+          : Promise.resolve([]),
+        showPersonalCloudDrives
+          ? api.listUserUserspaceMountSources().catch(() => [])
+          : Promise.resolve([]),
+        showPersonalCloudDrives
+          ? api.listUserspaceMountSources().catch(() => [])
+          : Promise.resolve([]),
         loadObjectStorageConfig(activeWorkspaceId).catch(() => null),
       ]);
       setMounts(mountList);
@@ -5472,7 +6200,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       setCloudProviderStatuses(cloudProviders);
       setCloudOAuthAccounts(cloudAccounts);
       setPersonalMountSources(userMountSources);
-      setGlobalCloudMountSources(globalMountSources.filter((source) => source.source_type === 'microsoft_drive' || source.source_type === 'google_drive'));
+      setGlobalCloudMountSources(
+        globalMountSources.filter(
+          (source) =>
+            source.source_type === 'microsoft_drive' || source.source_type === 'google_drive',
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load mounts');
     } finally {
@@ -5505,7 +6238,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setCloudProviderStatuses(cloudProviders);
     setCloudOAuthAccounts(accounts);
     setPersonalMountSources(userSources);
-    setGlobalCloudMountSources(globalMountSources.filter((source) => source.source_type === 'microsoft_drive' || source.source_type === 'google_drive'));
+    setGlobalCloudMountSources(
+      globalMountSources.filter(
+        (source) =>
+          source.source_type === 'microsoft_drive' || source.source_type === 'google_drive',
+      ),
+    );
   }, [activeWorkspaceId, showPersonalCloudDrives]);
 
   useEffect(() => {
@@ -5514,107 +6252,150 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       if (event.data?.type === 'ragtime-cloud-oauth-complete') {
         void refreshPersonalCloudMountState();
       } else if (event.data?.type === 'ragtime-cloud-oauth-error') {
-        setError(typeof event.data.message === 'string' ? event.data.message : 'Cloud OAuth failed');
+        setError(
+          typeof event.data.message === 'string' ? event.data.message : 'Cloud OAuth failed',
+        );
       }
     };
     window.addEventListener('message', listener);
     return () => window.removeEventListener('message', listener);
   }, [refreshPersonalCloudMountState]);
 
-  const globalCloudOAuthAccountIds = useMemo(() => new Set(
-    globalCloudMountSources
-      .map((source) => source.oauth_account_id)
-      .filter((accountId): accountId is string => Boolean(accountId))
-  ), [globalCloudMountSources]);
+  const globalCloudOAuthAccountIds = useMemo(
+    () =>
+      new Set(
+        globalCloudMountSources
+          .map((source) => source.oauth_account_id)
+          .filter((accountId): accountId is string => Boolean(accountId)),
+      ),
+    [globalCloudMountSources],
+  );
 
-  const configuredCloudProviders = useMemo(() => (
-    cloudProviderStatuses
-      .filter((status) => CLOUD_MOUNT_PROVIDERS.includes(status.provider) && status.configured)
-      .map((status) => status.provider)
-  ), [cloudProviderStatuses]);
+  const configuredCloudProviders = useMemo(
+    () =>
+      cloudProviderStatuses
+        .filter((status) => CLOUD_MOUNT_PROVIDERS.includes(status.provider) && status.configured)
+        .map((status) => status.provider),
+    [cloudProviderStatuses],
+  );
 
   const configuredCloudProviderSet = useMemo(
     () => new Set(configuredCloudProviders),
     [configuredCloudProviders],
   );
 
-  const showConfiguredCloudMountPanel = showPersonalCloudDrives && configuredCloudProviders.length > 0;
+  const showConfiguredCloudMountPanel =
+    showPersonalCloudDrives && configuredCloudProviders.length > 0;
 
-  const visiblePersonalCloudOAuthAccounts = useMemo(() => cloudOAuthAccounts.filter((account) => {
-    if (!configuredCloudProviderSet.has(account.provider)) {
-      return false;
-    }
-    const hasPersonalSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
-    return hasPersonalSource || !globalCloudOAuthAccountIds.has(account.id);
-  }), [cloudOAuthAccounts, configuredCloudProviderSet, globalCloudOAuthAccountIds, personalMountSources]);
+  const visiblePersonalCloudOAuthAccounts = useMemo(
+    () =>
+      cloudOAuthAccounts.filter((account) => {
+        if (!configuredCloudProviderSet.has(account.provider)) {
+          return false;
+        }
+        const hasPersonalSource = personalMountSources.some(
+          (source) => source.oauth_account_id === account.id,
+        );
+        return hasPersonalSource || !globalCloudOAuthAccountIds.has(account.id);
+      }),
+    [
+      cloudOAuthAccounts,
+      configuredCloudProviderSet,
+      globalCloudOAuthAccountIds,
+      personalMountSources,
+    ],
+  );
 
   const visiblePersonalMountSources = useMemo(
-    () => personalMountSources.filter((source) => (
-      isCloudMountProvider(source.source_type) && configuredCloudProviderSet.has(source.source_type)
-    )),
+    () =>
+      personalMountSources.filter(
+        (source) =>
+          isCloudMountProvider(source.source_type) &&
+          configuredCloudProviderSet.has(source.source_type),
+      ),
     [configuredCloudProviderSet, personalMountSources],
   );
 
-  const handleConnectCloudProvider = useCallback(async (provider: UserCloudOAuthProvider) => {
-    if (!activeWorkspaceId) return;
-    const configured = cloudProviderStatuses.some((status) => status.provider === provider && status.configured);
-    if (!configured) {
-      setError(`${provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'} OAuth is not configured.`);
-      return;
-    }
-    setSavingCloudProvider(provider);
-    try {
-      const redirectUri = `${window.location.origin}/indexes/userspace/cloud-oauth/callback`;
-      const response = await api.startUserCloudOAuth({ provider, redirect_uri: redirectUri, workspace_id: activeWorkspaceId });
-      window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start cloud OAuth');
-    } finally {
-      setSavingCloudProvider(null);
-    }
-  }, [activeWorkspaceId, cloudProviderStatuses]);
+  const handleConnectCloudProvider = useCallback(
+    async (provider: UserCloudOAuthProvider) => {
+      if (!activeWorkspaceId) return;
+      const configured = cloudProviderStatuses.some(
+        (status) => status.provider === provider && status.configured,
+      );
+      if (!configured) {
+        setError(
+          `${provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'} OAuth is not configured.`,
+        );
+        return;
+      }
+      setSavingCloudProvider(provider);
+      try {
+        const redirectUri = `${window.location.origin}/indexes/userspace/cloud-oauth/callback`;
+        const response = await api.startUserCloudOAuth({
+          provider,
+          redirect_uri: redirectUri,
+          workspace_id: activeWorkspaceId,
+        });
+        window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to start cloud OAuth');
+      } finally {
+        setSavingCloudProvider(null);
+      }
+    },
+    [activeWorkspaceId, cloudProviderStatuses],
+  );
 
-  const handleCreatePersonalCloudSource = useCallback(async (account: UserCloudOAuthAccount) => {
-    if (!activeWorkspaceId) return;
-    setSavingCloudProvider(account.provider);
-    try {
-      await api.createUserUserspaceMountSource({
-        workspace_id: activeWorkspaceId,
-        name: account.provider === 'microsoft_drive' ? 'My OneDrive' : 'My Google Drive',
-        source_type: account.provider,
-        oauth_account_id: account.id,
-        approved_paths: account.provider === 'google_drive' ? ['my-drive'] : ['.'],
-      });
-      await refreshPersonalCloudMountState();
-      toast.success('Personal cloud source added.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add personal cloud source');
-    } finally {
-      setSavingCloudProvider(null);
-    }
-  }, [activeWorkspaceId, refreshPersonalCloudMountState, toast]);
+  const handleCreatePersonalCloudSource = useCallback(
+    async (account: UserCloudOAuthAccount) => {
+      if (!activeWorkspaceId) return;
+      setSavingCloudProvider(account.provider);
+      try {
+        await api.createUserUserspaceMountSource({
+          workspace_id: activeWorkspaceId,
+          name: account.provider === 'microsoft_drive' ? 'My OneDrive' : 'My Google Drive',
+          source_type: account.provider,
+          oauth_account_id: account.id,
+          approved_paths: account.provider === 'google_drive' ? ['my-drive'] : ['.'],
+        });
+        await refreshPersonalCloudMountState();
+        toast.success('Personal cloud source added.');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to add personal cloud source');
+      } finally {
+        setSavingCloudProvider(null);
+      }
+    },
+    [activeWorkspaceId, refreshPersonalCloudMountState, toast],
+  );
 
-  const handleDisconnectCloudAccount = useCallback(async (account: UserCloudOAuthAccount) => {
-    setDeletingCloudAccountId(account.id);
-    try {
-      await api.disconnectUserCloudOAuth(account.id);
-      await refreshPersonalCloudMountState();
-      toast.success('Cloud OAuth account removed.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove cloud OAuth account');
-    } finally {
-      setDeletingCloudAccountId(null);
-    }
-  }, [refreshPersonalCloudMountState, toast]);
+  const handleDisconnectCloudAccount = useCallback(
+    async (account: UserCloudOAuthAccount) => {
+      setDeletingCloudAccountId(account.id);
+      try {
+        await api.disconnectUserCloudOAuth(account.id);
+        await refreshPersonalCloudMountState();
+        toast.success('Cloud OAuth account removed.');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to remove cloud OAuth account');
+      } finally {
+        setDeletingCloudAccountId(null);
+      }
+    },
+    [refreshPersonalCloudMountState, toast],
+  );
 
-  const handleDeletePersonalCloudSource = useCallback(async (sourceId: string) => {
-    try {
-      await api.deleteUserUserspaceMountSource(sourceId);
-      await refreshPersonalCloudMountState();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete personal cloud source');
-    }
-  }, [refreshPersonalCloudMountState]);
+  const handleDeletePersonalCloudSource = useCallback(
+    async (sourceId: string) => {
+      try {
+        await api.deleteUserUserspaceMountSource(sourceId);
+        await refreshPersonalCloudMountState();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete personal cloud source');
+      }
+    },
+    [refreshPersonalCloudMountState],
+  );
 
   const createMountEffectiveSourcePath = useMemo(() => {
     if (createMountSourcePath) {
@@ -5637,32 +6418,48 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return browserPathToWorkspaceMountTargetPath(createMountTargetBrowserPath);
   }, [createMountTargetBrowserPath, createMountTargetPath]);
 
-  const createMountSelectedSource = useMemo(() => (
-    mountableSources.find((source) => (
-      source.mount_source_id === createMountSourceId && source.source_scope === createMountSourceScope && source.source_path === createMountRootSourcePath
-    )) ?? null
-  ), [createMountRootSourcePath, createMountSourceId, createMountSourceScope, mountableSources]);
+  const createMountSelectedSource = useMemo(
+    () =>
+      mountableSources.find(
+        (source) =>
+          source.mount_source_id === createMountSourceId &&
+          source.source_scope === createMountSourceScope &&
+          source.source_path === createMountRootSourcePath,
+      ) ?? null,
+    [createMountRootSourcePath, createMountSourceId, createMountSourceScope, mountableSources],
+  );
 
-  const isCreateMountDisabled = useMemo(() => (
-    savingMount
-    || !createMountSourceId
-    || !createMountEffectiveSourcePath
-    || !createMountEffectiveTargetPath
-    || createMountEffectiveTargetPath === '/workspace'
-  ), [createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountSourceId, savingMount]);
+  const isCreateMountDisabled = useMemo(
+    () =>
+      savingMount ||
+      !createMountSourceId ||
+      !createMountEffectiveSourcePath ||
+      !createMountEffectiveTargetPath ||
+      createMountEffectiveTargetPath === '/workspace',
+    [
+      createMountEffectiveSourcePath,
+      createMountEffectiveTargetPath,
+      createMountSourceId,
+      savingMount,
+    ],
+  );
 
   const handleCreateMount = useCallback(async () => {
     if (
-      !activeWorkspaceId
-      || !isOwner
-      || !createMountSourceId
-      || !createMountEffectiveSourcePath
-      || !createMountEffectiveTargetPath
+      !activeWorkspaceId ||
+      !isOwner ||
+      !createMountSourceId ||
+      !createMountEffectiveSourcePath ||
+      !createMountEffectiveTargetPath
     ) {
       return;
     }
     setSavingMount(true);
-    const sourceStageKey = getMountSourceBrowserStageKey(createMountSourceScope, createMountSourceId, createMountRootSourcePath);
+    const sourceStageKey = getMountSourceBrowserStageKey(
+      createMountSourceScope,
+      createMountSourceId,
+      createMountRootSourcePath,
+    );
     const sourceDirectoryToCreate = resolveMountDirectoryToCreate(
       createMountBrowserPath,
       createMountStagedSourceDirectories[sourceStageKey] ?? [],
@@ -5682,14 +6479,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         source_directory_to_create: sourceDirectoryToCreate,
         target_directory_to_create: targetDirectoryToCreate,
         auto_sync_enabled: false,
-        sync_interval_seconds: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncIntervalSeconds : null,
-        sync_start_minute: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && createMountSyncIntervalSeconds != null
-          ? (createMountSyncStartMinute ?? defaultScheduleStartMinute())
+        sync_interval_seconds: isWorkspaceMountSyncCapableSourceType(
+          createMountSelectedSource?.source_type,
+        )
+          ? createMountSyncIntervalSeconds
           : null,
-        sync_timezone: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && createMountSyncIntervalSeconds != null
-          ? (createMountSyncTimezone ?? defaultScheduleTimezone())
-          : null,
-        sync_mode: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) ? createMountSyncMode : 'merge',
+        sync_start_minute:
+          isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) &&
+          createMountSyncIntervalSeconds != null
+            ? (createMountSyncStartMinute ?? defaultScheduleStartMinute())
+            : null,
+        sync_timezone:
+          isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) &&
+          createMountSyncIntervalSeconds != null
+            ? (createMountSyncTimezone ?? defaultScheduleTimezone())
+            : null,
+        sync_mode: isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type)
+          ? createMountSyncMode
+          : 'merge',
         description: createMountDescription.trim() || null,
       });
       setMounts((prev) => [...prev, created]);
@@ -5716,7 +6523,26 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setSavingMount(false);
     }
-  }, [activeWorkspaceId, createMountBrowserPath, createMountDescription, createMountEffectiveSourcePath, createMountEffectiveTargetPath, createMountRootSourcePath, createMountSelectedSource?.source_type, createMountSourceId, createMountSourceScope, createMountStagedSourceDirectories, createMountStagedTargetDirectories, createMountSyncIntervalSeconds, createMountSyncMode, createMountSyncStartMinute, createMountSyncTimezone, createMountTargetBrowserPath, isOwner, loadWorkspaceData]);
+  }, [
+    activeWorkspaceId,
+    createMountBrowserPath,
+    createMountDescription,
+    createMountEffectiveSourcePath,
+    createMountEffectiveTargetPath,
+    createMountRootSourcePath,
+    createMountSelectedSource?.source_type,
+    createMountSourceId,
+    createMountSourceScope,
+    createMountStagedSourceDirectories,
+    createMountStagedTargetDirectories,
+    createMountSyncIntervalSeconds,
+    createMountSyncMode,
+    createMountSyncStartMinute,
+    createMountSyncTimezone,
+    createMountTargetBrowserPath,
+    isOwner,
+    loadWorkspaceData,
+  ]);
 
   const handleSaveMountDescription = useCallback(async () => {
     if (!activeWorkspaceId || !isOwner || !editingMountDescriptionId) return;
@@ -5725,7 +6551,7 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       const updated = await api.updateWorkspaceMount(activeWorkspaceId, editingMountDescriptionId, {
         description: editingMountDescriptionDraft.trim() || null,
       });
-      setMounts((prev) => prev.map((mount) => mount.id === updated.id ? updated : mount));
+      setMounts((prev) => prev.map((mount) => (mount.id === updated.id ? updated : mount)));
       setEditingMountDescriptionId(null);
       setEditingMountDescriptionDraft('');
     } catch (err) {
@@ -5735,148 +6561,171 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, editingMountDescriptionDraft, editingMountDescriptionId, isOwner]);
 
-  const handleDeleteMount = useCallback(async (mountId: string) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setDeletingMountId(mountId);
-    try {
-      await api.deleteWorkspaceMount(activeWorkspaceId, mountId);
-      setMounts((prev) => prev.filter((m) => m.id !== mountId));
-      void loadWorkspaceData(activeWorkspaceId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete mount');
-    } finally {
-      setDeletingMountId(null);
-    }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceData]);
+  const handleDeleteMount = useCallback(
+    async (mountId: string) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setDeletingMountId(mountId);
+      try {
+        await api.deleteWorkspaceMount(activeWorkspaceId, mountId);
+        setMounts((prev) => prev.filter((m) => m.id !== mountId));
+        void loadWorkspaceData(activeWorkspaceId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete mount');
+      } finally {
+        setDeletingMountId(null);
+      }
+    },
+    [activeWorkspaceId, isOwner, loadWorkspaceData],
+  );
 
-  const showMountUpdateError = useCallback((
-    mount: WorkspaceMount,
-    err: unknown,
-    fallback: string,
-    options: { assumeGlobalSourceDisabled?: boolean } = {},
-  ) => {
-    const message = getApiErrorMessage(err, fallback);
-    const canNavigateToGlobalSource = mount.mount_source_scope === 'global' && Boolean(onNavigateToTools);
-    const shouldOfferToolsLink = err instanceof ApiError
-      && err.status === 400
-      && canNavigateToGlobalSource
-      && (
-        options.assumeGlobalSourceDisabled === true
-        || mount.source_unavailable_kind === 'mount_source_unavailable'
-      );
+  const showMountUpdateError = useCallback(
+    (
+      mount: WorkspaceMount,
+      err: unknown,
+      fallback: string,
+      options: { assumeGlobalSourceDisabled?: boolean } = {},
+    ) => {
+      const message = getApiErrorMessage(err, fallback);
+      const canNavigateToGlobalSource =
+        mount.mount_source_scope === 'global' && Boolean(onNavigateToTools);
+      const shouldOfferToolsLink =
+        err instanceof ApiError &&
+        err.status === 400 &&
+        canNavigateToGlobalSource &&
+        (options.assumeGlobalSourceDisabled === true ||
+          mount.source_unavailable_kind === 'mount_source_unavailable');
 
-    setError(message);
-    if (shouldOfferToolsLink && onNavigateToTools) {
-      toast.error(
-        <>
-          This mount source has been disabled by an administrator.{' '}
-          <a
-            href="#"
-            onClick={(event) => {
-              event.preventDefault();
-              onNavigateToTools('mount-sources');
-            }}
-            style={{ color: 'inherit', textDecoration: 'underline' }}
-          >
-            Re-enable in Tools
-          </a>
-        </>,
-        8000,
-      );
-      return;
-    }
+      setError(message);
+      if (shouldOfferToolsLink && onNavigateToTools) {
+        toast.error(
+          <>
+            This mount source has been disabled by an administrator.{' '}
+            <a
+              href="#"
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigateToTools('mount-sources');
+              }}
+              style={{ color: 'inherit', textDecoration: 'underline' }}
+            >
+              Re-enable in Tools
+            </a>
+          </>,
+          8000,
+        );
+        return;
+      }
 
-    toast.error(message, 8000);
-  }, [onNavigateToTools, toast]);
+      toast.error(message, 8000);
+    },
+    [onNavigateToTools, toast],
+  );
 
-  const handleEjectMount = useCallback(async (mount: WorkspaceMount) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingMountWatchId(mount.id);
-    try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
-        enabled: false,
-      });
-      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
-      setError(null);
-      void loadWorkspaceData(activeWorkspaceId);
-    } catch (err) {
-      showMountUpdateError(mount, err, 'Failed to eject mount');
-    } finally {
-      setSavingMountWatchId(null);
-    }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceData, showMountUpdateError]);
+  const handleEjectMount = useCallback(
+    async (mount: WorkspaceMount) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setSavingMountWatchId(mount.id);
+      try {
+        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+          enabled: false,
+        });
+        setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+        setError(null);
+        void loadWorkspaceData(activeWorkspaceId);
+      } catch (err) {
+        showMountUpdateError(mount, err, 'Failed to eject mount');
+      } finally {
+        setSavingMountWatchId(null);
+      }
+    },
+    [activeWorkspaceId, isOwner, loadWorkspaceData, showMountUpdateError],
+  );
 
-  const handleRemount = useCallback(async (mount: WorkspaceMount) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingMountWatchId(mount.id);
-    try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
-        enabled: true,
-      });
-      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
-      setError(null);
-      void loadWorkspaceData(activeWorkspaceId);
-    } catch (err) {
-      showMountUpdateError(mount, err, 'Failed to remount', {
-        assumeGlobalSourceDisabled: true,
-      });
-    } finally {
-      setSavingMountWatchId(null);
-    }
-  }, [activeWorkspaceId, isOwner, loadWorkspaceData, showMountUpdateError]);
+  const handleRemount = useCallback(
+    async (mount: WorkspaceMount) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setSavingMountWatchId(mount.id);
+      try {
+        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+          enabled: true,
+        });
+        setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+        setError(null);
+        void loadWorkspaceData(activeWorkspaceId);
+      } catch (err) {
+        showMountUpdateError(mount, err, 'Failed to remount', {
+          assumeGlobalSourceDisabled: true,
+        });
+      } finally {
+        setSavingMountWatchId(null);
+      }
+    },
+    [activeWorkspaceId, isOwner, loadWorkspaceData, showMountUpdateError],
+  );
 
   const applyMountSyncFailure = useCallback((mountId: string, err: unknown, fallback: string) => {
     const message = getApiErrorMessage(err, fallback);
-    setMounts((prev) => prev.map((mount) => (
-      mount.id === mountId
-        ? {
-          ...mount,
-          sync_status: 'error',
-          sync_notice: null,
-          last_sync_error: message,
-        }
-        : mount
-    )));
+    setMounts((prev) =>
+      prev.map((mount) =>
+        mount.id === mountId
+          ? {
+              ...mount,
+              sync_status: 'error',
+              sync_notice: null,
+              last_sync_error: message,
+            }
+          : mount,
+      ),
+    );
     setError(message);
   }, []);
 
-  const handleSyncMount = useCallback(async (mount: WorkspaceMount) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    if (isDestructiveMountSyncMode(mount.sync_mode)) {
-      setMountSyncPreviewIntent('sync');
-      setMountSyncPreviewNextSyncMode(mount.sync_mode);
-      setPreviewingMountId(mount.id);
-      try {
-        const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id);
-        setMountSyncPreview(preview);
-        setMountSyncPreviewMount(mount);
-        setError(preview.sync_notice || null);
-      } catch (err) {
-        applyMountSyncFailure(mount.id, err, 'Failed to preview mount sync');
-      } finally {
-        setPreviewingMountId(null);
+  const handleSyncMount = useCallback(
+    async (mount: WorkspaceMount) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      if (isDestructiveMountSyncMode(mount.sync_mode)) {
+        setMountSyncPreviewIntent('sync');
+        setMountSyncPreviewNextSyncMode(mount.sync_mode);
+        setPreviewingMountId(mount.id);
+        try {
+          const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id);
+          setMountSyncPreview(preview);
+          setMountSyncPreviewMount(mount);
+          setError(preview.sync_notice || null);
+        } catch (err) {
+          applyMountSyncFailure(mount.id, err, 'Failed to preview mount sync');
+        } finally {
+          setPreviewingMountId(null);
+        }
+        return;
       }
-      return;
-    }
 
-    setSyncingMountId(mount.id);
-    try {
-      const result = await api.syncWorkspaceMount(activeWorkspaceId, mount.id);
-      setMounts((prev) => prev.map((m) => m.id === mount.id ? {
-        ...m,
-        sync_mode: result.sync_mode,
-        sync_status: result.sync_status,
-        sync_backend: result.sync_backend,
-        sync_notice: result.sync_notice,
-        last_sync_error: result.last_sync_error,
-      } : m));
-      setError(result.last_sync_error || result.sync_notice || null);
-    } catch (err) {
-      applyMountSyncFailure(mount.id, err, 'Failed to sync mount');
-    } finally {
-      setSyncingMountId(null);
-    }
-  }, [activeWorkspaceId, applyMountSyncFailure, isOwner]);
+      setSyncingMountId(mount.id);
+      try {
+        const result = await api.syncWorkspaceMount(activeWorkspaceId, mount.id);
+        setMounts((prev) =>
+          prev.map((m) =>
+            m.id === mount.id
+              ? {
+                  ...m,
+                  sync_mode: result.sync_mode,
+                  sync_status: result.sync_status,
+                  sync_backend: result.sync_backend,
+                  sync_notice: result.sync_notice,
+                  last_sync_error: result.last_sync_error,
+                }
+              : m,
+          ),
+        );
+        setError(result.last_sync_error || result.sync_notice || null);
+      } catch (err) {
+        applyMountSyncFailure(mount.id, err, 'Failed to sync mount');
+      } finally {
+        setSyncingMountId(null);
+      }
+    },
+    [activeWorkspaceId, applyMountSyncFailure, isOwner],
+  );
 
   const handleCloseMountSyncPreview = useCallback(() => {
     setMountSyncPreview(null);
@@ -5886,21 +6735,34 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, []);
 
   const handleConfirmMountSyncPreview = useCallback(async () => {
-    if (!activeWorkspaceId || !isOwner || !mountSyncPreview || !mountSyncPreviewMount || !mountSyncPreviewIntent) return;
+    if (
+      !activeWorkspaceId ||
+      !isOwner ||
+      !mountSyncPreview ||
+      !mountSyncPreviewMount ||
+      !mountSyncPreviewIntent
+    )
+      return;
     if (mountSyncPreviewIntent === 'sync') {
       setSyncingMountId(mountSyncPreviewMount.id);
       try {
         const result = await api.syncWorkspaceMount(activeWorkspaceId, mountSyncPreviewMount.id, {
           preview_token: mountSyncPreview.preview_token,
         });
-        setMounts((prev) => prev.map((m) => m.id === mountSyncPreviewMount.id ? {
-          ...m,
-          sync_mode: result.sync_mode,
-          sync_status: result.sync_status,
-          sync_backend: result.sync_backend,
-          sync_notice: result.sync_notice,
-          last_sync_error: result.last_sync_error,
-        } : m));
+        setMounts((prev) =>
+          prev.map((m) =>
+            m.id === mountSyncPreviewMount.id
+              ? {
+                  ...m,
+                  sync_mode: result.sync_mode,
+                  sync_status: result.sync_status,
+                  sync_backend: result.sync_backend,
+                  sync_notice: result.sync_notice,
+                  last_sync_error: result.last_sync_error,
+                }
+              : m,
+          ),
+        );
         handleCloseMountSyncPreview();
         setError(result.last_sync_error || result.sync_notice || null);
       } catch (err) {
@@ -5915,10 +6777,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     if (mountSyncPreviewIntent === 'enable-auto') {
       setSavingMountWatchId(mountSyncPreviewMount.id);
       try {
-        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mountSyncPreviewMount.id, {
-          auto_sync_enabled: true,
-          destructive_auto_sync_preview_token: mountSyncPreview.preview_token,
-        });
+        const updated = await api.updateWorkspaceMount(
+          activeWorkspaceId,
+          mountSyncPreviewMount.id,
+          {
+            auto_sync_enabled: true,
+            destructive_auto_sync_preview_token: mountSyncPreview.preview_token,
+          },
+        );
         setMounts((prev) => prev.map((m) => (m.id === mountSyncPreviewMount.id ? updated : m)));
         handleCloseMountSyncPreview();
         setError(updated.last_sync_error || updated.sync_notice || null);
@@ -5949,145 +6815,168 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } finally {
       setSavingMountWatchId(null);
     }
-  }, [activeWorkspaceId, applyMountSyncFailure, handleCloseMountSyncPreview, isOwner, mountSyncPreview, mountSyncPreviewIntent, mountSyncPreviewMount, mountSyncPreviewNextSyncMode, showMountUpdateError]);
+  }, [
+    activeWorkspaceId,
+    applyMountSyncFailure,
+    handleCloseMountSyncPreview,
+    isOwner,
+    mountSyncPreview,
+    mountSyncPreviewIntent,
+    mountSyncPreviewMount,
+    mountSyncPreviewNextSyncMode,
+    showMountUpdateError,
+  ]);
 
-  const handleToggleMountAutoSync = useCallback(async (mount: WorkspaceMount, enabled: boolean) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    if (enabled && isDestructiveMountSyncMode(mount.sync_mode)) {
-      setMountSyncPreviewIntent('enable-auto');
-      setMountSyncPreviewNextSyncMode(mount.sync_mode);
-      setPreviewingMountId(mount.id);
-      try {
-        const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id);
-        setMountSyncPreview(preview);
-        setMountSyncPreviewMount(mount);
-        setError(preview.sync_notice || null);
-      } catch (err) {
-        setMountSyncPreviewIntent(null);
-        setMountSyncPreviewNextSyncMode(null);
-        applyMountSyncFailure(mount.id, err, 'Failed to preview auto-sync');
-      } finally {
-        setPreviewingMountId(null);
+  const handleToggleMountAutoSync = useCallback(
+    async (mount: WorkspaceMount, enabled: boolean) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      if (enabled && isDestructiveMountSyncMode(mount.sync_mode)) {
+        setMountSyncPreviewIntent('enable-auto');
+        setMountSyncPreviewNextSyncMode(mount.sync_mode);
+        setPreviewingMountId(mount.id);
+        try {
+          const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id);
+          setMountSyncPreview(preview);
+          setMountSyncPreviewMount(mount);
+          setError(preview.sync_notice || null);
+        } catch (err) {
+          setMountSyncPreviewIntent(null);
+          setMountSyncPreviewNextSyncMode(null);
+          applyMountSyncFailure(mount.id, err, 'Failed to preview auto-sync');
+        } finally {
+          setPreviewingMountId(null);
+        }
+        return;
       }
-      return;
-    }
 
-    setSavingMountWatchId(mount.id);
-    try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
-        auto_sync_enabled: enabled,
-      });
-      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
-      setError(null);
-    } catch (err) {
-      showMountUpdateError(mount, err, 'Failed to update mount watch mode', {
-        assumeGlobalSourceDisabled: enabled,
-      });
-    } finally {
-      setSavingMountWatchId(null);
-    }
-  }, [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError]);
-
-  const handleUpdateMountSyncInterval = useCallback(async (
-    mount: WorkspaceMount,
-    intervalSeconds: number | null,
-    startMinute: number | null = mount.sync_start_minute,
-    timezone: string | null = mount.sync_timezone,
-  ) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    setSavingMountIntervalId(mount.id);
-    try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
-        sync_interval_seconds: intervalSeconds,
-        sync_start_minute: intervalSeconds == null ? null : (startMinute ?? defaultScheduleStartMinute()),
-        sync_timezone: intervalSeconds == null ? null : (timezone ?? defaultScheduleTimezone()),
-      });
-      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
-      setError(null);
-    } catch (err) {
-      showMountUpdateError(mount, err, 'Failed to update mount sync interval');
-    } finally {
-      setSavingMountIntervalId(null);
-    }
-  }, [activeWorkspaceId, isOwner, showMountUpdateError]);
-
-  const handleUpdateMountSyncMode = useCallback(async (mount: WorkspaceMount, syncMode: WorkspaceMountSyncMode) => {
-    if (!activeWorkspaceId || !isOwner) return;
-    if (mount.auto_sync_enabled && isDestructiveMountSyncMode(syncMode)) {
-      setMountSyncPreviewIntent('update-auto-sync-mode');
-      setMountSyncPreviewNextSyncMode(syncMode);
-      setPreviewingMountId(mount.id);
+      setSavingMountWatchId(mount.id);
       try {
-        const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id, {
+        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+          auto_sync_enabled: enabled,
+        });
+        setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+        setError(null);
+      } catch (err) {
+        showMountUpdateError(mount, err, 'Failed to update mount watch mode', {
+          assumeGlobalSourceDisabled: enabled,
+        });
+      } finally {
+        setSavingMountWatchId(null);
+      }
+    },
+    [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError],
+  );
+
+  const handleUpdateMountSyncInterval = useCallback(
+    async (
+      mount: WorkspaceMount,
+      intervalSeconds: number | null,
+      startMinute: number | null = mount.sync_start_minute,
+      timezone: string | null = mount.sync_timezone,
+    ) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      setSavingMountIntervalId(mount.id);
+      try {
+        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
+          sync_interval_seconds: intervalSeconds,
+          sync_start_minute:
+            intervalSeconds == null ? null : (startMinute ?? defaultScheduleStartMinute()),
+          sync_timezone: intervalSeconds == null ? null : (timezone ?? defaultScheduleTimezone()),
+        });
+        setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+        setError(null);
+      } catch (err) {
+        showMountUpdateError(mount, err, 'Failed to update mount sync interval');
+      } finally {
+        setSavingMountIntervalId(null);
+      }
+    },
+    [activeWorkspaceId, isOwner, showMountUpdateError],
+  );
+
+  const handleUpdateMountSyncMode = useCallback(
+    async (mount: WorkspaceMount, syncMode: WorkspaceMountSyncMode) => {
+      if (!activeWorkspaceId || !isOwner) return;
+      if (mount.auto_sync_enabled && isDestructiveMountSyncMode(syncMode)) {
+        setMountSyncPreviewIntent('update-auto-sync-mode');
+        setMountSyncPreviewNextSyncMode(syncMode);
+        setPreviewingMountId(mount.id);
+        try {
+          const preview = await api.previewWorkspaceMountSync(activeWorkspaceId, mount.id, {
+            sync_mode: syncMode,
+          });
+          setMountSyncPreview(preview);
+          setMountSyncPreviewMount(mount);
+          setError(preview.sync_notice || null);
+        } catch (err) {
+          setMountSyncPreviewIntent(null);
+          setMountSyncPreviewNextSyncMode(null);
+          applyMountSyncFailure(mount.id, err, 'Failed to preview mount sync mode');
+        } finally {
+          setPreviewingMountId(null);
+        }
+        return;
+      }
+
+      setSavingMountWatchId(mount.id);
+      try {
+        const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
           sync_mode: syncMode,
         });
-        setMountSyncPreview(preview);
-        setMountSyncPreviewMount(mount);
-        setError(preview.sync_notice || null);
+        setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
+        setError(null);
       } catch (err) {
-        setMountSyncPreviewIntent(null);
-        setMountSyncPreviewNextSyncMode(null);
-        applyMountSyncFailure(mount.id, err, 'Failed to preview mount sync mode');
+        showMountUpdateError(mount, err, 'Failed to update mount sync mode');
       } finally {
-        setPreviewingMountId(null);
+        setSavingMountWatchId(null);
       }
-      return;
-    }
+    },
+    [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError],
+  );
 
-    setSavingMountWatchId(mount.id);
-    try {
-      const updated = await api.updateWorkspaceMount(activeWorkspaceId, mount.id, {
-        sync_mode: syncMode,
-      });
-      setMounts((prev) => prev.map((m) => (m.id === mount.id ? updated : m)));
-      setError(null);
-    } catch (err) {
-      showMountUpdateError(mount, err, 'Failed to update mount sync mode');
-    } finally {
-      setSavingMountWatchId(null);
-    }
-  }, [activeWorkspaceId, applyMountSyncFailure, isOwner, showMountUpdateError]);
+  const browseWorkspaceMountTargetPath = useCallback(
+    async (browserPath: string): Promise<BrowseResponse> => {
+      const normalizedBrowserPath = normalizeMountBrowserPath(browserPath);
+      const relativePath = normalizedBrowserPath === '/' ? '' : normalizedBrowserPath.slice(1);
 
-  const browseWorkspaceMountTargetPath = useCallback(async (browserPath: string): Promise<BrowseResponse> => {
-    const normalizedBrowserPath = normalizeMountBrowserPath(browserPath);
-    const relativePath = normalizedBrowserPath === '/' ? '' : normalizedBrowserPath.slice(1);
+      const entries: DirectoryEntry[] = fileBrowserEntries
+        .map((entry) => ({
+          entry,
+          normalizedEntryPath: normalizeWorkspaceFileListPath(entry.path, activeWorkspaceId),
+        }))
+        .filter(({ normalizedEntryPath }) => {
+          if (!normalizedEntryPath) {
+            return false;
+          }
+          const entryParentPath = normalizedEntryPath.includes('/')
+            ? normalizedEntryPath.slice(0, normalizedEntryPath.lastIndexOf('/'))
+            : '';
+          return entryParentPath === relativePath;
+        })
+        .map(({ entry, normalizedEntryPath }) => {
+          const entryName = normalizedEntryPath.split('/').pop() || normalizedEntryPath;
+          return {
+            name: entryName,
+            path: sourcePathToBrowserPath(normalizedEntryPath),
+            is_dir: entry.entry_type === 'directory',
+            size: entry.size_bytes,
+          };
+        })
+        .sort((left, right) => {
+          if (left.is_dir !== right.is_dir) {
+            return left.is_dir ? -1 : 1;
+          }
+          return left.name.localeCompare(right.name);
+        });
 
-    const entries: DirectoryEntry[] = fileBrowserEntries
-      .map((entry) => ({
-        entry,
-        normalizedEntryPath: normalizeWorkspaceFileListPath(entry.path, activeWorkspaceId),
-      }))
-      .filter(({ normalizedEntryPath }) => {
-        if (!normalizedEntryPath) {
-          return false;
-        }
-        const entryParentPath = normalizedEntryPath.includes('/')
-          ? normalizedEntryPath.slice(0, normalizedEntryPath.lastIndexOf('/'))
-          : '';
-        return entryParentPath === relativePath;
-      })
-      .map(({ entry, normalizedEntryPath }) => {
-        const entryName = normalizedEntryPath.split('/').pop() || normalizedEntryPath;
-        return {
-          name: entryName,
-          path: sourcePathToBrowserPath(normalizedEntryPath),
-          is_dir: entry.entry_type === 'directory',
-          size: entry.size_bytes,
-        };
-      })
-      .sort((left, right) => {
-        if (left.is_dir !== right.is_dir) {
-          return left.is_dir ? -1 : 1;
-        }
-        return left.name.localeCompare(right.name);
-      });
-
-    return {
-      path: normalizedBrowserPath,
-      entries,
-      error: undefined,
-    };
-  }, [activeWorkspaceId, fileBrowserEntries]);
+      return {
+        path: normalizedBrowserPath,
+        entries,
+        error: undefined,
+      };
+    },
+    [activeWorkspaceId, fileBrowserEntries],
+  );
 
   const handleStartWorkspaceRename = useCallback((workspace: UserSpaceWorkspace) => {
     setDeleteConfirmWorkspaceId(null);
@@ -6101,87 +6990,95 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setWorkspaceNameDraft('');
   }, []);
 
-  const applyWorkspaceShareStatus = useCallback((status: UserSpaceWorkspaceShareLinkStatus) => {
-    setShareLinkStatus(status);
-    setShareSlugDraft(status.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
-    setShareSlugEdited(false);
-    setShareSlugAvailable(null);
-    setShareAccessMode(status.share_access_mode ?? 'token');
-    setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
-    setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
-    setSharePasswordDraft('');
-    setShareLinkType(status.active_share_style ?? 'anonymous');
-  }, [activeWorkspace?.name]);
+  const applyWorkspaceShareStatus = useCallback(
+    (status: UserSpaceWorkspaceShareLinkStatus) => {
+      setShareLinkStatus(status);
+      setShareSlugDraft(status.share_slug ?? getDefaultShareSlug(activeWorkspace?.name));
+      setShareSlugEdited(false);
+      setShareSlugAvailable(null);
+      setShareAccessMode(status.share_access_mode ?? 'token');
+      setShareSelectedUserIdsDraft(status.selected_user_ids ?? []);
+      setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
+      setSharePasswordDraft('');
+      setShareLinkType(status.active_share_style ?? 'anonymous');
+    },
+    [activeWorkspace?.name],
+  );
 
-  const syncWorkspaceShareSelection = useCallback((
-    workspaceId: string,
-    links: UserSpaceWorkspaceShareLinkStatus[],
-    ownerUsername: string,
-    preferredShareId?: string | null,
-  ) => {
-    const nextSelected = (
-      (preferredShareId ? links.find((candidate) => candidate.id === preferredShareId) : null)
-      || (selectedShareId ? links.find((candidate) => candidate.id === selectedShareId) : null)
-      || links[0]
-      || null
-    );
+  const syncWorkspaceShareSelection = useCallback(
+    (
+      workspaceId: string,
+      links: UserSpaceWorkspaceShareLinkStatus[],
+      ownerUsername: string,
+      preferredShareId?: string | null,
+    ) => {
+      const nextSelected =
+        (preferredShareId ? links.find((candidate) => candidate.id === preferredShareId) : null) ||
+        (selectedShareId ? links.find((candidate) => candidate.id === selectedShareId) : null) ||
+        links[0] ||
+        null;
 
-    setShareLinks(links);
-    setSelectedShareId(nextSelected?.id ?? null);
+      setShareLinks(links);
+      setSelectedShareId(nextSelected?.id ?? null);
 
-    const resolvedStatus = nextSelected ?? {
-      id: '',
-      workspace_id: workspaceId,
-      has_share_link: false,
-      owner_username: ownerUsername,
-      label: null,
-      share_slug: null,
-      share_token: null,
-      share_url: null,
-      anonymous_share_url: null,
-      subdomain_share_url: null,
-      subdomain_share_enabled: false,
-      subdomain_share_disabled_reason: null,
-      created_at: null,
-      share_access_mode: 'token',
-      selected_user_ids: [],
-      selected_ldap_groups: [],
-      has_password: false,
-      active_share_style: 'anonymous',
-    };
-    applyWorkspaceShareStatus(resolvedStatus);
-    return resolvedStatus;
-  }, [applyWorkspaceShareStatus, selectedShareId]);
+      const resolvedStatus = nextSelected ?? {
+        id: '',
+        workspace_id: workspaceId,
+        has_share_link: false,
+        owner_username: ownerUsername,
+        label: null,
+        share_slug: null,
+        share_token: null,
+        share_url: null,
+        anonymous_share_url: null,
+        subdomain_share_url: null,
+        subdomain_share_enabled: false,
+        subdomain_share_disabled_reason: null,
+        created_at: null,
+        share_access_mode: 'token',
+        selected_user_ids: [],
+        selected_ldap_groups: [],
+        has_password: false,
+        active_share_style: 'anonymous',
+      };
+      applyWorkspaceShareStatus(resolvedStatus);
+      return resolvedStatus;
+    },
+    [applyWorkspaceShareStatus, selectedShareId],
+  );
 
-  const loadShareLinkStatus = useCallback(async (preferredShareId?: string | null) => {
-    if (!activeWorkspaceId || !canEditWorkspace) {
-      setShareLinks([]);
-      setSelectedShareId(null);
-      setShareLinkStatus(null);
-      return null;
-    }
+  const loadShareLinkStatus = useCallback(
+    async (preferredShareId?: string | null) => {
+      if (!activeWorkspaceId || !canEditWorkspace) {
+        setShareLinks([]);
+        setSelectedShareId(null);
+        setShareLinkStatus(null);
+        return null;
+      }
 
-    setLoadingShareStatus(true);
-    try {
-      const response = await api.listUserSpaceWorkspaceShareLinks(activeWorkspaceId);
-      const status = syncWorkspaceShareSelection(
-        activeWorkspaceId,
-        response.links,
-        response.owner_username,
-        preferredShareId,
-      );
-      setError(null);
-      return status;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load share link state');
-      setShareLinks([]);
-      setSelectedShareId(null);
-      setShareLinkStatus(null);
-      return null;
-    } finally {
-      setLoadingShareStatus(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, syncWorkspaceShareSelection]);
+      setLoadingShareStatus(true);
+      try {
+        const response = await api.listUserSpaceWorkspaceShareLinks(activeWorkspaceId);
+        const status = syncWorkspaceShareSelection(
+          activeWorkspaceId,
+          response.links,
+          response.owner_username,
+          preferredShareId,
+        );
+        setError(null);
+        return status;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load share link state');
+        setShareLinks([]);
+        setSelectedShareId(null);
+        setShareLinkStatus(null);
+        return null;
+      } finally {
+        setLoadingShareStatus(false);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, syncWorkspaceShareSelection],
+  );
 
   useEffect(() => {
     if (!showShareModal) return;
@@ -6196,14 +7093,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     return shareLinkStatus.workspace_id === activeWorkspaceId ? shareLinkStatus : null;
   }, [activeWorkspaceId, shareLinkStatus]);
 
-  const handleSelectShare = useCallback((shareId: string) => {
-    const selected = shareLinks.find((candidate) => candidate.id === shareId);
-    if (!selected) {
-      return;
-    }
-    setSelectedShareId(shareId);
-    applyWorkspaceShareStatus(selected);
-  }, [applyWorkspaceShareStatus, shareLinks]);
+  const handleSelectShare = useCallback(
+    (shareId: string) => {
+      const selected = shareLinks.find((candidate) => candidate.id === shareId);
+      if (!selected) {
+        return;
+      }
+      setSelectedShareId(shareId);
+      applyWorkspaceShareStatus(selected);
+    },
+    [applyWorkspaceShareStatus, shareLinks],
+  );
 
   const handleOpenShareModal = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -6220,14 +7120,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     setShareSelectedLdapGroupsDraft(status.selected_ldap_groups ?? []);
     setSharePasswordDraft('');
     setShareLdapGroupDraft('');
-    void api.listUsersDirectory().then(setAllUsers).catch(() => setAllUsers([]));
+    void api
+      .listUsersDirectory()
+      .then(setAllUsers)
+      .catch(() => setAllUsers([]));
     void (async () => {
       setLoadingLdapGroups(true);
       try {
         const ldapData = await api.getLdapConfig();
-        let groups = Array.isArray(ldapData.discovered_groups)
-          ? ldapData.discovered_groups
-          : [];
+        let groups = Array.isArray(ldapData.discovered_groups) ? ldapData.discovered_groups : [];
 
         if (groups.length === 0) {
           const discovered = await api.discoverLdapWithStoredCredentials();
@@ -6250,80 +7151,90 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       }
     })();
     setShowShareModal(true);
-  }, [
-    activeWorkspace?.name,
-    activeWorkspaceId,
-    canEditWorkspace,
-    loadShareLinkStatus,
-  ]);
+  }, [activeWorkspace?.name, activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
 
-  const handleEnsureShareLink = useCallback(async (rotateToken = false) => {
-    if (!activeWorkspaceId || !canEditWorkspace) return null;
+  const handleEnsureShareLink = useCallback(
+    async (rotateToken = false) => {
+      if (!activeWorkspaceId || !canEditWorkspace) return null;
 
-    setSharingWorkspace(true);
-    if (rotateToken) {
-      setRotatingShareLink(true);
-    }
+      setSharingWorkspace(true);
+      if (rotateToken) {
+        setRotatingShareLink(true);
+      }
 
-    try {
-      const link = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId, rotateToken);
-      await loadShareLinkStatus(link.id);
-      setError(null);
-      return {
-        id: link.id,
-        workspace_id: link.workspace_id,
-        has_share_link: true,
-        owner_username: link.owner_username,
-        label: link.label ?? null,
-        share_slug: link.share_slug,
-        share_token: link.share_token,
-        share_url: link.share_url,
-        anonymous_share_url: link.anonymous_share_url,
-        subdomain_share_url: link.subdomain_share_url,
-        subdomain_share_enabled: link.subdomain_share_enabled,
-        subdomain_share_disabled_reason: link.subdomain_share_disabled_reason,
-        created_at: new Date().toISOString(),
-        share_access_mode: activeShareLinkStatus?.share_access_mode ?? 'token',
-        selected_user_ids: activeShareLinkStatus?.selected_user_ids ?? [],
-        selected_ldap_groups: activeShareLinkStatus?.selected_ldap_groups ?? [],
-        has_password: activeShareLinkStatus?.has_password ?? false,
-        active_share_style: activeShareLinkStatus?.active_share_style ?? 'anonymous',
-      } satisfies UserSpaceWorkspaceShareLinkStatus;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create share link');
-      return null;
-    } finally {
-      setSharingWorkspace(false);
-      setRotatingShareLink(false);
-    }
-  }, [
-    activeWorkspaceId,
-    activeShareLinkStatus?.has_password,
-    activeShareLinkStatus?.selected_ldap_groups,
-    activeShareLinkStatus?.selected_user_ids,
-    activeShareLinkStatus?.share_access_mode,
-    canEditWorkspace,
-    loadShareLinkStatus,
-  ]);
+      try {
+        const link = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId, rotateToken);
+        await loadShareLinkStatus(link.id);
+        setError(null);
+        return {
+          id: link.id,
+          workspace_id: link.workspace_id,
+          has_share_link: true,
+          owner_username: link.owner_username,
+          label: link.label ?? null,
+          share_slug: link.share_slug,
+          share_token: link.share_token,
+          share_url: link.share_url,
+          anonymous_share_url: link.anonymous_share_url,
+          subdomain_share_url: link.subdomain_share_url,
+          subdomain_share_enabled: link.subdomain_share_enabled,
+          subdomain_share_disabled_reason: link.subdomain_share_disabled_reason,
+          created_at: new Date().toISOString(),
+          share_access_mode: activeShareLinkStatus?.share_access_mode ?? 'token',
+          selected_user_ids: activeShareLinkStatus?.selected_user_ids ?? [],
+          selected_ldap_groups: activeShareLinkStatus?.selected_ldap_groups ?? [],
+          has_password: activeShareLinkStatus?.has_password ?? false,
+          active_share_style: activeShareLinkStatus?.active_share_style ?? 'anonymous',
+        } satisfies UserSpaceWorkspaceShareLinkStatus;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to create share link');
+        return null;
+      } finally {
+        setSharingWorkspace(false);
+        setRotatingShareLink(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends on specific activeShareLinkStatus fields, not active_share_style
+    [
+      activeWorkspaceId,
+      activeShareLinkStatus?.has_password,
+      activeShareLinkStatus?.selected_ldap_groups,
+      activeShareLinkStatus?.selected_user_ids,
+      activeShareLinkStatus?.share_access_mode,
+      canEditWorkspace,
+      loadShareLinkStatus,
+    ],
+  );
 
-  const resolveShareUrl = useCallback((status: UserSpaceWorkspaceShareLinkStatus | null | undefined): string | null => {
-    if (!status?.has_share_link) return null;
-    if (shareLinkType === 'subdomain' && status.subdomain_share_enabled && status.subdomain_share_url) {
-      return status.subdomain_share_url;
-    }
-    if (shareLinkType === 'anonymous' && status.anonymous_share_url) {
-      return status.anonymous_share_url;
-    }
-    return status.share_url;
-  }, [shareLinkType]);
+  const resolveShareUrl = useCallback(
+    (status: UserSpaceWorkspaceShareLinkStatus | null | undefined): string | null => {
+      if (!status?.has_share_link) return null;
+      if (
+        shareLinkType === 'subdomain' &&
+        status.subdomain_share_enabled &&
+        status.subdomain_share_url
+      ) {
+        return status.subdomain_share_url;
+      }
+      if (shareLinkType === 'anonymous' && status.anonymous_share_url) {
+        return status.anonymous_share_url;
+      }
+      return status.share_url;
+    },
+    [shareLinkType],
+  );
 
-  const effectiveShareUrl = useMemo(() => resolveShareUrl(activeShareLinkStatus), [activeShareLinkStatus, resolveShareUrl]);
+  const effectiveShareUrl = useMemo(
+    () => resolveShareUrl(activeShareLinkStatus),
+    [activeShareLinkStatus, resolveShareUrl],
+  );
   const shareSubdomainEnabled = Boolean(activeShareLinkStatus?.subdomain_share_enabled);
-  const shareSubdomainDisabledReason = activeShareLinkStatus?.subdomain_share_disabled_reason ?? null;
+  const shareSubdomainDisabledReason =
+    activeShareLinkStatus?.subdomain_share_disabled_reason ?? null;
   const showProtectedSubdomainNotice = Boolean(
-    activeShareLinkStatus?.has_share_link
-    && shareLinkType === 'subdomain'
-    && shareAccessMode !== 'token',
+    activeShareLinkStatus?.has_share_link &&
+    shareLinkType === 'subdomain' &&
+    shareAccessMode !== 'token',
   );
 
   useEffect(() => {
@@ -6348,7 +7259,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to copy share link');
     }
-  }, [activeShareLinkStatus?.has_share_link, effectiveShareUrl, handleEnsureShareLink, resolveShareUrl]);
+  }, [
+    activeShareLinkStatus?.has_share_link,
+    effectiveShareUrl,
+    handleEnsureShareLink,
+    resolveShareUrl,
+  ]);
 
   const handleOpenFullPreview = useCallback(async () => {
     let url = resolveShareUrl(activeShareLinkStatus);
@@ -6398,47 +7314,56 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     shareSlugCheckRequestRef.current = requestId;
     const timer = window.setTimeout(() => {
       setCheckingShareSlug(true);
-      void api.checkUserSpaceWorkspaceShareSlugAvailability(
-        activeWorkspaceId,
-        normalized,
-        activeShareLinkStatus?.id || undefined,
-      ).then((result) => {
-        if (shareSlugCheckRequestRef.current !== requestId) {
-          return;
-        }
-        setShareSlugAvailable(result.available);
-      }).catch(() => {
-        if (shareSlugCheckRequestRef.current !== requestId) {
-          return;
-        }
-        setShareSlugAvailable(false);
-      }).finally(() => {
-        if (shareSlugCheckRequestRef.current !== requestId) {
-          return;
-        }
-        setCheckingShareSlug(false);
-      });
+      void api
+        .checkUserSpaceWorkspaceShareSlugAvailability(
+          activeWorkspaceId,
+          normalized,
+          activeShareLinkStatus?.id || undefined,
+        )
+        .then((result) => {
+          if (shareSlugCheckRequestRef.current !== requestId) {
+            return;
+          }
+          setShareSlugAvailable(result.available);
+        })
+        .catch(() => {
+          if (shareSlugCheckRequestRef.current !== requestId) {
+            return;
+          }
+          setShareSlugAvailable(false);
+        })
+        .finally(() => {
+          if (shareSlugCheckRequestRef.current !== requestId) {
+            return;
+          }
+          setCheckingShareSlug(false);
+        });
     }, 350);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [showShareModal, activeWorkspaceId, canEditWorkspace, shareSlugDraft, shareSlugEdited, activeShareLinkStatus?.id]);
+  }, [
+    showShareModal,
+    activeWorkspaceId,
+    canEditWorkspace,
+    shareSlugDraft,
+    shareSlugEdited,
+    activeShareLinkStatus?.id,
+  ]);
 
   const handleToggleShareSelectedUser = useCallback((userId: string) => {
-    setShareSelectedUserIdsDraft((current) => (
-      current.includes(userId)
-        ? current.filter((value) => value !== userId)
-        : [...current, userId]
-    ));
+    setShareSelectedUserIdsDraft((current) =>
+      current.includes(userId) ? current.filter((value) => value !== userId) : [...current, userId],
+    );
   }, []);
 
   const handleAddShareLdapGroup = useCallback(() => {
     const groupDn = shareLdapGroupDraft.trim();
     if (!groupDn) return;
-    setShareSelectedLdapGroupsDraft((current) => (
-      current.includes(groupDn) ? current : [...current, groupDn]
-    ));
+    setShareSelectedLdapGroupsDraft((current) =>
+      current.includes(groupDn) ? current : [...current, groupDn],
+    );
     setShareLdapGroupDraft('');
   }, [shareLdapGroupDraft]);
 
@@ -6463,7 +7388,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       return;
     }
 
-    if (shareAccessMode === 'password' && !currentStatus.has_password && !sharePasswordDraft.trim()) {
+    if (
+      shareAccessMode === 'password' &&
+      !currentStatus.has_password &&
+      !sharePasswordDraft.trim()
+    ) {
       setError('Share password is required for password-protected access');
       return;
     }
@@ -6474,18 +7403,22 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       const currentShareId = status.id;
 
       if ((status.share_slug ?? '') !== normalizedSlug) {
-        status = await api.updateUserSpaceWorkspaceShareSlug(activeWorkspaceId, currentShareId, normalizedSlug);
+        status = await api.updateUserSpaceWorkspaceShareSlug(
+          activeWorkspaceId,
+          currentShareId,
+          normalizedSlug,
+        );
       }
 
       const selectedUserIds = normalizeUniqueStrings(shareSelectedUserIdsDraft);
       const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
       const styleChanged = shareLinkType !== (status.active_share_style ?? 'anonymous');
       const hasAccessChanges =
-        shareAccessMode !== status.share_access_mode
-        || !areSameNormalizedStringArrays(selectedUserIds, status.selected_user_ids ?? [])
-        || !areSameNormalizedStringArrays(selectedLdapGroups, status.selected_ldap_groups ?? [])
-        || (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim()))
-        || styleChanged;
+        shareAccessMode !== status.share_access_mode ||
+        !areSameNormalizedStringArrays(selectedUserIds, status.selected_user_ids ?? []) ||
+        !areSameNormalizedStringArrays(selectedLdapGroups, status.selected_ldap_groups ?? []) ||
+        (shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim())) ||
+        styleChanged;
 
       if (hasAccessChanges) {
         status = await api.updateUserSpaceWorkspaceShareAccess(activeWorkspaceId, currentShareId, {
@@ -6534,35 +7467,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     }
   }, [activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
 
-  const handleSaveShareLabel = useCallback(async (label: string) => {
-    if (!activeWorkspaceId || !activeShareLinkStatus?.id || !canEditWorkspace) return;
+  const handleSaveShareLabel = useCallback(
+    async (label: string) => {
+      if (!activeWorkspaceId || !activeShareLinkStatus?.id || !canEditWorkspace) return;
 
-    setSavingShareLabel(true);
-    try {
-      await api.updateUserSpaceWorkspaceShareLinkLabel(activeWorkspaceId, activeShareLinkStatus.id, { label });
-      await loadShareLinkStatus(activeShareLinkStatus.id);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update share link label');
-    } finally {
-      setSavingShareLabel(false);
-    }
-  }, [activeShareLinkStatus?.id, activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
+      setSavingShareLabel(true);
+      try {
+        await api.updateUserSpaceWorkspaceShareLinkLabel(
+          activeWorkspaceId,
+          activeShareLinkStatus.id,
+          { label },
+        );
+        await loadShareLinkStatus(activeShareLinkStatus.id);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update share link label');
+      } finally {
+        setSavingShareLabel(false);
+      }
+    },
+    [activeShareLinkStatus?.id, activeWorkspaceId, canEditWorkspace, loadShareLinkStatus],
+  );
 
-  const handleDeleteSelectedShareLink = useCallback(async (shareId: string) => {
-    if (!activeWorkspaceId || !shareId || !canEditWorkspace) return;
+  const handleDeleteSelectedShareLink = useCallback(
+    async (shareId: string) => {
+      if (!activeWorkspaceId || !shareId || !canEditWorkspace) return;
 
-    setDeletingSelectedShareLink(true);
-    try {
-      await api.deleteUserSpaceWorkspaceShareLink(activeWorkspaceId, shareId);
-      await loadShareLinkStatus();
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete share link');
-    } finally {
-      setDeletingSelectedShareLink(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
+      setDeletingSelectedShareLink(true);
+      try {
+        await api.deleteUserSpaceWorkspaceShareLink(activeWorkspaceId, shareId);
+        await loadShareLinkStatus();
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to delete share link');
+      } finally {
+        setDeletingSelectedShareLink(false);
+      }
+    },
+    [activeWorkspaceId, canEditWorkspace, loadShareLinkStatus],
+  );
 
   const shareSelectableUsers = useMemo(() => {
     if (allUsers.length > 0) {
@@ -6575,9 +7518,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       activeWorkspace.owner_user_id,
       ...activeWorkspace.members.map((member) => member.user_id),
     ]);
-    const fallbackUsers: UserDirectoryEntry[] = [currentUser, ...allUsers].filter((user, index, list) => (
-      workspaceMemberIds.has(user.id) && list.findIndex((candidate) => candidate.id === user.id) === index
-    ));
+    const fallbackUsers: UserDirectoryEntry[] = [currentUser, ...allUsers].filter(
+      (user, index, list) =>
+        workspaceMemberIds.has(user.id) &&
+        list.findIndex((candidate) => candidate.id === user.id) === index,
+    );
     return fallbackUsers;
   }, [activeWorkspace, allUsers, currentUser]);
 
@@ -6586,7 +7531,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       return false;
     }
 
-    const slugChanged = normalizeShareSlugInput(shareSlugDraft) !== normalizeShareSlugInput(activeShareLinkStatus.share_slug ?? '');
+    const slugChanged =
+      normalizeShareSlugInput(shareSlugDraft) !==
+      normalizeShareSlugInput(activeShareLinkStatus.share_slug ?? '');
     const accessModeChanged = shareAccessMode !== activeShareLinkStatus.share_access_mode;
     const selectedUsersChanged = !areSameNormalizedStringArrays(
       shareSelectedUserIdsDraft,
@@ -6596,15 +7543,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
       shareSelectedLdapGroupsDraft,
       activeShareLinkStatus.selected_ldap_groups ?? [],
     );
-    const pendingPasswordChange = shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim());
-    const styleChanged = shareLinkType !== (activeShareLinkStatus.active_share_style ?? 'anonymous');
+    const pendingPasswordChange =
+      shareAccessMode === 'password' && Boolean(sharePasswordDraft.trim());
+    const styleChanged =
+      shareLinkType !== (activeShareLinkStatus.active_share_style ?? 'anonymous');
 
-    return slugChanged
-      || accessModeChanged
-      || selectedUsersChanged
-      || selectedLdapGroupsChanged
-      || pendingPasswordChange
-      || styleChanged;
+    return (
+      slugChanged ||
+      accessModeChanged ||
+      selectedUsersChanged ||
+      selectedLdapGroupsChanged ||
+      pendingPasswordChange ||
+      styleChanged
+    );
   }, [
     activeShareLinkStatus,
     shareAccessMode,
@@ -6616,288 +7567,456 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
     showShareModal,
   ]);
 
-  const activeShareCreatedLabel = useMemo(() => (
-    activeShareLinkStatus?.created_at
-      ? `Created ${formatSnapshotTimestamp(activeShareLinkStatus.created_at)}`
-      : 'Share link active'
-  ), [activeShareLinkStatus?.created_at]);
+  const activeShareCreatedLabel = useMemo(
+    () =>
+      activeShareLinkStatus?.created_at
+        ? `Created ${formatSnapshotTimestamp(activeShareLinkStatus.created_at)}`
+        : 'Share link active',
+    [activeShareLinkStatus?.created_at],
+  );
 
-  const handleSaveWorkspaceRename = useCallback(async (workspace: UserSpaceWorkspace) => {
-    const nextName = workspaceNameDraft.trim();
-    if (!nextName) return;
+  const handleSaveWorkspaceRename = useCallback(
+    async (workspace: UserSpaceWorkspace) => {
+      const nextName = workspaceNameDraft.trim();
+      if (!nextName) return;
 
-    try {
-      const updated = await api.updateUserSpaceWorkspace(workspace.id, { name: nextName });
-      setWorkspaces((current) => current.map((ws) => ws.id === updated.id ? updated : ws));
-      setEditingWorkspaceNameId(null);
-      setWorkspaceNameDraft('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename workspace');
-    }
-  }, [workspaceNameDraft]);
+      try {
+        const updated = await api.updateUserSpaceWorkspace(workspace.id, { name: nextName });
+        setWorkspaces((current) => current.map((ws) => (ws.id === updated.id ? updated : ws)));
+        setEditingWorkspaceNameId(null);
+        setWorkspaceNameDraft('');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to rename workspace');
+      }
+    },
+    [workspaceNameDraft],
+  );
 
-  const renderTreeNodes = useCallback((nodes: ReturnType<typeof buildUserSpaceTree>, depth = 0) => {
-    return nodes.flatMap((node) => {
-      const indentStyle = { paddingLeft: `${depth * 14 + 6}px` };
+  const renderTreeNodes = useCallback(
+    (nodes: ReturnType<typeof buildUserSpaceTree>, depth = 0) => {
+      return nodes.flatMap((node) => {
+        const indentStyle = { paddingLeft: `${depth * 14 + 6}px` };
 
-      if (node.type === 'folder') {
-        const isExpanded = expandedFolders.has(node.path);
-        const isRenaming = renamingFolderPath === node.path;
-        const isConfirmingDelete = deleteConfirmFolderPath === node.path;
-        const rows: JSX.Element[] = [];
+        if (node.type === 'folder') {
+          const isExpanded = expandedFolders.has(node.path);
+          const isRenaming = renamingFolderPath === node.path;
+          const isConfirmingDelete = deleteConfirmFolderPath === node.path;
+          const rows: JSX.Element[] = [];
+
+          if (isRenaming) {
+            rows.push(
+              <div
+                key={`${node.path}-rename`}
+                className="userspace-file-item userspace-tree-row active"
+              >
+                <input
+                  className="userspace-file-rename-input"
+                  style={indentStyle}
+                  value={renameValue}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') handleRenameFolder(node.path, renameValue);
+                    if (event.key === 'Escape') setRenamingFolderPath(null);
+                  }}
+                  autoFocus
+                />
+                <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                  <button
+                    className="chat-action-btn"
+                    onClick={() => handleRenameFolder(node.path, renameValue)}
+                    title="Confirm"
+                  >
+                    <Check size={12} />
+                  </button>
+                  <button
+                    className="chat-action-btn"
+                    onClick={() => setRenamingFolderPath(null)}
+                    title="Cancel"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </div>,
+            );
+          } else {
+            const mountInfo = mountTargetPaths.get(node.path);
+            const isMount = !!mountInfo;
+            const isMountDisabled = isMount && !mountInfo.enabled;
+            const isMountDisconnected = isMount && !mountInfo.sourceAvailable;
+            const isSyncCapableMount =
+              isMount && isWorkspaceMountSyncCapableSourceType(mountInfo.sourceType);
+            const isMountSyncInProgress =
+              isSyncCapableMount &&
+              !!mountInfo &&
+              (mountInfo.syncStatus === 'syncing' ||
+                syncingMountId === mountInfo.id ||
+                previewingMountId === mountInfo.id);
+            const mountStatusClass = isMountSyncInProgress
+              ? 'userspace-status-pill-warning'
+              : mountInfo?.syncStatus === 'synced'
+                ? 'userspace-status-pill-success'
+                : mountInfo?.syncStatus === 'pending'
+                  ? 'userspace-status-pill-info'
+                  : 'userspace-status-pill-danger';
+            const mountBadgeLabel = isMountDisconnected
+              ? 'disconnected'
+              : isMountDisabled
+                ? 'unmounted'
+                : isSyncCapableMount
+                  ? isMountSyncInProgress
+                    ? 'syncing'
+                    : mountInfo?.syncStatus === 'synced'
+                      ? 'synced'
+                      : mountInfo?.syncStatus === 'pending'
+                        ? 'pending'
+                        : 'error'
+                  : 'live';
+            const hasChangedFileDescendant =
+              !isExpanded &&
+              collectFilePaths(node).some(
+                (p) => changedFilePaths.has(p) && !isPathInMountTarget(p),
+              );
+            rows.push(
+              <div
+                key={node.path}
+                className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled || isMountDisconnected ? ' userspace-tree-mount-disabled' : ''}`}
+              >
+                <button
+                  className="userspace-item-content userspace-tree-content"
+                  onClick={() => handleToggleFolder(node.path)}
+                  style={indentStyle}
+                >
+                  <span className="userspace-tree-chevron" aria-hidden="true">
+                    {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                  <span
+                    className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}
+                  >
+                    {node.name}
+                  </span>
+                  {hasChangedFileDescendant && (
+                    <span
+                      className="userspace-tree-folder-changed-file-dot"
+                      title="Contains changed files"
+                    />
+                  )}
+                  {isMount && (
+                    <span
+                      className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSyncCapableMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      title={
+                        isMountDisconnected
+                          ? 'Mount source is no longer available'
+                          : isMountSyncInProgress
+                            ? mountInfo.progressText
+                            : isSyncCapableMount &&
+                                mountInfo?.syncStatus === 'error' &&
+                                mountInfo?.lastSyncError
+                              ? mountInfo.lastSyncError
+                              : 'Manage mounts'
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleOpenMountsModal();
+                      }}
+                    >
+                      {isMountSyncInProgress && (
+                        <MiniLoadingSpinner variant="icon" size={11} ariaHidden />
+                      )}
+                      {mountBadgeLabel}
+                    </span>
+                  )}
+                </button>
+                {canEditWorkspace && !isMount && (
+                  <div className="userspace-item-actions">
+                    {isConfirmingDelete ? (
+                      <>
+                        <button
+                          className="chat-action-btn confirm-delete"
+                          onClick={() => handleDeleteFolder(node.path)}
+                          title="Confirm"
+                        >
+                          <Check size={12} />
+                        </button>
+                        <button
+                          className="chat-action-btn cancel-delete"
+                          onClick={() => setDeleteConfirmFolderPath(null)}
+                          title="Cancel"
+                        >
+                          <X size={12} />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="chat-action-btn"
+                          onClick={() => handleStartCreateFile(node.path)}
+                          title="New file in folder"
+                        >
+                          <Plus size={12} />
+                        </button>
+                        <button
+                          className="chat-action-btn"
+                          onClick={() => {
+                            setRenamingFolderPath(node.path);
+                            setRenameValue(node.path);
+                          }}
+                          title="Rename folder"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          className="chat-action-btn"
+                          onClick={() => setDeleteConfirmFolderPath(node.path)}
+                          title="Delete folder"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>,
+            );
+          }
+
+          if (isExpanded && node.children.length > 0) {
+            rows.push(...renderTreeNodes(node.children, depth + 1));
+          }
+
+          return rows;
+        }
+
+        const isConfirmingDelete = deleteConfirmFileId === node.path;
+        const isRenaming = renamingFilePath === node.path;
 
         if (isRenaming) {
-          rows.push(
-            <div key={`${node.path}-rename`} className="userspace-file-item userspace-tree-row active">
+          return [
+            <div
+              key={`${node.path}-rename`}
+              className="userspace-file-item userspace-tree-row active"
+            >
               <input
                 className="userspace-file-rename-input"
                 style={indentStyle}
                 value={renameValue}
                 onChange={(event) => setRenameValue(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') handleRenameFolder(node.path, renameValue);
-                  if (event.key === 'Escape') setRenamingFolderPath(null);
+                  if (event.key === 'Enter') handleRenameFile(node.path, renameValue);
+                  if (event.key === 'Escape') setRenamingFilePath(null);
                 }}
                 autoFocus
               />
               <div className="userspace-item-actions" style={{ opacity: 1 }}>
-                <button className="chat-action-btn" onClick={() => handleRenameFolder(node.path, renameValue)} title="Confirm">
+                <button
+                  className="chat-action-btn"
+                  onClick={() => handleRenameFile(node.path, renameValue)}
+                  title="Confirm"
+                >
                   <Check size={12} />
                 </button>
-                <button className="chat-action-btn" onClick={() => setRenamingFolderPath(null)} title="Cancel">
+                <button
+                  className="chat-action-btn"
+                  onClick={() => setRenamingFilePath(null)}
+                  title="Cancel"
+                >
                   <X size={12} />
                 </button>
               </div>
-            </div>
-          );
-        } else {
-          const mountInfo = mountTargetPaths.get(node.path);
-          const isMount = !!mountInfo;
-          const isMountDisabled = isMount && !mountInfo.enabled;
-          const isMountDisconnected = isMount && !mountInfo.sourceAvailable;
-          const isSyncCapableMount = isMount && isWorkspaceMountSyncCapableSourceType(mountInfo.sourceType);
-          const isMountSyncInProgress = isSyncCapableMount && !!mountInfo && (mountInfo.syncStatus === 'syncing' || syncingMountId === mountInfo.id || previewingMountId === mountInfo.id);
-          const mountStatusClass = isMountSyncInProgress
-            ? 'userspace-status-pill-warning'
-            : mountInfo?.syncStatus === 'synced'
-              ? 'userspace-status-pill-success'
-              : mountInfo?.syncStatus === 'pending'
-                ? 'userspace-status-pill-info'
-                : 'userspace-status-pill-danger';
-          const mountBadgeLabel = isMountDisconnected
-            ? 'disconnected'
-            : isMountDisabled
-              ? 'unmounted'
-              : isSyncCapableMount
-                ? isMountSyncInProgress
-                  ? 'syncing'
-                  : mountInfo?.syncStatus === 'synced'
-                    ? 'synced'
-                    : mountInfo?.syncStatus === 'pending'
-                      ? 'pending'
-                      : 'error'
-                : 'live';
-          const hasChangedFileDescendant = !isExpanded && collectFilePaths(node).some((p) => changedFilePaths.has(p) && !isPathInMountTarget(p));
-          rows.push(
-            <div key={node.path} className={`userspace-file-item userspace-tree-row userspace-tree-folder-row${isMount ? ' userspace-tree-mount-folder' : ''}${isMountDisabled || isMountDisconnected ? ' userspace-tree-mount-disabled' : ''}`}>
-              <button className="userspace-item-content userspace-tree-content" onClick={() => handleToggleFolder(node.path)} style={indentStyle}>
-                <span className="userspace-tree-chevron" aria-hidden="true">
-                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                </span>
-                <span className={`userspace-folder-label${isMount ? ' userspace-tree-mount-label' : ''}`}>{node.name}</span>
-                {hasChangedFileDescendant && <span className="userspace-tree-folder-changed-file-dot" title="Contains changed files" />}
-                {isMount && (
-                  <span
-                    className={`userspace-tree-mount-badge${isMountDisconnected ? ' userspace-tree-mount-badge-disconnected' : isMountDisabled ? ' userspace-tree-mount-badge-disabled' : isSyncCapableMount && (isMountSyncInProgress || mountInfo?.syncStatus !== 'synced') ? ` userspace-tree-mount-badge-sync ${mountStatusClass}` : ''}`}
-                    role="button"
-                    tabIndex={0}
-                    title={isMountDisconnected ? 'Mount source is no longer available' : isMountSyncInProgress ? mountInfo.progressText : isSyncCapableMount && mountInfo?.syncStatus === 'error' && mountInfo?.lastSyncError ? mountInfo.lastSyncError : 'Manage mounts'}
-                    onClick={(e) => { e.stopPropagation(); void handleOpenMountsModal(); }}
-                  >
-                    {isMountSyncInProgress && <MiniLoadingSpinner variant="icon" size={11} ariaHidden />}
-                    {mountBadgeLabel}
-                  </span>
-                )}
-              </button>
-              {canEditWorkspace && !isMount && (
-                <div className="userspace-item-actions">
-                  {isConfirmingDelete ? (
-                    <>
-                      <button className="chat-action-btn confirm-delete" onClick={() => handleDeleteFolder(node.path)} title="Confirm">
-                        <Check size={12} />
-                      </button>
-                      <button className="chat-action-btn cancel-delete" onClick={() => setDeleteConfirmFolderPath(null)} title="Cancel">
-                        <X size={12} />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button className="chat-action-btn" onClick={() => handleStartCreateFile(node.path)} title="New file in folder">
-                        <Plus size={12} />
-                      </button>
-                      <button className="chat-action-btn" onClick={() => { setRenamingFolderPath(node.path); setRenameValue(node.path); }} title="Rename folder">
-                        <Pencil size={12} />
-                      </button>
-                      <button className="chat-action-btn" onClick={() => setDeleteConfirmFolderPath(node.path)} title="Delete folder">
-                        <Trash2 size={12} />
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          );
+            </div>,
+          ];
         }
 
-        if (isExpanded && node.children.length > 0) {
-          rows.push(...renderTreeNodes(node.children, depth + 1));
-        }
+        const isFileInMount = isPathInMountTarget(node.path);
+        const isFileChanged = changedFilePaths.has(node.path) && !isFileInMount;
 
-        return rows;
-      }
-
-      const isConfirmingDelete = deleteConfirmFileId === node.path;
-      const isRenaming = renamingFilePath === node.path;
-
-      if (isRenaming) {
         return [
-          <div key={`${node.path}-rename`} className="userspace-file-item userspace-tree-row active">
-            <input
-              className="userspace-file-rename-input"
+          <div
+            key={node.path}
+            className={`userspace-file-item userspace-tree-row ${node.path === selectedFilePath ? 'active' : ''}`}
+          >
+            <button
+              className="userspace-item-content userspace-tree-content"
+              onClick={() => handleTreeFileSelect(node.path)}
+              onMouseEnter={isFileChanged ? () => handleTreeFileHoverStart(node.path) : undefined}
+              onMouseLeave={isFileChanged ? handleTreeFileHoverEnd : undefined}
               style={indentStyle}
-              value={renameValue}
-              onChange={(event) => setRenameValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') handleRenameFile(node.path, renameValue);
-                if (event.key === 'Escape') setRenamingFilePath(null);
-              }}
-              autoFocus
-            />
-            <div className="userspace-item-actions" style={{ opacity: 1 }}>
-              <button className="chat-action-btn" onClick={() => handleRenameFile(node.path, renameValue)} title="Confirm">
-                <Check size={12} />
-              </button>
-              <button className="chat-action-btn" onClick={() => setRenamingFilePath(null)} title="Cancel">
-                <X size={12} />
-              </button>
+            >
+              <span className="userspace-tree-file-label">{node.name}</span>
+              {isFileChanged && (
+                <span
+                  className="userspace-tree-file-changed-dot"
+                  title="Changed since last snapshot"
+                />
+              )}
+              {isFileInMount && (
+                <span
+                  className="userspace-tree-file-untracked-badge"
+                  title="Mounted file, not tracked in snapshots"
+                >
+                  u
+                </span>
+              )}
+            </button>
+            <div className="userspace-item-actions">
+              {!isConfirmingDelete && (
+                <DisabledPopover
+                  message="Already in chat context"
+                  disabled={chatContextReferencePaths.has(node.path)}
+                  position="right"
+                >
+                  <button
+                    className="chat-action-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleAddFileContextReference(node.path);
+                    }}
+                    disabled={chatContextReferencePaths.has(node.path)}
+                    title={
+                      chatContextReferencePaths.has(node.path)
+                        ? 'Already in chat context'
+                        : 'Add file to chat context'
+                    }
+                  >
+                    <AtSign size={12} />
+                  </button>
+                </DisabledPopover>
+              )}
+              {canEditWorkspace &&
+                (isConfirmingDelete ? (
+                  <>
+                    <button
+                      className="chat-action-btn confirm-delete"
+                      onClick={() => handleDeleteFile(node.path)}
+                      title="Confirm"
+                    >
+                      <Check size={12} />
+                    </button>
+                    <button
+                      className="chat-action-btn cancel-delete"
+                      onClick={() => setDeleteConfirmFileId(null)}
+                      title="Cancel"
+                    >
+                      <X size={12} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {isFileChanged && (
+                      <button
+                        className="userspace-tree-save-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSaveTreeFile(node.path);
+                        }}
+                        disabled={savingTreeFile === node.path}
+                        title={savingTreeFile === node.path ? 'Saving...' : 'Save file'}
+                      >
+                        <Save
+                          size={12}
+                          className={savingTreeFile === node.path ? 'spinning' : undefined}
+                        />
+                      </button>
+                    )}
+                    <button
+                      className="chat-action-btn"
+                      onClick={() => {
+                        setRenamingFilePath(node.path);
+                        setRenameValue(node.path);
+                      }}
+                      title="Rename"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      className="chat-action-btn"
+                      onClick={() => setDeleteConfirmFileId(node.path)}
+                      title="Delete"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </>
+                ))}
             </div>
           </div>,
         ];
-      }
-
-      const isFileInMount = isPathInMountTarget(node.path);
-      const isFileChanged = changedFilePaths.has(node.path) && !isFileInMount;
-
-      return [
-        <div
-          key={node.path}
-          className={`userspace-file-item userspace-tree-row ${node.path === selectedFilePath ? 'active' : ''}`}
-        >
-          <button
-            className="userspace-item-content userspace-tree-content"
-            onClick={() => handleTreeFileSelect(node.path)}
-            onMouseEnter={isFileChanged ? () => handleTreeFileHoverStart(node.path) : undefined}
-            onMouseLeave={isFileChanged ? handleTreeFileHoverEnd : undefined}
-            style={indentStyle}
-          >
-            <span className="userspace-tree-file-label">{node.name}</span>
-            {isFileChanged && (
-              <span
-                className="userspace-tree-file-changed-dot"
-                title="Changed since last snapshot"
-              />
-            )}
-            {isFileInMount && (
-              <span
-                className="userspace-tree-file-untracked-badge"
-                title="Mounted file, not tracked in snapshots"
-              >
-                u
-              </span>
-            )}
-          </button>
-          <div className="userspace-item-actions">
-            {!isConfirmingDelete && (
-              <DisabledPopover
-                message="Already in chat context"
-                disabled={chatContextReferencePaths.has(node.path)}
-                position="right"
-              >
-                <button
-                  className="chat-action-btn"
-                  onClick={(e) => { e.stopPropagation(); void handleAddFileContextReference(node.path); }}
-                  disabled={chatContextReferencePaths.has(node.path)}
-                  title={chatContextReferencePaths.has(node.path) ? 'Already in chat context' : 'Add file to chat context'}
-                >
-                  <AtSign size={12} />
-                </button>
-              </DisabledPopover>
-            )}
-            {canEditWorkspace && (
-              isConfirmingDelete ? (
-                <>
-                  <button className="chat-action-btn confirm-delete" onClick={() => handleDeleteFile(node.path)} title="Confirm">
-                    <Check size={12} />
-                  </button>
-                  <button className="chat-action-btn cancel-delete" onClick={() => setDeleteConfirmFileId(null)} title="Cancel">
-                    <X size={12} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  {isFileChanged && (
-                    <button
-                      className="userspace-tree-save-btn"
-                      onClick={(e) => { e.stopPropagation(); handleSaveTreeFile(node.path); }}
-                      disabled={savingTreeFile === node.path}
-                      title={savingTreeFile === node.path ? 'Saving...' : 'Save file'}
-                    >
-                      <Save size={12} className={savingTreeFile === node.path ? 'spinning' : undefined} />
-                    </button>
-                  )}
-                  <button className="chat-action-btn" onClick={() => { setRenamingFilePath(node.path); setRenameValue(node.path); }} title="Rename">
-                    <Pencil size={12} />
-                  </button>
-                  <button className="chat-action-btn" onClick={() => setDeleteConfirmFileId(node.path)} title="Delete">
-                    <Trash2 size={12} />
-                  </button>
-                </>
-              )
-            )}
-          </div>
-        </div>,
-      ];
-    });
-  }, [canEditWorkspace, changedFilePaths, chatContextReferencePaths, deleteConfirmFileId, deleteConfirmFolderPath, expandedFolders, handleAddFileContextReference, handleDeleteFile, handleDeleteFolder, handleOpenMountsModal, handleRenameFile, handleRenameFolder, handleSaveTreeFile, handleSelectFile, handleStartCreateFile, handleToggleFolder, handleTreeFileHoverEnd, handleTreeFileHoverStart, handleTreeFileSelect, isPathInMountTarget, mountTargetPaths, previewingMountId, renameValue, renamingFilePath, renamingFolderPath, savingTreeFile, selectedFilePath, syncingMountId]);
+      });
+    },
+    [
+      canEditWorkspace,
+      changedFilePaths,
+      chatContextReferencePaths,
+      deleteConfirmFileId,
+      deleteConfirmFolderPath,
+      expandedFolders,
+      handleAddFileContextReference,
+      handleDeleteFile,
+      handleDeleteFolder,
+      handleOpenMountsModal,
+      handleRenameFile,
+      handleRenameFolder,
+      handleSaveTreeFile,
+      handleStartCreateFile,
+      handleToggleFolder,
+      handleTreeFileHoverEnd,
+      handleTreeFileHoverStart,
+      handleTreeFileSelect,
+      isPathInMountTarget,
+      mountTargetPaths,
+      previewingMountId,
+      renameValue,
+      renamingFilePath,
+      renamingFolderPath,
+      savingTreeFile,
+      selectedFilePath,
+      syncingMountId,
+    ],
+  );
 
   const sqliteInspectorButtonTitle = sqliteHasTables
     ? 'Open SQLite Inspector'
     : 'SQLite database is empty — open the inspector to initialize tables';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
   const hasStatusOverlayContent = Boolean(
-    loading || creatingWorkspace || duplicatingWorkspaceSourceId || deletingWorkspaceId || runtimeOverlayStatus || (formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId)
+    loading ||
+    creatingWorkspace ||
+    duplicatingWorkspaceSourceId ||
+    deletingWorkspaceId ||
+    runtimeOverlayStatus ||
+    (formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId),
   );
-  const statusOverlaySignature = useMemo(() => JSON.stringify({
-    loading,
-    creatingWorkspace,
-    creatingWorkspaceStatus,
-    duplicatingWorkspaceSourceId,
-    duplicatingWorkspaceStatus,
-    deletingWorkspaceId,
-    deletingWorkspaceStatus,
-    runtimeOverlayStatus,
-    formattedError: formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId ? formattedError : null,
-  }), [
-    loading,
-    creatingWorkspace,
-    creatingWorkspaceStatus,
-    duplicatingWorkspaceSourceId,
-    duplicatingWorkspaceStatus,
-    deletingWorkspaceId,
-    deletingWorkspaceStatus,
-    runtimeOverlayStatus,
-    formattedError,
-  ]);
+  const statusOverlaySignature = useMemo(
+    () =>
+      JSON.stringify({
+        loading,
+        creatingWorkspace,
+        creatingWorkspaceStatus,
+        duplicatingWorkspaceSourceId,
+        duplicatingWorkspaceStatus,
+        deletingWorkspaceId,
+        deletingWorkspaceStatus,
+        runtimeOverlayStatus,
+        formattedError:
+          formattedError &&
+          !creatingWorkspace &&
+          !duplicatingWorkspaceSourceId &&
+          !deletingWorkspaceId
+            ? formattedError
+            : null,
+      }),
+    [
+      loading,
+      creatingWorkspace,
+      creatingWorkspaceStatus,
+      duplicatingWorkspaceSourceId,
+      duplicatingWorkspaceStatus,
+      deletingWorkspaceId,
+      deletingWorkspaceStatus,
+      runtimeOverlayStatus,
+      formattedError,
+    ],
+  );
 
   useEffect(() => {
     if (!hasStatusOverlayContent) {
@@ -6917,7 +8036,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
   }, [hasStatusOverlayContent, statusOverlaySignature]);
 
   useEffect(() => {
-    if (!hasStatusOverlayContent || !statusOverlayVisible || statusOverlayPinned || statusOverlayInteracting || runtimeOverlayStatus) {
+    if (
+      !hasStatusOverlayContent ||
+      !statusOverlayVisible ||
+      statusOverlayPinned ||
+      statusOverlayInteracting ||
+      runtimeOverlayStatus
+    ) {
       setStatusOverlayFading(false);
       return;
     }
@@ -6975,12 +8100,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               aria-expanded={isWorkspaceMenuOpen}
               disabled={workspaces.length === 0}
             >
-              <span className="model-selector-text">{activeWorkspace?.name ?? 'No workspaces'}</span>
+              <span className="model-selector-text">
+                {activeWorkspace?.name ?? 'No workspaces'}
+              </span>
               {activeWorkspaceChatState.hasLive && (
                 <MiniLoadingSpinner variant="icon" size={14} title="Chat in progress" />
               )}
               {!activeWorkspaceChatState.hasLive && activeWorkspaceChatState.hasInterrupted && (
-                <span className="userspace-workspace-trigger-state is-interrupted" title="A conversation was interrupted">
+                <span
+                  className="userspace-workspace-trigger-state is-interrupted"
+                  title="A conversation was interrupted"
+                >
                   <AlertCircle size={13} />
                 </span>
               )}
@@ -6990,7 +8120,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             {isWorkspaceMenuOpen && workspaces.length > 0 && (
               <div
                 className="model-selector-dropdown userspace-workspace-dropdown"
-                style={workspaceDropdownPosition ? { top: workspaceDropdownPosition.top, left: workspaceDropdownPosition.left } : undefined}
+                style={
+                  workspaceDropdownPosition
+                    ? { top: workspaceDropdownPosition.top, left: workspaceDropdownPosition.left }
+                    : undefined
+                }
               >
                 {workspaces.length > 1 && (
                   <div className="model-selector-search">
@@ -7028,13 +8162,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       </button>
                     )}
                     {workspacePickerChatSearch.loading && (
-                      <span className="model-selector-search-spinner" title="Searching workspace chat contents">
+                      <span
+                        className="model-selector-search-spinner"
+                        title="Searching workspace chat contents"
+                      >
                         <MiniLoadingSpinner variant="icon" size={12} />
                       </span>
                     )}
                   </div>
                 )}
-                <div className="model-selector-dropdown-inner" role="listbox" aria-label="Workspace list">
+                <div
+                  className="model-selector-dropdown-inner"
+                  role="listbox"
+                  aria-label="Workspace list"
+                >
                   {(() => {
                     if (filteredWorkspacePickerWorkspaces.length === 0) {
                       if (workspacePickerChatSearch.loading) {
@@ -7043,20 +8184,29 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         );
                       }
                       return (
-                        <div className="model-selector-empty">No workspaces match "{workspacePickerSearch.trim()}"</div>
+                        <div className="model-selector-empty">
+                          No workspaces match "{workspacePickerSearch.trim()}"
+                        </div>
                       );
                     }
                     return filteredWorkspacePickerWorkspaces.map((ws) => {
-                      const workspaceChatState = workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
-                      const workspaceSearchSnippet = workspacePickerChatSearch.snippetsByWorkspaceId[ws.id];
+                      const workspaceChatState =
+                        workspaceChatStates[ws.id] ?? DEFAULT_WORKSPACE_CHAT_STATE;
+                      const workspaceSearchSnippet =
+                        workspacePickerChatSearch.snippetsByWorkspaceId[ws.id];
                       const canDeleteWorkspace =
                         ws.owner_user_id === currentUser.id ||
-                        ws.members.some((member) => member.user_id === currentUser.id && member.role === 'owner');
-                      const canRenameWorkspace = currentUser.role === 'admin'
-                        || ws.owner_user_id === currentUser.id
-                        || ws.members.some((member) => (
-                          member.user_id === currentUser.id && (member.role === 'owner' || member.role === 'editor')
-                        ));
+                        ws.members.some(
+                          (member) => member.user_id === currentUser.id && member.role === 'owner',
+                        );
+                      const canRenameWorkspace =
+                        currentUser.role === 'admin' ||
+                        ws.owner_user_id === currentUser.id ||
+                        ws.members.some(
+                          (member) =>
+                            member.user_id === currentUser.id &&
+                            (member.role === 'owner' || member.role === 'editor'),
+                        );
                       const isConfirmingDelete = deleteConfirmWorkspaceId === ws.id;
                       const isDeletingWorkspace = Boolean(deletingWorkspaceTasks[ws.id]);
                       const duplicateTask = activeWorkspaceDuplicateTaskBySourceId[ws.id] ?? null;
@@ -7071,7 +8221,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                           {isRenamingWorkspace ? (
                             <div className="userspace-workspace-inline-edit">
                               <textarea
-                                ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+                                ref={(el) => {
+                                  if (el) {
+                                    el.style.height = 'auto';
+                                    el.style.height = `${el.scrollHeight}px`;
+                                  }
+                                }}
                                 className="userspace-workspace-rename-input"
                                 value={workspaceNameDraft}
                                 onChange={(event) => {
@@ -7113,16 +8268,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             >
                               <span className="userspace-workspace-select-copy">
                                 <span className="model-selector-item-name">
-                                  <SearchHighlightedText text={ws.name} query={workspacePickerSearch} />
+                                  <SearchHighlightedText
+                                    text={ws.name}
+                                    query={workspacePickerSearch}
+                                  />
                                 </span>
-                                {workspaceSearchSnippet && !ws.name.toLowerCase().includes(workspacePickerSearch.trim().toLowerCase()) && (
-                                  <span className="chat-conversation-snippet userspace-workspace-search-snippet">
-                                    <SearchHighlightedText text={workspaceSearchSnippet} query={workspacePickerSearch} />
-                                  </span>
-                                )}
+                                {workspaceSearchSnippet &&
+                                  !ws.name
+                                    .toLowerCase()
+                                    .includes(workspacePickerSearch.trim().toLowerCase()) && (
+                                    <span className="chat-conversation-snippet userspace-workspace-search-snippet">
+                                      <SearchHighlightedText
+                                        text={workspaceSearchSnippet}
+                                        query={workspacePickerSearch}
+                                      />
+                                    </span>
+                                  )}
                               </span>
                               {!workspaceChatState.hasLive && workspaceChatState.hasInterrupted && (
-                                <span className="userspace-workspace-item-state is-interrupted" title="A conversation was interrupted">
+                                <span
+                                  className="userspace-workspace-item-state is-interrupted"
+                                  title="A conversation was interrupted"
+                                >
                                   <AlertCircle size={13} />
                                 </span>
                               )}
@@ -7170,7 +8337,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                     }}
                                     title="Confirm delete workspace"
                                   >
-                                    {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                    {isDeletingWorkspace ? (
+                                      <MiniLoadingSpinner variant="icon" size={12} />
+                                    ) : (
+                                      <Check size={12} />
+                                    )}
                                   </button>
                                   <button
                                     type="button"
@@ -7196,9 +8367,18 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         event.stopPropagation();
                                         void handleDuplicateWorkspace(ws.id);
                                       }}
-                                      title={isDuplicatingWorkspace ? (formatWorkspaceDuplicateTaskStatus(duplicateTask) || 'Duplicating workspace...') : 'Duplicate workspace'}
+                                      title={
+                                        isDuplicatingWorkspace
+                                          ? formatWorkspaceDuplicateTaskStatus(duplicateTask) ||
+                                            'Duplicating workspace...'
+                                          : 'Duplicate workspace'
+                                      }
                                     >
-                                      {isDuplicatingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <CopyPlus size={12} />}
+                                      {isDuplicatingWorkspace ? (
+                                        <MiniLoadingSpinner variant="icon" size={12} />
+                                      ) : (
+                                        <CopyPlus size={12} />
+                                      )}
                                     </button>
                                   )}
                                   {canRenameWorkspace && (
@@ -7226,7 +8406,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                       }}
                                       title="Delete workspace"
                                     >
-                                      {isDeletingWorkspace ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                      {isDeletingWorkspace ? (
+                                        <MiniLoadingSpinner variant="icon" size={12} />
+                                      ) : (
+                                        <Trash2 size={12} />
+                                      )}
                                     </button>
                                   )}
                                 </>
@@ -7235,13 +8419,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                           )}
 
                           {!canDeleteWorkspace && (
-                            <span className="userspace-workspace-owner-hint" title="Only workspace owners can delete workspaces">
+                            <span
+                              className="userspace-workspace-owner-hint"
+                              title="Only workspace owners can delete workspaces"
+                            >
                               Shared
                             </span>
                           )}
 
                           {workspaceChatState.hasLive && (
-                            <span className="userspace-workspace-item-state" title="Chat in progress">
+                            <span
+                              className="userspace-workspace-item-state"
+                              title="Chat in progress"
+                            >
                               <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
                             </span>
                           )}
@@ -7254,40 +8444,73 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             )}
           </div>
           {workspaces.length < workspacesTotal && (
-            <button className="btn btn-secondary btn-sm" onClick={() => loadWorkspaces(true)} disabled={loadingMore}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => loadWorkspaces(true)}
+              disabled={loadingMore}
+            >
               {loadingMore ? '...' : 'More'}
             </button>
           )}
           <button
             className="btn btn-primary btn-sm"
             onClick={handleCreateWorkspace}
-            title={creatingWorkspace ? (creatingWorkspaceStatus || 'Creating workspaces...') : 'New workspace'}
+            title={
+              creatingWorkspace
+                ? creatingWorkspaceStatus || 'Creating workspaces...'
+                : 'New workspace'
+            }
           >
-            {creatingWorkspace ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
+            {creatingWorkspace ? (
+              <MiniLoadingSpinner variant="icon" size={14} />
+            ) : (
+              <Plus size={14} />
+            )}
           </button>
           {canEditWorkspace && activeWorkspaceId && (
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowScmWizard(true)} title="Backup or restore this workspace">
-              {(archiveExportInProgress || archiveImportInProgress || scmImportInProgress)
-                ? <MiniLoadingSpinner variant="icon" size={14} />
-                : <FolderGit2Icon size={14} />}
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setShowScmWizard(true)}
+              title="Backup or restore this workspace"
+            >
+              {archiveExportInProgress || archiveImportInProgress || scmImportInProgress ? (
+                <MiniLoadingSpinner variant="icon" size={14} />
+              ) : (
+                <FolderGit2Icon size={14} />
+              )}
             </button>
           )}
           {activeWorkspaceId && (
-            <AgentAccessButton onClick={handleOpenAgentAccessModal} title="Manage cross-workspace agent access" />
+            <AgentAccessButton
+              onClick={handleOpenAgentAccessModal}
+              title="Manage cross-workspace agent access"
+            />
           )}
           {isOwner && (
             <>
               <MemberManagementButton onClick={handleOpenMembersModal} title="Manage members" />
-              <button className="btn btn-secondary btn-sm" onClick={handleOpenEnvVarsModal} title="Environment variables">
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleOpenEnvVarsModal}
+                title="Environment variables"
+              >
                 <KeyRound size={14} />
               </button>
-              <button className="btn btn-secondary btn-sm" onClick={handleOpenMountsModal} title="Filesystem mounts">
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleOpenMountsModal}
+                title="Filesystem mounts"
+              >
                 <HardDrive size={14} />
               </button>
             </>
           )}
           {currentUser.role === 'admin' && (
-            <button className="btn btn-secondary btn-sm" onClick={() => setShowAdminWorkspacesModal(true)} title="Manage all workspaces (Admin)">
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setShowAdminWorkspacesModal(true)}
+              title="Manage all workspaces (Admin)"
+            >
               <Shield size={14} />
             </button>
           )}
@@ -7296,7 +8519,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         <div className="userspace-toolbar-group userspace-toolbar-group-right">
           <div className="userspace-toolbar-status-group">
             {previewExecuting && (
-              <span className="userspace-toolbar-live-status" title="Live data connection in progress">
+              <span
+                className="userspace-toolbar-live-status"
+                title="Live data connection in progress"
+              >
                 <MiniLoadingSpinner variant="icon" size={14} ariaHidden />
                 Connecting data...
               </span>
@@ -7308,7 +8534,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             )}
             {activeWorkspace && !isAdminImpersonating && !isOwner && (
               <span className="userspace-status-pill userspace-status-pill-info">
-                {activeWorkspaceRole}{!canEditWorkspace ? ' (read-only)' : ''}
+                {activeWorkspaceRole}
+                {!canEditWorkspace ? ' (read-only)' : ''}
               </span>
             )}
             {activeWorkspace?.scm?.connected && (
@@ -7330,19 +8557,31 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               </span>
             )}
             {archiveExportInProgress && activeWorkspace?.archive_export_task_phase && (
-              <span className="userspace-status-pill userspace-status-pill-info" title="Workspace archive export status">
+              <span
+                className="userspace-status-pill userspace-status-pill-info"
+                title="Workspace archive export status"
+              >
                 Archive export: {activeWorkspace.archive_export_task_phase.replace(/_/g, ' ')}
               </span>
             )}
             {archiveImportInProgress && activeWorkspace?.archive_import_task_phase && (
-              <span className="userspace-status-pill userspace-status-pill-info" title="Workspace archive import status">
+              <span
+                className="userspace-status-pill userspace-status-pill-info"
+                title="Workspace archive import status"
+              >
                 Archive import: {activeWorkspace.archive_import_task_phase.replace(/_/g, ' ')}
               </span>
             )}
             {scmImportInProgress && workspaceScmWizardActivity && (
-              <span className="userspace-status-pill userspace-status-pill-info" title="Workspace SCM import status">
-                SCM: {workspaceScmWizardActivity.kind === 'preview'
-                  ? workspaceScmWizardActivity.status === 'ready' ? 'ready to pull' : 'previewing'
+              <span
+                className="userspace-status-pill userspace-status-pill-info"
+                title="Workspace SCM import status"
+              >
+                SCM:{' '}
+                {workspaceScmWizardActivity.kind === 'preview'
+                  ? workspaceScmWizardActivity.status === 'ready'
+                    ? 'ready to pull'
+                    : 'previewing'
                   : 'importing'}
               </span>
             )}
@@ -7351,7 +8590,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 className="userspace-status-pill userspace-status-pill-warning"
                 title={`Viewing as admin (owner: ${activeWorkspace?.owner_display_name || activeWorkspace?.owner_username || 'unknown'})`}
               >
-                {activeWorkspace?.owner_display_name || activeWorkspace?.owner_username || 'unknown'}
+                {activeWorkspace?.owner_display_name ||
+                  activeWorkspace?.owner_username ||
+                  'unknown'}
               </span>
             )}
             {activeWorkspaceId && collabPresenceCount > 1 && (
@@ -7360,33 +8601,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 position="bottom"
                 content={
                   <div className="userspace-collab-popover">
-                    <div className="userspace-collab-popover-header">Collaborators viewing this workspace</div>
+                    <div className="userspace-collab-popover-header">
+                      Collaborators viewing this workspace
+                    </div>
                     {collabPresenceLoading && (
                       <div className="userspace-collab-popover-status">Loading...</div>
                     )}
                     {!collabPresenceLoading && collabPresenceError && (
-                      <div className="userspace-collab-popover-status userspace-collab-popover-error">{collabPresenceError}</div>
+                      <div className="userspace-collab-popover-status userspace-collab-popover-error">
+                        {collabPresenceError}
+                      </div>
                     )}
-                    {!collabPresenceLoading && !collabPresenceError && collabPresenceUsers.length === 0 && (
-                      <div className="userspace-collab-popover-status">No active collaborators.</div>
-                    )}
-                    {!collabPresenceLoading && !collabPresenceError && collabPresenceUsers.length > 0 && (
-                      <ul className="userspace-collab-popover-list">
-                        {collabPresenceUsers.map((pu) => (
-                          <li key={pu.user_id} className="userspace-collab-popover-item">
-                            <Users size={12} />
-                            <span>{getCollabUserLabel(pu)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
+                    {!collabPresenceLoading &&
+                      !collabPresenceError &&
+                      collabPresenceUsers.length === 0 && (
+                        <div className="userspace-collab-popover-status">
+                          No active collaborators.
+                        </div>
+                      )}
+                    {!collabPresenceLoading &&
+                      !collabPresenceError &&
+                      collabPresenceUsers.length > 0 && (
+                        <ul className="userspace-collab-popover-list">
+                          {collabPresenceUsers.map((pu) => (
+                            <li key={pu.user_id} className="userspace-collab-popover-item">
+                              <Users size={12} />
+                              <span>{getCollabUserLabel(pu)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                   </div>
                 }
               >
                 <span
                   className="userspace-collab-badge"
                   title={`${collabPresenceCount} collaborators viewing this workspace`}
-                  onMouseEnter={() => { void loadCollabPresence(); }}
+                  onMouseEnter={() => {
+                    void loadCollabPresence();
+                  }}
                 >
                   <Users size={14} />
                   <span className="userspace-collab-badge-count">{collabPresenceCount}</span>
@@ -7395,14 +8648,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             )}
             {runtimeStatus && (
               <span
-                className={`userspace-status-pill ${runtimeDisplayState === 'running'
-                  ? 'userspace-status-pill-success'
-                  : runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping'
-                    ? 'userspace-status-pill-warning'
-                    : runtimeDisplayState === 'error' || runtimeDisplayState === 'stopped'
-                      ? 'userspace-status-pill-danger'
-                      : 'userspace-status-pill-muted'
-                  }`}
+                className={`userspace-status-pill ${
+                  runtimeDisplayState === 'running'
+                    ? 'userspace-status-pill-success'
+                    : runtimeDisplayState === 'starting' || runtimeDisplayState === 'stopping'
+                      ? 'userspace-status-pill-warning'
+                      : runtimeDisplayState === 'error' || runtimeDisplayState === 'stopped'
+                        ? 'userspace-status-pill-danger'
+                        : 'userspace-status-pill-muted'
+                }`}
                 title={runtimeStatus.last_error || 'Workspace runtime session state'}
               >
                 {runtimeDisplayState === 'starting'
@@ -7438,18 +8692,45 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           {canEditWorkspace && activeWorkspaceId && (
             <div className="userspace-toolbar-runtime-controls">
               {showStartRuntimeButton && (
-                <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStartRuntime} disabled={runtimeBusy} title="Start runtime">
-                  {runtimeBusy ? <MiniLoadingSpinner variant="icon" size={14} /> : <Play size={14} />}
+                <button
+                  className="btn btn-secondary btn-sm btn-icon"
+                  onClick={handleStartRuntime}
+                  disabled={runtimeBusy}
+                  title="Start runtime"
+                >
+                  {runtimeBusy ? (
+                    <MiniLoadingSpinner variant="icon" size={14} />
+                  ) : (
+                    <Play size={14} />
+                  )}
                 </button>
               )}
               {showRestartRuntimeButton && (
-                <button className="btn btn-secondary btn-sm btn-icon" onClick={handleRestartRuntime} disabled={runtimeBusy} title="Restart runtime">
-                  {runtimeBusy ? <MiniLoadingSpinner variant="icon" size={14} /> : <RotateCw size={14} />}
+                <button
+                  className="btn btn-secondary btn-sm btn-icon"
+                  onClick={handleRestartRuntime}
+                  disabled={runtimeBusy}
+                  title="Restart runtime"
+                >
+                  {runtimeBusy ? (
+                    <MiniLoadingSpinner variant="icon" size={14} />
+                  ) : (
+                    <RotateCw size={14} />
+                  )}
                 </button>
               )}
               {showStopRuntimeButton && (
-                <button className="btn btn-secondary btn-sm btn-icon" onClick={handleStopRuntime} disabled={runtimeBusy} title="Stop runtime">
-                  {runtimeBusy ? <MiniLoadingSpinner variant="icon" size={14} /> : <Square size={14} />}
+                <button
+                  className="btn btn-secondary btn-sm btn-icon"
+                  onClick={handleStopRuntime}
+                  disabled={runtimeBusy}
+                  title="Stop runtime"
+                >
+                  {runtimeBusy ? (
+                    <MiniLoadingSpinner variant="icon" size={14} />
+                  ) : (
+                    <Square size={14} />
+                  )}
                 </button>
               )}
             </div>
@@ -7537,45 +8818,89 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
             setStatusOverlayInteracting(false);
           }}
           onClick={handleStatusOverlayClick}
-          title={statusOverlayPinned ? 'Pinned. Click to unpin and restore fade behavior.' : 'Click to pin this notification. Click again to unpin.'}
+          title={
+            statusOverlayPinned
+              ? 'Pinned. Click to unpin and restore fade behavior.'
+              : 'Click to pin this notification. Click again to unpin.'
+          }
         >
-          {loading && <p className="userspace-status userspace-status-overlay-item">Loading workspaces...</p>}
+          {loading && (
+            <p className="userspace-status userspace-status-overlay-item">Loading workspaces...</p>
+          )}
           {creatingWorkspace && (
             <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} /> {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
+              <MiniLoadingSpinner variant="icon" size={14} />{' '}
+              {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
             </p>
           )}
           {duplicatingWorkspaceSourceId && (
             <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} /> {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
+              <MiniLoadingSpinner variant="icon" size={14} />{' '}
+              {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
             </p>
           )}
           {deletingWorkspaceId && (
             <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} /> {deletingWorkspaceStatus || 'Deleting workspace...'}
+              <MiniLoadingSpinner variant="icon" size={14} />{' '}
+              {deletingWorkspaceStatus || 'Deleting workspace...'}
             </p>
           )}
-          {runtimeOverlayStatus && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId && (
-            <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
-            </p>
-          )}
-          {formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId && (
-            <p className="userspace-error userspace-status userspace-status-overlay-item">{formattedError}</p>
-          )}
+          {runtimeOverlayStatus &&
+            !creatingWorkspace &&
+            !duplicatingWorkspaceSourceId &&
+            !deletingWorkspaceId && (
+              <p className="userspace-status userspace-status-overlay-item">
+                <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
+              </p>
+            )}
+          {formattedError &&
+            !creatingWorkspace &&
+            !duplicatingWorkspaceSourceId &&
+            !deletingWorkspaceId && (
+              <p className="userspace-error userspace-status userspace-status-overlay-item">
+                {formattedError}
+              </p>
+            )}
         </div>
       )}
 
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
-      <div className="userspace-content" ref={contentRef} style={{ gridTemplateColumns: rightPaneCollapsed ? 'minmax(0, 1fr) 16px minmax(0, 0fr)' : leftPaneCollapsed ? 'minmax(0, 0fr) 16px minmax(0, 1fr)' : `minmax(0, ${leftPaneFractionLiveRef.current}fr) 4px minmax(0, ${1 - leftPaneFractionLiveRef.current}fr)` }}>
+      <div
+        className="userspace-content"
+        ref={contentRef}
+        style={{
+          gridTemplateColumns: rightPaneCollapsed
+            ? 'minmax(0, 1fr) 16px minmax(0, 0fr)'
+            : leftPaneCollapsed
+              ? 'minmax(0, 0fr) 16px minmax(0, 1fr)'
+              : `minmax(0, ${leftPaneFractionLiveRef.current}fr) 4px minmax(0, ${1 - leftPaneFractionLiveRef.current}fr)`,
+        }}
+      >
         {/* Left pane */}
-        <div className="userspace-left-pane" ref={leftPaneRef} style={{ display: leftPaneCollapsed ? 'none' : undefined }}>
-          <div className="userspace-editor-section" ref={editorSectionRef} style={{ display: editorChatCollapsedSide === 'before' ? 'none' : undefined, flex: editorFractionLiveRef.current }}>
+        <div
+          className="userspace-left-pane"
+          ref={leftPaneRef}
+          style={{ display: leftPaneCollapsed ? 'none' : undefined }}
+        >
+          <div
+            className="userspace-editor-section"
+            ref={editorSectionRef}
+            style={{
+              display: editorChatCollapsedSide === 'before' ? 'none' : undefined,
+              flex: editorFractionLiveRef.current,
+            }}
+          >
             {/* File sidebar */}
             {!sidebarCollapsed && (
-              <div className="userspace-file-sidebar" ref={fileSidebarRef} style={{ width: sidebarWidthLiveRef.current }}>
+              <div
+                className="userspace-file-sidebar"
+                ref={fileSidebarRef}
+                style={{ width: sidebarWidthLiveRef.current }}
+              >
                 <div className="userspace-file-sidebar-header">
-                  <h4><File size={14} /> Files</h4>
+                  <h4>
+                    <File size={14} /> Files
+                  </h4>
                 </div>
                 <div className="userspace-file-list">
                   {renderTreeNodes(fileTree)}
@@ -7587,36 +8912,62 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         value={newFileName}
                         onChange={(e) => setNewFileName(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleCreateNewFile(newFileName, newFileParentPath);
+                          if (e.key === 'Enter')
+                            handleCreateNewFile(newFileName, newFileParentPath);
                           if (e.key === 'Escape') {
                             setNewFileName(null);
                             setNewFileParentPath('');
                           }
                         }}
-                        placeholder={newFileParentPath ? `${newFileParentPath}/file.ts` : 'path/to/file.ts'}
+                        placeholder={
+                          newFileParentPath ? `${newFileParentPath}/file.ts` : 'path/to/file.ts'
+                        }
                         autoFocus
                       />
                       <div className="userspace-item-actions" style={{ opacity: 1 }}>
-                        <button className="chat-action-btn" onClick={() => handleCreateNewFile(newFileName, newFileParentPath)} title="Create">
+                        <button
+                          className="chat-action-btn"
+                          onClick={() => handleCreateNewFile(newFileName, newFileParentPath)}
+                          title="Create"
+                        >
                           <Check size={12} />
                         </button>
-                        <button className="chat-action-btn" onClick={() => { setNewFileName(null); setNewFileParentPath(''); }} title="Cancel">
+                        <button
+                          className="chat-action-btn"
+                          onClick={() => {
+                            setNewFileName(null);
+                            setNewFileParentPath('');
+                          }}
+                          title="Cancel"
+                        >
                           <X size={12} />
                         </button>
                       </div>
                     </div>
                   ) : canEditWorkspace ? (
-                    <button className="userspace-new-file-btn" onClick={() => handleStartCreateFile('')} title="New file">
+                    <button
+                      className="userspace-new-file-btn"
+                      onClick={() => handleStartCreateFile('')}
+                      title="New file"
+                    >
                       <Plus size={12} /> New file
                     </button>
                   ) : fileTree.length === 0 ? (
-                    <p className="userspace-muted" style={{ padding: '8px' }}>No files yet</p>
+                    <p className="userspace-muted" style={{ padding: '8px' }}>
+                      No files yet
+                    </p>
                   ) : null}
                 </div>
               </div>
             )}
 
-            <ResizeHandle direction="horizontal" onResize={handleResizeSidebar} onResizeEnd={commitSidebarWidth} collapsed={sidebarCollapsed ? 'before' : undefined} onExpand={expandSidebar} />
+            <ResizeHandle
+              direction="horizontal"
+              onResize={handleResizeSidebar}
+              onResizeEnd={commitSidebarWidth}
+              collapsed={sidebarCollapsed ? 'before' : undefined}
+              onExpand={expandSidebar}
+            />
 
             {/* Code editor */}
             <div className="userspace-code-editor" ref={codeEditorRef}>
@@ -7626,7 +8977,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   <File size={18} />
                   <div className="userspace-nontext-file-copy">
                     <strong>{selectedFileDisplayName || 'Selected file'}</strong>
-                    <p className="userspace-muted" style={{ margin: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                    <p
+                      className="userspace-muted"
+                      style={{ margin: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}
+                    >
                       {selectedFileUnsupportedMessage}
                     </p>
                   </div>
@@ -7669,7 +9023,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     const stored = localStorage.getItem('ragtime-theme');
                     if (stored === 'light') return 'light';
                     if (stored === 'dark' || stored) return 'dark';
-                    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                    return window.matchMedia('(prefers-color-scheme: light)').matches
+                      ? 'light'
+                      : 'dark';
                   })()}
                   basicSetup={USERSPACE_CODEMIRROR_BASIC_SETUP}
                 />
@@ -7686,7 +9042,14 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           />
 
           {/* Chat section */}
-          <div className="userspace-chat-section" ref={chatSectionRef} style={{ display: editorChatCollapsedSide === 'after' ? 'none' : undefined, flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current }}>
+          <div
+            className="userspace-chat-section"
+            ref={chatSectionRef}
+            style={{
+              display: editorChatCollapsedSide === 'after' ? 'none' : undefined,
+              flex: editorChatCollapsedSide === 'before' ? 1 : 1 - editorFractionLiveRef.current,
+            }}
+          >
             {activeWorkspaceId ? (
               <ChatPanel
                 key={activeWorkspaceId}
@@ -7715,17 +9078,31 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 embedded
                 readOnly={false}
                 allowAdminReadOnlyBypass={isAdminImpersonating}
-                inputBanner={branchRestoreSnapshotId ? (
-                  <div className="chat-branch-restore-banner">
-                    <span>This branch has an associated code snapshot.</span>
-                    {canEditWorkspace ? (
-                      <button className="chat-branch-restore-btn confirm" onClick={handleConfirmBranchRestore}>Restore</button>
-                    ) : (
-                      <span className="chat-branch-restore-note">Only workspace owners and editors can restore files.</span>
-                    )}
-                    <button className="chat-branch-restore-btn dismiss" onClick={handleDismissBranchRestore}>Dismiss</button>
-                  </div>
-                ) : undefined}
+                inputBanner={
+                  branchRestoreSnapshotId ? (
+                    <div className="chat-branch-restore-banner">
+                      <span>This branch has an associated code snapshot.</span>
+                      {canEditWorkspace ? (
+                        <button
+                          className="chat-branch-restore-btn confirm"
+                          onClick={handleConfirmBranchRestore}
+                        >
+                          Restore
+                        </button>
+                      ) : (
+                        <span className="chat-branch-restore-note">
+                          Only workspace owners and editors can restore files.
+                        </span>
+                      )}
+                      <button
+                        className="chat-branch-restore-btn dismiss"
+                        onClick={handleDismissBranchRestore}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  ) : undefined
+                }
               />
             ) : (
               <div className="userspace-chat-placeholder">
@@ -7735,7 +9112,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           </div>
         </div>
 
-        <ResizeHandle direction="horizontal" onResize={handleResizeMainSplit} onResizeEnd={commitMainSplitFraction} collapsed={rightPaneCollapsed ? 'after' : leftPaneCollapsed ? 'before' : undefined} onExpand={leftPaneCollapsed ? expandLeftPane : expandRightPane} />
+        <ResizeHandle
+          direction="horizontal"
+          onResize={handleResizeMainSplit}
+          onResizeEnd={commitMainSplitFraction}
+          collapsed={rightPaneCollapsed ? 'after' : leftPaneCollapsed ? 'before' : undefined}
+          onExpand={leftPaneCollapsed ? expandLeftPane : expandRightPane}
+        />
 
         {/* Right pane */}
         <div
@@ -7751,7 +9134,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 liveDataConnections={previewLiveDataConnections}
                 runtimePreviewUrl={previewFrameUrl ?? undefined}
                 runtimePreviewOrigin={previewOrigin ?? undefined}
-                runtimeAuthorizationPending={Boolean(activeWorkspaceId) && previewAuthorizationPending}
+                runtimeAuthorizationPending={
+                  Boolean(activeWorkspaceId) && previewAuthorizationPending
+                }
                 runtimeAvailable={runtimeStatus?.devserver_running ?? false}
                 runtimeError={runtimeStatus?.last_error ?? undefined}
                 previewInstanceKey={`${activeWorkspaceId ?? ''}:${previewRefreshCounter}`}
@@ -7767,16 +9152,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           ) : (
             <div className="userspace-preview-section" style={{ padding: 12 }}>
               {runtimeCapSysAdminMissing && (
-                <div className="userspace-snapshot-item" style={{ marginBottom: 8, alignItems: 'flex-start' }}>
+                <div
+                  className="userspace-snapshot-item"
+                  style={{ marginBottom: 8, alignItems: 'flex-start' }}
+                >
                   <div
                     className="userspace-snapshot-info"
-                    style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4, overflow: 'visible' }}
+                    style={{
+                      flexDirection: 'column',
+                      alignItems: 'flex-start',
+                      gap: 4,
+                      overflow: 'visible',
+                    }}
                   >
                     <strong>Runtime isolation notice</strong>
-                    <span className="userspace-muted" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
-                      Runtime is running without CAP_SYS_ADMIN. Console commands run with reduced isolation
-                      (chroot fallback). Enable CAP_SYS_ADMIN on the runtime service for full namespace +
-                      pivot_root isolation.
+                    <span
+                      className="userspace-muted"
+                      style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}
+                    >
+                      Runtime is running without CAP_SYS_ADMIN. Console commands run with reduced
+                      isolation (chroot fallback). Enable CAP_SYS_ADMIN on the runtime service for
+                      full namespace + pivot_root isolation.
                     </span>
                   </div>
                 </div>
@@ -7802,7 +9198,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               </div>
               {terminalReadOnly && (
                 <div className="userspace-toolbar-actions" style={{ marginTop: 8 }}>
-                  <span className="userspace-muted">Terminal is read-only for your workspace role.</span>
+                  <span className="userspace-muted">
+                    Terminal is read-only for your workspace role.
+                  </span>
                 </div>
               )}
             </div>
@@ -7810,21 +9208,36 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section">
-            <button className="userspace-snapshots-toggle" disabled={snapshotUiLocked} onClick={() => {
-              const next = !showSnapshots;
-              setShowSnapshots(next);
-              if (next && activeWorkspaceId && snapshotsLoadedForWorkspace !== activeWorkspaceId) {
-                void loadSnapshots(activeWorkspaceId);
-              }
-            }}>
+            <button
+              className="userspace-snapshots-toggle"
+              disabled={snapshotUiLocked}
+              onClick={() => {
+                const next = !showSnapshots;
+                setShowSnapshots(next);
+                if (
+                  next &&
+                  activeWorkspaceId &&
+                  snapshotsLoadedForWorkspace !== activeWorkspaceId
+                ) {
+                  void loadSnapshots(activeWorkspaceId);
+                }
+              }}
+            >
               <History size={14} />
-              <span>Snapshots{snapshotsLoadedForWorkspace === activeWorkspaceId ? ` (${snapshots.length})` : ''}</span>
+              <span>
+                Snapshots
+                {snapshotsLoadedForWorkspace === activeWorkspaceId ? ` (${snapshots.length})` : ''}
+              </span>
               <ChevronDown size={14} className={showSnapshots ? '' : 'rotated'} />
             </button>
             {showSnapshots && (
               <div className="userspace-snapshots-list">
                 {restoringSnapshotId && (
-                  <div className="userspace-snapshot-busy-indicator" role="status" aria-live="polite">
+                  <div
+                    className="userspace-snapshot-busy-indicator"
+                    role="status"
+                    aria-live="polite"
+                  >
                     Restoring snapshot {restoringSnapshotId.slice(0, 8)}...
                   </div>
                 )}
@@ -7844,8 +9257,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             title={branch.git_ref_name}
                             style={{ '--userspace-branch-color': branchColor } as CSSProperties}
                           >
-                            <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
-                            <span className="userspace-snapshot-branch-legend-count">{branchSnapshots.length}</span>
+                            <span className="userspace-snapshot-branch-legend-name">
+                              {branch.name}
+                            </span>
+                            <span className="userspace-snapshot-branch-legend-count">
+                              {branchSnapshots.length}
+                            </span>
                             {branch.branched_from_snapshot_id && (
                               <span className="userspace-snapshot-branch-legend-fork">
                                 from {branch.branched_from_snapshot_id.slice(0, 8)}
@@ -7856,8 +9273,17 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 role="button"
                                 tabIndex={0}
                                 className="userspace-snapshot-branch-promote"
-                                onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
-                                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handlePromoteBranchToMain(branch.id);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handlePromoteBranchToMain(branch.id);
+                                  }
+                                }}
                                 title="Promote this branch to Main"
                               >
                                 <Crown size={10} />
@@ -7882,47 +9308,68 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                           onClick={() => setShowStaleBranches((prev) => !prev)}
                           title={showStaleBranches ? 'Hide stale branches' : 'Show stale branches'}
                         >
-                          {showStaleBranches ? `Hide ${staleBranches.length} stale` : `${staleBranches.length} stale`}
+                          {showStaleBranches
+                            ? `Hide ${staleBranches.length} stale`
+                            : `${staleBranches.length} stale`}
                           <ChevronDown size={10} className={showStaleBranches ? '' : 'rotated'} />
                         </button>
                       )}
-                      {showStaleBranches && staleBranches.map((branch) => (
-                        <button
-                          key={`stale-legend-${branch.id}`}
-                          type="button"
-                          className="userspace-snapshot-branch-legend stale"
-                          onClick={() => handleSwitchSnapshotBranch(branch.id)}
-                          disabled={!canEditWorkspace || snapshotUiLocked}
-                          title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
-                        >
-                          <span className="userspace-snapshot-branch-legend-name">{branch.name}</span>
-                          <span className="userspace-snapshot-branch-legend-count">{branch.commits_behind ?? 0} behind</span>
-                          {canEditWorkspace && (
-                            <span
-                              role="button"
-                              tabIndex={0}
-                              className="userspace-snapshot-branch-promote"
-                              onClick={(e) => { e.stopPropagation(); handlePromoteBranchToMain(branch.id); }}
-                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handlePromoteBranchToMain(branch.id); } }}
-                              title="Promote this branch to Main"
-                            >
-                              <Crown size={10} />
+                      {showStaleBranches &&
+                        staleBranches.map((branch) => (
+                          <button
+                            key={`stale-legend-${branch.id}`}
+                            type="button"
+                            className="userspace-snapshot-branch-legend stale"
+                            onClick={() => handleSwitchSnapshotBranch(branch.id)}
+                            disabled={!canEditWorkspace || snapshotUiLocked}
+                            title={`${branch.git_ref_name} (${branch.commits_behind ?? 0} commits behind)`}
+                          >
+                            <span className="userspace-snapshot-branch-legend-name">
+                              {branch.name}
                             </span>
-                          )}
-                        </button>
-                      ))}
+                            <span className="userspace-snapshot-branch-legend-count">
+                              {branch.commits_behind ?? 0} behind
+                            </span>
+                            {canEditWorkspace && (
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="userspace-snapshot-branch-promote"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handlePromoteBranchToMain(branch.id);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handlePromoteBranchToMain(branch.id);
+                                  }
+                                }}
+                                title="Promote this branch to Main"
+                              >
+                                <Crown size={10} />
+                              </span>
+                            )}
+                          </button>
+                        ))}
                     </div>
 
                     {snapshotTimelineRows.map(({ snapshot, laneIndex, laneStates, forkLinks }) => {
-                      const isCurrentSnapshot = snapshot.is_current || currentSnapshotId === snapshot.id;
+                      const isCurrentSnapshot =
+                        snapshot.is_current || currentSnapshotId === snapshot.id;
                       const branchColor = snapshotBranchColorById.get(snapshot.branch_id);
                       const isExpanded = expandedSnapshotIds.has(snapshot.id);
                       const diffSummary = snapshotDiffSummaries[snapshot.id];
-                      const diffSummaryLoading = loadingSnapshotDiffSummaryIds[snapshot.id] === true;
+                      const diffSummaryLoading =
+                        loadingSnapshotDiffSummaryIds[snapshot.id] === true;
                       const diffSummaryError = snapshotDiffSummaryErrors[snapshot.id];
 
                       return (
-                        <div key={snapshot.id} className={`userspace-snapshot-row-group ${isExpanded ? 'expanded' : ''}`}>
+                        <div
+                          key={snapshot.id}
+                          className={`userspace-snapshot-row-group ${isExpanded ? 'expanded' : ''}`}
+                        >
                           <div
                             className={`userspace-snapshot-graph-row ${isCurrentSnapshot ? 'current' : ''}`}
                             style={{ '--userspace-branch-color': branchColor } as CSSProperties}
@@ -7941,20 +9388,29 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                           >
                             <div
                               className="userspace-snapshot-graph-lanes"
-                              style={{ gridTemplateColumns: `repeat(${snapshotsByBranch.length}, 18px)` }}
+                              style={{
+                                gridTemplateColumns: `repeat(${snapshotsByBranch.length}, 18px)`,
+                              }}
                               aria-hidden="true"
                             >
                               {snapshotsByBranch.map(({ branch }, branchIndex) => {
                                 const laneState = laneStates[branchIndex];
                                 const laneColor = snapshotBranchColorById.get(branch.id);
                                 return (
-                                  <div key={`${snapshot.id}-${branch.id}`} className="userspace-snapshot-lane-cell">
+                                  <div
+                                    key={`${snapshot.id}-${branch.id}`}
+                                    className="userspace-snapshot-lane-cell"
+                                  >
                                     <span
                                       className={`userspace-snapshot-lane-line ${laneState?.isActive ? 'active' : ''} ${laneState?.isStart ? 'start' : ''} ${laneState?.isEnd ? 'end' : ''}`}
-                                      style={{ '--userspace-branch-color': laneColor } as CSSProperties}
+                                      style={
+                                        { '--userspace-branch-color': laneColor } as CSSProperties
+                                      }
                                     />
                                     {branchIndex === laneIndex && (
-                                      <span className={`userspace-snapshot-node-dot ${isCurrentSnapshot ? 'current' : ''}`} />
+                                      <span
+                                        className={`userspace-snapshot-node-dot ${isCurrentSnapshot ? 'current' : ''}`}
+                                      />
                                     )}
                                   </div>
                                 );
@@ -7968,19 +9424,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                   <span
                                     key={`${snapshot.id}-${forkLink.branchId}`}
                                     className="userspace-snapshot-fork-link"
-                                    style={{
-                                      left: `${forkLink.fromLaneIndex * 18 + 9}px`,
-                                      width: `${forkWidth * 18}px`,
-                                      '--userspace-branch-color': snapshotBranchColorById.get(forkLink.branchId),
-                                    } as CSSProperties}
+                                    style={
+                                      {
+                                        left: `${forkLink.fromLaneIndex * 18 + 9}px`,
+                                        width: `${forkWidth * 18}px`,
+                                        '--userspace-branch-color': snapshotBranchColorById.get(
+                                          forkLink.branchId,
+                                        ),
+                                      } as CSSProperties
+                                    }
                                   />
                                 );
                               })}
                             </div>
 
                             <div className="userspace-snapshot-row-main">
-                              <ChevronRight size={12} className={`userspace-snapshot-expand-chevron ${isExpanded ? 'expanded' : ''}`} />
-                              <code className="userspace-snapshot-hash">{snapshot.id.slice(0, 8)}</code>
+                              <ChevronRight
+                                size={12}
+                                className={`userspace-snapshot-expand-chevron ${isExpanded ? 'expanded' : ''}`}
+                              />
+                              <code className="userspace-snapshot-hash">
+                                {snapshot.id.slice(0, 8)}
+                              </code>
                               {renamingSnapshotId === snapshot.id ? (
                                 <input
                                   className="userspace-snapshot-rename-input"
@@ -8001,7 +9466,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                   disabled={savingSnapshotRename}
                                 />
                               ) : (
-                                <span className="userspace-snapshot-msg" title={snapshot.message || undefined}>
+                                <span
+                                  className="userspace-snapshot-msg"
+                                  title={snapshot.message || undefined}
+                                >
                                   {snapshot.message || 'No message'}
                                 </span>
                               )}
@@ -8026,13 +9494,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                       <button
                                         type="button"
                                         className="userspace-snapshot-delete-confirm-btn"
-                                        disabled={deletingSnapshotId === snapshot.id || snapshotUiLocked}
+                                        disabled={
+                                          deletingSnapshotId === snapshot.id || snapshotUiLocked
+                                        }
                                         onClick={(event) => {
                                           event.stopPropagation();
                                           void handleDeleteSnapshot(snapshot.id);
                                         }}
                                       >
-                                        {deletingSnapshotId === snapshot.id ? <MiniLoadingSpinner variant="icon" size={10} /> : 'Confirm'}
+                                        {deletingSnapshotId === snapshot.id ? (
+                                          <MiniLoadingSpinner variant="icon" size={10} />
+                                        ) : (
+                                          'Confirm'
+                                        )}
                                       </button>
                                       <button
                                         type="button"
@@ -8069,7 +9543,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
                             <div className="userspace-snapshot-row-actions">
                               {isCurrentSnapshot ? (
-                                <span className="userspace-snapshot-current-badge">You are here</span>
+                                <span className="userspace-snapshot-current-badge">
+                                  You are here
+                                </span>
                               ) : (
                                 <button
                                   type="button"
@@ -8098,7 +9574,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 </div>
                               ) : diffSummaryError ? (
                                 <div className="userspace-snapshot-expanded-panel">
-                                  <p className="userspace-muted userspace-error">{formatUserSpaceErrorMessage(diffSummaryError)}</p>
+                                  <p className="userspace-muted userspace-error">
+                                    {formatUserSpaceErrorMessage(diffSummaryError)}
+                                  </p>
                                 </div>
                               ) : !diffSummary ? (
                                 <div className="userspace-snapshot-expanded-panel">
@@ -8108,15 +9586,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                   </div>
                                 </div>
                               ) : diffSummary.available === false ? (
-                                <div className="userspace-snapshot-expanded-panel" style={{ margin: 0, padding: '2px 6px 4px' }}>
-                                  <p className="userspace-muted" style={{ color: 'var(--color-warning, #b26a00)', margin: 0, fontSize: 12 }}>
-                                    {diffSummary.warning ?? 'This snapshot history is unavailable in the current workspace repository.'}
+                                <div
+                                  className="userspace-snapshot-expanded-panel"
+                                  style={{ margin: 0, padding: '2px 6px 4px' }}
+                                >
+                                  <p
+                                    className="userspace-muted"
+                                    style={{
+                                      color: 'var(--color-warning, #b26a00)',
+                                      margin: 0,
+                                      fontSize: 12,
+                                    }}
+                                  >
+                                    {diffSummary.warning ??
+                                      'This snapshot history is unavailable in the current workspace repository.'}
                                   </p>
                                 </div>
                               ) : diffSummary.files.length > 0 ? (
                                 <div className="userspace-snapshot-diff-file-list">
                                   {diffSummary.is_snapshot_own_diff && (
-                                    <div className="userspace-snapshot-diff-own-label userspace-muted">Snapshot contents (no changes to current workspace)</div>
+                                    <div className="userspace-snapshot-diff-own-label userspace-muted">
+                                      Snapshot contents (no changes to current workspace)
+                                    </div>
                                   )}
                                   {diffSummary.files.map((file) => {
                                     const fileKey = getSnapshotDiffFileKey(snapshot.id, file.path);
@@ -8125,22 +9616,47 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         key={fileKey}
                                         type="button"
                                         className={`userspace-snapshot-diff-file-row ${activeSnapshotFileDiffKey === fileKey ? 'active' : ''}`}
-                                        onMouseEnter={() => handleSnapshotFileHoverStart(snapshot.id, file.path)}
+                                        onMouseEnter={() =>
+                                          handleSnapshotFileHoverStart(snapshot.id, file.path)
+                                        }
                                         onMouseLeave={handleSnapshotFileHoverEnd}
-                                        onFocus={() => handleSnapshotFileHoverStart(snapshot.id, file.path)}
+                                        onFocus={() =>
+                                          handleSnapshotFileHoverStart(snapshot.id, file.path)
+                                        }
                                         onBlur={handleSnapshotFileHoverEnd}
                                       >
-                                        <span className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${file.status.toLowerCase()}`}>{file.status}</span>
-                                        <span className="userspace-snapshot-diff-path" title={file.old_path ? `${file.old_path} -> ${file.path}` : file.path}>{file.path}</span>
-                                        {file.old_path && <span className="userspace-snapshot-diff-old-path">from {file.old_path}</span>}
-                                        <span className="userspace-snapshot-diff-counts">+{file.additions} -{file.deletions}</span>
+                                        <span
+                                          className={`userspace-snapshot-diff-status userspace-snapshot-diff-status-${file.status.toLowerCase()}`}
+                                        >
+                                          {file.status}
+                                        </span>
+                                        <span
+                                          className="userspace-snapshot-diff-path"
+                                          title={
+                                            file.old_path
+                                              ? `${file.old_path} -> ${file.path}`
+                                              : file.path
+                                          }
+                                        >
+                                          {file.path}
+                                        </span>
+                                        {file.old_path && (
+                                          <span className="userspace-snapshot-diff-old-path">
+                                            from {file.old_path}
+                                          </span>
+                                        )}
+                                        <span className="userspace-snapshot-diff-counts">
+                                          +{file.additions} -{file.deletions}
+                                        </span>
                                       </button>
                                     );
                                   })}
                                 </div>
                               ) : (
                                 <div className="userspace-snapshot-expanded-panel">
-                                  <p className="userspace-muted">No changes from this snapshot to the current workspace.</p>
+                                  <p className="userspace-muted">
+                                    No changes from this snapshot to the current workspace.
+                                  </p>
                                 </div>
                               )}
                             </>
@@ -8150,11 +9666,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     })}
                   </div>
                 ) : snapshotsLoadedForWorkspace !== activeWorkspaceId ? (
-                  <p className="userspace-muted" style={{ padding: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <p
+                    className="userspace-muted"
+                    style={{ padding: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
                     <MiniLoadingSpinner variant="icon" size={12} /> Loading snapshots
                   </p>
                 ) : (
-                  <p className="userspace-muted" style={{ padding: '8px' }}>No snapshots yet</p>
+                  <p className="userspace-muted" style={{ padding: '8px' }}>
+                    No snapshots yet
+                  </p>
                 )}
               </div>
             )}
@@ -8198,8 +9719,6 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         onDeleteEnvVar={handleDeleteEnvVar}
       />
 
-
-
       {showScmWizard && activeWorkspace && (
         <WorkspaceScmWizard
           workspace={activeWorkspace}
@@ -8208,9 +9727,11 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
           onAskAgent={handleAskAgentToPrepareWorkspace}
           onWorkspaceChanged={async () => {
             const refreshedWorkspace = await api.getUserSpaceWorkspace(activeWorkspace.id);
-            setWorkspaces((current) => current.map((workspace) => (
-              workspace.id === refreshedWorkspace.id ? refreshedWorkspace : workspace
-            )));
+            setWorkspaces((current) =>
+              current.map((workspace) =>
+                workspace.id === refreshedWorkspace.id ? refreshedWorkspace : workspace,
+              ),
+            );
             await Promise.all([
               loadWorkspaceData(activeWorkspace.id),
               loadChangedFileState(activeWorkspace.id),
@@ -8231,15 +9752,25 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   style={{
                     background: 'transparent',
                     border: 'none',
-                    borderBottom: mountsModalTab === 'mounts' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                    borderBottom:
+                      mountsModalTab === 'mounts'
+                        ? '2px solid var(--color-accent)'
+                        : '2px solid transparent',
                     padding: '8px 16px',
                     cursor: 'pointer',
-                    color: mountsModalTab === 'mounts' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                    color:
+                      mountsModalTab === 'mounts'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-secondary)',
                     fontSize: 14,
                     fontWeight: 600,
                     transition: 'color 0.15s, border-color 0.15s',
                   }}
-                  onClick={() => { setMountsModalTab('mounts'); setShowObjectStorageWizard(false); setEditingObjectStorageBucket(null); }}
+                  onClick={() => {
+                    setMountsModalTab('mounts');
+                    setShowObjectStorageWizard(false);
+                    setEditingObjectStorageBucket(null);
+                  }}
                 >
                   Filesystem Mounts
                 </button>
@@ -8248,10 +9779,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   style={{
                     background: 'transparent',
                     border: 'none',
-                    borderBottom: mountsModalTab === 'object-storage' ? '2px solid var(--color-accent)' : '2px solid transparent',
+                    borderBottom:
+                      mountsModalTab === 'object-storage'
+                        ? '2px solid var(--color-accent)'
+                        : '2px solid transparent',
                     padding: '8px 16px',
                     cursor: 'pointer',
-                    color: mountsModalTab === 'object-storage' ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                    color:
+                      mountsModalTab === 'object-storage'
+                        ? 'var(--color-text-primary)'
+                        : 'var(--color-text-secondary)',
                     fontSize: 14,
                     fontWeight: 600,
                     transition: 'color 0.15s, border-color 0.15s',
@@ -8261,7 +9798,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   Object Storage
                 </button>
               </div>
-              <button className="modal-close" onClick={handleCloseMountsModal}>&times;</button>
+              <button className="modal-close" onClick={handleCloseMountsModal}>
+                &times;
+              </button>
             </div>
             <div className="modal-body">
               {mountsModalTab === 'object-storage' ? (
@@ -8269,7 +9808,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   <WorkspaceObjectStorageWizard
                     workspaceId={activeWorkspaceId}
                     existingBucket={editingObjectStorageBucket}
-                    existingBucketNames={objectStorageConfig?.buckets.map((bucket) => bucket.name) ?? []}
+                    existingBucketNames={
+                      objectStorageConfig?.buckets.map((bucket) => bucket.name) ?? []
+                    }
                     onClose={() => {
                       setShowObjectStorageWizard(false);
                       setEditingObjectStorageBucket(null);
@@ -8285,7 +9826,13 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       <p className="userspace-muted">Loading...</p>
                     ) : objectStorageConfig ? (
                       <>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                          }}
+                        >
                           <strong>Buckets</strong>
                           <button
                             type="button"
@@ -8302,11 +9849,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
 
                         <div style={{ display: 'grid', gap: 10 }}>
                           {objectStorageConfig.buckets.map((bucket) => (
-                            <div key={bucket.name} style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 8 }}>
+                            <div
+                              key={bucket.name}
+                              style={{
+                                border: '1px solid var(--color-border)',
+                                borderRadius: 8,
+                                padding: 12,
+                                display: 'grid',
+                                gap: 8,
+                              }}
+                            >
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <strong>{bucket.name}</strong>
                                 {bucket.is_default && (
-                                  <span className="userspace-muted" style={{ fontSize: 12, padding: '2px 6px', borderRadius: 999, background: 'var(--color-bg-tertiary)' }}>
+                                  <span
+                                    className="userspace-muted"
+                                    style={{
+                                      fontSize: 12,
+                                      padding: '2px 6px',
+                                      borderRadius: 999,
+                                      background: 'var(--color-bg-tertiary)',
+                                    }}
+                                  >
                                     Default
                                   </span>
                                 )}
@@ -8325,11 +9889,24 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 <button
                                   type="button"
                                   className="btn btn-secondary btn-sm"
-                                  onClick={() => { void handleDeleteObjectStorageBucket(bucket.name); }}
-                                  disabled={objectStorageConfig.buckets.length <= 1 || deletingObjectStorageBucket === bucket.name}
-                                  title={objectStorageConfig.buckets.length <= 1 ? 'At least one bucket must remain' : 'Delete bucket'}
+                                  onClick={() => {
+                                    void handleDeleteObjectStorageBucket(bucket.name);
+                                  }}
+                                  disabled={
+                                    objectStorageConfig.buckets.length <= 1 ||
+                                    deletingObjectStorageBucket === bucket.name
+                                  }
+                                  title={
+                                    objectStorageConfig.buckets.length <= 1
+                                      ? 'At least one bucket must remain'
+                                      : 'Delete bucket'
+                                  }
                                 >
-                                  {deletingObjectStorageBucket === bucket.name ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                  {deletingObjectStorageBucket === bucket.name ? (
+                                    <MiniLoadingSpinner variant="icon" size={12} />
+                                  ) : (
+                                    <Trash2 size={12} />
+                                  )}
                                 </button>
                               </div>
                               <div className="userspace-muted" style={{ fontSize: 12 }}>
@@ -8337,10 +9914,16 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               </div>
                               <div style={{ display: 'grid', gap: 4 }}>
                                 <span className="userspace-muted" style={{ fontSize: 12 }}>
-                                  Public root: <code>/{bucket.name}/{bucket.public_prefix}</code>
+                                  Public root:{' '}
+                                  <code>
+                                    /{bucket.name}/{bucket.public_prefix}
+                                  </code>
                                 </span>
                                 <span className="userspace-muted" style={{ fontSize: 12 }}>
-                                  Private root: <code>/{bucket.name}/{bucket.private_prefix}</code>
+                                  Private root:{' '}
+                                  <code>
+                                    /{bucket.name}/{bucket.private_prefix}
+                                  </code>
                                 </span>
                               </div>
                             </div>
@@ -8348,7 +9931,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         </div>
                       </>
                     ) : (
-                      <p className="userspace-muted">Object storage is unavailable for this workspace.</p>
+                      <p className="userspace-muted">
+                        Object storage is unavailable for this workspace.
+                      </p>
                     )}
                   </div>
                 )
@@ -8356,7 +9941,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                 <>
                   {!mountsLoading && mounts.length === 0 && (
                     <p className="userspace-muted" style={{ marginBottom: 12 }}>
-                      Attach folders from your connected tools so apps running in this workspace can read and write to them.
+                      Attach folders from your connected tools so apps running in this workspace can
+                      read and write to them.
                     </p>
                   )}
                   {mountsLoading ? (
@@ -8365,61 +9951,187 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                     <>
                       {mounts.length > 0 && (
                         <div style={{ marginBottom: 16 }}>
-                          <strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>Active mounts</strong>
+                          <strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>
+                            Active mounts
+                          </strong>
                           <div className="userspace-mount-list">
                             {mounts.map((mount) => {
                               const isEjected = !mount.enabled;
                               const SyncModeIcon = getMountSyncModeIcon(mount.sync_mode);
-                              const displaySourcePath = resolveSourceDisplayPath(mount.source_path, undefined, { sourceType: mount.source_type });
+                              const displaySourcePath = resolveSourceDisplayPath(
+                                mount.source_path,
+                                undefined,
+                                { sourceType: mount.source_type },
+                              );
                               const isMountEditable = mount.editable !== false;
-                              const mountCloudProvider = isCloudMountProvider(mount.source_type) ? mount.source_type : null;
-                              const hasCloudSourceAuthIssue = !isEjected
-                                && !mount.source_available
-                                && mount.source_unavailable_kind === 'cloud_auth';
-                              const mountSyncErrorMessage =
-                                isEjected
-                                  ? null
-                                  : hasCloudSourceAuthIssue
-                                    ? mount.source_unavailable_reason || 'Cloud connection is no longer available. Reconnect OAuth for this mount source, then sync again.'
-                                    : mount.last_sync_error;
-                              const shouldShowSyncNotice = Boolean(mount.sync_notice) && !hasCloudSourceAuthIssue;
-                              const canRunManualSync = mount.source_available && !isEjected && isMountEditable;
-                              const mountReadOnlyReason = 'Read-only: access to this source was revoked by an admin.';
+                              const mountCloudProvider = isCloudMountProvider(mount.source_type)
+                                ? mount.source_type
+                                : null;
+                              const hasCloudSourceAuthIssue =
+                                !isEjected &&
+                                !mount.source_available &&
+                                mount.source_unavailable_kind === 'cloud_auth';
+                              const mountSyncErrorMessage = isEjected
+                                ? null
+                                : hasCloudSourceAuthIssue
+                                  ? mount.source_unavailable_reason ||
+                                    'Cloud connection is no longer available. Reconnect OAuth for this mount source, then sync again.'
+                                  : mount.last_sync_error;
+                              const shouldShowSyncNotice =
+                                Boolean(mount.sync_notice) && !hasCloudSourceAuthIssue;
+                              const canRunManualSync =
+                                mount.source_available && !isEjected && isMountEditable;
+                              const mountReadOnlyReason =
+                                'Read-only: access to this source was revoked by an admin.';
                               return (
-                                <div key={mount.id} className="userspace-mount-row" style={isEjected ? { opacity: 0.45, filter: 'grayscale(0.6)' } : undefined}>
+                                <div
+                                  key={mount.id}
+                                  className="userspace-mount-row"
+                                  style={
+                                    isEjected
+                                      ? { opacity: 0.45, filter: 'grayscale(0.6)' }
+                                      : undefined
+                                  }
+                                >
                                   <div className="userspace-mount-primary-row">
                                     <span className="userspace-mount-path-flow">
-                                      <HardDrive size={13} className="userspace-mount-target-icon" />
-                                      <span className="userspace-mount-source-path">{displaySourcePath}</span>
-                                      <ArrowRight size={12} className="userspace-mount-path-arrow" />
-                                      <span className="userspace-mount-target-path">{mount.target_path}</span>
-                                      <span className="userspace-mount-tool-label">({mount.source_name ?? 'Unknown source'})</span>
+                                      <HardDrive
+                                        size={13}
+                                        className="userspace-mount-target-icon"
+                                      />
+                                      <span className="userspace-mount-source-path">
+                                        {displaySourcePath}
+                                      </span>
+                                      <ArrowRight
+                                        size={12}
+                                        className="userspace-mount-path-arrow"
+                                      />
+                                      <span className="userspace-mount-target-path">
+                                        {mount.target_path}
+                                      </span>
+                                      <span className="userspace-mount-tool-label">
+                                        ({mount.source_name ?? 'Unknown source'})
+                                      </span>
                                     </span>
                                     <div className="userspace-mount-controls">
                                       <span className="userspace-mount-sync-status">
-                                        {isEjected && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }} title="Mount is currently unmounted">Unmounted</span>}
-                                        {!isEjected && !mount.source_available && <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title="Mount source is no longer available">Disconnected</span>}
-                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && (syncingMountId === mount.id || previewingMountId === mount.id) && <span className="userspace-status-pill userspace-status-pill-warning" style={{ fontSize: 11 }}>In Progress</span>}
-                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'synced' && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Synced</span>}
-                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'pending' && <span className="userspace-status-pill userspace-status-pill-info" style={{ fontSize: 11 }}>Pending</span>}
-                                        {!isEjected && mount.source_available && isWorkspaceMountSyncCapableSourceType(mount.source_type) && syncingMountId !== mount.id && previewingMountId !== mount.id && mount.sync_status === 'error' && (
-                                          <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={mount.last_sync_error ?? undefined}>Error</span>
+                                        {isEjected && (
+                                          <span
+                                            className="userspace-status-pill userspace-status-pill-info"
+                                            style={{ fontSize: 11 }}
+                                            title="Mount is currently unmounted"
+                                          >
+                                            Unmounted
+                                          </span>
                                         )}
-                                        {!isEjected && mount.source_available && !isWorkspaceMountSyncCapableSourceType(mount.source_type) && <span className="userspace-status-pill userspace-status-pill-success" style={{ fontSize: 11 }}>Live</span>}
+                                        {!isEjected && !mount.source_available && (
+                                          <span
+                                            className="userspace-status-pill userspace-status-pill-danger"
+                                            style={{ fontSize: 11 }}
+                                            title="Mount source is no longer available"
+                                          >
+                                            Disconnected
+                                          </span>
+                                        )}
+                                        {!isEjected &&
+                                          mount.source_available &&
+                                          isWorkspaceMountSyncCapableSourceType(
+                                            mount.source_type,
+                                          ) &&
+                                          (syncingMountId === mount.id ||
+                                            previewingMountId === mount.id) && (
+                                            <span
+                                              className="userspace-status-pill userspace-status-pill-warning"
+                                              style={{ fontSize: 11 }}
+                                            >
+                                              In Progress
+                                            </span>
+                                          )}
+                                        {!isEjected &&
+                                          mount.source_available &&
+                                          isWorkspaceMountSyncCapableSourceType(
+                                            mount.source_type,
+                                          ) &&
+                                          syncingMountId !== mount.id &&
+                                          previewingMountId !== mount.id &&
+                                          mount.sync_status === 'synced' && (
+                                            <span
+                                              className="userspace-status-pill userspace-status-pill-success"
+                                              style={{ fontSize: 11 }}
+                                            >
+                                              Synced
+                                            </span>
+                                          )}
+                                        {!isEjected &&
+                                          mount.source_available &&
+                                          isWorkspaceMountSyncCapableSourceType(
+                                            mount.source_type,
+                                          ) &&
+                                          syncingMountId !== mount.id &&
+                                          previewingMountId !== mount.id &&
+                                          mount.sync_status === 'pending' && (
+                                            <span
+                                              className="userspace-status-pill userspace-status-pill-info"
+                                              style={{ fontSize: 11 }}
+                                            >
+                                              Pending
+                                            </span>
+                                          )}
+                                        {!isEjected &&
+                                          mount.source_available &&
+                                          isWorkspaceMountSyncCapableSourceType(
+                                            mount.source_type,
+                                          ) &&
+                                          syncingMountId !== mount.id &&
+                                          previewingMountId !== mount.id &&
+                                          mount.sync_status === 'error' && (
+                                            <span
+                                              className="userspace-status-pill userspace-status-pill-danger"
+                                              style={{ fontSize: 11 }}
+                                              title={mount.last_sync_error ?? undefined}
+                                            >
+                                              Error
+                                            </span>
+                                          )}
+                                        {!isEjected &&
+                                          mount.source_available &&
+                                          !isWorkspaceMountSyncCapableSourceType(
+                                            mount.source_type,
+                                          ) && (
+                                            <span
+                                              className="userspace-status-pill userspace-status-pill-success"
+                                              style={{ fontSize: 11 }}
+                                            >
+                                              Live
+                                            </span>
+                                          )}
                                       </span>
                                       <div className="userspace-mount-actions">
-                                        {isWorkspaceMountSyncCapableSourceType(mount.source_type) && (
+                                        {isWorkspaceMountSyncCapableSourceType(
+                                          mount.source_type,
+                                        ) && (
                                           <>
                                             <button
                                               className="btn btn-sm btn-secondary"
                                               onClick={() => {
-                                                const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
+                                                const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map(
+                                                  (o) => o.value,
+                                                );
                                                 const currentIndex = modes.indexOf(mount.sync_mode);
-                                                const nextMode = modes[(currentIndex + 1) % modes.length];
+                                                const nextMode =
+                                                  modes[(currentIndex + 1) % modes.length];
                                                 void handleUpdateMountSyncMode(mount, nextMode);
                                               }}
-                                              disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
-                                              title={isMountEditable ? getMountSyncModeDescription(mount.sync_mode) : mountReadOnlyReason}
+                                              disabled={
+                                                savingMountWatchId === mount.id ||
+                                                isEjected ||
+                                                !isMountEditable
+                                              }
+                                              title={
+                                                isMountEditable
+                                                  ? getMountSyncModeDescription(mount.sync_mode)
+                                                  : mountReadOnlyReason
+                                              }
                                               style={{
                                                 minWidth: 100,
                                                 display: 'inline-flex',
@@ -8427,26 +10139,82 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                 gap: 5,
                                               }}
                                             >
-                                              {savingMountWatchId === mount.id
-                                                ? <MiniLoadingSpinner variant="icon" size={12} />
-                                                : <><SyncModeIcon size={12} /> {getMountSyncModeLabel(mount.sync_mode)}</>}
+                                              {savingMountWatchId === mount.id ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
+                                                <>
+                                                  <SyncModeIcon size={12} />{' '}
+                                                  {getMountSyncModeLabel(mount.sync_mode)}
+                                                </>
+                                              )}
                                               <span
                                                 role="button"
-                                                onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` && v.mode === 'pinned' ? null : { id: `sync-mode-${mount.id}`, mode: 'pinned' }); }}
-                                                onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? v : { id: `sync-mode-${mount.id}`, mode: 'hover' })}
-                                                onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setExpandedSyncModeInfo((v) =>
+                                                    v?.id === `sync-mode-${mount.id}` &&
+                                                    v.mode === 'pinned'
+                                                      ? null
+                                                      : {
+                                                          id: `sync-mode-${mount.id}`,
+                                                          mode: 'pinned',
+                                                        },
+                                                  );
+                                                }}
+                                                onMouseEnter={() =>
+                                                  setExpandedSyncModeInfo((v) =>
+                                                    v?.id === `sync-mode-${mount.id}`
+                                                      ? v
+                                                      : {
+                                                          id: `sync-mode-${mount.id}`,
+                                                          mode: 'hover',
+                                                        },
+                                                  )
+                                                }
+                                                onMouseLeave={() =>
+                                                  setExpandedSyncModeInfo((v) =>
+                                                    v?.mode === 'pinned' ? v : null,
+                                                  )
+                                                }
                                                 title="About sync modes"
-                                                style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
+                                                style={{
+                                                  display: 'inline-flex',
+                                                  alignItems: 'center',
+                                                  marginLeft: 2,
+                                                  cursor: 'pointer',
+                                                  position: 'relative',
+                                                }}
                                               >
                                                 <Info size={11} />
-                                                {expandedSyncModeInfo?.id === `sync-mode-${mount.id}` && (
+                                                {expandedSyncModeInfo?.id ===
+                                                  `sync-mode-${mount.id}` && (
                                                   <>
                                                     {expandedSyncModeInfo?.mode === 'pinned' && (
-                                                      <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
+                                                      <div
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          setExpandedSyncModeInfo(null);
+                                                        }}
+                                                        style={{
+                                                          position: 'fixed',
+                                                          inset: 0,
+                                                          zIndex: 999,
+                                                        }}
+                                                      />
                                                     )}
                                                     <div
-                                                      onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === `sync-mode-${mount.id}` ? { ...v, mode: 'hover' } : v)}
-                                                      onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
+                                                      onMouseEnter={() =>
+                                                        setExpandedSyncModeInfo((v) =>
+                                                          v?.id === `sync-mode-${mount.id}`
+                                                            ? { ...v, mode: 'hover' }
+                                                            : v,
+                                                        )
+                                                      }
+                                                      onMouseLeave={() =>
+                                                        setExpandedSyncModeInfo((v) =>
+                                                          v?.mode === 'pinned' ? v : null,
+                                                        )
+                                                      }
                                                       style={{
                                                         position: 'absolute',
                                                         top: '100%',
@@ -8454,7 +10222,8 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                         marginTop: 8,
                                                         padding: 12,
                                                         background: 'var(--color-bg-primary, #fff)',
-                                                        border: '1px solid var(--color-border, #ddd)',
+                                                        border:
+                                                          '1px solid var(--color-border, #ddd)',
                                                         borderRadius: 8,
                                                         boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
                                                         fontSize: 12,
@@ -8464,16 +10233,35 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                         zIndex: 1000,
                                                         whiteSpace: 'normal',
                                                         textAlign: 'left',
-                                                      }}>
-                                                      {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
-                                                        const OptionIcon = option.icon;
-                                                        return (
-                                                          <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                                                            <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                                                            <span><strong>{option.label}</strong>: {option.description}</span>
-                                                          </div>
-                                                        );
-                                                      })}
+                                                      }}
+                                                    >
+                                                      {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map(
+                                                        (option) => {
+                                                          const OptionIcon = option.icon;
+                                                          return (
+                                                            <div
+                                                              key={option.value}
+                                                              style={{
+                                                                display: 'flex',
+                                                                gap: 8,
+                                                                alignItems: 'flex-start',
+                                                              }}
+                                                            >
+                                                              <OptionIcon
+                                                                size={13}
+                                                                style={{
+                                                                  flexShrink: 0,
+                                                                  marginTop: 1,
+                                                                }}
+                                                              />
+                                                              <span>
+                                                                <strong>{option.label}</strong>:{' '}
+                                                                {option.description}
+                                                              </span>
+                                                            </div>
+                                                          );
+                                                        },
+                                                      )}
                                                     </div>
                                                   </>
                                                 )}
@@ -8481,13 +10269,28 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                             </button>
                                             <button
                                               className={`btn btn-sm ${mount.auto_sync_enabled ? 'btn-primary' : 'btn-secondary userspace-mount-toggle-btn-inactive'}`}
-                                              onClick={() => handleToggleMountAutoSync(mount, !mount.auto_sync_enabled)}
-                                              disabled={savingMountWatchId === mount.id || isEjected || !isMountEditable}
-                                              title={isMountEditable
-                                                ? (mount.auto_sync_enabled ? 'Disable Auto Sync and switch to on-demand syncing' : 'Enable Auto Sync to keep this mount in sync on a schedule')
-                                                : mountReadOnlyReason}
+                                              onClick={() =>
+                                                handleToggleMountAutoSync(
+                                                  mount,
+                                                  !mount.auto_sync_enabled,
+                                                )
+                                              }
+                                              disabled={
+                                                savingMountWatchId === mount.id ||
+                                                isEjected ||
+                                                !isMountEditable
+                                              }
+                                              title={
+                                                isMountEditable
+                                                  ? mount.auto_sync_enabled
+                                                    ? 'Disable Auto Sync and switch to on-demand syncing'
+                                                    : 'Enable Auto Sync to keep this mount in sync on a schedule'
+                                                  : mountReadOnlyReason
+                                              }
                                             >
-                                              {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : (
+                                              {savingMountWatchId === mount.id ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
                                                 <span className="userspace-mount-toggle-icon">
                                                   Auto Sync
                                                 </span>
@@ -8498,112 +10301,216 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                                 <button
                                                   className="btn btn-sm btn-secondary userspace-mount-interval-trigger"
                                                   onClick={(e) => {
-                                                    const rect = e.currentTarget.getBoundingClientRect();
+                                                    const rect =
+                                                      e.currentTarget.getBoundingClientRect();
                                                     if (expandedMountIntervalMenuId === mount.id) {
                                                       setExpandedMountIntervalMenuId(null);
                                                       setMountIntervalMenuRect(null);
                                                     } else {
-                                                      setMountIntervalMenuRect({ top: rect.bottom + 8, left: rect.right });
+                                                      setMountIntervalMenuRect({
+                                                        top: rect.bottom + 8,
+                                                        left: rect.right,
+                                                      });
                                                       setExpandedMountIntervalMenuId(mount.id);
                                                     }
                                                   }}
-                                                  disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
-                                                  title={isMountEditable
-                                                    ? (mount.sync_interval_seconds == null
-                                                      ? `Using default sync cadence (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})`
-                                                      : `Auto Sync checks every ${formatMountSyncInterval(mount.sync_interval_seconds)}`)
-                                                    : mountReadOnlyReason}
+                                                  disabled={
+                                                    savingMountIntervalId === mount.id ||
+                                                    isEjected ||
+                                                    !isMountEditable
+                                                  }
+                                                  title={
+                                                    isMountEditable
+                                                      ? mount.sync_interval_seconds == null
+                                                        ? `Using default sync cadence (${formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})`
+                                                        : `Auto Sync checks every ${formatMountSyncInterval(mount.sync_interval_seconds)}`
+                                                      : mountReadOnlyReason
+                                                  }
                                                 >
-                                                  {savingMountIntervalId === mount.id
-                                                    ? <MiniLoadingSpinner variant="icon" size={12} />
-                                                    : <>
-                                                      <span>{getMountIntervalLabel(mount.sync_interval_seconds)}</span>
+                                                  {savingMountIntervalId === mount.id ? (
+                                                    <MiniLoadingSpinner variant="icon" size={12} />
+                                                  ) : (
+                                                    <>
+                                                      <span>
+                                                        {getMountIntervalLabel(
+                                                          mount.sync_interval_seconds,
+                                                        )}
+                                                      </span>
                                                       <ChevronDown size={11} />
-                                                    </>}
+                                                    </>
+                                                  )}
                                                 </button>
-                                                {expandedMountIntervalMenuId === mount.id && mountIntervalMenuRect && (
-                                                  <>
-                                                    <div
-                                                      onClick={() => { setExpandedMountIntervalMenuId(null); setMountIntervalMenuRect(null); }}
-                                                      style={{ position: 'fixed', inset: 0, zIndex: 10000 }}
-                                                    />
-                                                    <div className="userspace-mount-interval-menu" role="menu" aria-label="Auto sync interval" style={{ position: 'fixed', top: mountIntervalMenuRect.top, right: `calc(100vw - ${mountIntervalMenuRect.left}px)`, left: 'auto', bottom: 'auto', zIndex: 10001 }}>
-                                                      <div className="userspace-mount-interval-menu-copy">
-                                                        Choose how often Auto Sync checks this mount.
-                                                      </div>
-                                                      <button
-                                                        type="button"
-                                                        className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds == null ? 'active' : ''}`}
+                                                {expandedMountIntervalMenuId === mount.id &&
+                                                  mountIntervalMenuRect && (
+                                                    <>
+                                                      <div
                                                         onClick={() => {
                                                           setExpandedMountIntervalMenuId(null);
                                                           setMountIntervalMenuRect(null);
-                                                          void handleUpdateMountSyncInterval(mount, null);
+                                                        }}
+                                                        style={{
+                                                          position: 'fixed',
+                                                          inset: 0,
+                                                          zIndex: 10000,
+                                                        }}
+                                                      />
+                                                      <div
+                                                        className="userspace-mount-interval-menu"
+                                                        role="menu"
+                                                        aria-label="Auto sync interval"
+                                                        style={{
+                                                          position: 'fixed',
+                                                          top: mountIntervalMenuRect.top,
+                                                          right: `calc(100vw - ${mountIntervalMenuRect.left}px)`,
+                                                          left: 'auto',
+                                                          bottom: 'auto',
+                                                          zIndex: 10001,
                                                         }}
                                                       >
-                                                        <span>Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</span>
-                                                        {mount.sync_interval_seconds == null && <Check size={11} />}
-                                                      </button>
-                                                      {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                                        <div className="userspace-mount-interval-menu-copy">
+                                                          Choose how often Auto Sync checks this
+                                                          mount.
+                                                        </div>
                                                         <button
-                                                          key={seconds}
                                                           type="button"
-                                                          className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds === seconds ? 'active' : ''}`}
+                                                          className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds == null ? 'active' : ''}`}
                                                           onClick={() => {
                                                             setExpandedMountIntervalMenuId(null);
                                                             setMountIntervalMenuRect(null);
-                                                            void handleUpdateMountSyncInterval(mount, seconds, mount.sync_start_minute, mount.sync_timezone);
+                                                            void handleUpdateMountSyncInterval(
+                                                              mount,
+                                                              null,
+                                                            );
                                                           }}
                                                         >
-                                                          <span>Every {formatMountSyncInterval(seconds)}</span>
-                                                          {mount.sync_interval_seconds === seconds && <Check size={11} />}
+                                                          <span>
+                                                            Use default (
+                                                            {formatMountSyncInterval(
+                                                              MOUNT_SYNC_DEFAULT_SECONDS,
+                                                            )}
+                                                            )
+                                                          </span>
+                                                          {mount.sync_interval_seconds == null && (
+                                                            <Check size={11} />
+                                                          )}
                                                         </button>
-                                                      ))}
-                                                      {mount.sync_interval_seconds != null && !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(mount.sync_interval_seconds) && (
-                                                        <button
-                                                          type="button"
-                                                          className="userspace-mount-interval-menu-item active"
-                                                          onClick={() => {
-                                                            setExpandedMountIntervalMenuId(null);
-                                                            setMountIntervalMenuRect(null);
-                                                            void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, mount.sync_timezone);
-                                                          }}
-                                                        >
-                                                          <span>Every {formatMountSyncInterval(mount.sync_interval_seconds)}</span>
-                                                          <Check size={11} />
-                                                        </button>
-                                                      )}
-                                                    </div>
-                                                  </>
-                                                )}
+                                                        {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map(
+                                                          (seconds) => (
+                                                            <button
+                                                              key={seconds}
+                                                              type="button"
+                                                              className={`userspace-mount-interval-menu-item ${mount.sync_interval_seconds === seconds ? 'active' : ''}`}
+                                                              onClick={() => {
+                                                                setExpandedMountIntervalMenuId(
+                                                                  null,
+                                                                );
+                                                                setMountIntervalMenuRect(null);
+                                                                void handleUpdateMountSyncInterval(
+                                                                  mount,
+                                                                  seconds,
+                                                                  mount.sync_start_minute,
+                                                                  mount.sync_timezone,
+                                                                );
+                                                              }}
+                                                            >
+                                                              <span>
+                                                                Every{' '}
+                                                                {formatMountSyncInterval(seconds)}
+                                                              </span>
+                                                              {mount.sync_interval_seconds ===
+                                                                seconds && <Check size={11} />}
+                                                            </button>
+                                                          ),
+                                                        )}
+                                                        {mount.sync_interval_seconds != null &&
+                                                          !WORKSPACE_MOUNT_INTERVAL_OPTIONS.includes(
+                                                            mount.sync_interval_seconds,
+                                                          ) && (
+                                                            <button
+                                                              type="button"
+                                                              className="userspace-mount-interval-menu-item active"
+                                                              onClick={() => {
+                                                                setExpandedMountIntervalMenuId(
+                                                                  null,
+                                                                );
+                                                                setMountIntervalMenuRect(null);
+                                                                void handleUpdateMountSyncInterval(
+                                                                  mount,
+                                                                  mount.sync_interval_seconds,
+                                                                  mount.sync_start_minute,
+                                                                  mount.sync_timezone,
+                                                                );
+                                                              }}
+                                                            >
+                                                              <span>
+                                                                Every{' '}
+                                                                {formatMountSyncInterval(
+                                                                  mount.sync_interval_seconds,
+                                                                )}
+                                                              </span>
+                                                              <Check size={11} />
+                                                            </button>
+                                                          )}
+                                                      </div>
+                                                    </>
+                                                  )}
                                               </div>
                                             )}
-                                            {mount.auto_sync_enabled && mount.sync_interval_seconds != null && (
-                                              <ScheduleStartTimeInput
-                                                enabled={true}
-                                                startMinute={mount.sync_start_minute}
-                                                timezone={mount.sync_timezone}
-                                                onStartMinuteChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, value, mount.sync_timezone)}
-                                                onTimezoneChange={(value) => void handleUpdateMountSyncInterval(mount, mount.sync_interval_seconds, mount.sync_start_minute, value)}
-                                                disabled={savingMountIntervalId === mount.id || isEjected || !isMountEditable}
-                                                label="Start Time"
-                                                style={{ marginBottom: 0, minWidth: 220 }}
-                                              />
-                                            )}
+                                            {mount.auto_sync_enabled &&
+                                              mount.sync_interval_seconds != null && (
+                                                <ScheduleStartTimeInput
+                                                  enabled={true}
+                                                  startMinute={mount.sync_start_minute}
+                                                  timezone={mount.sync_timezone}
+                                                  onStartMinuteChange={(value) =>
+                                                    void handleUpdateMountSyncInterval(
+                                                      mount,
+                                                      mount.sync_interval_seconds,
+                                                      value,
+                                                      mount.sync_timezone,
+                                                    )
+                                                  }
+                                                  onTimezoneChange={(value) =>
+                                                    void handleUpdateMountSyncInterval(
+                                                      mount,
+                                                      mount.sync_interval_seconds,
+                                                      mount.sync_start_minute,
+                                                      value,
+                                                    )
+                                                  }
+                                                  disabled={
+                                                    savingMountIntervalId === mount.id ||
+                                                    isEjected ||
+                                                    !isMountEditable
+                                                  }
+                                                  label="Start Time"
+                                                  style={{ marginBottom: 0, minWidth: 220 }}
+                                                />
+                                              )}
                                             <button
                                               className="btn btn-secondary btn-sm userspace-mount-sync-now-btn userspace-mount-icon-btn"
                                               onClick={() => handleSyncMount(mount)}
-                                              disabled={syncingMountId === mount.id || previewingMountId === mount.id || !canRunManualSync}
-                                              title={canRunManualSync
-                                                ? (mount.auto_sync_enabled
-                                                  ? 'Run an immediate sync now (Auto Sync remains enabled)'
-                                                  : 'Run a one-time on-demand sync now')
-                                                : (!mount.source_available
-                                                  ? 'Reconnect OAuth for this mount source before syncing'
-                                                  : mountReadOnlyReason)}
+                                              disabled={
+                                                syncingMountId === mount.id ||
+                                                previewingMountId === mount.id ||
+                                                !canRunManualSync
+                                              }
+                                              title={
+                                                canRunManualSync
+                                                  ? mount.auto_sync_enabled
+                                                    ? 'Run an immediate sync now (Auto Sync remains enabled)'
+                                                    : 'Run a one-time on-demand sync now'
+                                                  : !mount.source_available
+                                                    ? 'Reconnect OAuth for this mount source before syncing'
+                                                    : mountReadOnlyReason
+                                              }
                                             >
-                                              {syncingMountId === mount.id || previewingMountId === mount.id
-                                                ? <MiniLoadingSpinner variant="icon" size={12} />
-                                                : <RefreshCw size={12} />}
+                                              {syncingMountId === mount.id ||
+                                              previewingMountId === mount.id ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
+                                                <RefreshCw size={12} />
+                                              )}
                                             </button>
                                           </>
                                         )}
@@ -8612,28 +10519,58 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                             <button
                                               className="btn btn-secondary btn-sm userspace-mount-icon-btn"
                                               onClick={() => void handleRemount(mount)}
-                                              disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
-                                              title={isMountEditable ? 'Remount' : mountReadOnlyReason}
+                                              disabled={
+                                                deletingMountId === mount.id ||
+                                                savingMountWatchId === mount.id ||
+                                                !isMountEditable
+                                              }
+                                              title={
+                                                isMountEditable ? 'Remount' : mountReadOnlyReason
+                                              }
                                             >
-                                              {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveDownload size={12} />}
+                                              {savingMountWatchId === mount.id ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
+                                                <HardDriveDownload size={12} />
+                                              )}
                                             </button>
                                             <button
                                               className="btn btn-secondary btn-sm userspace-mount-icon-btn"
                                               onClick={() => void handleDeleteMount(mount.id)}
-                                              disabled={deletingMountId === mount.id || !isMountEditable}
-                                              title={isMountEditable ? 'Delete mount permanently' : mountReadOnlyReason}
+                                              disabled={
+                                                deletingMountId === mount.id || !isMountEditable
+                                              }
+                                              title={
+                                                isMountEditable
+                                                  ? 'Delete mount permanently'
+                                                  : mountReadOnlyReason
+                                              }
                                             >
-                                              {deletingMountId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                              {deletingMountId === mount.id ? (
+                                                <MiniLoadingSpinner variant="icon" size={12} />
+                                              ) : (
+                                                <Trash2 size={12} />
+                                              )}
                                             </button>
                                           </>
                                         ) : (
                                           <button
                                             className="btn btn-secondary btn-sm userspace-mount-icon-btn"
                                             onClick={() => void handleEjectMount(mount)}
-                                            disabled={deletingMountId === mount.id || savingMountWatchId === mount.id || !isMountEditable}
-                                            title={isMountEditable ? 'Unmount' : mountReadOnlyReason}
+                                            disabled={
+                                              deletingMountId === mount.id ||
+                                              savingMountWatchId === mount.id ||
+                                              !isMountEditable
+                                            }
+                                            title={
+                                              isMountEditable ? 'Unmount' : mountReadOnlyReason
+                                            }
                                           >
-                                            {savingMountWatchId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <HardDriveUpload size={12} />}
+                                            {savingMountWatchId === mount.id ? (
+                                              <MiniLoadingSpinner variant="icon" size={12} />
+                                            ) : (
+                                              <HardDriveUpload size={12} />
+                                            )}
                                           </button>
                                         )}
                                       </div>
@@ -8647,9 +10584,12 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                           className="form-input userspace-mount-desc-input"
                                           placeholder="Description for agents (optional)"
                                           value={editingMountDescriptionDraft}
-                                          onChange={(e) => setEditingMountDescriptionDraft(e.target.value)}
+                                          onChange={(e) =>
+                                            setEditingMountDescriptionDraft(e.target.value)
+                                          }
                                           onKeyDown={(e) => {
-                                            if (e.key === 'Enter') void handleSaveMountDescription();
+                                            if (e.key === 'Enter')
+                                              void handleSaveMountDescription();
                                             if (e.key === 'Escape') {
                                               setEditingMountDescriptionId(null);
                                               setEditingMountDescriptionDraft('');
@@ -8660,10 +10600,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         <button
                                           className="btn btn-primary btn-sm"
                                           onClick={() => void handleSaveMountDescription()}
-                                          disabled={savingMountDescriptionId === mount.id || !isMountEditable}
-                                          title={isMountEditable ? 'Save description' : mountReadOnlyReason}
+                                          disabled={
+                                            savingMountDescriptionId === mount.id ||
+                                            !isMountEditable
+                                          }
+                                          title={
+                                            isMountEditable
+                                              ? 'Save description'
+                                              : mountReadOnlyReason
+                                          }
                                         >
-                                          {savingMountDescriptionId === mount.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Check size={12} />}
+                                          {savingMountDescriptionId === mount.id ? (
+                                            <MiniLoadingSpinner variant="icon" size={12} />
+                                          ) : (
+                                            <Check size={12} />
+                                          )}
                                         </button>
                                         <button
                                           className="btn btn-secondary btn-sm"
@@ -8690,13 +10641,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         </span>
                                         <button
                                           className="inline-edit-btn userspace-mount-desc-edit-btn"
-                                          title={isMountEditable ? 'Edit description' : mountReadOnlyReason}
+                                          title={
+                                            isMountEditable
+                                              ? 'Edit description'
+                                              : mountReadOnlyReason
+                                          }
                                           disabled={!isMountEditable}
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!isMountEditable) return;
                                             setEditingMountDescriptionId(mount.id);
-                                            setEditingMountDescriptionDraft(mount.description ?? '');
+                                            setEditingMountDescriptionDraft(
+                                              mount.description ?? '',
+                                            );
                                           }}
                                         >
                                           <Pencil size={11} />
@@ -8705,52 +10662,101 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                     )}
                                   </div>
                                   {mount.sync_status === 'error' && mountSyncErrorMessage && (
-                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 4, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
-                                      <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                    <div
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: 6,
+                                        marginTop: 4,
+                                        color: 'var(--color-error, #c0392b)',
+                                        fontSize: 12,
+                                      }}
+                                    >
+                                      <AlertCircle
+                                        size={12}
+                                        style={{ flexShrink: 0, marginTop: 2 }}
+                                      />
                                       <span>
                                         {mountSyncErrorMessage}
-                                        {hasCloudSourceAuthIssue && mount.mount_source_scope === 'global' && onNavigateToTools && (
-                                          <>
-                                            {' '}
-                                            <a
-                                              href="#"
-                                              onClick={(event) => {
-                                                event.preventDefault();
-                                                onNavigateToTools('mount-sources');
-                                              }}
-                                              style={{ color: 'inherit', textDecoration: 'underline' }}
-                                            >
-                                              Open Mount Sources
-                                            </a>
-                                          </>
-                                        )}
-                                        {hasCloudSourceAuthIssue && mount.mount_source_scope === 'user' && showPersonalCloudDrives && mountCloudProvider && (
-                                          <>
-                                            {' '}
-                                            <a
-                                              href="#"
-                                              onClick={(event) => {
-                                                event.preventDefault();
-                                                void handleConnectCloudProvider(mountCloudProvider);
-                                              }}
-                                              style={{ color: 'inherit', textDecoration: 'underline' }}
-                                            >
-                                              Reconnect OAuth
-                                            </a>
-                                          </>
-                                        )}
+                                        {hasCloudSourceAuthIssue &&
+                                          mount.mount_source_scope === 'global' &&
+                                          onNavigateToTools && (
+                                            <>
+                                              {' '}
+                                              <a
+                                                href="#"
+                                                onClick={(event) => {
+                                                  event.preventDefault();
+                                                  onNavigateToTools('mount-sources');
+                                                }}
+                                                style={{
+                                                  color: 'inherit',
+                                                  textDecoration: 'underline',
+                                                }}
+                                              >
+                                                Open Mount Sources
+                                              </a>
+                                            </>
+                                          )}
+                                        {hasCloudSourceAuthIssue &&
+                                          mount.mount_source_scope === 'user' &&
+                                          showPersonalCloudDrives &&
+                                          mountCloudProvider && (
+                                            <>
+                                              {' '}
+                                              <a
+                                                href="#"
+                                                onClick={(event) => {
+                                                  event.preventDefault();
+                                                  void handleConnectCloudProvider(
+                                                    mountCloudProvider,
+                                                  );
+                                                }}
+                                                style={{
+                                                  color: 'inherit',
+                                                  textDecoration: 'underline',
+                                                }}
+                                              >
+                                                Reconnect OAuth
+                                              </a>
+                                            </>
+                                          )}
                                       </span>
                                     </div>
                                   )}
                                   {shouldShowSyncNotice && (
-                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
-                                      <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                    <div
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: 6,
+                                        marginTop: 6,
+                                        color: 'var(--color-warning, #b26a00)',
+                                        fontSize: 12,
+                                      }}
+                                    >
+                                      <AlertCircle
+                                        size={12}
+                                        style={{ flexShrink: 0, marginTop: 2 }}
+                                      />
                                       <span>{mount.sync_notice}</span>
                                     </div>
                                   )}
                                   {!isMountEditable && (
-                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
-                                      <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                    <div
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: 6,
+                                        marginTop: 6,
+                                        color: 'var(--color-warning, #b26a00)',
+                                        fontSize: 12,
+                                      }}
+                                    >
+                                      <AlertCircle
+                                        size={12}
+                                        style={{ flexShrink: 0, marginTop: 2 }}
+                                      />
                                       <span>{mountReadOnlyReason}</span>
                                     </div>
                                   )}
@@ -8762,13 +10768,32 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       )}
 
                       {showConfiguredCloudMountPanel && configuredCloudProviders.length > 0 && (
-                        <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, padding: 12, display: 'grid', gap: 10, marginBottom: 16 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <div
+                          style={{
+                            border: '1px solid var(--color-border)',
+                            borderRadius: 8,
+                            padding: 12,
+                            display: 'grid',
+                            gap: 10,
+                            marginBottom: 16,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              flexWrap: 'wrap',
+                            }}
+                          >
                             <strong style={{ fontSize: 13 }}>Personal cloud drives</strong>
                             <span style={{ marginLeft: 'auto' }} />
                             {configuredCloudProviders.map((provider) => {
-                              const label = provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
-                              const hasConnectedAccount = cloudOAuthAccounts.some((account) => account.provider === provider);
+                              const label =
+                                provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive';
+                              const hasConnectedAccount = cloudOAuthAccounts.some(
+                                (account) => account.provider === provider,
+                              );
                               return (
                                 <button
                                   key={provider}
@@ -8778,26 +10803,58 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                   disabled={savingCloudProvider === provider}
                                   title={`Connect ${label}`}
                                 >
-                                  {savingCloudProvider === provider ? <MiniLoadingSpinner variant="icon" size={12} /> : <ExternalLink size={12} />}
+                                  {savingCloudProvider === provider ? (
+                                    <MiniLoadingSpinner variant="icon" size={12} />
+                                  ) : (
+                                    <ExternalLink size={12} />
+                                  )}
                                   {provider === 'microsoft_drive'
-                                    ? (hasConnectedAccount ? 'Reconnect OneDrive' : 'Connect OneDrive')
-                                    : (hasConnectedAccount ? 'Reconnect Google' : 'Connect Google')}
+                                    ? hasConnectedAccount
+                                      ? 'Reconnect OneDrive'
+                                      : 'Connect OneDrive'
+                                    : hasConnectedAccount
+                                      ? 'Reconnect Google'
+                                      : 'Connect Google'}
                                 </button>
                               );
                             })}
                           </div>
-                          {(visiblePersonalCloudOAuthAccounts.length > 0 || visiblePersonalMountSources.length > 0) && (
+                          {(visiblePersonalCloudOAuthAccounts.length > 0 ||
+                            visiblePersonalMountSources.length > 0) && (
                             <div style={{ display: 'grid', gap: 8 }}>
                               {visiblePersonalCloudOAuthAccounts.map((account) => {
-                                const hasSource = personalMountSources.some((source) => source.oauth_account_id === account.id);
+                                const hasSource = personalMountSources.some(
+                                  (source) => source.oauth_account_id === account.id,
+                                );
                                 return (
-                                  <div key={account.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                  <div
+                                    key={account.id}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: 8,
+                                      fontSize: 12,
+                                    }}
+                                  >
                                     <HardDrive size={12} />
-                                    <span>{account.provider === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
-                                    <span className="userspace-muted">{account.account_email || account.account_name || 'Connected account'}</span>
+                                    <span>
+                                      {account.provider === 'microsoft_drive'
+                                        ? 'OneDrive'
+                                        : 'Google Drive'}
+                                    </span>
+                                    <span className="userspace-muted">
+                                      {account.account_email ||
+                                        account.account_name ||
+                                        'Connected account'}
+                                    </span>
                                     <span style={{ marginLeft: 'auto' }} />
                                     {!hasSource && (
-                                      <button className="btn btn-secondary btn-sm" onClick={() => void handleCreatePersonalCloudSource(account)}>
+                                      <button
+                                        className="btn btn-secondary btn-sm"
+                                        onClick={() =>
+                                          void handleCreatePersonalCloudSource(account)
+                                        }
+                                      >
                                         <Plus size={12} />
                                         Add Source
                                       </button>
@@ -8806,54 +10863,105 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                       className="btn btn-secondary btn-sm"
                                       onClick={() => void handleDisconnectCloudAccount(account)}
                                       disabled={deletingCloudAccountId === account.id || hasSource}
-                                      title={hasSource ? 'Remove this personal source before disconnecting the account' : 'Remove OAuth account'}
+                                      title={
+                                        hasSource
+                                          ? 'Remove this personal source before disconnecting the account'
+                                          : 'Remove OAuth account'
+                                      }
                                       aria-label={`Remove ${account.account_email || account.account_name || 'OAuth account'}`}
                                     >
-                                      {deletingCloudAccountId === account.id ? <MiniLoadingSpinner variant="icon" size={12} /> : <Trash2 size={12} />}
+                                      {deletingCloudAccountId === account.id ? (
+                                        <MiniLoadingSpinner variant="icon" size={12} />
+                                      ) : (
+                                        <Trash2 size={12} />
+                                      )}
                                     </button>
                                   </div>
                                 );
                               })}
                               {visiblePersonalMountSources.map((source) => {
-                                const sourceCloudProvider: UserCloudOAuthProvider | null = isCloudMountProvider(source.source_type) ? source.source_type : null;
+                                const sourceCloudProvider: UserCloudOAuthProvider | null =
+                                  isCloudMountProvider(source.source_type)
+                                    ? source.source_type
+                                    : null;
                                 return (
                                   <div key={source.id} style={{ display: 'grid', gap: 4 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+                                    <div
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 8,
+                                        fontSize: 12,
+                                      }}
+                                    >
                                       <Check size={12} />
                                       <span>{source.name}</span>
-                                      <span className="userspace-muted">{source.source_type === 'microsoft_drive' ? 'OneDrive' : 'Google Drive'}</span>
+                                      <span className="userspace-muted">
+                                        {source.source_type === 'microsoft_drive'
+                                          ? 'OneDrive'
+                                          : 'Google Drive'}
+                                      </span>
                                       {source.source_available === false && (
-                                        <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={source.source_unavailable_reason || undefined}>
+                                        <span
+                                          className="userspace-status-pill userspace-status-pill-danger"
+                                          style={{ fontSize: 11 }}
+                                          title={source.source_unavailable_reason || undefined}
+                                        >
                                           Disconnected
                                         </span>
                                       )}
                                       <span style={{ marginLeft: 'auto' }} />
                                       {source.usage_count === 0 && (
-                                        <button className="btn btn-secondary btn-sm" onClick={() => void handleDeletePersonalCloudSource(source.id)} title="Delete personal source">
+                                        <button
+                                          className="btn btn-secondary btn-sm"
+                                          onClick={() =>
+                                            void handleDeletePersonalCloudSource(source.id)
+                                          }
+                                          title="Delete personal source"
+                                        >
                                           <Trash2 size={12} />
                                         </button>
                                       )}
                                     </div>
                                     {source.source_available === false && (
-                                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, color: 'var(--color-error, #c0392b)', fontSize: 12, marginLeft: 20 }}>
-                                        <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
+                                      <div
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'flex-start',
+                                          gap: 6,
+                                          color: 'var(--color-error, #c0392b)',
+                                          fontSize: 12,
+                                          marginLeft: 20,
+                                        }}
+                                      >
+                                        <AlertCircle
+                                          size={12}
+                                          style={{ flexShrink: 0, marginTop: 2 }}
+                                        />
                                         <span>
-                                          {source.source_unavailable_reason || 'Cloud connection is no longer available.'}
-                                          {source.source_unavailable_kind === 'cloud_auth' && sourceCloudProvider && (
-                                            <>
-                                              {' '}
-                                              <a
-                                                href="#"
-                                                onClick={(event) => {
-                                                  event.preventDefault();
-                                                  void handleConnectCloudProvider(sourceCloudProvider);
-                                                }}
-                                                style={{ color: 'inherit', textDecoration: 'underline' }}
-                                              >
-                                                Reconnect OAuth
-                                              </a>
-                                            </>
-                                          )}
+                                          {source.source_unavailable_reason ||
+                                            'Cloud connection is no longer available.'}
+                                          {source.source_unavailable_kind === 'cloud_auth' &&
+                                            sourceCloudProvider && (
+                                              <>
+                                                {' '}
+                                                <a
+                                                  href="#"
+                                                  onClick={(event) => {
+                                                    event.preventDefault();
+                                                    void handleConnectCloudProvider(
+                                                      sourceCloudProvider,
+                                                    );
+                                                  }}
+                                                  style={{
+                                                    color: 'inherit',
+                                                    textDecoration: 'underline',
+                                                  }}
+                                                >
+                                                  Reconnect OAuth
+                                                </a>
+                                              </>
+                                            )}
                                         </span>
                                       </div>
                                     )}
@@ -8869,16 +10977,37 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                         <div className="userspace-env-var-form" style={{ marginTop: 12 }}>
                           <strong className="userspace-env-var-form-title">Add mount</strong>
                           {/* Source + Target in same row */}
-                          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', alignItems: 'start' }}>
+                          <div
+                            style={{
+                              display: 'grid',
+                              gap: 12,
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                              alignItems: 'start',
+                            }}
+                          >
                             <div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginBottom: 6 }}>
-                                <div className="userspace-muted" style={{ fontSize: 12, marginRight: 8 }}>
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 0,
+                                  marginBottom: 6,
+                                }}
+                              >
+                                <div
+                                  className="userspace-muted"
+                                  style={{ fontSize: 12, marginRight: 8 }}
+                                >
                                   <strong>Source</strong>
                                 </div>
                                 {mountableSources.map((src) => {
                                   const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
-                                  const isActive = createMountActiveSourceTab === tabKey
-                                    || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                                  const isActive =
+                                    createMountActiveSourceTab === tabKey ||
+                                    (!createMountActiveSourceTab &&
+                                      mountableSources[0] &&
+                                      tabKey ===
+                                        `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
                                   return (
                                     <button
                                       key={tabKey}
@@ -8886,17 +11015,32 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                       style={{
                                         background: 'transparent',
                                         border: 'none',
-                                        borderBottom: isActive ? '2px solid var(--color-accent)' : '2px solid transparent',
+                                        borderBottom: isActive
+                                          ? '2px solid var(--color-accent)'
+                                          : '2px solid transparent',
                                         padding: '4px 10px',
                                         cursor: 'pointer',
-                                        color: isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                                        color: isActive
+                                          ? 'var(--color-text-primary)'
+                                          : 'var(--color-text-secondary)',
                                         fontSize: 12,
                                         transition: 'color 0.15s, border-color 0.15s',
                                       }}
                                       onClick={() => setCreateMountActiveSourceTab(tabKey)}
                                     >
-                                      <span style={{ marginRight: 5, opacity: 0.5, display: 'inline-flex', verticalAlign: 'middle' }}>
-                                        {src.source_type === 'ssh' ? <Terminal size={11} /> : <HardDrive size={11} />}
+                                      <span
+                                        style={{
+                                          marginRight: 5,
+                                          opacity: 0.5,
+                                          display: 'inline-flex',
+                                          verticalAlign: 'middle',
+                                        }}
+                                      >
+                                        {src.source_type === 'ssh' ? (
+                                          <Terminal size={11} />
+                                        ) : (
+                                          <HardDrive size={11} />
+                                        )}
                                       </span>
                                       {src.source_name}
                                     </button>
@@ -8905,31 +11049,48 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               </div>
                               {mountableSources.map((src) => {
                                 const tabKey = `${src.source_scope}::${src.mount_source_id}::${src.source_path}`;
-                                const isActiveTab = createMountActiveSourceTab === tabKey
-                                  || (!createMountActiveSourceTab && mountableSources[0] && tabKey === `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
+                                const isActiveTab =
+                                  createMountActiveSourceTab === tabKey ||
+                                  (!createMountActiveSourceTab &&
+                                    mountableSources[0] &&
+                                    tabKey ===
+                                      `${mountableSources[0].source_scope}::${mountableSources[0].mount_source_id}::${mountableSources[0].source_path}`);
                                 if (!isActiveTab) return null;
                                 const browserRootPath = sourcePathToBrowserPath(src.source_path);
-                                const isSelectedSource = (
-                                  src.mount_source_id === createMountSourceId
-                                  && src.source_scope === createMountSourceScope
-                                  && src.source_path === createMountRootSourcePath
-                                  && !!createMountSourcePath
-                                );
+                                const isSelectedSource =
+                                  src.mount_source_id === createMountSourceId &&
+                                  src.source_scope === createMountSourceScope &&
+                                  src.source_path === createMountRootSourcePath &&
+                                  !!createMountSourcePath;
                                 return (
                                   <div key={tabKey}>
                                     <ConstrainedPathBrowser
                                       currentPath={isSelectedSource ? createMountBrowserPath : ''}
                                       rootPath={browserRootPath}
-                                      rootLabel={resolveSourceDisplayPath(src.source_path, createMountBrowserPathDisplayMap, { sourceType: src.source_type })}
+                                      rootLabel={resolveSourceDisplayPath(
+                                        src.source_path,
+                                        createMountBrowserPathDisplayMap,
+                                        { sourceType: src.source_type },
+                                      )}
                                       defaultExpanded={isSelectedSource}
                                       cacheKey={`${src.mount_source_id}:${src.source_path}`}
                                       pathDisplayMap={createMountBrowserPathDisplayMap}
                                       pathDisplayOptions={{ sourceType: src.source_type }}
-                                      stagedDirectories={createMountStagedSourceDirectories[
-                                        getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path)
-                                      ] ?? []}
+                                      stagedDirectories={
+                                        createMountStagedSourceDirectories[
+                                          getMountSourceBrowserStageKey(
+                                            src.source_scope,
+                                            src.mount_source_id,
+                                            src.source_path,
+                                          )
+                                        ] ?? []
+                                      }
                                       onStageDirectory={(path) => {
-                                        const stageKey = getMountSourceBrowserStageKey(src.source_scope, src.mount_source_id, src.source_path);
+                                        const stageKey = getMountSourceBrowserStageKey(
+                                          src.source_scope,
+                                          src.mount_source_id,
+                                          src.source_path,
+                                        );
                                         const normalizedPath = normalizeMountBrowserPath(path);
                                         setCreateMountStagedSourceDirectories((current) => {
                                           const existingPaths = current[stageKey] ?? [];
@@ -8938,7 +11099,9 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                           }
                                           return {
                                             ...current,
-                                            [stageKey]: [...existingPaths, normalizedPath].sort((left, right) => left.localeCompare(right)),
+                                            [stageKey]: [...existingPaths, normalizedPath].sort(
+                                              (left, right) => left.localeCompare(right),
+                                            ),
                                           };
                                         });
                                       }}
@@ -8946,18 +11109,29 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                         setCreateMountSourceId(src.mount_source_id);
                                         setCreateMountSourceScope(src.source_scope);
                                         setCreateMountRootSourcePath(src.source_path);
-                                        setCreateMountBrowserPath(normalizeMountBrowserPath(selectedPath));
-                                        setCreateMountSourcePath(browserPathToSourcePath(selectedPath));
+                                        setCreateMountBrowserPath(
+                                          normalizeMountBrowserPath(selectedPath),
+                                        );
+                                        setCreateMountSourcePath(
+                                          browserPathToSourcePath(selectedPath),
+                                        );
                                       }}
                                       onBrowsePath={async (path) => {
-                                        const result = await api.browseWorkspaceMountSource(activeWorkspaceId, {
-                                          mount_source_id: src.mount_source_id,
-                                          source_scope: src.source_scope,
-                                          root_source_path: src.source_path,
-                                          path,
-                                        });
+                                        const result = await api.browseWorkspaceMountSource(
+                                          activeWorkspaceId,
+                                          {
+                                            mount_source_id: src.mount_source_id,
+                                            source_scope: src.source_scope,
+                                            root_source_path: src.source_path,
+                                            path,
+                                          },
+                                        );
                                         setCreateMountBrowserPathDisplayMap((current) =>
-                                          mergeBrowserPathDisplayMapFromBrowseResponse(current, result, { sourceType: src.source_type }),
+                                          mergeBrowserPathDisplayMapFromBrowseResponse(
+                                            current,
+                                            result,
+                                            { sourceType: src.source_type },
+                                          ),
                                         );
                                         return result;
                                       }}
@@ -8967,7 +11141,10 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                               })}
                             </div>
                             <div>
-                              <div className="userspace-muted" style={{ marginBottom: 11, fontSize: 12 }}>
+                              <div
+                                className="userspace-muted"
+                                style={{ marginBottom: 11, fontSize: 12 }}
+                              >
                                 <strong>Target in workspace</strong>
                               </div>
                               <ConstrainedPathBrowser
@@ -8986,21 +11163,27 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                                 cannotSelectPathMessage="This path is already mounted"
                                 isPathDisabled={(path) => {
                                   const asTargetPath = `/workspace${normalizeMountBrowserPath(path)}`;
-                                  return mounts.some((m) => m.target_path === asTargetPath) ? 'Mounted' : null;
+                                  return mounts.some((m) => m.target_path === asTargetPath)
+                                    ? 'Mounted'
+                                    : null;
                                 }}
                                 stagedDirectories={createMountStagedTargetDirectories}
                                 onStageDirectory={(path) => {
                                   const normalizedPath = normalizeMountBrowserPath(path);
-                                  setCreateMountStagedTargetDirectories((current) => (
+                                  setCreateMountStagedTargetDirectories((current) =>
                                     current.includes(normalizedPath)
                                       ? current
-                                      : [...current, normalizedPath].sort((left, right) => left.localeCompare(right))
-                                  ));
+                                      : [...current, normalizedPath].sort((left, right) =>
+                                          left.localeCompare(right),
+                                        ),
+                                  );
                                 }}
                                 onSelectPath={(selectedPath) => {
                                   const normalizedPath = normalizeMountBrowserPath(selectedPath);
                                   setCreateMountTargetBrowserPath(normalizedPath);
-                                  setCreateMountTargetPath(browserPathToWorkspaceMountTargetPath(normalizedPath));
+                                  setCreateMountTargetPath(
+                                    browserPathToWorkspaceMountTargetPath(normalizedPath),
+                                  );
                                 }}
                                 onBrowsePath={browseWorkspaceMountTargetPath}
                               />
@@ -9013,136 +11196,219 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                             value={createMountDescription}
                             onChange={(e) => setCreateMountDescription(e.target.value)}
                           />
-                          {isWorkspaceMountSyncCapableSourceType(createMountSelectedSource?.source_type) && (() => {
-                            const CreateSyncModeIcon = getMountSyncModeIcon(createMountSyncMode);
-                            return (
-                              <div style={{ display: 'grid', gap: 6 }}>
-                                <label className="userspace-muted" style={{ fontSize: 12 }}>
-                                  <strong>Sync mode</strong>
-                                </label>
-                                <button
-                                  className="btn btn-sm btn-secondary"
-                                  type="button"
-                                  onClick={() => {
-                                    const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((o) => o.value);
-                                    const currentIndex = modes.indexOf(createMountSyncMode);
-                                    setCreateMountSyncMode(modes[(currentIndex + 1) % modes.length]);
-                                  }}
-                                  title={getMountSyncModeDescription(createMountSyncMode)}
-                                  style={{
-                                    padding: '8px 10px',
-                                    borderRadius: 6,
-                                    textAlign: 'left',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                  }}
-                                >
-                                  <CreateSyncModeIcon size={13} /> {getMountSyncModeLabel(createMountSyncMode)}
-                                  <span
-                                    role="button"
-                                    onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' && v.mode === 'pinned' ? null : { id: 'sync-mode-add-mount', mode: 'pinned' }); }}
-                                    onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? v : { id: 'sync-mode-add-mount', mode: 'hover' })}
-                                    onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
-                                    title="About sync modes"
-                                    style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 2, cursor: 'pointer', position: 'relative' }}
-                                  >
-                                    <Info size={11} />
-                                    {expandedSyncModeInfo?.id === 'sync-mode-add-mount' && (
-                                      <>
-                                        {expandedSyncModeInfo?.mode === 'pinned' && (
-                                          <div onClick={(e) => { e.stopPropagation(); setExpandedSyncModeInfo(null); }} style={{ position: 'fixed', inset: 0, zIndex: 999 }} />
-                                        )}
-                                        <div
-                                          onMouseEnter={() => setExpandedSyncModeInfo((v) => v?.id === 'sync-mode-add-mount' ? { ...v, mode: 'hover' } : v)}
-                                          onMouseLeave={() => setExpandedSyncModeInfo((v) => v?.mode === 'pinned' ? v : null)}
-                                          style={{
-                                            position: 'absolute',
-                                            top: '100%',
-                                            left: 0,
-                                            marginTop: 8,
-                                            padding: 12,
-                                            background: 'var(--color-bg-primary, #fff)',
-                                            border: '1px solid var(--color-border, #ddd)',
-                                            borderRadius: 8,
-                                            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-                                            fontSize: 12,
-                                            display: 'grid',
-                                            gap: 8,
-                                            minWidth: 280,
-                                            zIndex: 1000,
-                                            whiteSpace: 'normal',
-                                            textAlign: 'left',
-                                          }}>
-                                          {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
-                                            const OptionIcon = option.icon;
-                                            return (
-                                              <div key={option.value} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                                                <OptionIcon size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                                                <span><strong>{option.label}</strong>: {option.description}</span>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      </>
-                                    )}
-                                  </span>
-                                </button>
-                                <label className="userspace-muted" style={{ fontSize: 12, display: 'grid', gap: 6 }}>
-                                  <strong>Auto Sync cadence</strong>
-                                  <select
-                                    className="form-input"
-                                    value={mountIntervalSelectValue(createMountSyncIntervalSeconds)}
-                                    onChange={(e) => {
-                                      const value = e.target.value;
-                                      if (value === 'custom') return;
-                                      setCreateMountSyncIntervalSeconds(value === 'inherit' ? null : parseInt(value, 10));
-                                      if (value === 'inherit') {
-                                        setCreateMountSyncStartMinute(null);
-                                        setCreateMountSyncTimezone(null);
-                                      } else {
-                                        setCreateMountSyncStartMinute((current) => current ?? defaultScheduleStartMinute());
-                                        setCreateMountSyncTimezone((current) => current ?? defaultScheduleTimezone());
-                                      }
+                          {isWorkspaceMountSyncCapableSourceType(
+                            createMountSelectedSource?.source_type,
+                          ) &&
+                            (() => {
+                              const CreateSyncModeIcon = getMountSyncModeIcon(createMountSyncMode);
+                              return (
+                                <div style={{ display: 'grid', gap: 6 }}>
+                                  <label className="userspace-muted" style={{ fontSize: 12 }}>
+                                    <strong>Sync mode</strong>
+                                  </label>
+                                  <button
+                                    className="btn btn-sm btn-secondary"
+                                    type="button"
+                                    onClick={() => {
+                                      const modes = WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map(
+                                        (o) => o.value,
+                                      );
+                                      const currentIndex = modes.indexOf(createMountSyncMode);
+                                      setCreateMountSyncMode(
+                                        modes[(currentIndex + 1) % modes.length],
+                                      );
                                     }}
-                                    title="How often Auto Sync checks this mount"
+                                    title={getMountSyncModeDescription(createMountSyncMode)}
                                     style={{
-                                      width: '100%',
-                                      maxWidth: 168,
-                                      height: 30,
-                                      minHeight: 30,
-                                      padding: '4px 8px',
-                                      fontSize: 12,
-                                      lineHeight: '16px',
+                                      padding: '8px 10px',
+                                      borderRadius: 6,
+                                      textAlign: 'left',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: 6,
                                     }}
                                   >
-                                    <option value="inherit">Use default ({formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})</option>
-                                    {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
-                                      <option key={seconds} value={seconds}>
-                                        Every {formatMountSyncInterval(seconds)}
+                                    <CreateSyncModeIcon size={13} />{' '}
+                                    {getMountSyncModeLabel(createMountSyncMode)}
+                                    <span
+                                      role="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setExpandedSyncModeInfo((v) =>
+                                          v?.id === 'sync-mode-add-mount' && v.mode === 'pinned'
+                                            ? null
+                                            : { id: 'sync-mode-add-mount', mode: 'pinned' },
+                                        );
+                                      }}
+                                      onMouseEnter={() =>
+                                        setExpandedSyncModeInfo((v) =>
+                                          v?.id === 'sync-mode-add-mount'
+                                            ? v
+                                            : { id: 'sync-mode-add-mount', mode: 'hover' },
+                                        )
+                                      }
+                                      onMouseLeave={() =>
+                                        setExpandedSyncModeInfo((v) =>
+                                          v?.mode === 'pinned' ? v : null,
+                                        )
+                                      }
+                                      title="About sync modes"
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        marginLeft: 2,
+                                        cursor: 'pointer',
+                                        position: 'relative',
+                                      }}
+                                    >
+                                      <Info size={11} />
+                                      {expandedSyncModeInfo?.id === 'sync-mode-add-mount' && (
+                                        <>
+                                          {expandedSyncModeInfo?.mode === 'pinned' && (
+                                            <div
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setExpandedSyncModeInfo(null);
+                                              }}
+                                              style={{ position: 'fixed', inset: 0, zIndex: 999 }}
+                                            />
+                                          )}
+                                          <div
+                                            onMouseEnter={() =>
+                                              setExpandedSyncModeInfo((v) =>
+                                                v?.id === 'sync-mode-add-mount'
+                                                  ? { ...v, mode: 'hover' }
+                                                  : v,
+                                              )
+                                            }
+                                            onMouseLeave={() =>
+                                              setExpandedSyncModeInfo((v) =>
+                                                v?.mode === 'pinned' ? v : null,
+                                              )
+                                            }
+                                            style={{
+                                              position: 'absolute',
+                                              top: '100%',
+                                              left: 0,
+                                              marginTop: 8,
+                                              padding: 12,
+                                              background: 'var(--color-bg-primary, #fff)',
+                                              border: '1px solid var(--color-border, #ddd)',
+                                              borderRadius: 8,
+                                              boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                                              fontSize: 12,
+                                              display: 'grid',
+                                              gap: 8,
+                                              minWidth: 280,
+                                              zIndex: 1000,
+                                              whiteSpace: 'normal',
+                                              textAlign: 'left',
+                                            }}
+                                          >
+                                            {WORKSPACE_MOUNT_SYNC_MODE_OPTIONS.map((option) => {
+                                              const OptionIcon = option.icon;
+                                              return (
+                                                <div
+                                                  key={option.value}
+                                                  style={{
+                                                    display: 'flex',
+                                                    gap: 8,
+                                                    alignItems: 'flex-start',
+                                                  }}
+                                                >
+                                                  <OptionIcon
+                                                    size={13}
+                                                    style={{ flexShrink: 0, marginTop: 1 }}
+                                                  />
+                                                  <span>
+                                                    <strong>{option.label}</strong>:{' '}
+                                                    {option.description}
+                                                  </span>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </>
+                                      )}
+                                    </span>
+                                  </button>
+                                  <label
+                                    className="userspace-muted"
+                                    style={{ fontSize: 12, display: 'grid', gap: 6 }}
+                                  >
+                                    <strong>Auto Sync cadence</strong>
+                                    <select
+                                      className="form-input"
+                                      value={mountIntervalSelectValue(
+                                        createMountSyncIntervalSeconds,
+                                      )}
+                                      onChange={(e) => {
+                                        const value = e.target.value;
+                                        if (value === 'custom') return;
+                                        setCreateMountSyncIntervalSeconds(
+                                          value === 'inherit' ? null : parseInt(value, 10),
+                                        );
+                                        if (value === 'inherit') {
+                                          setCreateMountSyncStartMinute(null);
+                                          setCreateMountSyncTimezone(null);
+                                        } else {
+                                          setCreateMountSyncStartMinute(
+                                            (current) => current ?? defaultScheduleStartMinute(),
+                                          );
+                                          setCreateMountSyncTimezone(
+                                            (current) => current ?? defaultScheduleTimezone(),
+                                          );
+                                        }
+                                      }}
+                                      title="How often Auto Sync checks this mount"
+                                      style={{
+                                        width: '100%',
+                                        maxWidth: 168,
+                                        height: 30,
+                                        minHeight: 30,
+                                        padding: '4px 8px',
+                                        fontSize: 12,
+                                        lineHeight: '16px',
+                                      }}
+                                    >
+                                      <option value="inherit">
+                                        Use default (
+                                        {formatMountSyncInterval(MOUNT_SYNC_DEFAULT_SECONDS)})
                                       </option>
-                                    ))}
-                                  </select>
-                                  <ScheduleStartTimeInput
-                                    enabled={createMountSyncIntervalSeconds != null}
-                                    startMinute={createMountSyncStartMinute}
-                                    timezone={createMountSyncTimezone}
-                                    onStartMinuteChange={setCreateMountSyncStartMinute}
-                                    onTimezoneChange={setCreateMountSyncTimezone}
-                                    label="Start Time"
-                                  />
-                                </label>
-                              </div>
-                            );
-                          })()}
+                                      {WORKSPACE_MOUNT_INTERVAL_OPTIONS.map((seconds) => (
+                                        <option key={seconds} value={seconds}>
+                                          Every {formatMountSyncInterval(seconds)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <ScheduleStartTimeInput
+                                      enabled={createMountSyncIntervalSeconds != null}
+                                      startMinute={createMountSyncStartMinute}
+                                      timezone={createMountSyncTimezone}
+                                      onStartMinuteChange={setCreateMountSyncStartMinute}
+                                      onTimezoneChange={setCreateMountSyncTimezone}
+                                      label="Start Time"
+                                    />
+                                  </label>
+                                </div>
+                              );
+                            })()}
                           <div className="userspace-env-var-form-actions">
                             <button
                               className="btn btn-primary btn-sm"
                               onClick={handleCreateMount}
                               disabled={isCreateMountDisabled}
-                              title={createMountEffectiveTargetPath === '/workspace' ? 'Select a folder under /workspace before adding the mount' : undefined}
+                              title={
+                                createMountEffectiveTargetPath === '/workspace'
+                                  ? 'Select a folder under /workspace before adding the mount'
+                                  : undefined
+                              }
                             >
-                              {savingMount ? <MiniLoadingSpinner variant="icon" size={14} /> : <Plus size={14} />}
+                              {savingMount ? (
+                                <MiniLoadingSpinner variant="icon" size={14} />
+                              ) : (
+                                <Plus size={14} />
+                              )}
                               Add
                             </button>
                           </div>
@@ -9153,14 +11419,19 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                           {onNavigateToTools ? (
                             <a
                               href="#"
-                              onClick={(e) => { e.preventDefault(); handleCloseMountsModal(); onNavigateToTools('mount-sources'); }}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                handleCloseMountsModal();
+                                onNavigateToTools('mount-sources');
+                              }}
                               style={{ color: 'var(--color-accent)' }}
                             >
                               Add a source in Tools
                             </a>
                           ) : (
                             'Add a mount source in Tools'
-                          )}, then attach it here.
+                          )}
+                          , then attach it here.
                         </p>
                       )}
                     </>
@@ -9176,18 +11447,26 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
         <div className="modal-overlay" onClick={handleCloseMountSyncPreview}>
           <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>{mountSyncPreviewIntent === 'sync' ? 'Review Destructive Sync' : 'Confirm Destructive Auto-Sync'}</h3>
-              <button className="modal-close" onClick={handleCloseMountSyncPreview}>&times;</button>
+              <h3>
+                {mountSyncPreviewIntent === 'sync'
+                  ? 'Review Destructive Sync'
+                  : 'Confirm Destructive Auto-Sync'}
+              </h3>
+              <button className="modal-close" onClick={handleCloseMountSyncPreview}>
+                &times;
+              </button>
             </div>
-            <div className="modal-body" style={{ display: 'grid', gap: 14, maxHeight: '70vh', overflowY: 'auto' }}>
+            <div
+              className="modal-body"
+              style={{ display: 'grid', gap: 14, maxHeight: '70vh', overflowY: 'auto' }}
+            >
               <div style={{ display: 'grid', gap: 6 }}>
                 <div className="userspace-muted" style={{ fontSize: 12 }}>
-                  <strong>{mountSyncPreviewMount.source_name ?? 'Mount source'}</strong>
-                  {' '}
-                  {mountSyncPreviewMount.source_path === '.' ? '/' : formatMountSyncPreviewPath(mountSyncPreviewMount.source_path)}
-                  {' '}
-                  <ArrowRight size={11} style={{ verticalAlign: 'middle' }} />
-                  {' '}
+                  <strong>{mountSyncPreviewMount.source_name ?? 'Mount source'}</strong>{' '}
+                  {mountSyncPreviewMount.source_path === '.'
+                    ? '/'
+                    : formatMountSyncPreviewPath(mountSyncPreviewMount.source_path)}{' '}
+                  <ArrowRight size={11} style={{ verticalAlign: 'middle' }} />{' '}
                   {mountSyncPreviewMount.target_path}
                 </div>
                 <div className="userspace-muted" style={{ fontSize: 12 }}>
@@ -9199,27 +11478,61 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                   </div>
                 )}
                 {mountSyncPreview.sync_notice && (
-                  <div style={{ display: 'flex', gap: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 6,
+                      color: 'var(--color-warning, #b26a00)',
+                      fontSize: 12,
+                    }}
+                  >
                     <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
                     <span>{mountSyncPreview.sync_notice}</span>
                   </div>
                 )}
                 {mountSyncPreviewIntent !== 'sync' && (
-                  <div style={{ display: 'flex', gap: 6, color: 'var(--color-warning, #b26a00)', fontSize: 12 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 6,
+                      color: 'var(--color-warning, #b26a00)',
+                      fontSize: 12,
+                    }}
+                  >
                     <AlertCircle size={12} style={{ flexShrink: 0, marginTop: 2 }} />
-                    <span>Auto-sync will keep using this destructive mode until Auto is disabled or the sync mode changes.</span>
+                    <span>
+                      Auto-sync will keep using this destructive mode until Auto is disabled or the
+                      sync mode changes.
+                    </span>
                   </div>
                 )}
               </div>
 
               <div style={{ display: 'grid', gap: 10 }}>
                 {/* Source deletions */}
-                <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <strong>Deletes from source: {mountSyncPreview.delete_from_source_count}</strong>
-                    {mountSyncPreview.delete_from_source_count > mountSyncPreview.delete_from_source_paths.length && (
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 8,
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-tertiary)',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'baseline',
+                    }}
+                  >
+                    <strong>
+                      Deletes from source: {mountSyncPreview.delete_from_source_count}
+                    </strong>
+                    {mountSyncPreview.delete_from_source_count >
+                      mountSyncPreview.delete_from_source_paths.length && (
                       <span className="userspace-muted" style={{ fontSize: 11 }}>
-                        showing {mountSyncPreview.delete_from_source_paths.length} of {mountSyncPreview.delete_from_source_count}
+                        showing {mountSyncPreview.delete_from_source_paths.length} of{' '}
+                        {mountSyncPreview.delete_from_source_count}
                       </span>
                     )}
                   </div>
@@ -9228,7 +11541,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
                         Files or folders that will be removed from the remote source.
                       </div>
-                      <div style={{ marginTop: 8, maxHeight: 250, overflowY: 'auto', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                      <div
+                        style={{
+                          marginTop: 8,
+                          maxHeight: 250,
+                          overflowY: 'auto',
+                          borderRadius: 4,
+                          border: '1px solid var(--color-border)',
+                        }}
+                      >
                         {mountSyncPreview.delete_from_source_paths.map((path, i) => (
                           <div
                             key={`source:${path}`}
@@ -9247,17 +11568,36 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       </div>
                     </>
                   ) : (
-                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>No source deletions detected.</div>
+                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      No source deletions detected.
+                    </div>
                   )}
                 </div>
 
                 {/* Target deletions */}
-                <div style={{ padding: 12, borderRadius: 8, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <strong>Deletes from target: {mountSyncPreview.delete_from_target_count}</strong>
-                    {mountSyncPreview.delete_from_target_count > mountSyncPreview.delete_from_target_paths.length && (
+                <div
+                  style={{
+                    padding: 12,
+                    borderRadius: 8,
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-tertiary)',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'baseline',
+                    }}
+                  >
+                    <strong>
+                      Deletes from target: {mountSyncPreview.delete_from_target_count}
+                    </strong>
+                    {mountSyncPreview.delete_from_target_count >
+                      mountSyncPreview.delete_from_target_paths.length && (
                       <span className="userspace-muted" style={{ fontSize: 11 }}>
-                        showing {mountSyncPreview.delete_from_target_paths.length} of {mountSyncPreview.delete_from_target_count}
+                        showing {mountSyncPreview.delete_from_target_paths.length} of{' '}
+                        {mountSyncPreview.delete_from_target_count}
                       </span>
                     )}
                   </div>
@@ -9266,7 +11606,15 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
                         Files or folders that will be removed from the workspace target.
                       </div>
-                      <div style={{ marginTop: 8, maxHeight: 250, overflowY: 'auto', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                      <div
+                        style={{
+                          marginTop: 8,
+                          maxHeight: 250,
+                          overflowY: 'auto',
+                          borderRadius: 4,
+                          border: '1px solid var(--color-border)',
+                        }}
+                      >
                         {mountSyncPreview.delete_from_target_paths.map((path, i) => (
                           <div
                             key={`target:${path}`}
@@ -9285,16 +11633,21 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
                       </div>
                     </>
                   ) : (
-                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>No target deletions detected.</div>
+                    <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      No target deletions detected.
+                    </div>
                   )}
                 </div>
 
-                {(mountSyncPreview.delete_from_source_count > mountSyncPreview.delete_from_source_paths.length
-                  || mountSyncPreview.delete_from_target_count > mountSyncPreview.delete_from_target_paths.length) && (
-                    <div className="userspace-muted" style={{ fontSize: 12 }}>
-                      Full list truncated. Run preview again right before syncing if the source or target changes.
-                    </div>
-                  )}
+                {(mountSyncPreview.delete_from_source_count >
+                  mountSyncPreview.delete_from_source_paths.length ||
+                  mountSyncPreview.delete_from_target_count >
+                    mountSyncPreview.delete_from_target_paths.length) && (
+                  <div className="userspace-muted" style={{ fontSize: 12 }}>
+                    Full list truncated. Run preview again right before syncing if the source or
+                    target changes.
+                  </div>
+                )}
               </div>
             </div>
             <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
@@ -9304,11 +11657,20 @@ export function UserSpacePanel({ currentUser, debugMode = false, openWorkspaceRe
               <button
                 className="btn btn-danger"
                 onClick={() => void handleConfirmMountSyncPreview()}
-                disabled={syncingMountId === mountSyncPreviewMount.id || savingMountWatchId === mountSyncPreviewMount.id}
+                disabled={
+                  syncingMountId === mountSyncPreviewMount.id ||
+                  savingMountWatchId === mountSyncPreviewMount.id
+                }
               >
                 {mountSyncPreviewIntent === 'sync'
-                  ? (syncingMountId === mountSyncPreviewMount.id ? 'Syncing...' : 'Confirm Sync')
-                  : (savingMountWatchId === mountSyncPreviewMount.id ? 'Saving...' : mountSyncPreviewIntent === 'enable-auto' ? 'Enable Auto' : 'Confirm Mode Change')}
+                  ? syncingMountId === mountSyncPreviewMount.id
+                    ? 'Syncing...'
+                    : 'Confirm Sync'
+                  : savingMountWatchId === mountSyncPreviewMount.id
+                    ? 'Saving...'
+                    : mountSyncPreviewIntent === 'enable-auto'
+                      ? 'Enable Auto'
+                      : 'Confirm Mode Change'}
               </button>
             </div>
           </div>

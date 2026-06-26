@@ -4,7 +4,10 @@
     "ms-python.vscode-pylance",
     "ms-python.mypy-type-checker",
     "charliermarsh.ruff",
-    "ms-azuretools.vscode-docker"
+    "ms-azuretools.vscode-docker",
+    "Prisma.prisma",
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint"
   ],
   "unwantedRecommendations": ["ms-python.pylint"]
 }

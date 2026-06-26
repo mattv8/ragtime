@@ -1,6 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
 import { api } from '@/api';
-import type { ToolConfig, ToolGroup, HeartbeatStatus, SchemaIndexStats, SchemaIndexJob, UserspaceMountSource, MountSourceAffectedWorkspacesResponse, UserCloudOAuthAccount } from '@/types';
+import type {
+  ToolConfig,
+  ToolGroup,
+  HeartbeatStatus,
+  SchemaIndexStats,
+  SchemaIndexJob,
+  UserspaceMountSource,
+  MountSourceAffectedWorkspacesResponse,
+  UserCloudOAuthAccount,
+} from '@/types';
 import { TOOL_TYPE_INFO } from '@/types';
 import { ToolWizard } from './ToolWizard';
 import { MountSourceWizard } from './MountSourceWizard';
@@ -9,7 +18,11 @@ import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
-import { SearchFilterBar, searchFilterTextMatchesQuery, useUrlSearchFilterState } from './shared/SearchFilterBar';
+import {
+  SearchFilterBar,
+  searchFilterTextMatchesQuery,
+  useUrlSearchFilterState,
+} from './shared/SearchFilterBar';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
 import { Popover } from './Popover';
@@ -25,8 +38,10 @@ interface ToolHealthEventPayload {
 }
 
 function hasSchemaIndexingEnabled(tool: ToolConfig): boolean {
-  return (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
-    (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true;
+  return (
+    (tool.tool_type === 'postgres' || tool.tool_type === 'mssql' || tool.tool_type === 'mysql') &&
+    (tool.connection_config as { schema_index_enabled?: boolean })?.schema_index_enabled === true
+  );
 }
 
 function getToolWorkingDirectory(tool: ToolConfig): string | null {
@@ -39,19 +54,32 @@ function getToolWorkingDirectory(tool: ToolConfig): string | null {
 
 function formatMountSourceInterval(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) { const m = Math.floor(seconds / 60); const s = seconds % 60; return s > 0 ? `${m}m ${s}s` : `${m}m`; }
-  if (seconds < 86400) { const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); return m > 0 ? `${h}h ${m}m` : `${h}h`; }
-  const d = Math.floor(seconds / 86400); const h = Math.floor((seconds % 86400) / 3600);
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  }
+  if (seconds < 86400) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
 }
 
 function isAutoSyncMountSource(source: UserspaceMountSource): boolean {
-  return source.source_type === 'ssh'
-    || source.source_type === 'microsoft_drive'
-    || source.source_type === 'google_drive';
+  return (
+    source.source_type === 'ssh' ||
+    source.source_type === 'microsoft_drive' ||
+    source.source_type === 'google_drive'
+  );
 }
 
-function isCloudMountSource(source: UserspaceMountSource): source is UserspaceMountSource & { source_type: 'microsoft_drive' | 'google_drive' } {
+function isCloudMountSource(
+  source: UserspaceMountSource,
+): source is UserspaceMountSource & { source_type: 'microsoft_drive' | 'google_drive' } {
   return source.source_type === 'microsoft_drive' || source.source_type === 'google_drive';
 }
 
@@ -65,7 +93,9 @@ function pickLatestConnectedCloudAccount(
 ): UserCloudOAuthAccount | null {
   const sorted = [...accounts]
     .filter((account) => account.provider === provider && account.connected)
-    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+    .sort(
+      (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
+    );
   return sorted[0] ?? null;
 }
 
@@ -100,7 +130,9 @@ function getToolSearchText(tool: ToolConfig): string {
     typeInfo?.name,
     tool.tool_type,
     getToolConnectionSummary(tool),
-  ].filter(Boolean).join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function getToolConnectionSummary(tool: ToolConfig): string {
@@ -109,7 +141,7 @@ function getToolConnectionSummary(tool: ToolConfig): string {
     case 'postgres':
     case 'mysql':
       if ('host' in config && config.host) {
-        const port = 'port' in config ? config.port : (tool.tool_type === 'mysql' ? 3306 : 5432);
+        const port = 'port' in config ? config.port : tool.tool_type === 'mysql' ? 3306 : 5432;
         const database = 'database' in config ? config.database : '';
         return `${config.host}:${port}/${database}`;
       }
@@ -169,18 +201,38 @@ interface ToolCardProps {
   schemaIndexing?: boolean;
   activeSchemaJob?: SchemaIndexJob | null;
   schemaStats?: SchemaIndexStats | null;
-  onInlineUpdate?: (toolId: string, updates: { name?: string; description?: string }) => Promise<void>;
+  onInlineUpdate?: (
+    toolId: string,
+    updates: { name?: string; description?: string },
+  ) => Promise<void>;
   onToggleWrite?: (toolId: string, allowWrite: boolean) => void;
 }
 
-function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing, onPdmReindex, pdmIndexing, onSchemaReindex, schemaIndexing, activeSchemaJob, schemaStats, onInlineUpdate, onToggleWrite }: ToolCardProps) {
+function ToolCard({
+  tool,
+  heartbeat,
+  onEdit,
+  onDelete,
+  onToggle,
+  onTest,
+  testing,
+  onPdmReindex,
+  pdmIndexing,
+  onSchemaReindex,
+  schemaIndexing,
+  activeSchemaJob,
+  schemaStats,
+  onInlineUpdate,
+  onToggleWrite,
+}: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
   const workingDirectory = getToolWorkingDirectory(tool);
   const hasActiveIndexingJob = Boolean(
-    activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status)
+    activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status),
   );
-  const showConstraintsRow = Boolean(onToggleWrite) || hasActiveIndexingJob || Boolean(workingDirectory);
+  const showConstraintsRow =
+    Boolean(onToggleWrite) || hasActiveIndexingJob || Boolean(workingDirectory);
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -207,9 +259,17 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
     }
     if (heartbeat.alive) {
       const latency = heartbeat.latency_ms ? `${Math.round(heartbeat.latency_ms)}ms` : '';
-      return { status: 'alive', label: latency || 'Connected', icon: <Icon name="check" size={16} /> };
+      return {
+        status: 'alive',
+        label: latency || 'Connected',
+        icon: <Icon name="check" size={16} />,
+      };
     }
-    return { status: 'dead', label: heartbeat.error || 'Disconnected', icon: <Icon name="close" size={16} /> };
+    return {
+      status: 'dead',
+      label: heartbeat.error || 'Disconnected',
+      icon: <Icon name="close" size={16} />,
+    };
   };
 
   const heartbeatDisplay = getHeartbeatDisplay();
@@ -299,7 +359,9 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
   return (
     <div className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
-        <div className="tool-card-icon"><Icon name={getToolIconType(typeInfo?.icon)} size={28} /></div>
+        <div className="tool-card-icon">
+          <Icon name={getToolIconType(typeInfo?.icon)} size={28} />
+        </div>
         <div className="tool-card-header-content">
           <div className="tool-card-header-main">
             <div className="tool-card-title">
@@ -317,14 +379,25 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
                   />
                 </div>
               ) : (
-                <div className="editable-field-wrapper name-wrapper" onClick={() => handleStartEdit('name')}>
-                  <Popover className="tool-title-popover" content={tool.name} position="top" trigger="hover">
+                <div
+                  className="editable-field-wrapper name-wrapper"
+                  onClick={() => handleStartEdit('name')}
+                >
+                  <Popover
+                    className="tool-title-popover"
+                    content={tool.name}
+                    position="top"
+                    trigger="hover"
+                  >
                     <h3>{tool.name}</h3>
                   </Popover>
                   <button
                     type="button"
                     className="inline-edit-btn"
-                    onClick={(e) => { e.stopPropagation(); handleStartEdit('name'); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStartEdit('name');
+                    }}
                     title="Edit name"
                   >
                     <Icon name="pencil" size={14} />
@@ -387,7 +460,10 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
           <button
             type="button"
             className="inline-edit-btn"
-            onClick={(e) => { e.stopPropagation(); handleStartEdit('description'); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleStartEdit('description');
+            }}
             title="Edit description"
           >
             <Icon name="pencil" size={14} />
@@ -426,7 +502,11 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
             {onToggleWrite && (
               <label
                 className={`write-mode-toggle ${tool.allow_write ? 'active' : ''}`}
-                title={tool.allow_write ? 'Write access enabled. Click to make read only.' : 'Read only. Click to allow write access.'}
+                title={
+                  tool.allow_write
+                    ? 'Write access enabled. Click to make read only.'
+                    : 'Read only. Click to allow write access.'
+                }
               >
                 <span className="toggle-switch">
                   <input
@@ -436,13 +516,12 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
                   />
                   <span className="toggle-slider"></span>
                 </span>
-                <span className="write-mode-label">{tool.allow_write ? 'Write Enabled' : 'Read Only'}</span>
+                <span className="write-mode-label">
+                  {tool.allow_write ? 'Write Enabled' : 'Read Only'}
+                </span>
               </label>
             )}
-            <IndexingPill
-              activeJob={activeSchemaJob}
-              progressLabelPrefix="Indexing"
-            />
+            <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
             {workingDirectory && (
               <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
                 <Icon name="folder" size={14} />
@@ -494,11 +573,7 @@ function ToolCard({ tool, heartbeat, onEdit, onDelete, onToggle, onTest, testing
               {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
             </button>
           )}
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => onEdit(tool)}
-          >
+          <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
             Edit
           </button>
           <DeleteConfirmButton
@@ -519,7 +594,12 @@ interface ToolsPanelProps {
   onHighlightComplete?: () => void;
 }
 
-export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSection, onHighlightComplete }: ToolsPanelProps) {
+export function ToolsPanel({
+  onSchemaJobTriggered,
+  schemaJobs = [],
+  highlightSection,
+  onHighlightComplete,
+}: ToolsPanelProps) {
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -544,7 +624,9 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     mountSourceId: string;
     provider: 'microsoft_drive' | 'google_drive';
   } | null>(null);
-  const [reconnectStartingMountSourceId, setReconnectStartingMountSourceId] = useState<string | null>(null);
+  const [reconnectStartingMountSourceId, setReconnectStartingMountSourceId] = useState<
+    string | null
+  >(null);
   const [disableConfirmation, setDisableConfirmation] = useState<{
     source: UserspaceMountSource;
     affected: MountSourceAffectedWorkspacesResponse | null;
@@ -585,7 +667,10 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     const jobsByToolId: Record<string, SchemaIndexJob> = {};
 
     for (const job of schemaJobs) {
-      if ((job.status === 'pending' || job.status === 'indexing') && !jobsByToolId[job.tool_config_id]) {
+      if (
+        (job.status === 'pending' || job.status === 'indexing') &&
+        !jobsByToolId[job.tool_config_id]
+      ) {
         jobsByToolId[job.tool_config_id] = job;
       }
     }
@@ -658,21 +743,33 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     return () => {
       resizeObserver.disconnect();
     };
-  }, [updateSelectedGroupNotch, selectedGroupId, editingGroupId, toolFilter.tags.length, toolFilter.input]);
+  }, [
+    updateSelectedGroupNotch,
+    selectedGroupId,
+    editingGroupId,
+    toolFilter.tags.length,
+    toolFilter.input,
+  ]);
 
   const isToolFiltering = toolFilter.queries.length > 0;
-  const baseVisibleTools = isToolFiltering ? tools : selectedGroup ? selectedGroup.tools : ungroupedTools;
+  const baseVisibleTools = isToolFiltering
+    ? tools
+    : selectedGroup
+      ? selectedGroup.tools
+      : ungroupedTools;
   const visibleTools = useMemo(() => {
     if (!isToolFiltering) {
       return baseVisibleTools;
     }
 
-    return baseVisibleTools.filter((tool) => (
-      searchFilterTextMatchesQuery(getToolSearchText(tool), toolFilter.queries)
-    ));
+    return baseVisibleTools.filter((tool) =>
+      searchFilterTextMatchesQuery(getToolSearchText(tool), toolFilter.queries),
+    );
   }, [baseVisibleTools, isToolFiltering, toolFilter.queries]);
-  const showSelectedGroupEmptyState = Boolean(selectedGroupId) && !isToolFiltering && baseVisibleTools.length === 0;
-  const showToolFilterEmptyState = baseVisibleTools.length > 0 && visibleTools.length === 0 && toolFilter.hasActiveFilters;
+  const showSelectedGroupEmptyState =
+    Boolean(selectedGroupId) && !isToolFiltering && baseVisibleTools.length === 0;
+  const showToolFilterEmptyState =
+    baseVisibleTools.length > 0 && visibleTools.length === 0 && toolFilter.hasActiveFilters;
 
   const loadTools = useCallback(async () => {
     try {
@@ -683,7 +780,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
         api.listUserspaceMountSources(),
       ]);
       // Filter out filesystem_indexer tools - they're shown in the Indexer tab
-      const connectionTools = data.filter(t => t.tool_type !== 'filesystem_indexer');
+      const connectionTools = data.filter((t) => t.tool_type !== 'filesystem_indexer');
       setTools(connectionTools);
       setGroups(groupData);
       setMountSources(sources);
@@ -692,7 +789,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   // Load schema stats for tools with schema indexing enabled
   const loadSchemaStats = useCallback(async (toolList: ToolConfig[]) => {
@@ -709,7 +806,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
         } catch (err) {
           console.warn(`Failed to load schema stats for ${tool.name}:`, err);
         }
-      })
+      }),
     );
     setSchemaStats(statsMap);
   }, []);
@@ -811,12 +908,12 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
 
   const patchToolInState = useCallback((toolId: string, updates: Partial<ToolConfig>) => {
     setTools((current) =>
-      current.map((tool) => tool.id === toolId ? { ...tool, ...updates } : tool)
+      current.map((tool) => (tool.id === toolId ? { ...tool, ...updates } : tool)),
     );
   }, []);
 
   const replaceToolInState = useCallback((updatedTool: ToolConfig) => {
-    setTools((current) => current.map((tool) => tool.id === updatedTool.id ? updatedTool : tool));
+    setTools((current) => current.map((tool) => (tool.id === updatedTool.id ? updatedTool : tool)));
   }, []);
 
   const startEditingGroup = useCallback((groupId: string, name: string) => {
@@ -824,18 +921,23 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     setEditingGroupName(name);
   }, []);
 
-  const createSuggestedGroup = useCallback(async (tool: ToolConfig | null | undefined) => {
-    const suggestedName = getUniqueGroupName(getSuggestedGroupName(tool), groups);
-    const created = await api.createToolGroup({ name: suggestedName });
+  const createSuggestedGroup = useCallback(
+    async (tool: ToolConfig | null | undefined) => {
+      const suggestedName = getUniqueGroupName(getSuggestedGroupName(tool), groups);
+      const created = await api.createToolGroup({ name: suggestedName });
 
-    setGroups((current) => current.some((group) => group.id === created.id) ? current : [...current, created]);
+      setGroups((current) =>
+        current.some((group) => group.id === created.id) ? current : [...current, created],
+      );
 
-    if (created.id) {
-      startEditingGroup(created.id, suggestedName);
-    }
+      if (created.id) {
+        startEditingGroup(created.id, suggestedName);
+      }
 
-    return { created, suggestedName };
-  }, [groups, startEditingGroup]);
+      return { created, suggestedName };
+    },
+    [groups, startEditingGroup],
+  );
 
   const handleDeleteTool = async (toolId: string) => {
     try {
@@ -955,7 +1057,10 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   };
 
-  const handleInlineUpdate = async (toolId: string, updates: { name?: string; description?: string }) => {
+  const handleInlineUpdate = async (
+    toolId: string,
+    updates: { name?: string; description?: string },
+  ) => {
     try {
       const updatedTool = await api.updateToolConfig(toolId, updates);
       replaceToolInState(updatedTool);
@@ -985,9 +1090,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     if (!name) return;
     try {
       const updatedGroup = await api.updateToolGroup(groupId, { name });
-      setGroups((current) =>
-        current.map((group) => group.id === groupId ? updatedGroup : group)
-      );
+      setGroups((current) => current.map((group) => (group.id === groupId ? updatedGroup : group)));
       setEditingGroupId(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to rename group');
@@ -999,7 +1102,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       await api.deleteToolGroup(groupId);
       setGroups((current) => current.filter((group) => group.id !== groupId));
       setTools((current) =>
-        current.map((tool) => tool.group_id === groupId ? { ...tool, group_id: null } : tool)
+        current.map((tool) => (tool.group_id === groupId ? { ...tool, group_id: null } : tool)),
       );
       toast.success('Group deleted');
     } catch (err) {
@@ -1007,39 +1110,49 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   };
 
-  const deleteEmptyGroupIfNeeded = useCallback(async (toolId: string, previousGroupId: string | null, nextGroupId: string | null | undefined) => {
-    if (!previousGroupId || previousGroupId === nextGroupId) {
-      return;
-    }
+  const deleteEmptyGroupIfNeeded = useCallback(
+    async (
+      toolId: string,
+      previousGroupId: string | null,
+      nextGroupId: string | null | undefined,
+    ) => {
+      if (!previousGroupId || previousGroupId === nextGroupId) {
+        return;
+      }
 
-    const remainingToolsInPreviousGroup = tools.filter(
-      (tool) => tool.id !== toolId && tool.group_id === previousGroupId
-    );
+      const remainingToolsInPreviousGroup = tools.filter(
+        (tool) => tool.id !== toolId && tool.group_id === previousGroupId,
+      );
 
-    if (remainingToolsInPreviousGroup.length > 0) {
-      return;
-    }
+      if (remainingToolsInPreviousGroup.length > 0) {
+        return;
+      }
 
-    await api.deleteToolGroup(previousGroupId);
-    setGroups((current) => current.filter((group) => group.id !== previousGroupId));
+      await api.deleteToolGroup(previousGroupId);
+      setGroups((current) => current.filter((group) => group.id !== previousGroupId));
 
-    if (selectedGroupId === previousGroupId) {
-      setSelectedGroupId(null);
-    }
-  }, [tools, selectedGroupId]);
+      if (selectedGroupId === previousGroupId) {
+        setSelectedGroupId(null);
+      }
+    },
+    [tools, selectedGroupId],
+  );
 
-  const handleAssignGroup = useCallback(async (toolId: string, groupId: string | null) => {
-    try {
-      const previousTool = tools.find((tool) => tool.id === toolId);
-      const previousGroupId = previousTool?.group_id ?? null;
-      const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
-      replaceToolInState(updatedTool);
+  const handleAssignGroup = useCallback(
+    async (toolId: string, groupId: string | null) => {
+      try {
+        const previousTool = tools.find((tool) => tool.id === toolId);
+        const previousGroupId = previousTool?.group_id ?? null;
+        const updatedTool = await api.updateToolConfig(toolId, { group_id: groupId ?? '' });
+        replaceToolInState(updatedTool);
 
-      await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to assign group');
-    }
-  }, [tools, replaceToolInState, deleteEmptyGroupIfNeeded, toast]);
+        await deleteEmptyGroupIfNeeded(toolId, previousGroupId, updatedTool.group_id);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to assign group');
+      }
+    },
+    [tools, replaceToolInState, deleteEmptyGroupIfNeeded, toast],
+  );
 
   // Click outside the group content area clears the selected group
   useEffect(() => {
@@ -1053,23 +1166,29 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [selectedGroupId]);
 
-  const handleGroupTabsClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (selectedGroupId && e.target === e.currentTarget) {
+  const handleGroupTabsClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (selectedGroupId && e.target === e.currentTarget) {
+        setSelectedGroupId(null);
+      }
+    },
+    [selectedGroupId],
+  );
+
+  const handleGroupTabsListClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!selectedGroupId) {
+        return;
+      }
+
+      if (!(e.target instanceof Element) || e.target.closest('.tool-group-tab')) {
+        return;
+      }
+
       setSelectedGroupId(null);
-    }
-  }, [selectedGroupId]);
-
-  const handleGroupTabsListClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!selectedGroupId) {
-      return;
-    }
-
-    if (!(e.target instanceof Element) || e.target.closest('.tool-group-tab')) {
-      return;
-    }
-
-    setSelectedGroupId(null);
-  }, [selectedGroupId]);
+    },
+    [selectedGroupId],
+  );
 
   const handleToolFilterClick = useCallback(() => {
     if (selectedGroupId) {
@@ -1081,97 +1200,116 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   // Mount source handlers
   // ---------------------------------------------------------------------------
 
-  const handleMountSourceWizardSaved = useCallback((saved: UserspaceMountSource) => {
-    setMountSources((current) => {
-      const next = current.some((source) => source.id === saved.id)
-        ? current.map((source) => source.id === saved.id ? saved : source)
-        : [...current, saved];
-      return [...next].sort((left, right) => left.name.localeCompare(right.name));
-    });
-    setShowMountSourceWizard(false);
-    setEditingMountSource(null);
-    toast.success(saved.id === editingMountSource?.id ? 'Mount source updated.' : 'Mount source created.', 5000);
-  }, [editingMountSource]);
-
-  const handleDeleteMountSource = useCallback(async (mountSourceId: string) => {
-    setMountSourceDeletingId(mountSourceId);
-
-    try {
-      await api.deleteUserspaceMountSource(mountSourceId);
-      setMountSources((current) => current.filter((source) => source.id !== mountSourceId));
-      toast.success('Mount source deleted.', 5000);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete mount source');
-    } finally {
-      setMountSourceDeletingId(null);
-    }
-  }, []);
-
-  const handleStartReconnectMountSource = useCallback(async (source: UserspaceMountSource & { source_type: 'microsoft_drive' | 'google_drive' }) => {
-    setReconnectStartingMountSourceId(source.id);
-    try {
-      const response = await api.startUserCloudOAuth({
-        provider: source.source_type,
-        redirect_uri: getCloudOAuthCallbackUrl(),
+  const handleMountSourceWizardSaved = useCallback(
+    (saved: UserspaceMountSource) => {
+      setMountSources((current) => {
+        const next = current.some((source) => source.id === saved.id)
+          ? current.map((source) => (source.id === saved.id ? saved : source))
+          : [...current, saved];
+        return [...next].sort((left, right) => left.name.localeCompare(right.name));
       });
-      setReconnectingMountSource({ mountSourceId: source.id, provider: source.source_type });
-      window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
-    } catch (reconnectErr) {
-      toast.error(reconnectErr instanceof Error ? reconnectErr.message : 'Failed to start cloud OAuth reconnect');
-      setReconnectingMountSource(null);
-    } finally {
-      setReconnectStartingMountSourceId(null);
-    }
-  }, [toast]);
-
-  const handleToggleMountSourceEnabled = useCallback(async (source: UserspaceMountSource) => {
-    const nextEnabled = !source.enabled;
-
-    if (!nextEnabled) {
-      setDisableConfirmation({ source, affected: null, loading: true });
-      try {
-        const affected = await api.getMountSourceAffectedWorkspaces(source.id);
-        if (affected.total_mounts > 0) {
-          setDisableConfirmation({ source, affected, loading: false });
-          return;
-        }
-        setDisableConfirmation(null);
-      } catch {
-        setDisableConfirmation(null);
-      }
-    }
-
-    setMountSources((current) =>
-      current.map((s) => s.id === source.id ? { ...s, enabled: nextEnabled } : s)
-    );
-    try {
-      await api.updateUserspaceMountSource(source.id, { enabled: nextEnabled });
-    } catch (err) {
-      setMountSources((current) =>
-        current.map((s) => s.id === source.id ? { ...s, enabled: source.enabled } : s)
+      setShowMountSourceWizard(false);
+      setEditingMountSource(null);
+      toast.success(
+        saved.id === editingMountSource?.id ? 'Mount source updated.' : 'Mount source created.',
+        5000,
       );
-      if (source.source_unavailable_kind === 'cloud_auth' && isCloudMountSource(source)) {
-        toast.error(
-          <>
-            Cloud authentication is unavailable for this mount source.{' '}
-            <a
-              href="#"
-              onClick={(event) => {
-                event.preventDefault();
-                void handleStartReconnectMountSource(source);
-              }}
-              style={{ color: 'inherit', textDecoration: 'underline' }}
-            >
-              Reconnect now
-            </a>
-          </>,
-          10000,
-        );
-      } else {
-        toast.error(err instanceof Error ? err.message : 'Failed to update mount source');
+    },
+    [editingMountSource, toast],
+  );
+
+  const handleDeleteMountSource = useCallback(
+    async (mountSourceId: string) => {
+      setMountSourceDeletingId(mountSourceId);
+
+      try {
+        await api.deleteUserspaceMountSource(mountSourceId);
+        setMountSources((current) => current.filter((source) => source.id !== mountSourceId));
+        toast.success('Mount source deleted.', 5000);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to delete mount source');
+      } finally {
+        setMountSourceDeletingId(null);
       }
-    }
-  }, [handleStartReconnectMountSource, toast]);
+    },
+    [toast],
+  );
+
+  const handleStartReconnectMountSource = useCallback(
+    async (source: UserspaceMountSource & { source_type: 'microsoft_drive' | 'google_drive' }) => {
+      setReconnectStartingMountSourceId(source.id);
+      try {
+        const response = await api.startUserCloudOAuth({
+          provider: source.source_type,
+          redirect_uri: getCloudOAuthCallbackUrl(),
+        });
+        setReconnectingMountSource({ mountSourceId: source.id, provider: source.source_type });
+        window.open(response.auth_url, 'ragtime-cloud-oauth', 'popup,width=720,height=820');
+      } catch (reconnectErr) {
+        toast.error(
+          reconnectErr instanceof Error
+            ? reconnectErr.message
+            : 'Failed to start cloud OAuth reconnect',
+        );
+        setReconnectingMountSource(null);
+      } finally {
+        setReconnectStartingMountSourceId(null);
+      }
+    },
+    [toast],
+  );
+
+  const handleToggleMountSourceEnabled = useCallback(
+    async (source: UserspaceMountSource) => {
+      const nextEnabled = !source.enabled;
+
+      if (!nextEnabled) {
+        setDisableConfirmation({ source, affected: null, loading: true });
+        try {
+          const affected = await api.getMountSourceAffectedWorkspaces(source.id);
+          if (affected.total_mounts > 0) {
+            setDisableConfirmation({ source, affected, loading: false });
+            return;
+          }
+          setDisableConfirmation(null);
+        } catch {
+          setDisableConfirmation(null);
+        }
+      }
+
+      setMountSources((current) =>
+        current.map((s) => (s.id === source.id ? { ...s, enabled: nextEnabled } : s)),
+      );
+      try {
+        await api.updateUserspaceMountSource(source.id, { enabled: nextEnabled });
+      } catch (err) {
+        setMountSources((current) =>
+          current.map((s) => (s.id === source.id ? { ...s, enabled: source.enabled } : s)),
+        );
+        if (source.source_unavailable_kind === 'cloud_auth' && isCloudMountSource(source)) {
+          toast.error(
+            <>
+              Cloud authentication is unavailable for this mount source.{' '}
+              <a
+                href="#"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void handleStartReconnectMountSource(source);
+                }}
+                style={{ color: 'inherit', textDecoration: 'underline' }}
+              >
+                Reconnect now
+              </a>
+            </>,
+            10000,
+          );
+        } else {
+          toast.error(err instanceof Error ? err.message : 'Failed to update mount source');
+        }
+      }
+    },
+    [handleStartReconnectMountSource, toast],
+  );
 
   useEffect(() => {
     const listener = (event: MessageEvent) => {
@@ -1179,7 +1317,11 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
         return;
       }
       if (event.data?.type === 'ragtime-cloud-oauth-error') {
-        toast.error(typeof event.data.message === 'string' ? event.data.message : 'Cloud OAuth reconnect failed');
+        toast.error(
+          typeof event.data.message === 'string'
+            ? event.data.message
+            : 'Cloud OAuth reconnect failed',
+        );
         setReconnectingMountSource(null);
         return;
       }
@@ -1190,24 +1332,37 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       void (async () => {
         try {
           const accounts = await api.listUserCloudOAuthAccounts();
-          const callbackAccountId = typeof event.data?.account_id === 'string' ? event.data.account_id : null;
+          const callbackAccountId =
+            typeof event.data?.account_id === 'string' ? event.data.account_id : null;
           const account = callbackAccountId
-            ? accounts.find((item) => item.id === callbackAccountId && item.provider === reconnectingMountSource.provider && item.connected) ?? null
+            ? (accounts.find(
+                (item) =>
+                  item.id === callbackAccountId &&
+                  item.provider === reconnectingMountSource.provider &&
+                  item.connected,
+              ) ?? null)
             : pickLatestConnectedCloudAccount(accounts, reconnectingMountSource.provider);
           if (!account) {
-            toast.error('Connected account was not found after OAuth completion. Try reconnecting again.');
+            toast.error(
+              'Connected account was not found after OAuth completion. Try reconnecting again.',
+            );
             return;
           }
 
-          const updated = await api.updateUserspaceMountSource(reconnectingMountSource.mountSourceId, {
-            enabled: true,
-            connection_config: {
-              oauth_account_id: account.id,
+          const updated = await api.updateUserspaceMountSource(
+            reconnectingMountSource.mountSourceId,
+            {
+              enabled: true,
+              connection_config: {
+                oauth_account_id: account.id,
+              },
             },
-          });
+          );
 
           setMountSources((current) =>
-            current.map((source) => source.id === updated.id ? { ...updated, usage_count: source.usage_count } : source)
+            current.map((source) =>
+              source.id === updated.id ? { ...updated, usage_count: source.usage_count } : source,
+            ),
           );
           toast.success('Cloud account reconnected and mount source re-enabled.', 5000);
         } catch (err) {
@@ -1227,20 +1382,20 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     const { source } = disableConfirmation;
     setDisableConfirmation(null);
     setMountSources((current) =>
-      current.map((s) => s.id === source.id ? { ...s, enabled: false } : s)
+      current.map((s) => (s.id === source.id ? { ...s, enabled: false } : s)),
     );
     try {
       const updated = await api.updateUserspaceMountSource(source.id, { enabled: false });
       setMountSources((current) =>
-        current.map((s) => s.id === source.id ? { ...updated, usage_count: s.usage_count } : s)
+        current.map((s) => (s.id === source.id ? { ...updated, usage_count: s.usage_count } : s)),
       );
     } catch (err) {
       setMountSources((current) =>
-        current.map((s) => s.id === source.id ? { ...s, enabled: true } : s)
+        current.map((s) => (s.id === source.id ? { ...s, enabled: true } : s)),
       );
       toast.error(err instanceof Error ? err.message : 'Failed to disable mount source');
     }
-  }, [disableConfirmation]);
+  }, [disableConfirmation, toast]);
 
   // Drag-and-drop state
   const [dragToolId, setDragToolId] = useState<string | null>(null);
@@ -1265,7 +1420,10 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
       return null;
     }
 
-    const idx = Math.max(0, Math.min(dragInsertBefore ? targetIdx : targetIdx + 1, visibleTools.length));
+    const idx = Math.max(
+      0,
+      Math.min(dragInsertBefore ? targetIdx : targetIdx + 1, visibleTools.length),
+    );
 
     // Don't show a drop slot at a position that would result in no change
     const fromIdx = visibleTools.findIndex((tool) => tool.id === dragToolId);
@@ -1290,25 +1448,28 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     setDragGroupTargetId(null);
   }, [clearDragPreviewTimer]);
 
-  const scheduleDragPreview = useCallback((target: DragPreviewTarget) => {
-    clearDragPreviewTimer();
-    pendingDragPreviewRef.current = target;
-    setDragOverToolId(null);
+  const scheduleDragPreview = useCallback(
+    (target: DragPreviewTarget) => {
+      clearDragPreviewTimer();
+      pendingDragPreviewRef.current = target;
+      setDragOverToolId(null);
 
-    dragPreviewTimerRef.current = setTimeout(() => {
-      const pending = pendingDragPreviewRef.current;
-      if (!pending) {
+      dragPreviewTimerRef.current = setTimeout(() => {
+        const pending = pendingDragPreviewRef.current;
+        if (!pending) {
+          dragPreviewTimerRef.current = null;
+          return;
+        }
+
+        setDragOverToolId(pending.toolId);
+        setDragInsertBefore(pending.insertBefore);
+
         dragPreviewTimerRef.current = null;
-        return;
-      }
-
-      setDragOverToolId(pending.toolId);
-      setDragInsertBefore(pending.insertBefore);
-
-      dragPreviewTimerRef.current = null;
-      pendingDragPreviewRef.current = null;
-    }, DRAG_REORDER_PREVIEW_DELAY_MS);
-  }, [clearDragPreviewTimer]);
+        pendingDragPreviewRef.current = null;
+      }, DRAG_REORDER_PREVIEW_DELAY_MS);
+    },
+    [clearDragPreviewTimer],
+  );
 
   const handleDragStart = useCallback((e: React.DragEvent, toolId: string) => {
     e.dataTransfer.setData('text/plain', toolId);
@@ -1332,20 +1493,23 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
   const handleGroupDragLeave = useCallback((e: React.DragEvent, groupId: string) => {
     // Only clear if we actually left the group card (not entering a child element)
     if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
-      setDragOverGroupId((current) => current === groupId ? null : current);
+      setDragOverGroupId((current) => (current === groupId ? null : current));
     }
   }, []);
 
-  const handleGroupDrop = useCallback(async (e: React.DragEvent, groupId: string) => {
-    e.preventDefault();
-    const toolId = e.dataTransfer.getData('text/plain');
-    clearDragPreview();
-    setDragOverGroupId(null);
-    setDragToolId(null);
-    if (toolId) {
-      await handleAssignGroup(toolId, groupId);
-    }
-  }, [handleAssignGroup, clearDragPreview]);
+  const handleGroupDrop = useCallback(
+    async (e: React.DragEvent, groupId: string) => {
+      e.preventDefault();
+      const toolId = e.dataTransfer.getData('text/plain');
+      clearDragPreview();
+      setDragOverGroupId(null);
+      setDragToolId(null);
+      if (toolId) {
+        await handleAssignGroup(toolId, groupId);
+      }
+    },
+    [handleAssignGroup, clearDragPreview],
+  );
 
   const handleUngroupedDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -1359,285 +1523,329 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
     }
   }, []);
 
-  const handleUngroupedDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    const toolId = e.dataTransfer.getData('text/plain');
-    clearDragPreview();
-    setDragOverUngrouped(false);
-    setDragToolId(null);
-    if (toolId) {
-      await handleAssignGroup(toolId, null);
-    }
-  }, [handleAssignGroup, clearDragPreview]);
+  const handleUngroupedDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      const toolId = e.dataTransfer.getData('text/plain');
+      clearDragPreview();
+      setDragOverUngrouped(false);
+      setDragToolId(null);
+      if (toolId) {
+        await handleAssignGroup(toolId, null);
+      }
+    },
+    [handleAssignGroup, clearDragPreview],
+  );
 
   // ---- Within-list reorder handlers ----
 
-  const handleToolCardDragOver = useCallback((e: React.DragEvent, targetToolId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = 'move';
+  const handleToolCardDragOver = useCallback(
+    (e: React.DragEvent, targetToolId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
 
-    if (!dragToolId || dragToolId === targetToolId) {
-      return;
-    }
-
-    // Detect stack/group zone in the center of the card. Edge zones reorder.
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const relX = (e.clientX - rect.left) / rect.width;
-    const relY = (e.clientY - rect.top) / rect.height;
-    const isCenter = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
-
-    if (isCenter) {
-      // Center hover → show stack/group indicator, suppress reorder slot
-      if (dragGroupTargetId !== targetToolId) {
-        clearDragPreviewTimer();
-        pendingDragPreviewRef.current = null;
-        setDragOverToolId(null);
-        setDragGroupTargetId(targetToolId);
-      }
-      return;
-    }
-
-    // Edge hover → reorder mode; clear any group target
-    if (dragGroupTargetId !== null) {
-      setDragGroupTargetId(null);
-    }
-
-    const insertBefore = relX < 0.5;
-
-    if (dragOverToolId === targetToolId && dragInsertBefore === insertBefore) {
-      return;
-    }
-
-    const pending = pendingDragPreviewRef.current;
-    if (pending?.toolId === targetToolId && pending.insertBefore === insertBefore) {
-      return;
-    }
-
-    scheduleDragPreview({ toolId: targetToolId, insertBefore });
-  }, [dragToolId, dragOverToolId, dragInsertBefore, dragGroupTargetId, clearDragPreviewTimer, scheduleDragPreview]);
-
-  const handleToolCardDragLeave = useCallback((e: React.DragEvent) => {
-    const related = e.relatedTarget as HTMLElement;
-    if (
-      !(e.currentTarget as HTMLElement).contains(related) &&
-      (!related || !related.closest('.tool-reorder-drop-slot'))
-    ) {
-      clearDragPreview();
-    }
-  }, [clearDragPreview]);
-
-  const reorderVisibleTools = useCallback(async (draggedId: string, insertIdx: number) => {
-    try {
-      const reordered = [...visibleTools];
-      const fromIdx = reordered.findIndex(t => t.id === draggedId);
-
-      let moved: ToolConfig;
-      let safeInsertIdx = insertIdx;
-
-      if (fromIdx >= 0) {
-        [moved] = reordered.splice(fromIdx, 1);
-        if (fromIdx < safeInsertIdx) {
-          safeInsertIdx -= 1;
-        }
-      } else {
-        const draggedTool = tools.find(t => t.id === draggedId);
-        if (!draggedTool) return;
-        moved = await api.updateToolConfig(draggedId, { group_id: selectedGroupId ?? '' });
-      }
-
-      safeInsertIdx = Math.max(0, Math.min(safeInsertIdx, reordered.length));
-      reordered.splice(safeInsertIdx, 0, moved);
-
-      // Persist a full global order so sort_order remains unique and stable across reloads.
-      // Sending only the visible subset causes sort_order collisions with hidden tools.
-      const visibleIds = visibleTools.map((t) => t.id);
-      const visibleIdSet = new Set(visibleIds);
-      const reorderedVisibleIds = reordered.map((t) => t.id);
-
-      let fullOrderedIds: string[];
-
-      if (fromIdx >= 0) {
-        // Reorder within the currently visible subset while keeping non-visible tools in place.
-        let nextVisibleIdx = 0;
-        fullOrderedIds = tools.map((tool) => {
-          if (!visibleIdSet.has(tool.id)) {
-            return tool.id;
-          }
-          const replacement = reorderedVisibleIds[nextVisibleIdx];
-          nextVisibleIdx += 1;
-          return replacement;
-        });
-      } else {
-        // Dragged from outside the visible subset: remove old position, then insert into
-        // this subset's band at the resolved visible insertion index.
-        fullOrderedIds = tools.map((t) => t.id).filter((id) => id !== draggedId);
-
-        let globalInsertIdx = fullOrderedIds.length;
-        if (visibleIds.length > 0) {
-          if (safeInsertIdx >= visibleIds.length) {
-            const anchorId = visibleIds[visibleIds.length - 1];
-            const anchorIdx = fullOrderedIds.indexOf(anchorId);
-            if (anchorIdx >= 0) {
-              globalInsertIdx = anchorIdx + 1;
-            }
-          } else {
-            const anchorId = visibleIds[safeInsertIdx];
-            const anchorIdx = fullOrderedIds.indexOf(anchorId);
-            if (anchorIdx >= 0) {
-              globalInsertIdx = anchorIdx;
-            }
-          }
-        }
-
-        fullOrderedIds.splice(globalInsertIdx, 0, draggedId);
-      }
-
-      const updatedSortOrders = new Map(fullOrderedIds.map((id, i) => [id, i * 100]));
-      setTools((current) => {
-        const byId = new Map(current.map((tool) => [tool.id, tool]));
-        byId.set(draggedId, {
-          ...(byId.get(draggedId) ?? moved),
-          ...moved,
-          sort_order: updatedSortOrders.get(draggedId) ?? moved.sort_order,
-        });
-
-        return fullOrderedIds
-          .map((id) => {
-            const tool = byId.get(id);
-            if (!tool) return null;
-            const nextOrder = updatedSortOrders.get(id);
-            return nextOrder === undefined ? tool : { ...tool, sort_order: nextOrder };
-          })
-          .filter((tool): tool is ToolConfig => tool !== null);
-      });
-
-      await api.reorderTools({ tool_ids: fullOrderedIds });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to reorder tools');
-      await loadTools();
-    }
-  }, [visibleTools, tools, selectedGroupId, loadTools]);
-
-  const handleToolCardDrop = useCallback(async (e: React.DragEvent, targetToolId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const draggedId = e.dataTransfer.getData('text/plain') || dragToolId;
-
-    const localDragOverId = dragOverToolId;
-    const localInsertBefore = localDragOverId ? dragInsertBefore : true;
-    const localGroupTarget = dragGroupTargetId;
-
-    // Re-detect center zone during drop to ensure grouping intent is captured even if state was cleared
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const relX = (e.clientX - rect.left) / rect.width;
-    const relY = (e.clientY - rect.top) / rect.height;
-    const isCenterZone = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
-
-    clearDragPreview();
-    setDragToolId(null);
-
-    if (!draggedId || draggedId === targetToolId) return;
-
-    // Center drop or localGroupTarget match → group tools
-    if (isCenterZone || localGroupTarget === targetToolId) {
-      try {
-        const targetTool = tools.find((tool) => tool.id === targetToolId);
-        if (!targetTool) return;
-
-        const targetGroupId = targetTool.group_id;
-
-        if (targetGroupId) {
-          // Target is already in a group, just add dragged tool to it
-          await handleAssignGroup(draggedId, targetGroupId);
-          setSelectedGroupId(targetGroupId);
-        } else {
-          // Target is not in a group, create a new suggested group for both
-          const { created: newGroup } = await createSuggestedGroup(targetTool);
-          // Assign both tools to the new group (target first so it retains lower sort_order)
-          await Promise.all([
-            handleAssignGroup(targetToolId, newGroup.id),
-            handleAssignGroup(draggedId, newGroup.id),
-          ]);
-          setSelectedGroupId(newGroup.id);
-        }
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to group tools');
-      }
-      return;
-    }
-
-    const resolvedTargetId = localDragOverId ?? targetToolId;
-
-    const toIdx = visibleTools.findIndex((t) => t.id === resolvedTargetId);
-    if (toIdx < 0) return;
-    const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
-    await reorderVisibleTools(draggedId, insertIdx);
-  }, [visibleTools, tools, dragToolId, dragOverToolId, dragInsertBefore, dragGroupTargetId, reorderVisibleTools, clearDragPreview, handleAssignGroup, createSuggestedGroup, setSelectedGroupId, toast]);
-
-  const handleSlotDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const draggedId = e.dataTransfer.getData('text/plain');
-    const localDragOverId = dragOverToolId;
-    const localInsertBefore = dragInsertBefore;
-
-    clearDragPreview();
-    setDragToolId(null);
-
-    if (!draggedId || !localDragOverId || draggedId === localDragOverId) return;
-
-    const toIdx = visibleTools.findIndex(t => t.id === localDragOverId);
-    const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
-    await reorderVisibleTools(draggedId, insertIdx);
-  }, [visibleTools, dragOverToolId, dragInsertBefore, reorderVisibleTools, clearDragPreview]);
-
-  const handleGridDragOver = useCallback((e: React.DragEvent) => {
-    if (!dragToolId) return;
-
-    if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
-      return;
-    }
-
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragGroupTargetId(null);
-
-    // Hovering over the grid background itself, so push drop slot to the very end
-    const lastTool = visibleTools[visibleTools.length - 1];
-    if (lastTool && lastTool.id !== dragToolId) {
-      // Guard against resetting the timer on every rapid dragover event:
-      // check the pending ref (like handleToolCardDragOver does) so we only
-      // schedule once and let the 80ms timer commit.
-      const pending = pendingDragPreviewRef.current;
-      if (pending?.toolId === lastTool.id && pending.insertBefore === false) {
+      if (!dragToolId || dragToolId === targetToolId) {
         return;
       }
-      if (dragOverToolId !== lastTool.id || dragInsertBefore !== false) {
-        scheduleDragPreview({ toolId: lastTool.id, insertBefore: false });
+
+      // Detect stack/group zone in the center of the card. Edge zones reorder.
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const relX = (e.clientX - rect.left) / rect.width;
+      const relY = (e.clientY - rect.top) / rect.height;
+      const isCenter = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
+
+      if (isCenter) {
+        // Center hover → show stack/group indicator, suppress reorder slot
+        if (dragGroupTargetId !== targetToolId) {
+          clearDragPreviewTimer();
+          pendingDragPreviewRef.current = null;
+          setDragOverToolId(null);
+          setDragGroupTargetId(targetToolId);
+        }
+        return;
       }
-    }
-  }, [dragToolId, dragOverToolId, dragInsertBefore, visibleTools, scheduleDragPreview]);
 
-  const handleGridDrop = useCallback(async (e: React.DragEvent) => {
-    if (!dragToolId) return;
-    if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
-      return;
-    }
+      // Edge hover → reorder mode; clear any group target
+      if (dragGroupTargetId !== null) {
+        setDragGroupTargetId(null);
+      }
 
-    e.preventDefault();
-    const draggedId = e.dataTransfer.getData('text/plain');
+      const insertBefore = relX < 0.5;
 
-    clearDragPreview();
-    setDragToolId(null);
+      if (dragOverToolId === targetToolId && dragInsertBefore === insertBefore) {
+        return;
+      }
 
-    if (!draggedId) return;
+      const pending = pendingDragPreviewRef.current;
+      if (pending?.toolId === targetToolId && pending.insertBefore === insertBefore) {
+        return;
+      }
 
-    const lastTool = visibleTools[visibleTools.length - 1];
-    if (lastTool) {
-      await reorderVisibleTools(draggedId, visibleTools.length);
-    }
-  }, [dragToolId, visibleTools, reorderVisibleTools, clearDragPreview]);
+      scheduleDragPreview({ toolId: targetToolId, insertBefore });
+    },
+    [
+      dragToolId,
+      dragOverToolId,
+      dragInsertBefore,
+      dragGroupTargetId,
+      clearDragPreviewTimer,
+      scheduleDragPreview,
+    ],
+  );
+
+  const handleToolCardDragLeave = useCallback(
+    (e: React.DragEvent) => {
+      const related = e.relatedTarget as HTMLElement;
+      if (
+        !(e.currentTarget as HTMLElement).contains(related) &&
+        (!related || !related.closest('.tool-reorder-drop-slot'))
+      ) {
+        clearDragPreview();
+      }
+    },
+    [clearDragPreview],
+  );
+
+  const reorderVisibleTools = useCallback(
+    async (draggedId: string, insertIdx: number) => {
+      try {
+        const reordered = [...visibleTools];
+        const fromIdx = reordered.findIndex((t) => t.id === draggedId);
+
+        let moved: ToolConfig;
+        let safeInsertIdx = insertIdx;
+
+        if (fromIdx >= 0) {
+          [moved] = reordered.splice(fromIdx, 1);
+          if (fromIdx < safeInsertIdx) {
+            safeInsertIdx -= 1;
+          }
+        } else {
+          const draggedTool = tools.find((t) => t.id === draggedId);
+          if (!draggedTool) return;
+          moved = await api.updateToolConfig(draggedId, { group_id: selectedGroupId ?? '' });
+        }
+
+        safeInsertIdx = Math.max(0, Math.min(safeInsertIdx, reordered.length));
+        reordered.splice(safeInsertIdx, 0, moved);
+
+        // Persist a full global order so sort_order remains unique and stable across reloads.
+        // Sending only the visible subset causes sort_order collisions with hidden tools.
+        const visibleIds = visibleTools.map((t) => t.id);
+        const visibleIdSet = new Set(visibleIds);
+        const reorderedVisibleIds = reordered.map((t) => t.id);
+
+        let fullOrderedIds: string[];
+
+        if (fromIdx >= 0) {
+          // Reorder within the currently visible subset while keeping non-visible tools in place.
+          let nextVisibleIdx = 0;
+          fullOrderedIds = tools.map((tool) => {
+            if (!visibleIdSet.has(tool.id)) {
+              return tool.id;
+            }
+            const replacement = reorderedVisibleIds[nextVisibleIdx];
+            nextVisibleIdx += 1;
+            return replacement;
+          });
+        } else {
+          // Dragged from outside the visible subset: remove old position, then insert into
+          // this subset's band at the resolved visible insertion index.
+          fullOrderedIds = tools.map((t) => t.id).filter((id) => id !== draggedId);
+
+          let globalInsertIdx = fullOrderedIds.length;
+          if (visibleIds.length > 0) {
+            if (safeInsertIdx >= visibleIds.length) {
+              const anchorId = visibleIds[visibleIds.length - 1];
+              const anchorIdx = fullOrderedIds.indexOf(anchorId);
+              if (anchorIdx >= 0) {
+                globalInsertIdx = anchorIdx + 1;
+              }
+            } else {
+              const anchorId = visibleIds[safeInsertIdx];
+              const anchorIdx = fullOrderedIds.indexOf(anchorId);
+              if (anchorIdx >= 0) {
+                globalInsertIdx = anchorIdx;
+              }
+            }
+          }
+
+          fullOrderedIds.splice(globalInsertIdx, 0, draggedId);
+        }
+
+        const updatedSortOrders = new Map(fullOrderedIds.map((id, i) => [id, i * 100]));
+        setTools((current) => {
+          const byId = new Map(current.map((tool) => [tool.id, tool]));
+          byId.set(draggedId, {
+            ...(byId.get(draggedId) ?? moved),
+            ...moved,
+            sort_order: updatedSortOrders.get(draggedId) ?? moved.sort_order,
+          });
+
+          return fullOrderedIds
+            .map((id) => {
+              const tool = byId.get(id);
+              if (!tool) return null;
+              const nextOrder = updatedSortOrders.get(id);
+              return nextOrder === undefined ? tool : { ...tool, sort_order: nextOrder };
+            })
+            .filter((tool): tool is ToolConfig => tool !== null);
+        });
+
+        await api.reorderTools({ tool_ids: fullOrderedIds });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to reorder tools');
+        await loadTools();
+      }
+    },
+    [visibleTools, tools, selectedGroupId, loadTools, toast],
+  );
+
+  const handleToolCardDrop = useCallback(
+    async (e: React.DragEvent, targetToolId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedId = e.dataTransfer.getData('text/plain') || dragToolId;
+
+      const localDragOverId = dragOverToolId;
+      const localInsertBefore = localDragOverId ? dragInsertBefore : true;
+      const localGroupTarget = dragGroupTargetId;
+
+      // Re-detect center zone during drop to ensure grouping intent is captured even if state was cleared
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const relX = (e.clientX - rect.left) / rect.width;
+      const relY = (e.clientY - rect.top) / rect.height;
+      const isCenterZone = relX >= 0.25 && relX <= 0.75 && relY >= 0.25 && relY <= 0.75;
+
+      clearDragPreview();
+      setDragToolId(null);
+
+      if (!draggedId || draggedId === targetToolId) return;
+
+      // Center drop or localGroupTarget match → group tools
+      if (isCenterZone || localGroupTarget === targetToolId) {
+        try {
+          const targetTool = tools.find((tool) => tool.id === targetToolId);
+          if (!targetTool) return;
+
+          const targetGroupId = targetTool.group_id;
+
+          if (targetGroupId) {
+            // Target is already in a group, just add dragged tool to it
+            await handleAssignGroup(draggedId, targetGroupId);
+            setSelectedGroupId(targetGroupId);
+          } else {
+            // Target is not in a group, create a new suggested group for both
+            const { created: newGroup } = await createSuggestedGroup(targetTool);
+            // Assign both tools to the new group (target first so it retains lower sort_order)
+            await Promise.all([
+              handleAssignGroup(targetToolId, newGroup.id),
+              handleAssignGroup(draggedId, newGroup.id),
+            ]);
+            setSelectedGroupId(newGroup.id);
+          }
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : 'Failed to group tools');
+        }
+        return;
+      }
+
+      const resolvedTargetId = localDragOverId ?? targetToolId;
+
+      const toIdx = visibleTools.findIndex((t) => t.id === resolvedTargetId);
+      if (toIdx < 0) return;
+      const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
+      await reorderVisibleTools(draggedId, insertIdx);
+    },
+    [
+      visibleTools,
+      tools,
+      dragToolId,
+      dragOverToolId,
+      dragInsertBefore,
+      dragGroupTargetId,
+      reorderVisibleTools,
+      clearDragPreview,
+      handleAssignGroup,
+      createSuggestedGroup,
+      setSelectedGroupId,
+      toast,
+    ],
+  );
+
+  const handleSlotDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const draggedId = e.dataTransfer.getData('text/plain');
+      const localDragOverId = dragOverToolId;
+      const localInsertBefore = dragInsertBefore;
+
+      clearDragPreview();
+      setDragToolId(null);
+
+      if (!draggedId || !localDragOverId || draggedId === localDragOverId) return;
+
+      const toIdx = visibleTools.findIndex((t) => t.id === localDragOverId);
+      const insertIdx = localInsertBefore ? toIdx : toIdx + 1;
+      await reorderVisibleTools(draggedId, insertIdx);
+    },
+    [visibleTools, dragOverToolId, dragInsertBefore, reorderVisibleTools, clearDragPreview],
+  );
+
+  const handleGridDragOver = useCallback(
+    (e: React.DragEvent) => {
+      if (!dragToolId) return;
+
+      if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
+        return;
+      }
+
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      setDragGroupTargetId(null);
+
+      // Hovering over the grid background itself, so push drop slot to the very end
+      const lastTool = visibleTools[visibleTools.length - 1];
+      if (lastTool && lastTool.id !== dragToolId) {
+        // Guard against resetting the timer on every rapid dragover event:
+        // check the pending ref (like handleToolCardDragOver does) so we only
+        // schedule once and let the 80ms timer commit.
+        const pending = pendingDragPreviewRef.current;
+        if (pending?.toolId === lastTool.id && pending.insertBefore === false) {
+          return;
+        }
+        if (dragOverToolId !== lastTool.id || dragInsertBefore !== false) {
+          scheduleDragPreview({ toolId: lastTool.id, insertBefore: false });
+        }
+      }
+    },
+    [dragToolId, dragOverToolId, dragInsertBefore, visibleTools, scheduleDragPreview],
+  );
+
+  const handleGridDrop = useCallback(
+    async (e: React.DragEvent) => {
+      if (!dragToolId) return;
+      if ((e.target as HTMLElement).closest('.tool-card-drag-wrap, .tool-reorder-drop-slot')) {
+        return;
+      }
+
+      e.preventDefault();
+      const draggedId = e.dataTransfer.getData('text/plain');
+
+      clearDragPreview();
+      setDragToolId(null);
+
+      if (!draggedId) return;
+
+      const lastTool = visibleTools[visibleTools.length - 1];
+      if (lastTool) {
+        await reorderVisibleTools(draggedId, visibleTools.length);
+      }
+    },
+    [dragToolId, visibleTools, reorderVisibleTools, clearDragPreview],
+  );
 
   useEffect(() => {
     return () => {
@@ -1722,7 +1930,7 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           <h2>Tool Connections</h2>
           <AnimatedCreateButton
             isExpanded={showWizard}
-            onClick={() => showWizard ? handleWizardClose() : handleAddTool()}
+            onClick={() => (showWizard ? handleWizardClose() : handleAddTool())}
             label="Add Tool"
           />
         </div>
@@ -1737,149 +1945,168 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           />
         ) : (
           <>
-        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
+            <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
 
-        <p className="fieldset-help">
-          Configure connections to databases, shells, and other tools that the AI can use during conversations.
-          Each tool can have multiple instances (e.g., production and staging databases). To group a tool, create a group and drag the tool into it.
-          Deleting a group does not delete the tools.
-        </p>
-
-        {loading ? (
-          <p className="muted">Loading tools...</p>
-        ) : tools.length === 0 ? (
-          <div className="empty-state">
-            <p>No tools configured yet.</p>
-            <p className="muted">
-              Click "Add Tool" to set up your first connection.
+            <p className="fieldset-help">
+              Configure connections to databases, shells, and other tools that the AI can use during
+              conversations. Each tool can have multiple instances (e.g., production and staging
+              databases). To group a tool, create a group and drag the tool into it. Deleting a
+              group does not delete the tools.
             </p>
-          </div>
-        ) : (
-          <>
-            {/* Group tabs + tool grid */}
-            <div ref={groupContentRef} className={`tool-group-content${selectedGroupId ? ' has-selection' : ''}`}>
-            <div
-              className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}
-              onClick={handleGroupTabsClick}
-            >
-              <div className="tool-group-tabs-list" onClick={handleGroupTabsListClick}>
-              {allGroups.length > 0 && allGroups.map(({ group, tools: groupTools }) => {
-                const isActive = selectedGroupId === group.id;
-                const isDragTarget = dragOverGroupId === group.id;
-                return (
-                  <div
-                    key={group.id}
-                    className={`tool-group-tab${isActive ? ' active' : ''}${isDragTarget ? ' drag-over' : ''}${editingGroupId === group.id ? ' editing' : ''}`}
-                    onClick={() => setSelectedGroupId(isActive ? null : group.id)}
-                    onDragOver={(e) => handleGroupDragOver(e, group.id)}
-                    onDragLeave={(e) => handleGroupDragLeave(e, group.id)}
-                    onDrop={(e) => handleGroupDrop(e, group.id)}
-                  >
-                      {editingGroupId === group.id ? (
-                        <textarea
-                          className="tool-group-tab-input"
-                          value={editingGroupName}
-                          onChange={(e) => setEditingGroupName(e.target.value)}
-                          onBlur={() => handleRenameGroup(group.id)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') { e.preventDefault(); handleRenameGroup(group.id); }
-                            if (e.key === 'Escape') setEditingGroupId(null);
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          autoFocus
-                        />
-                      ) : (
-                        <span className="tool-group-tab-name">{group.name}</span>
-                      )}
-                      <span className="tool-group-tab-count">{groupTools.length}</span>
-                      <span
-                        className="tool-group-tab-rename"
-                        onClick={(e) => { e.stopPropagation(); setEditingGroupId(group.id); setEditingGroupName(group.name); }}
-                        title="Rename group"
-                      >
-                        &#9998;
-                      </span>
-                      <DeleteConfirmButton
-                        onDelete={() => { handleDeleteGroup(group.id); if (selectedGroupId === group.id) setSelectedGroupId(null); }}
-                        className="tool-group-tab-delete"
-                        title="Delete group"
-                      />
-                  </div>
-                );
-              })}
-              {/* "Ungrouped" drop target — visible when dragging from within a group */}
-              {dragToolId && selectedGroupId && (
-                <div
-                  className={`tool-group-tab tool-group-tab-ungrouped${dragOverUngrouped ? ' drag-over' : ''}`}
-                  onDragOver={handleUngroupedDragOver}
-                  onDragLeave={handleUngroupedDragLeave}
-                  onDrop={handleUngroupedDrop}
-                >
-                  Ungrouped
-                </div>
-              )}
-              </div>
-              <div className="tool-group-tabs-actions" onClick={(e) => e.stopPropagation()}>
-                <button
-                  className="tool-group-tab tool-group-tab-add"
-                  onClick={handleCreateGroup}
-                  title="Create a new group"
-                >
-                  + Add Group
-                </button>
-                <SearchFilterBar
-                  state={toolFilter}
-                  inputRef={toolFilterInputRef}
-                  placeholder="Filter tools by keyword..."
-                  ariaLabel="Filter tools by keyword"
-                  className="tool-group-filter-search"
-                  onClick={handleToolFilterClick}
-                />
-              </div>
-            </div>
 
-            {/* Tool cards — filtered by selected group */}
-            {showSelectedGroupEmptyState ? (
-              <div className="tool-group-active-panel">
-                <p className="muted" style={{ textAlign: 'center', margin: 0 }}>No tools in this group yet. Drag tools here to add them.</p>
-              </div>
-            ) : showToolFilterEmptyState ? (
-              <div className={selectedGroupId ? 'tool-group-active-panel' : 'tool-group-section-panel'}>
-                <p className="muted" style={{ textAlign: 'center', margin: 0 }}>No tools match the current filters.</p>
-              </div>
-            ) : selectedGroupId && selectedGroup ? (
-              <div className="tool-group-active-panel">
-                <div
-                  className="tools-grid"
-                  onDragOver={(e) => dragToolId ? handleGridDragOver(e) : undefined}
-                  onDrop={(e) => dragToolId ? handleGridDrop(e) : undefined}
-                >
-                  {renderToolCardsWithDropSlot()}
-                </div>
+            {loading ? (
+              <p className="muted">Loading tools...</p>
+            ) : tools.length === 0 ? (
+              <div className="empty-state">
+                <p>No tools configured yet.</p>
+                <p className="muted">Click "Add Tool" to set up your first connection.</p>
               </div>
             ) : (
-              <div
-                className={`tool-group-section-panel${showUngroupedDropZone ? ' tool-ungrouped-drop-zone' : ''}${dragOverUngrouped ? ' drag-over' : ''}`}
-                onDragOver={(e) => {
-                  if (showUngroupedDropZone) handleUngroupedDragOver(e);
-                  if (dragToolId) handleGridDragOver(e);
-                }}
-                onDragLeave={showUngroupedDropZone ? handleUngroupedDragLeave : undefined}
-                onDrop={(e) => {
-                  const draggedTool = tools.find(t => t.id === dragToolId);
-                  if (showUngroupedDropZone && draggedTool?.group_id) handleUngroupedDrop(e);
-                  else if (dragToolId) handleGridDrop(e);
-                }}
-              >
-                <div className="tools-grid">
-                  {renderToolCardsWithDropSlot()}
+              <>
+                {/* Group tabs + tool grid */}
+                <div
+                  ref={groupContentRef}
+                  className={`tool-group-content${selectedGroupId ? ' has-selection' : ''}`}
+                >
+                  <div
+                    className={`tool-group-tabs${dragToolId ? ' dragging' : ''}`}
+                    onClick={handleGroupTabsClick}
+                  >
+                    <div className="tool-group-tabs-list" onClick={handleGroupTabsListClick}>
+                      {allGroups.length > 0 &&
+                        allGroups.map(({ group, tools: groupTools }) => {
+                          const isActive = selectedGroupId === group.id;
+                          const isDragTarget = dragOverGroupId === group.id;
+                          return (
+                            <div
+                              key={group.id}
+                              className={`tool-group-tab${isActive ? ' active' : ''}${isDragTarget ? ' drag-over' : ''}${editingGroupId === group.id ? ' editing' : ''}`}
+                              onClick={() => setSelectedGroupId(isActive ? null : group.id)}
+                              onDragOver={(e) => handleGroupDragOver(e, group.id)}
+                              onDragLeave={(e) => handleGroupDragLeave(e, group.id)}
+                              onDrop={(e) => handleGroupDrop(e, group.id)}
+                            >
+                              {editingGroupId === group.id ? (
+                                <textarea
+                                  className="tool-group-tab-input"
+                                  value={editingGroupName}
+                                  onChange={(e) => setEditingGroupName(e.target.value)}
+                                  onBlur={() => handleRenameGroup(group.id)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleRenameGroup(group.id);
+                                    }
+                                    if (e.key === 'Escape') setEditingGroupId(null);
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  autoFocus
+                                />
+                              ) : (
+                                <span className="tool-group-tab-name">{group.name}</span>
+                              )}
+                              <span className="tool-group-tab-count">{groupTools.length}</span>
+                              <span
+                                className="tool-group-tab-rename"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingGroupId(group.id);
+                                  setEditingGroupName(group.name);
+                                }}
+                                title="Rename group"
+                              >
+                                &#9998;
+                              </span>
+                              <DeleteConfirmButton
+                                onDelete={() => {
+                                  handleDeleteGroup(group.id);
+                                  if (selectedGroupId === group.id) setSelectedGroupId(null);
+                                }}
+                                className="tool-group-tab-delete"
+                                title="Delete group"
+                              />
+                            </div>
+                          );
+                        })}
+                      {/* "Ungrouped" drop target — visible when dragging from within a group */}
+                      {dragToolId && selectedGroupId && (
+                        <div
+                          className={`tool-group-tab tool-group-tab-ungrouped${dragOverUngrouped ? ' drag-over' : ''}`}
+                          onDragOver={handleUngroupedDragOver}
+                          onDragLeave={handleUngroupedDragLeave}
+                          onDrop={handleUngroupedDrop}
+                        >
+                          Ungrouped
+                        </div>
+                      )}
+                    </div>
+                    <div className="tool-group-tabs-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="tool-group-tab tool-group-tab-add"
+                        onClick={handleCreateGroup}
+                        title="Create a new group"
+                      >
+                        + Add Group
+                      </button>
+                      <SearchFilterBar
+                        state={toolFilter}
+                        inputRef={toolFilterInputRef}
+                        placeholder="Filter tools by keyword..."
+                        ariaLabel="Filter tools by keyword"
+                        className="tool-group-filter-search"
+                        onClick={handleToolFilterClick}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Tool cards — filtered by selected group */}
+                  {showSelectedGroupEmptyState ? (
+                    <div className="tool-group-active-panel">
+                      <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
+                        No tools in this group yet. Drag tools here to add them.
+                      </p>
+                    </div>
+                  ) : showToolFilterEmptyState ? (
+                    <div
+                      className={
+                        selectedGroupId ? 'tool-group-active-panel' : 'tool-group-section-panel'
+                      }
+                    >
+                      <p className="muted" style={{ textAlign: 'center', margin: 0 }}>
+                        No tools match the current filters.
+                      </p>
+                    </div>
+                  ) : selectedGroupId && selectedGroup ? (
+                    <div className="tool-group-active-panel">
+                      <div
+                        className="tools-grid"
+                        onDragOver={(e) => (dragToolId ? handleGridDragOver(e) : undefined)}
+                        onDrop={(e) => (dragToolId ? handleGridDrop(e) : undefined)}
+                      >
+                        {renderToolCardsWithDropSlot()}
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={`tool-group-section-panel${showUngroupedDropZone ? ' tool-ungrouped-drop-zone' : ''}${dragOverUngrouped ? ' drag-over' : ''}`}
+                      onDragOver={(e) => {
+                        if (showUngroupedDropZone) handleUngroupedDragOver(e);
+                        if (dragToolId) handleGridDragOver(e);
+                      }}
+                      onDragLeave={showUngroupedDropZone ? handleUngroupedDragLeave : undefined}
+                      onDrop={(e) => {
+                        const draggedTool = tools.find((t) => t.id === dragToolId);
+                        if (showUngroupedDropZone && draggedTool?.group_id) handleUngroupedDrop(e);
+                        else if (dragToolId) handleGridDrop(e);
+                      }}
+                    >
+                      <div className="tools-grid">{renderToolCardsWithDropSlot()}</div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              </>
             )}
-            </div>
           </>
-        )}
-        </>
         )}
       </div>
 
@@ -1906,156 +2133,245 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
           <MountSourceWizard
             existingSource={editingMountSource}
             existingNames={mountSources.map((s) => s.name)}
-            onClose={() => { setShowMountSourceWizard(false); setEditingMountSource(null); }}
+            onClose={() => {
+              setShowMountSourceWizard(false);
+              setEditingMountSource(null);
+            }}
             onSaved={handleMountSourceWizardSaved}
             embedded={true}
           />
         ) : (
           <>
-        <p className="fieldset-help">
-          Define mount sources backed by SSH, filesystem, OneDrive, or Google Drive. Workspaces attach these sources without duplicating connection credentials.
-        </p>
+            <p className="fieldset-help">
+              Define mount sources backed by SSH, filesystem, OneDrive, or Google Drive. Workspaces
+              attach these sources without duplicating connection credentials.
+            </p>
 
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
-          {mountSources.length > 0 ? mountSources.map((source) => (
             <div
-              key={source.id}
-              className="card"
-              style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', opacity: source.enabled ? 1 : 0.6 }}
+              style={{
+                display: 'grid',
+                gap: 12,
+                gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
+              }}
             >
-              {(() => {
-                const sourceUnavailable = source.enabled && source.source_available === false;
-                const sourceUnavailableReason = source.source_unavailable_reason || 'Mount source is currently unavailable.';
-                const sourceNeedsOAuthReconnect = source.source_unavailable_kind === 'cloud_auth' && isCloudMountSource(source);
-                return (
-                  <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
-                  <HardDrive size={14} style={{ flexShrink: 0 }} />
-                  <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.name}</span>
-                  <span className="muted" style={{ fontSize: '0.8rem', flexShrink: 0 }}>
+              {mountSources.length > 0 ? (
+                mountSources.map((source) => (
+                  <div
+                    key={source.id}
+                    className="card"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                      padding: '12px 14px',
+                      opacity: source.enabled ? 1 : 0.6,
+                    }}
+                  >
                     {(() => {
-                      switch (source.source_type) {
-                        case 'ssh':
-                          return 'SSH';
-                        case 'microsoft_drive':
-                          return 'OneDrive';
-                        case 'google_drive':
-                          return 'Google Drive';
-                        default:
-                          return source.mount_backend.replace('_', ' ');
-                      }
-                    })()}
-                  </span>
-                  {sourceUnavailable && (
-                    <span className="userspace-status-pill userspace-status-pill-danger" style={{ fontSize: 11 }} title={sourceUnavailableReason}>
-                      Disconnected
-                    </span>
-                  )}
-                  {source.usage_count > 0 && (
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 600,
-                        padding: '1px 6px',
-                        borderRadius: 8,
-                        background: 'var(--color-accent)',
-                        color: 'var(--color-bg)',
-                        flexShrink: 0,
-                      }}
-                      title={`Used by ${source.usage_count} workspace${source.usage_count !== 1 ? 's' : ''}`}
-                    >
-                      {source.usage_count}
-                    </span>
-                  )}
-                </span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => { setEditingMountSource(source); setShowMountSourceWizard(true); }}
-                  >
-                    <Pencil size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => void handleDeleteMountSource(source.id)}
-                    disabled={mountSourceDeletingId === source.id}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                  <label className="toggle-switch" style={{ marginLeft: 2 }}>
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      onChange={() => void handleToggleMountSourceEnabled(source)}
-                      disabled={reconnectStartingMountSourceId === source.id}
-                    />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </span>
-              </div>
-              {sourceUnavailable && (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: 2, color: 'var(--color-error, #c0392b)', fontSize: 12 }}>
-                  <Icon name="alert-circle" size={12} />
-                  <span>
-                    {sourceUnavailableReason}
-                    {sourceNeedsOAuthReconnect && (
-                      <>
-                        {' '}
-                        <a
-                          href="#"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            void handleStartReconnectMountSource(source);
-                          }}
-                          style={{ color: 'inherit', textDecoration: 'underline' }}
-                        >
-                          Reconnect OAuth
-                        </a>
-                      </>
-                    )}
-                  </span>
-                </div>
-              )}
-              {source.approved_paths.length > 0 && (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {source.approved_paths.map((p) => {
-                    const displayPath = resolveSourceDisplayPath(p, undefined, { sourceType: source.source_type });
-                    return (
-                      <code key={p} style={{ fontSize: '0.8rem', padding: '2px 8px', background: 'var(--color-bg-tertiary)', borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                        {displayPath === '/'
-                          ? '/'
-                          : displayPath.split('/').filter(Boolean).map((seg, i) => (
-                            <span key={i}>
-                              <span style={{ opacity: 0.5 }}>/</span>{seg}
+                      const sourceUnavailable = source.enabled && source.source_available === false;
+                      const sourceUnavailableReason =
+                        source.source_unavailable_reason ||
+                        'Mount source is currently unavailable.';
+                      const sourceNeedsOAuthReconnect =
+                        source.source_unavailable_kind === 'cloud_auth' &&
+                        isCloudMountSource(source);
+                      return (
+                        <>
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: 8,
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                flex: 1,
+                                minWidth: 0,
+                              }}
+                            >
+                              <HardDrive size={14} style={{ flexShrink: 0 }} />
+                              <span
+                                style={{
+                                  fontWeight: 500,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {source.name}
+                              </span>
+                              <span className="muted" style={{ fontSize: '0.8rem', flexShrink: 0 }}>
+                                {(() => {
+                                  switch (source.source_type) {
+                                    case 'ssh':
+                                      return 'SSH';
+                                    case 'microsoft_drive':
+                                      return 'OneDrive';
+                                    case 'google_drive':
+                                      return 'Google Drive';
+                                    default:
+                                      return source.mount_backend.replace('_', ' ');
+                                  }
+                                })()}
+                              </span>
+                              {sourceUnavailable && (
+                                <span
+                                  className="userspace-status-pill userspace-status-pill-danger"
+                                  style={{ fontSize: 11 }}
+                                  title={sourceUnavailableReason}
+                                >
+                                  Disconnected
+                                </span>
+                              )}
+                              {source.usage_count > 0 && (
+                                <span
+                                  style={{
+                                    fontSize: '0.7rem',
+                                    fontWeight: 600,
+                                    padding: '1px 6px',
+                                    borderRadius: 8,
+                                    background: 'var(--color-accent)',
+                                    color: 'var(--color-bg)',
+                                    flexShrink: 0,
+                                  }}
+                                  title={`Used by ${source.usage_count} workspace${source.usage_count !== 1 ? 's' : ''}`}
+                                >
+                                  {source.usage_count}
+                                </span>
+                              )}
                             </span>
-                          ))
-                        }
-                      </code>
-                    );
-                  })}
-                </div>
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                flexShrink: 0,
+                              }}
+                            >
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => {
+                                  setEditingMountSource(source);
+                                  setShowMountSourceWizard(true);
+                                }}
+                              >
+                                <Pencil size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => void handleDeleteMountSource(source.id)}
+                                disabled={mountSourceDeletingId === source.id}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                              <label className="toggle-switch" style={{ marginLeft: 2 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={source.enabled}
+                                  onChange={() => void handleToggleMountSourceEnabled(source)}
+                                  disabled={reconnectStartingMountSourceId === source.id}
+                                />
+                                <span className="toggle-slider"></span>
+                              </label>
+                            </span>
+                          </div>
+                          {sourceUnavailable && (
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 6,
+                                marginTop: 2,
+                                color: 'var(--color-error, #c0392b)',
+                                fontSize: 12,
+                              }}
+                            >
+                              <Icon name="alert-circle" size={12} />
+                              <span>
+                                {sourceUnavailableReason}
+                                {sourceNeedsOAuthReconnect && (
+                                  <>
+                                    {' '}
+                                    <a
+                                      href="#"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        void handleStartReconnectMountSource(source);
+                                      }}
+                                      style={{ color: 'inherit', textDecoration: 'underline' }}
+                                    >
+                                      Reconnect OAuth
+                                    </a>
+                                  </>
+                                )}
+                              </span>
+                            </div>
+                          )}
+                          {source.approved_paths.length > 0 && (
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {source.approved_paths.map((p) => {
+                                const displayPath = resolveSourceDisplayPath(p, undefined, {
+                                  sourceType: source.source_type,
+                                });
+                                return (
+                                  <code
+                                    key={p}
+                                    style={{
+                                      fontSize: '0.8rem',
+                                      padding: '2px 8px',
+                                      background: 'var(--color-bg-tertiary)',
+                                      borderRadius: 4,
+                                      border: '1px solid var(--color-border)',
+                                    }}
+                                  >
+                                    {displayPath === '/'
+                                      ? '/'
+                                      : displayPath
+                                          .split('/')
+                                          .filter(Boolean)
+                                          .map((seg, i) => (
+                                            <span key={i}>
+                                              <span style={{ opacity: 0.5 }}>/</span>
+                                              {seg}
+                                            </span>
+                                          ))}
+                                  </code>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {isAutoSyncMountSource(source) &&
+                            source.sync_interval_seconds != null && (
+                              <span className="muted" style={{ fontSize: '0.75rem' }}>
+                                Sync interval:{' '}
+                                {formatMountSourceInterval(source.sync_interval_seconds)}
+                              </span>
+                            )}
+                          {(source.source_type === 'microsoft_drive' ||
+                            source.source_type === 'google_drive') &&
+                            source.account_email && (
+                              <span className="muted" style={{ fontSize: '0.75rem' }}>
+                                Account: {source.account_email}
+                              </span>
+                            )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                ))
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  No mount sources configured yet.
+                </p>
               )}
-              {isAutoSyncMountSource(source) && source.sync_interval_seconds != null && (
-                <span className="muted" style={{ fontSize: '0.75rem' }}>
-                  Sync interval: {formatMountSourceInterval(source.sync_interval_seconds)}
-                </span>
-              )}
-              {(source.source_type === 'microsoft_drive' || source.source_type === 'google_drive') && source.account_email && (
-                <span className="muted" style={{ fontSize: '0.75rem' }}>
-                  Account: {source.account_email}
-                </span>
-              )}
-                  </>
-                );
-              })()}
             </div>
-          )) : (
-            <p className="muted" style={{ margin: 0 }}>No mount sources configured yet.</p>
-          )}
-        </div>
           </>
         )}
       </div>
@@ -2076,31 +2392,66 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
               ) : (
                 <>
                   <p>
-                    Disabling <strong>{disableConfirmation.source.name}</strong> will immediately stop
-                    {disableConfirmation.source.source_type === 'ssh' ? ' SFTP sync' : ' mount access'} for
-                    {' '}<strong>{disableConfirmation.affected?.total_mounts ?? disableConfirmation.source.usage_count}</strong> mount{(disableConfirmation.affected?.total_mounts ?? disableConfirmation.source.usage_count) !== 1 ? 's' : ''} across
-                    {' '}<strong>{disableConfirmation.affected?.workspaces.length ?? '?'}</strong> workspace{(disableConfirmation.affected?.workspaces.length ?? 0) !== 1 ? 's' : ''}.
+                    Disabling <strong>{disableConfirmation.source.name}</strong> will immediately
+                    stop
+                    {disableConfirmation.source.source_type === 'ssh'
+                      ? ' SFTP sync'
+                      : ' mount access'}{' '}
+                    for{' '}
+                    <strong>
+                      {disableConfirmation.affected?.total_mounts ??
+                        disableConfirmation.source.usage_count}
+                    </strong>{' '}
+                    mount
+                    {(disableConfirmation.affected?.total_mounts ??
+                      disableConfirmation.source.usage_count) !== 1
+                      ? 's'
+                      : ''}{' '}
+                    across <strong>{disableConfirmation.affected?.workspaces.length ?? '?'}</strong>{' '}
+                    workspace
+                    {(disableConfirmation.affected?.workspaces.length ?? 0) !== 1 ? 's' : ''}.
                   </p>
-                  {disableConfirmation.affected && disableConfirmation.affected.workspaces.length > 0 && (
-                    <div style={{ maxHeight: 200, overflowY: 'auto', margin: '12px 0', border: '1px solid var(--color-border)', borderRadius: 6 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                        <thead>
-                          <tr style={{ borderBottom: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}>
-                            <th style={{ padding: '6px 10px', textAlign: 'left' }}>Workspace</th>
-                            <th style={{ padding: '6px 10px', textAlign: 'right' }}>Mounts</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {disableConfirmation.affected.workspaces.map((ws) => (
-                            <tr key={ws.workspace_id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                              <td style={{ padding: '6px 10px' }}>{ws.workspace_name}</td>
-                              <td style={{ padding: '6px 10px', textAlign: 'right' }}>{ws.mount_count}</td>
+                  {disableConfirmation.affected &&
+                    disableConfirmation.affected.workspaces.length > 0 && (
+                      <div
+                        style={{
+                          maxHeight: 200,
+                          overflowY: 'auto',
+                          margin: '12px 0',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 6,
+                        }}
+                      >
+                        <table
+                          style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}
+                        >
+                          <thead>
+                            <tr
+                              style={{
+                                borderBottom: '1px solid var(--color-border)',
+                                background: 'var(--color-bg-tertiary)',
+                              }}
+                            >
+                              <th style={{ padding: '6px 10px', textAlign: 'left' }}>Workspace</th>
+                              <th style={{ padding: '6px 10px', textAlign: 'right' }}>Mounts</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                          </thead>
+                          <tbody>
+                            {disableConfirmation.affected.workspaces.map((ws) => (
+                              <tr
+                                key={ws.workspace_id}
+                                style={{ borderBottom: '1px solid var(--color-border)' }}
+                              >
+                                <td style={{ padding: '6px 10px' }}>{ws.workspace_name}</td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right' }}>
+                                  {ws.mount_count}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   <p className="field-help" style={{ margin: '8px 0 0' }}>
                     {disableConfirmation.source.source_type === 'ssh'
                       ? 'Auto-sync will be stopped for all affected mounts. Re-enabling the source will allow mounts to resume syncing.'
@@ -2137,20 +2488,19 @@ export function ToolsPanel({ onSchemaJobTriggered, schemaJobs = [], highlightSec
             </div>
             <div className="modal-body">
               <p>
-                Are you sure you want to enable write access for <strong>{writeConfirmTool.name}</strong>?
+                Are you sure you want to enable write access for{' '}
+                <strong>{writeConfirmTool.name}</strong>?
               </p>
               <p className="field-help" style={{ marginTop: 8 }}>
-                This allows the AI to modify data, run destructive queries, and make changes to the connected system.
+                This allows the AI to modify data, run destructive queries, and make changes to the
+                connected system.
               </p>
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setWriteConfirmTool(null)}>
                 Cancel
               </button>
-              <button
-                className="btn btn-danger"
-                onClick={() => void handleConfirmWriteEnable()}
-              >
+              <button className="btn btn-danger" onClick={() => void handleConfirmWriteEnable()}>
                 Enable Write Access
               </button>
             </div>

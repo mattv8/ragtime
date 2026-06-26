@@ -1,4 +1,12 @@
-import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  type ReactNode,
+} from 'react';
 import type { AvailableModel, AvailableModelsResponse } from '@/types';
 
 /** How long to wait before aborting a model-fetch request. */
@@ -16,9 +24,15 @@ interface AvailableModelsContextValue {
   /** Last fetch error message, when model discovery fails. */
   error: string | null;
   /** Readiness details for provider/model availability checks. */
-  readiness: Pick<AvailableModelsResponse, 'models_loading' | 'copilot_refresh_in_progress' | 'provider_states'> | null;
+  readiness: Pick<
+    AvailableModelsResponse,
+    'models_loading' | 'copilot_refresh_in_progress' | 'provider_states'
+  > | null;
   /** Metadata returned alongside models (default/current model, allowed list). */
-  meta: Pick<AvailableModelsResponse, 'default_model' | 'current_model' | 'discovered_model_identifiers' | 'allowed_models'> | null;
+  meta: Pick<
+    AvailableModelsResponse,
+    'default_model' | 'current_model' | 'discovered_model_identifiers' | 'allowed_models'
+  > | null;
   /** Trigger a (re)fetch. Safe to call multiple times; concurrent calls are coalesced. */
   refresh: () => void;
   /**
@@ -64,9 +78,9 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   >([]);
 
   const isSettled = useCallback(() => {
-    return !inflightRef.current
-      && !readiness?.models_loading
-      && !readiness?.copilot_refresh_in_progress;
+    return (
+      !inflightRef.current && !readiness?.models_loading && !readiness?.copilot_refresh_in_progress
+    );
   }, [readiness?.copilot_refresh_in_progress, readiness?.models_loading]);
 
   const resolveWaiters = useCallback(
@@ -95,81 +109,87 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const doFetch = useCallback(async (reason: 'manual' | 'poll' = 'manual') => {
-    if (inflightRef.current) {
-      pendingRefreshRef.current = true;
-      return;
-    }
-
-    // Coalesce rapid manual refresh calls (e.g. StrictMode mount + immediate UI-triggered refresh).
-    if (
-      reason === 'manual'
-      && models.length > 0
-      && Date.now() - lastSuccessfulFetchAtRef.current < MODEL_MANUAL_REFRESH_COOLDOWN_MS
-    ) {
-      return;
-    }
-
-    inflightRef.current = true;
-    pendingRefreshRef.current = false;
-
-    // Cancel any previous in-flight request.
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setLoading(true);
-    const timeoutId = setTimeout(() => controller.abort(), MODEL_FETCH_TIMEOUT_MS);
-
-    try {
-      const response = await fetch('/indexes/chat/available-models', {
-        credentials: 'include',
-        signal: controller.signal,
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        throw new Error(`Model fetch failed: ${response.status}`);
+  const doFetch = useCallback(
+    async (reason: 'manual' | 'poll' = 'manual') => {
+      if (inflightRef.current) {
+        pendingRefreshRef.current = true;
+        return;
       }
-      const data: AvailableModelsResponse = await response.json();
-      setModels(data.models);
-      setError(null);
-      setReadiness({
-        models_loading: data.models_loading ?? false,
-        copilot_refresh_in_progress: data.copilot_refresh_in_progress ?? false,
-        provider_states: data.provider_states ?? [],
-      });
-      setMeta({
-        default_model: data.default_model,
-        current_model: data.current_model,
-        discovered_model_identifiers: data.discovered_model_identifiers ?? [],
-        allowed_models: data.allowed_models,
-      });
-      lastSuccessfulFetchAtRef.current = Date.now();
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        const errorMessage = err instanceof Error ? err.message : 'Failed to load available models';
-        setError(errorMessage);
-        setReadiness(prev => prev
-          ? {
-              ...prev,
-              models_loading: false,
-              copilot_refresh_in_progress: false,
-            }
-          : prev);
-        console.error('Failed to load available models:', err);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      setLoading(false);
-      inflightRef.current = false;
 
-      // If another refresh was requested while we were fetching, run it now.
-      if (pendingRefreshRef.current) {
-        pendingRefreshRef.current = false;
-        void doFetch('manual');
+      // Coalesce rapid manual refresh calls (e.g. StrictMode mount + immediate UI-triggered refresh).
+      if (
+        reason === 'manual' &&
+        models.length > 0 &&
+        Date.now() - lastSuccessfulFetchAtRef.current < MODEL_MANUAL_REFRESH_COOLDOWN_MS
+      ) {
+        return;
       }
-    }
-  }, [models.length]);
+
+      inflightRef.current = true;
+      pendingRefreshRef.current = false;
+
+      // Cancel any previous in-flight request.
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setLoading(true);
+      const timeoutId = setTimeout(() => controller.abort(), MODEL_FETCH_TIMEOUT_MS);
+
+      try {
+        const response = await fetch('/indexes/chat/available-models', {
+          credentials: 'include',
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        if (!response.ok) {
+          throw new Error(`Model fetch failed: ${response.status}`);
+        }
+        const data: AvailableModelsResponse = await response.json();
+        setModels(data.models);
+        setError(null);
+        setReadiness({
+          models_loading: data.models_loading ?? false,
+          copilot_refresh_in_progress: data.copilot_refresh_in_progress ?? false,
+          provider_states: data.provider_states ?? [],
+        });
+        setMeta({
+          default_model: data.default_model,
+          current_model: data.current_model,
+          discovered_model_identifiers: data.discovered_model_identifiers ?? [],
+          allowed_models: data.allowed_models,
+        });
+        lastSuccessfulFetchAtRef.current = Date.now();
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          const errorMessage =
+            err instanceof Error ? err.message : 'Failed to load available models';
+          setError(errorMessage);
+          setReadiness((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  models_loading: false,
+                  copilot_refresh_in_progress: false,
+                }
+              : prev,
+          );
+          console.error('Failed to load available models:', err);
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        setLoading(false);
+        inflightRef.current = false;
+
+        // If another refresh was requested while we were fetching, run it now.
+        if (pendingRefreshRef.current) {
+          pendingRefreshRef.current = false;
+          void doFetch('manual');
+        }
+      }
+    },
+    [models.length],
+  );
 
   const refresh = useCallback(() => {
     void doFetch('manual');
@@ -206,9 +226,7 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     clearPollTimer();
-    const shouldPoll = Boolean(
-      readiness?.models_loading || readiness?.copilot_refresh_in_progress,
-    );
+    const shouldPoll = Boolean(readiness?.models_loading || readiness?.copilot_refresh_in_progress);
     if (!shouldPoll) {
       return;
     }
@@ -229,7 +247,9 @@ export function AvailableModelsProvider({ children }: { children: ReactNode }) {
   }, [clearPollTimer]);
 
   return (
-    <AvailableModelsContext.Provider value={{ models, loading, error, readiness, meta, refresh, awaitReady }}>
+    <AvailableModelsContext.Provider
+      value={{ models, loading, error, readiness, meta, refresh, awaitReady }}
+    >
       {children}
     </AvailableModelsContext.Provider>
   );
