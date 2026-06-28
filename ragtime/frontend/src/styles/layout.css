@@ -369,12 +369,6 @@ body.authenticated-webgl-background-active #root {
   background: var(--color-primary-light);
 }
 
-.topnav-user {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-}
-
 .topnav-actions {
   display: flex;
   align-items: center;
@@ -594,14 +588,6 @@ body.authenticated-webgl-background-active #root {
   color: var(--color-text-primary);
 }
 
-.topnav-username {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
 .admin-badge {
   background: var(--color-primary);
   color: white;
@@ -611,15 +597,6 @@ body.authenticated-webgl-background-active #root {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-.logout-btn {
-  color: var(--color-text-muted) !important;
-}
-
-.logout-btn:hover {
-  color: var(--color-error) !important;
-  background: var(--color-error-light) !important;
 }
 
 /* Theme Toggle in Nav */
@@ -988,11 +965,6 @@ body.authenticated-webgl-background-active #root {
   overflow: hidden;
 }
 
-.index-title-row {
-  justify-content: space-between;
-  width: 100%;
-}
-
 /* =============================================================================
    TOOLS PANEL & GRID
    ============================================================================= */
@@ -1108,14 +1080,21 @@ body.authenticated-webgl-background-active #root {
   width: 100%;
   flex: 1;
   min-width: 0;
+  margin-top: -5px;
+  margin-left: -9px;
+  margin-right: -9px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
 }
 
 .tool-card-connection-sub {
   font-size: 11px;
   color: var(--color-text-muted);
   font-family: var(--font-mono);
-  background: var(--color-bg-tertiary);
-  padding: 1px 6px;
+  background: var(--color-surface-hover);
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   display: inline-block;
   margin-top: 4px;
@@ -1171,8 +1150,8 @@ body.authenticated-webgl-background-active #root {
 .tool-card-description {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
-  margin-bottom: var(--space-sm);
-  line-height: var(--leading-normal);
+  margin-bottom: var(--space-md);
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
@@ -1216,16 +1195,6 @@ body.authenticated-webgl-background-active #root {
   margin-bottom: var(--space-sm);
 }
 
-.tool-card-connection-sub {
-  font-size: 11px;
-  padding: 2px 6px;
-  background: var(--color-surface-hover);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-}
-
 .write-mode-toggle {
   display: inline-flex;
   align-items: center;
@@ -1255,11 +1224,6 @@ body.authenticated-webgl-background-active #root {
 .write-mode-toggle.active,
 .write-mode-toggle.active:hover {
   color: var(--color-warning);
-}
-
-.tool-card-description {
-  margin-bottom: var(--space-md);
-  line-height: 1.5;
 }
 
 .tool-card-schema-stats {
@@ -1359,15 +1323,6 @@ body.authenticated-webgl-background-active #root {
   margin-left: -11px;
   margin-right: -11px;
   padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-}
-
-.name-wrapper {
-  margin-top: -5px;
-  margin-left: -9px;
-  margin-right: -9px;
-  padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
 }

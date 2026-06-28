@@ -94,22 +94,9 @@
   background: #16a34a;
 }
 
-.btn-warning {
-  background: var(--color-warning);
-}
-
-.btn-warning:hover:not(:disabled) {
-  background: #d97706;
-}
-
 .btn-sm {
   padding: 6px 12px;
   font-size: var(--text-xs);
-}
-
-.btn-lg {
-  padding: 14px 28px;
-  font-size: var(--text-base);
 }
 
 .btn-icon {
@@ -257,9 +244,8 @@ textarea:focus {
   background: var(--color-bg-primary);
 }
 
+.chat-panel-fullscreen,
 .userspace-layout.userspace-fullscreen {
-  max-width: none;
-  margin: 0;
   width: auto;
   position: fixed;
   top: 1rem;
@@ -270,6 +256,11 @@ textarea:focus {
   z-index: 500;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
+}
+
+.userspace-layout.userspace-fullscreen {
+  max-width: none;
+  margin: 0;
   background: var(--color-bg-primary);
 }
 

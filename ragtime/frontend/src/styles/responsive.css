@@ -87,10 +87,6 @@
     font-size: var(--text-sm);
   }
 
-  .topnav-user {
-    gap: var(--space-sm);
-  }
-
   .warnings-banner-compact .warnings-banner-content {
     flex-wrap: wrap;
     align-items: flex-start;
@@ -98,10 +94,6 @@
 
   .warnings-banner-dismiss {
     margin-left: 0;
-  }
-
-  .topnav-username {
-    font-size: var(--text-xs);
   }
 
   .admin-badge {
@@ -861,17 +853,6 @@
     min-width: 80px;
   }
 
-  .chat-model-badge,
-  .chat-background-indicator {
-    font-size: 0.6rem;
-    padding: 2px 6px;
-  }
-
-  .chat-model-select {
-    max-width: 120px;
-    font-size: 0.65rem;
-  }
-
   .chat-workspace-conversation-picker {
     min-width: 120px;
     max-width: 180px;
@@ -955,13 +936,6 @@
   .btn-attach-menu {
     width: 34px;
     height: 34px;
-  }
-
-  .chat-send-btn,
-  .chat-stop-btn {
-    flex: 1;
-    padding: var(--space-sm) var(--space-md);
-    min-width: auto;
   }
 
   .userspace-toolbar-group,

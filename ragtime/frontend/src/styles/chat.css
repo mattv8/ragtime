@@ -12,16 +12,6 @@
   position: relative;
 }
 .chat-panel-fullscreen {
-  position: fixed;
-  top: 1rem;
-  left: 1rem;
-  right: 1rem;
-  bottom: 1rem;
-  width: auto;
-  height: auto;
-  z-index: 500;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
   background: var(--color-surface);
 }
 /* Embedded mode: no sidebar, no border, fills parent */
@@ -67,9 +57,6 @@
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-}
-.chat-sidebar-header {
-  display: none;
 }
 /* Conversation List */
 .chat-conversation-list {
@@ -744,59 +731,6 @@ textarea.chat-header-title-input {
 .chat-workspace-conversation-item {
   font-size: var(--text-sm);
 }
-.chat-model-badge {
-  font-size: var(--text-xs);
-  padding: 4px var(--space-sm);
-  background: var(--color-primary-light);
-  border-radius: var(--radius-sm);
-  color: var(--color-primary);
-}
-.chat-background-indicator {
-  font-size: var(--text-xs);
-  padding: 4px var(--space-sm);
-  background: var(--color-warning-light);
-  border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-warning);
-  animation: pulse 1.5s ease-in-out infinite;
-  white-space: nowrap;
-}
-.chat-model-select {
-  font-size: var(--text-xs);
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  color: var(--color-text-primary);
-  cursor: pointer;
-  max-width: 200px;
-  transition: all var(--transition-fast);
-  font-weight: 500;
-}
-.chat-model-select:hover:not(:disabled) {
-  background: var(--color-surface-hover);
-  border-color: var(--color-text-muted);
-}
-.chat-model-select:focus {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
-.chat-model-select:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.chat-model-select optgroup {
-  font-weight: 600;
-  font-size: var(--text-xs);
-  color: var(--color-text-primary);
-  background: var(--color-surface);
-  padding: 4px 0;
-}
-.chat-model-select option {
-  padding: 4px 12px;
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-}
 /* =============================================================================
    MODEL SELECTOR (Custom Dropdown with Hover Submenus)
    ============================================================================= */
@@ -1254,32 +1188,6 @@ textarea.chat-header-title-input {
 .chat-header-actions .context-usage-pie {
   width: 30px !important;
   height: 30px !important;
-}
-.chat-context-meter {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  min-width: 110px;
-}
-.chat-context-track {
-  width: 56px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--color-border);
-  overflow: hidden;
-}
-.chat-context-fill {
-  height: 100%;
-  background: var(--color-success);
-  transition:
-    width var(--transition-fast),
-    background-color var(--transition-fast);
-}
-.chat-context-label {
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  min-width: 34px;
-  text-align: right;
 }
 .chat-toggle-control {
   display: flex;
@@ -2099,11 +2007,6 @@ textarea.chat-header-title-input {
 .chat-stop-btn-inline:hover {
   background: #dc2626;
   transform: scale(1.05);
-}
-/* Remove old button styles */
-.chat-send-btn,
-.chat-stop-btn {
-  display: none;
 }
 /* Continue Button */
 .chat-continue-inline {
