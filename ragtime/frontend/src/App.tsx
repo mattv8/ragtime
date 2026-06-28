@@ -76,6 +76,7 @@ function getInitialConversationId(): string | null {
 }
 
 const INDEXER_ACTIVE_POLL_MS = 2000;
+const ENCRYPTION_KEY_ERROR_DISMISS_KEY = 'ragtime_encryption_key_error';
 
 /**
  * Check if URL contains OAuth authorization parameters.
@@ -284,30 +285,34 @@ export function App() {
     return unsubscribe;
   }, [forceLoginScreen]);
 
-  // Load server name and embedding dimensions from settings
-  useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const { settings, configuration_warnings } = await api.getSettings();
-        const configuredServerName = (settings.server_name || '').trim();
-        const resolvedServerName = configuredServerName || 'Ragtime';
-        setServerName(resolvedServerName);
-        document.title = resolvedServerName;
-        setAuthenticatedWebglBackgroundEnabled(
-          settings.authenticated_webgl_background_enabled ?? true,
-        );
-        // Also load aggregate_search setting
-        setAggregateSearch(settings.aggregate_search ?? true);
-        // Load embedding dimensions for memory calculation
-        setEmbeddingDimensions(settings.embedding_dimensions ?? null);
-        // Store configuration warnings
-        setConfigurationWarnings(configuration_warnings ?? []);
-      } catch {
-        // Ignore errors, use default name
+  const refreshConfigurationWarnings = useCallback(async () => {
+    try {
+      const { settings, configuration_warnings } = await api.getSettings();
+      const configuredServerName = (settings.server_name || '').trim();
+      const resolvedServerName = configuredServerName || 'Ragtime';
+      const nextWarnings = configuration_warnings ?? [];
+
+      setServerName(resolvedServerName);
+      document.title = resolvedServerName;
+      setAuthenticatedWebglBackgroundEnabled(
+        settings.authenticated_webgl_background_enabled ?? true,
+      );
+      setAggregateSearch(settings.aggregate_search ?? true);
+      setEmbeddingDimensions(settings.embedding_dimensions ?? null);
+      setConfigurationWarnings(nextWarnings);
+
+      const hasEncryptionWarning = nextWarnings.some(
+        (warning) => warning.category === 'encryption',
+      );
+      if (!hasEncryptionWarning) {
+        window.sessionStorage.removeItem(ENCRYPTION_KEY_ERROR_DISMISS_KEY);
       }
-    };
-    loadSettings();
+    } catch {}
   }, []);
+
+  useEffect(() => {
+    void refreshConfigurationWarnings();
+  }, [refreshConfigurationWarnings]);
 
   // Callback to update server name from SettingsPanel
   const handleServerNameChange = useCallback((name: string) => {
@@ -938,6 +943,7 @@ export function App() {
         <WarningsBanner
           title="Encryption Key Error"
           warnings={encryptionKeyErrorMessages}
+          dismissKey={ENCRYPTION_KEY_ERROR_DISMISS_KEY}
           hidden={hideChrome || !isAdmin}
         />
         <WarningsBanner
@@ -1001,6 +1007,7 @@ export function App() {
               onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
               onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
               onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
+              onSettingsSaved={refreshConfigurationWarnings}
               highlightSetting={highlightSetting}
               onHighlightComplete={() => setHighlightSetting(null)}
               authStatus={authStatus}

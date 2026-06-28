@@ -152,6 +152,22 @@ def decrypt_secret(encrypted: str) -> str:
         return ""
 
 
+def attempt_decrypt(encrypted: str) -> bool:
+    if not encrypted:
+        return True
+
+    if not encrypted.startswith(ENCRYPTED_PREFIX):
+        return True
+
+    try:
+        fernet = _get_fernet()
+        encrypted_data = encrypted[len(ENCRYPTED_PREFIX) :]
+        fernet.decrypt(encrypted_data.encode())
+    except Exception:
+        return False
+    return True
+
+
 def is_encrypted(value: str) -> bool:
     """Check if a value is encrypted (has the enc:: prefix)."""
     return value.startswith(ENCRYPTED_PREFIX) if value else False

@@ -80,7 +80,8 @@ from ragtime.core.embedding_models import (
     OPENAI_EMBEDDING_PRIORITY,
     get_embedding_models,
 )
-from ragtime.core.encryption import decrypt_secret
+from ragtime.core.encryption import decrypt_secret, encryption_key_mismatch_detected
+from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
 from ragtime.core.git import fetch_branches as git_fetch_branches
@@ -1923,6 +1924,9 @@ async def get_settings(_user: User = Depends(require_admin)):
         chunk_count = sum(int(getattr(idx, "chunkCount", 0) or 0) for idx in indexes)
     except Exception:
         pass
+
+    if encryption_key_mismatch_detected():
+        await recheck_encryption_key_health()
 
     warnings = await settings.get_configuration_warnings(chunk_count=chunk_count)
 

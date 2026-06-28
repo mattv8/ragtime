@@ -482,6 +482,7 @@ interface SettingsPanelProps {
   onAuthenticatedWebglBackgroundChange?: (enabled: boolean) => void;
   onChatCompactionThresholdChange?: (threshold: number) => void;
   onChatAutoCompactionThresholdChange?: (threshold: number) => void;
+  onSettingsSaved?: () => Promise<void> | void;
   /** Setting ID to highlight and scroll to (e.g., 'sequential_index_loading') */
   highlightSetting?: string | null;
   /** Called after highlight animation completes to clear the param */
@@ -496,6 +497,7 @@ export function SettingsPanel({
   onAuthenticatedWebglBackgroundChange,
   onChatCompactionThresholdChange,
   onChatAutoCompactionThresholdChange,
+  onSettingsSaved,
   highlightSetting,
   onHighlightComplete,
   authStatus,
@@ -2496,6 +2498,7 @@ export function SettingsPanel({
       onAuthenticatedWebglBackgroundChange?.(
         updated.authenticated_webgl_background_enabled ?? true,
       );
+      await onSettingsSaved?.();
       toast.success('Server branding saved');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save branding settings');
@@ -2566,6 +2569,7 @@ export function SettingsPanel({
         ...prev,
         ...getEmbeddingSettingsFormData(updated),
       }));
+      await onSettingsSaved?.();
       toast.success('Embedding configuration saved');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save embedding settings');
@@ -2669,6 +2673,7 @@ export function SettingsPanel({
       setSettings(updated);
       onChatCompactionThresholdChange?.(updated.chat_compaction_threshold_percent ?? 80);
       onChatAutoCompactionThresholdChange?.(updated.chat_auto_compaction_threshold_percent ?? 99);
+      await onSettingsSaved?.();
       toast.success('LLM configuration saved');
       refreshModels();
       await refreshDefaultChatModelPreview();
@@ -2704,6 +2709,7 @@ export function SettingsPanel({
         archive_max_total_size_bytes: updated.archive_max_total_size_bytes,
         archive_max_file_count: updated.archive_max_file_count,
       }));
+      await onSettingsSaved?.();
       toast.success(
         'Search configuration saved. Restart the server to apply changes to search tools.',
         5000,
@@ -2795,6 +2801,7 @@ export function SettingsPanel({
         mcp_default_route_client_id: updated.mcp_default_route_client_id ?? '',
         mcp_default_route_password: updated.mcp_default_route_password ?? '',
       }));
+      await onSettingsSaved?.();
       toast.success('MCP configuration saved.', 5000);
     } catch (err) {
       setMcpError(err instanceof Error ? err.message : 'Failed to save MCP settings');
@@ -3034,6 +3041,7 @@ export function SettingsPanel({
         ...prev,
         userspace_preview_sandbox_flags: updated.userspace_preview_sandbox_flags,
       }));
+      await onSettingsSaved?.();
       toast.success('User Space preview sandbox settings saved.', 5000);
     } catch (err) {
       toast.error(
@@ -3083,6 +3091,7 @@ export function SettingsPanel({
         userspace_primitive_archive_max_entries: updated.userspace_primitive_archive_max_entries,
         http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
+      await onSettingsSaved?.();
       toast.success('User Space settings saved.', 5000);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save User Space settings');

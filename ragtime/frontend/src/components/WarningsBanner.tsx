@@ -36,7 +36,7 @@ export function WarningsBanner({
     }
     const storage = persistDismiss ? window.localStorage : window.sessionStorage;
     setDismissed(storage.getItem(dismissKey) === 'true');
-  }, [dismissKey, persistDismiss]);
+  }, [dismissKey, persistDismiss, warnings]);
 
   if (warnings.length === 0) return null;
   if (hidden || dismissed) return null;
