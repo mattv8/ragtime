@@ -100,3 +100,4 @@ ragtime/indexer/static/dist/
 .playwright-mcp/
 .swarm/
 .opencode/
+.omo/
