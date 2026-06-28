@@ -135,7 +135,7 @@ export function IndexConfigFields({
             max={10000}
             disabled={isLoading}
           />
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
             Files larger than this are skipped
           </small>
         </div>
@@ -154,7 +154,7 @@ export function IndexConfigFields({
               max={480}
               disabled={isLoading}
             />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
               Auto-scales with history depth
             </small>
           </div>
@@ -182,7 +182,7 @@ export function IndexConfigFields({
                   : `${gitHistoryDepth} commits`}
             </span>
           </div>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
             {gitHistoryDepth === 0
               ? `Full history: Indexes all commits.${commitHistory?.total_commits ? ` (${commitHistory.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
               : gitHistoryDepth === 1

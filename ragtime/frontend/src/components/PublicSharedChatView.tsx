@@ -450,7 +450,11 @@ function SharedChatSurface({
                       {addingToChats ? 'Adding...' : 'Add this chat'}
                     </button>
                   ))}
-                <UserMenu user={currentUser} onLogout={onLogout} />
+                <UserMenu
+                  user={currentUser}
+                  onLogout={onLogout}
+                  defaultThemePack={authStatus?.default_theme_pack}
+                />
               </>
             ) : (
               <button className="topnav-link" onClick={() => setShowLogin((previous) => !previous)}>

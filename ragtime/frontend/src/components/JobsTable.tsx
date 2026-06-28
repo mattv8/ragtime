@@ -578,7 +578,7 @@ export function JobsTable({
               left: '10px',
               top: '50%',
               transform: 'translateY(-50%)',
-              color: 'var(--text-secondary)',
+              color: 'var(--color-text-secondary)',
             }}
           />
           <input
@@ -601,7 +601,7 @@ export function JobsTable({
       {loading && allJobs.length === 0 && <div className="empty-state">Loading...</div>}
 
       {error && (
-        <div className="empty-state" style={{ color: '#f87171' }}>
+        <div className="empty-state" style={{ color: 'var(--color-error)' }}>
           Error loading jobs: {error}
         </div>
       )}

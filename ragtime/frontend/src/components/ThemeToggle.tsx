@@ -1,25 +1,17 @@
 import { Moon, Sun } from 'lucide-react';
 import { useEffect, useState } from 'react';
-
-type Theme = 'light' | 'dark' | 'system';
+import {
+  type ColorMode,
+  getStoredColorMode,
+  setColorMode,
+  resolveEffectiveColorMode,
+} from '@/theme';
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const stored = localStorage.getItem('ragtime-theme') as Theme | null;
-    return stored || 'system';
-  });
+  const [theme, setTheme] = useState<ColorMode>(() => getStoredColorMode());
 
   useEffect(() => {
-    const root = document.documentElement;
-
-    if (theme === 'system') {
-      // Remove data-theme to let CSS @media handle it
-      root.removeAttribute('data-theme');
-      localStorage.removeItem('ragtime-theme');
-    } else {
-      root.setAttribute('data-theme', theme);
-      localStorage.setItem('ragtime-theme', theme);
-    }
+    setColorMode(theme);
   }, [theme]);
 
   const cycleTheme = () => {
@@ -30,15 +22,7 @@ export function ThemeToggle() {
     });
   };
 
-  // Determine the effective theme for the icon display
-  const getEffectiveTheme = (): 'light' | 'dark' => {
-    if (theme === 'system') {
-      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-    }
-    return theme;
-  };
-
-  const effectiveTheme = getEffectiveTheme();
+  const effectiveTheme = resolveEffectiveColorMode(theme);
 
   return (
     <button

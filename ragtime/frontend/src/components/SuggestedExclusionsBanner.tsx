@@ -23,15 +23,17 @@ export function SuggestedExclusionsBanner({
     return (
       <div
         style={{
-          background: 'rgba(34, 197, 94, 0.1)',
-          border: '1px solid rgba(34, 197, 94, 0.3)',
+          background: 'var(--color-success-light)',
+          border: '1px solid var(--color-success-border)',
           borderRadius: '8px',
           padding: '12px',
           marginBottom: '16px',
         }}
       >
-        <strong style={{ color: '#22c55e' }}>Exclusions applied!</strong>
-        <span style={{ marginLeft: '8px', color: '#94a3b8', fontSize: '0.9rem' }}>
+        <strong style={{ color: 'var(--color-success)' }}>Exclusions applied!</strong>
+        <span
+          style={{ marginLeft: '8px', color: 'var(--color-text-secondary)', fontSize: '0.9rem' }}
+        >
           Click "Re-analyze" to see the updated estimates.
         </span>
       </div>
@@ -41,15 +43,15 @@ export function SuggestedExclusionsBanner({
   return (
     <div
       style={{
-        background: 'rgba(96, 165, 250, 0.1)',
-        border: '1px solid rgba(96, 165, 250, 0.3)',
+        background: 'var(--color-info-light)',
+        border: '1px solid var(--color-info-border)',
         borderRadius: '8px',
         padding: '12px',
         marginBottom: '16px',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-        <strong style={{ color: '#60a5fa' }}>Suggested Exclusions:</strong>
+        <strong style={{ color: 'var(--color-accent)' }}>Suggested Exclusions:</strong>
         <button
           type="button"
           className="btn btn-sm"
@@ -59,7 +61,13 @@ export function SuggestedExclusionsBanner({
           Apply All
         </button>
       </div>
-      <code style={{ fontSize: '0.85rem', color: '#94a3b8', wordBreak: 'break-word' }}>
+      <code
+        style={{
+          fontSize: '0.85rem',
+          color: 'var(--color-text-secondary)',
+          wordBreak: 'break-word',
+        }}
+      >
         {exclusions.join(', ')}
       </code>
     </div>

@@ -57,7 +57,9 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
-            <p style={{ fontSize: '0.9rem', color: '#888', marginBottom: '16px' }}>
+            <p
+              style={{ fontSize: '0.9rem', color: 'var(--color-text-muted)', marginBottom: '16px' }}
+            >
               Search weight influences how the AI prioritizes results from this index relative to
               others.
             </p>
@@ -80,7 +82,7 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
                   display: 'flex',
                   justifyContent: 'space-between',
                   fontSize: '0.75rem',
-                  color: '#666',
+                  color: 'var(--color-text-muted)',
                 }}
               >
                 <span>0 (lowest)</span>
@@ -91,8 +93,8 @@ function EditWeightModal({ index, onSave, onClose, saving }: WeightModalProps) {
             <div
               style={{
                 fontSize: '0.85rem',
-                color: '#888',
-                background: 'rgba(0,0,0,0.2)',
+                color: 'var(--color-text-muted)',
+                background: 'var(--color-bg-tertiary)',
                 padding: '12px',
                 borderRadius: '6px',
               }}
@@ -520,7 +522,7 @@ export function IndexesList({
               marginTop: '0.5rem',
               marginBottom: '1rem',
               padding: '0.75rem',
-              backgroundColor: 'rgba(255,255,255,0.05)',
+              backgroundColor: 'var(--color-surface)',
               borderRadius: '4px',
             }}
           >
@@ -590,7 +592,7 @@ export function IndexesList({
           {loading && indexes.length === 0 && <div className="empty-state">Loading...</div>}
 
           {error && (
-            <div className="empty-state" style={{ color: '#f87171' }}>
+            <div className="empty-state" style={{ color: 'var(--color-error)' }}>
               Error loading indexes: {error}
             </div>
           )}
@@ -843,14 +845,14 @@ export function IndexesList({
                   </button>
                 </div>
                 <div className="modal-body">
-                  <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
+                  <p style={{ marginBottom: '16px', color: 'var(--color-text-secondary)' }}>
                     Re-index <strong>{reindexingIndex.name}</strong> from Git repository.
                   </p>
                   <div
                     style={{
                       marginBottom: '16px',
                       padding: '12px',
-                      background: 'var(--bg-tertiary)',
+                      background: 'var(--color-bg-tertiary)',
                       borderRadius: '8px',
                       fontSize: '13px',
                     }}
@@ -871,9 +873,9 @@ export function IndexesList({
                       style={{
                         marginBottom: '16px',
                         padding: '12px',
-                        background: 'var(--bg-tertiary)',
+                        background: 'var(--color-bg-tertiary)',
                         borderRadius: '8px',
-                        color: 'var(--text-secondary)',
+                        color: 'var(--color-text-secondary)',
                       }}
                     >
                       Checking repository access...
@@ -888,12 +890,12 @@ export function IndexesList({
                         style={{
                           marginBottom: '16px',
                           padding: '12px',
-                          background: 'rgba(34, 197, 94, 0.1)',
+                          background: 'var(--color-success-light)',
                           borderRadius: '8px',
-                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                          border: '1px solid var(--color-success-border)',
                         }}
                       >
-                        <span style={{ color: '#22c55e' }}>
+                        <span style={{ color: 'var(--color-success)' }}>
                           Private repository - will use stored token.
                         </span>
                       </div>
@@ -907,12 +909,12 @@ export function IndexesList({
                           style={{
                             marginBottom: '12px',
                             padding: '12px',
-                            background: 'rgba(251, 191, 36, 0.1)',
+                            background: 'var(--color-warning-light)',
                             borderRadius: '8px',
-                            border: '1px solid rgba(251, 191, 36, 0.3)',
+                            border: '1px solid var(--color-warning-border)',
                           }}
                         >
-                          <span style={{ color: '#fbbf24' }}>
+                          <span style={{ color: 'var(--color-warning)' }}>
                             {reindexVisibility.message || 'Stored token is no longer valid.'}
                           </span>
                         </div>
@@ -923,7 +925,7 @@ export function IndexesList({
                       <small
                         style={{
                           display: 'block',
-                          color: 'var(--text-secondary)',
+                          color: 'var(--color-text-secondary)',
                           marginBottom: '8px',
                         }}
                       >
@@ -951,7 +953,7 @@ export function IndexesList({
                         <small
                           style={{
                             display: 'block',
-                            color: 'var(--text-secondary)',
+                            color: 'var(--color-text-secondary)',
                             marginBottom: '8px',
                           }}
                         >

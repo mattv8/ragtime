@@ -122,7 +122,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
             <Upload size={28} />
           </div>
           <div>Drag &amp; drop an exported FAISS zip here, or click to browse</div>
-          <div style={{ fontSize: '0.85rem', color: '#888', marginTop: 8 }}>
+          <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginTop: 8 }}>
             Produced by the &quot;Download&quot; button on an existing document index
           </div>
           {file && <div className="file-name">{file.name}</div>}
@@ -153,7 +153,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               placeholder="e.g., odev_proj"
               disabled={isLoading}
             />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
               Defaults to the zip filename. The server will use the name embedded in{' '}
               <code>metadata.json</code> if you leave this blank or clear it (the name is restored
               from the original export).
@@ -170,7 +170,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               style={{ width: '100%', resize: 'vertical', minHeight: '60px' }}
               disabled={isLoading}
             />
-            <small style={{ color: '#888', fontSize: '0.8rem' }}>
+            <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
               Helps the AI understand when to search this index. Overrides the description from the
               zip when set.
             </small>
@@ -190,7 +190,12 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               Overwrite existing index with the same name
             </label>
             <small
-              style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '0.25rem' }}
+              style={{
+                color: 'var(--color-text-muted)',
+                fontSize: '0.8rem',
+                display: 'block',
+                marginTop: '0.25rem',
+              }}
             >
               When unchecked, the import fails if an index with the same name already exists.
             </small>
@@ -229,8 +234,8 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
           style={{
             marginTop: '16px',
             padding: '12px',
-            background: 'rgba(34, 197, 94, 0.1)',
-            border: '1px solid rgba(34, 197, 94, 0.3)',
+            background: 'var(--color-success-light)',
+            border: '1px solid var(--color-success-border)',
             borderRadius: '8px',
             fontSize: '0.9rem',
           }}
@@ -242,7 +247,9 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
           <div>Source type: {result.source_type}</div>
           <div>Vector store: {result.vector_store_type}</div>
           {result.description && (
-            <div style={{ marginTop: '6px', color: '#bbb' }}>Description: {result.description}</div>
+            <div style={{ marginTop: '6px', color: 'var(--color-text-secondary)' }}>
+              Description: {result.description}
+            </div>
           )}
         </div>
       )}

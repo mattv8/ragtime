@@ -1106,6 +1106,7 @@ class IndexerRepository:
             id=settings.id,
             # Server branding
             server_name=getattr(settings, "serverName", DEFAULT_SERVER_NAME),
+            default_theme_pack=getattr(settings, "defaultThemePack", "default"),
             authenticated_webgl_background_enabled=getattr(
                 settings,
                 "authenticatedWebglBackgroundEnabled",
@@ -1420,6 +1421,7 @@ class IndexerRepository:
         field_mapping = {
             # Server branding
             "server_name": "serverName",
+            "default_theme_pack": "defaultThemePack",
             "authenticated_webgl_background_enabled": "authenticatedWebglBackgroundEnabled",
             "openapi_model_prefix_enabled": "openapiModelPrefixEnabled",
             # Embedding settings

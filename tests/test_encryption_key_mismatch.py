@@ -25,7 +25,19 @@ class _FindManyDelegate:
         self._rows = rows
 
     async def find_many(self, **_kwargs):
+        if "select" in _kwargs:
+            raise AssertionError("find_many() must not be called with select")
         return self._rows
+
+    async def find_unique(self, **_kwargs):
+        if "select" in _kwargs:
+            raise AssertionError("find_unique() must not be called with select")
+        return self._rows[0] if self._rows else None
+
+
+class _AppSettingsFindManyOnlyDelegate(_FindManyDelegate):
+    async def find_unique(self, **_kwargs):
+        raise TypeError("AppSettingsActions.find_many() got an unexpected keyword argument 'select'")
 
 
 def _build_encryption_health_db(**overrides):
@@ -137,11 +149,7 @@ class EncryptionKeyHealthRecheckTests(unittest.IsolatedAsyncioTestCase):
         decrypt_secret("enc::bad-token")
         self.assertTrue(encryption_key_mismatch_detected())
 
-        db = _build_encryption_health_db(
-            appsettings=_FindManyDelegate(
-                [SimpleNamespace(openaiApiKey=encrypt_secret("restored-secret"))]
-            )
-        )
+        db = _build_encryption_health_db(appsettings=_FindManyDelegate([SimpleNamespace(openaiApiKey=encrypt_secret("restored-secret"))]))
 
         async def fake_get_db():
             return db
@@ -150,6 +158,15 @@ class EncryptionKeyHealthRecheckTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await recheck_encryption_key_health())
 
         self.assertFalse(encryption_key_mismatch_detected())
+
+    async def test_recheck_uses_find_many_for_app_settings_when_find_unique_is_broken(self) -> None:
+        db = _build_encryption_health_db(appsettings=_AppSettingsFindManyOnlyDelegate([SimpleNamespace(openaiApiKey=encrypt_secret("restored-secret"))]))
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.encryption_health.get_db", new=fake_get_db):
+            self.assertTrue(await recheck_encryption_key_health())
 
     async def test_get_settings_rechecks_before_building_configuration_warnings(self) -> None:
         decrypt_secret("enc::bad-token")
@@ -182,7 +199,7 @@ class EncryptionKeyHealthRecheckTests(unittest.IsolatedAsyncioTestCase):
             patch.object(AppSettings, "get_configuration_warnings", new=fake_get_configuration_warnings),
             patch("ragtime.indexer.routes.recheck_encryption_key_health", new=recheck_mock),
         ):
-            response = await indexer_routes.get_settings(SimpleNamespace(id="admin"))
+            response = await indexer_routes.get_settings(SimpleNamespace(id="admin"))  # type: ignore[arg-type]
 
         self.assertEqual(response.configuration_warnings, [])
         self.assertFalse(encryption_key_mismatch_detected())

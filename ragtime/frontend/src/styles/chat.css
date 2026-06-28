@@ -598,7 +598,7 @@ textarea.chat-header-title-input {
   flex-shrink: 0;
   width: 16px;
   height: 16px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: none;
   background: transparent;
   color: var(--color-text-muted);
@@ -1101,7 +1101,7 @@ textarea.chat-header-title-input {
     height: 18px;
     margin: 0;
     border: 1px solid var(--color-warning-border);
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--color-surface);
     display: inline-flex;
     align-items: center;
@@ -1118,7 +1118,7 @@ textarea.chat-header-title-input {
     height: 18px;
     margin: 0;
     border: none;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--color-surface);
     display: inline-flex;
     align-items: center;
@@ -1576,7 +1576,7 @@ textarea.chat-header-title-input {
   font-size: var(--font-size-xs);
   line-height: 1.4;
   background: transparent;
-  color: #60a5fa;
+  color: var(--color-info);
 }
 
 .chat-branch-restore-btn:hover {
@@ -1636,7 +1636,7 @@ textarea.chat-header-title-input {
   background: var(--bg-primary);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
@@ -1913,7 +1913,7 @@ textarea.chat-header-title-input {
 }
 .chat-input-field::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 [data-theme='dark'] .chat-input-field::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
@@ -1931,7 +1931,7 @@ textarea.chat-header-title-input {
 }
 .chat-input::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 .chat-input::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.25);
@@ -2493,7 +2493,7 @@ textarea.chat-header-title-input {
   font-size: 0.65rem;
   color: var(--color-text-muted);
   background: var(--color-surface-secondary);
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
   white-space: nowrap;
   flex-shrink: 0;
@@ -2726,7 +2726,7 @@ textarea.chat-header-title-input {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 .tool-call-web-result-favicon-fallback {
   flex-shrink: 0;
@@ -3464,7 +3464,7 @@ button.tool-call-userspace-write-path-link:hover {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--tool-call-font-xs);
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   min-width: max-content;
 }
 @media (min-width: 1600px), (min-resolution: 1.25dppx) {
@@ -3823,6 +3823,7 @@ button.tool-call-userspace-write-path-link:hover {
   border-collapse: collapse;
   width: auto !important; /* Let table size naturally instead of forcing 100% */
   min-width: 100%; /* But still fill container when content is small */
+  font-family: var(--font-body);
   font-size: var(--text-xs);
   margin: var(--space-xs) 0 !important;
 }
@@ -4094,7 +4095,7 @@ button.tool-call-userspace-write-path-link:hover {
 }
 .markdown-codeblock-pre::-webkit-scrollbar-thumb {
   background: var(--color-text-muted);
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 .markdown-codeblock-pre::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-secondary);
@@ -4325,14 +4326,14 @@ button.tool-call-userspace-write-path-link:hover {
   background: var(--color-warning, #fde68a);
   color: inherit;
   padding: 0 1px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 .chat-search-focus-highlight {
   display: inline;
   background: var(--color-accent-light);
   color: inherit;
   padding: 0 1px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   animation: highlight-pulse 0.8s ease-out 2;
 }
 
@@ -4415,7 +4416,7 @@ button.tool-call-userspace-write-path-link:hover {
   font-size: 10px;
   color: var(--color-text-muted);
   background: var(--color-bg-primary);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 1px 6px;
   border: 1px solid var(--color-border);
 }
@@ -4469,7 +4470,7 @@ mark.chat-in-chat-search-match {
   background: var(--color-accent, #3b82f6);
   color: var(--color-on-accent, #ffffff);
   padding: 0 1px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 ::highlight(ragtime-chat-search-match) {
   background: #3b82f6;

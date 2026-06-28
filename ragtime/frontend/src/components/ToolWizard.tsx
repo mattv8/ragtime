@@ -1492,7 +1492,11 @@ function PublicKeyDisplay({
           title="Copy to clipboard"
           style={
             keyCopied
-              ? { backgroundColor: '#28a745', borderColor: '#28a745', color: 'white' }
+              ? {
+                  backgroundColor: 'var(--color-success)',
+                  borderColor: 'var(--color-success)',
+                  color: '#fff',
+                }
               : undefined
           }
         >
@@ -3782,7 +3786,7 @@ export function ToolWizard({
               </div>
               <p className="field-help">
                 {databaseDiscoveryError ? (
-                  <span style={{ color: '#dc3545' }}>{databaseDiscoveryError}</span>
+                  <span style={{ color: 'var(--color-error)' }}>{databaseDiscoveryError}</span>
                 ) : discoveredDatabases.length > 0 ? (
                   `Found ${discoveredDatabases.length} database(s), ${discoveredDatabases.filter((db) => db.accessible).length} accessible.`
                 ) : (
@@ -3854,7 +3858,7 @@ export function ToolWizard({
           className="schema-indexing-section"
           style={{
             marginTop: '1.5rem',
-            borderTop: '1px solid var(--border-color)',
+            borderTop: '1px solid var(--color-border)',
             paddingTop: '1rem',
           }}
         >
@@ -4057,7 +4061,7 @@ export function ToolWizard({
             </div>
             <p className="field-help">
               {mssqlDatabaseDiscoveryError ? (
-                <span style={{ color: '#dc3545' }}>{mssqlDatabaseDiscoveryError}</span>
+                <span style={{ color: 'var(--color-error)' }}>{mssqlDatabaseDiscoveryError}</span>
               ) : mssqlDiscoveredDatabases.length > 0 ? (
                 `Found ${mssqlDiscoveredDatabases.length} database(s), ${mssqlDiscoveredDatabases.filter((db) => db.accessible).length} accessible. Inaccessible entries are disabled.`
               ) : (
@@ -4072,7 +4076,7 @@ export function ToolWizard({
           className="schema-indexing-section"
           style={{
             marginTop: '1.5rem',
-            borderTop: '1px solid var(--border-color)',
+            borderTop: '1px solid var(--color-border)',
             paddingTop: '1rem',
           }}
         >
@@ -4299,7 +4303,7 @@ export function ToolWizard({
               </div>
               <p className="field-help">
                 {mysqlDatabaseDiscoveryError ? (
-                  <span style={{ color: '#dc3545' }}>{mysqlDatabaseDiscoveryError}</span>
+                  <span style={{ color: 'var(--color-error)' }}>{mysqlDatabaseDiscoveryError}</span>
                 ) : mysqlDiscoveredDatabases.length > 0 ? (
                   `Found ${mysqlDiscoveredDatabases.length} database(s), ${mysqlDiscoveredDatabases.filter((db) => db.accessible).length} accessible.`
                 ) : (
@@ -4396,7 +4400,7 @@ export function ToolWizard({
               </div>
               <p className="field-help">
                 {mysqlDatabaseDiscoveryError ? (
-                  <span style={{ color: '#dc3545' }}>{mysqlDatabaseDiscoveryError}</span>
+                  <span style={{ color: 'var(--color-error)' }}>{mysqlDatabaseDiscoveryError}</span>
                 ) : mysqlDiscoveredDatabases.length > 0 ? (
                   `Found ${mysqlDiscoveredDatabases.length} database(s), ${mysqlDiscoveredDatabases.filter((db) => db.accessible).length} accessible.`
                 ) : (
@@ -4412,7 +4416,7 @@ export function ToolWizard({
           className="schema-indexing-section"
           style={{
             marginTop: '1.5rem',
-            borderTop: '1px solid var(--border-color)',
+            borderTop: '1px solid var(--color-border)',
             paddingTop: '1rem',
           }}
         >
@@ -4630,7 +4634,7 @@ export function ToolWizard({
             </div>
             <p className="field-help">
               {influxdbBucketDiscoveryError ? (
-                <span style={{ color: '#dc3545' }}>{influxdbBucketDiscoveryError}</span>
+                <span style={{ color: 'var(--color-error)' }}>{influxdbBucketDiscoveryError}</span>
               ) : influxdbDiscoveredBuckets.length > 0 ? (
                 `Found ${influxdbDiscoveredBuckets.length} bucket(s), ${influxdbDiscoveredBuckets.filter((bucket) => bucket.accessible).length} accessible.`
               ) : (
@@ -4888,7 +4892,7 @@ export function ToolWizard({
               </button>
             </div>
             {pdmDatabaseDiscoveryError && (
-              <p className="field-help" style={{ color: 'var(--error-color)' }}>
+              <p className="field-help" style={{ color: 'var(--color-error)' }}>
                 {pdmDatabaseDiscoveryError}
               </p>
             )}
@@ -4922,12 +4926,12 @@ export function ToolWizard({
             className="error-panel"
             style={{
               padding: '1rem',
-              backgroundColor: 'rgba(255,0,0,0.1)',
+              backgroundColor: 'var(--color-error-light)',
               borderRadius: '4px',
               marginBottom: '1rem',
             }}
           >
-            <p style={{ color: 'var(--error-color)', margin: 0 }}>{pdmSchemaDiscoveryError}</p>
+            <p style={{ color: 'var(--color-error)', margin: 0 }}>{pdmSchemaDiscoveryError}</p>
             <button
               type="button"
               className="btn btn-sm"
@@ -5036,9 +5040,9 @@ export function ToolWizard({
                         maxHeight: '200px',
                         overflow: 'auto',
                         padding: '0.5rem',
-                        border: '1px solid var(--border-color)',
+                        border: '1px solid var(--color-border)',
                         borderRadius: '4px',
-                        backgroundColor: 'var(--bg-secondary)',
+                        backgroundColor: 'var(--color-bg-secondary)',
                       }}
                     >
                       {pdmDiscoveredExtensions
@@ -5060,9 +5064,9 @@ export function ToolWizard({
                                 padding: '0.25rem 0.5rem',
                                 borderRadius: '4px',
                                 backgroundColor: isSelected
-                                  ? 'var(--primary-color-light)'
-                                  : 'var(--bg-primary)',
-                                border: '1px solid var(--border-color)',
+                                  ? 'var(--color-primary-light)'
+                                  : 'var(--color-bg-primary)',
+                                border: '1px solid var(--color-border)',
                                 whiteSpace: 'nowrap',
                               }}
                             >
@@ -5123,7 +5127,7 @@ export function ToolWizard({
               className="pdm-section"
               style={{
                 marginBottom: '1.5rem',
-                borderTop: '1px solid var(--border-color)',
+                borderTop: '1px solid var(--color-border)',
                 paddingTop: '1rem',
               }}
             >
@@ -5217,9 +5221,9 @@ export function ToolWizard({
                       maxHeight: '250px',
                       overflow: 'auto',
                       padding: '0.5rem',
-                      border: '1px solid var(--border-color)',
+                      border: '1px solid var(--color-border)',
                       borderRadius: '4px',
-                      backgroundColor: 'var(--bg-secondary)',
+                      backgroundColor: 'var(--color-bg-secondary)',
                     }}
                   >
                     {pdmDiscoveredVariables
@@ -5239,9 +5243,9 @@ export function ToolWizard({
                               padding: '0.25rem 0.5rem',
                               borderRadius: '4px',
                               backgroundColor: isSelected
-                                ? 'var(--primary-color-light)'
-                                : 'var(--bg-primary)',
-                              border: '1px solid var(--border-color)',
+                                ? 'var(--color-primary-light)'
+                                : 'var(--color-bg-primary)',
+                              border: '1px solid var(--color-border)',
                               whiteSpace: 'nowrap',
                             }}
                           >
@@ -5276,7 +5280,7 @@ export function ToolWizard({
             {/* Metadata Options Section */}
             <div
               className="pdm-section"
-              style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}
+              style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem' }}
             >
               <h4 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Indexing Options</h4>
 
@@ -5738,7 +5742,7 @@ export function ToolWizard({
           {!loadingCapabilities && containerCapabilities && !containerCapabilities.can_mount && (
             <p
               className="field-help info-message"
-              style={{ marginTop: '0.5rem', color: 'var(--text-muted)' }}
+              style={{ marginTop: '0.5rem', color: 'var(--color-text-muted)' }}
             >
               SMB/NFS options are hidden because the container lacks mount privileges. To enable,
               uncomment <code>privileged: true</code> and <code>cap_add: SYS_ADMIN</code> in
@@ -5882,7 +5886,7 @@ export function ToolWizard({
             {fsAnalysisJob?.status === 'failed' && (
               <div
                 className="analysis-error"
-                style={{ color: 'var(--error)', marginBottom: '1rem' }}
+                style={{ color: 'var(--color-error)', marginBottom: '1rem' }}
               >
                 Analysis failed: {fsAnalysisJob.error_message}
               </div>
@@ -5903,7 +5907,7 @@ export function ToolWizard({
                   className="analysis-results"
                   style={{
                     padding: '1rem',
-                    backgroundColor: 'var(--panel-bg)',
+                    backgroundColor: 'var(--color-surface)',
                     borderRadius: '4px',
                     marginTop: '0.5rem',
                   }}
@@ -5985,7 +5989,9 @@ export function ToolWizard({
               onToggle={(e) => setFsAdvancedOpen((e.target as HTMLDetailsElement).open)}
               style={{ marginTop: '1rem' }}
             >
-              <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '0.5rem' }}>
+              <summary
+                style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '0.5rem' }}
+              >
                 Advanced Indexing & Safety
               </summary>
               <div className="form-row" style={{ marginTop: '0.5rem' }}>
@@ -6163,7 +6169,13 @@ export function ToolWizard({
                   testResult.details !== undefined &&
                   testResult.details !== null && (
                     <details className="test-error-details" style={{ marginTop: '0.5rem' }}>
-                      <summary style={{ cursor: 'pointer', fontSize: '0.85rem', color: '#666' }}>
+                      <summary
+                        style={{
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          color: 'var(--color-text-muted)',
+                        }}
+                      >
                         Show error details
                       </summary>
                       <pre
@@ -6263,7 +6275,7 @@ export function ToolWizard({
                 onChange={(e) => setSshConfig({ ...sshConfig, working_directory: e.target.value })}
                 placeholder="/var/www/html"
               />
-              <p className="field-help warning" style={{ color: '#f0ad4e' }}>
+              <p className="field-help warning" style={{ color: 'var(--color-warning)' }}>
                 Enter directory manually. Configure authentication in the previous step to enable
                 file browsing.
               </p>

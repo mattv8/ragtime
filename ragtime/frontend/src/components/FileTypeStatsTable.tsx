@@ -58,7 +58,7 @@ export function FileTypeStatsTable({
         </tbody>
       </table>
       {remainingCount > 0 && (
-        <div style={{ padding: '8px', color: '#888', fontSize: '0.85rem' }}>
+        <div style={{ padding: '8px', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
           ... and {remainingCount} more types
         </div>
       )}
@@ -68,7 +68,7 @@ export function FileTypeStatsTable({
   if (collapsible) {
     return (
       <details style={{ marginBottom: '16px' }}>
-        <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+        <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
           {summaryLabel || `File Type Breakdown (${stats.length} types)`}
         </summary>
         {tableContent}

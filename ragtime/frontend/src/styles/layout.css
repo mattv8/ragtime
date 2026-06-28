@@ -14,6 +14,16 @@
   padding: 0;
 }
 
+/* Form controls do not inherit font-family from body by default; opt them in so
+   the active theme's font reaches buttons, inputs, selects, and textareas. */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
@@ -60,7 +70,7 @@ html {
 }
 
 body {
-  font-family: var(--font-sans);
+  font-family: var(--font-body);
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--color-text-primary);
@@ -87,6 +97,16 @@ body.authenticated-webgl-background-active {
 
 body.authenticated-webgl-background-active #root {
   height: 100dvh;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+legend {
+  font-family: var(--font-heading);
 }
 
 /* =============================================================================
@@ -306,6 +326,7 @@ body.authenticated-webgl-background-active #root {
 }
 
 .topnav-brand {
+  font-family: var(--font-heading);
   font-size: var(--text-xl);
   font-weight: 700;
   color: var(--color-primary);
@@ -407,7 +428,7 @@ body.authenticated-webgl-background-active #root {
 .security-banner-content code {
   background: rgba(0, 0, 0, 0.1);
   padding: 0.1em 0.3em;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   font-size: 0.9em;
 }
 
@@ -1772,7 +1793,7 @@ body.authenticated-webgl-background-active #root {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--color-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-primary);
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -1788,8 +1809,8 @@ body.authenticated-webgl-background-active #root {
 }
 
 .cloud-oauth-callback-copy.is-copied {
-  background: #28a745;
-  border-color: #28a745;
+  background: var(--color-success);
+  border-color: var(--color-success);
   color: #fff;
 }
 
@@ -2218,7 +2239,7 @@ body.authenticated-webgl-background-active #root {
 .login-auth-dot {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-text-secondary);
   flex-shrink: 0;
 }
@@ -2436,15 +2457,15 @@ body.authenticated-webgl-background-active #root {
 
 /* SLO color indicators */
 .users-slo-green {
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .users-slo-yellow {
-  color: #f59e0b;
+  color: var(--color-warning);
 }
 
 .users-slo-red {
-  color: #ef4444;
+  color: var(--color-error);
 }
 
 .users-slo-detail {

@@ -185,8 +185,8 @@ export function ModelFilterModal({
                                           fontSize: '0.7em',
                                           padding: '1px 4px',
                                           borderRadius: '4px',
-                                          background: 'var(--bg-secondary, #2d2d2d)',
-                                          color: 'var(--text-muted, #888)',
+                                          background: 'var(--color-bg-secondary)',
+                                          color: 'var(--color-text-muted)',
                                         }}
                                       >
                                         via {formatProviderDisplayName(model.provider)}
@@ -198,8 +198,8 @@ export function ModelFilterModal({
                                             fontSize: '0.7em',
                                             padding: '1px 4px',
                                             borderRadius: '4px',
-                                            background: '#e0e0e0',
-                                            color: '#555',
+                                            background: 'var(--color-bg-tertiary)',
+                                            color: 'var(--color-text-secondary)',
                                           }}
                                         >
                                           LATEST

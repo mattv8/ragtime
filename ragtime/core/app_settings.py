@@ -290,6 +290,7 @@ class SettingsCache:
 
             self._settings = {
                 "server_name": prisma_settings.serverName,
+                "default_theme_pack": getattr(prisma_settings, "defaultThemePack", "default"),
                 "authenticated_webgl_background_enabled": getattr(
                     prisma_settings,
                     "authenticatedWebglBackgroundEnabled",
@@ -542,6 +543,7 @@ class SettingsCache:
             logger.warning(f"Failed to load settings from database: {e}. Using defaults.")
             return {
                 "server_name": DEFAULT_SERVER_NAME,
+                "default_theme_pack": "default",
                 "authenticated_webgl_background_enabled": DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
                 "openapi_model_prefix_enabled": DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
                 "enabled_tools": [],

@@ -402,7 +402,10 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
     const handleThemeChange = () => setThemeRevision((revision) => revision + 1);
     const rootElement = document.documentElement;
     const observer = new MutationObserver(handleThemeChange);
-    observer.observe(rootElement, { attributes: true, attributeFilter: ['data-theme', 'style'] });
+    observer.observe(rootElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'data-theme-pack', 'style'],
+    });
 
     const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: light)');
     colorSchemeQuery.addEventListener('change', handleThemeChange);

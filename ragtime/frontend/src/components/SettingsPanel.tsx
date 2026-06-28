@@ -1,6 +1,6 @@
 import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, ExternalLink, Eye, EyeOff, Pencil } from 'lucide-react';
+import { Lock, LockOpen, Info, ExternalLink, Eye, EyeOff, Pencil, Check } from 'lucide-react';
 import { api } from '@/api';
 import type {
   AppSettings,
@@ -79,6 +79,7 @@ import {
   providersSame,
   type ProviderConnectionDescriptor,
 } from '@/utils/modelProviders';
+import { THEME_PACKS, type ThemePackId, resolveThemePackId, applyThemePack } from '@/theme';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -507,12 +508,34 @@ export function SettingsPanel({
   const [userspacePreviewSettings, setUserspacePreviewSettings] =
     useState<UserSpacePreviewSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [defaultThemePack, setDefaultThemePack] = useState<ThemePackId>('default');
   const [toasts, toast] = useToast();
   const settingsFilter = useUrlSearchFilterState();
   const [settingsFilterHasMatches, setSettingsFilterHasMatches] = useState(true);
   const settingsFilterInputRef = useRef<HTMLInputElement | null>(null);
   const [activeAuthProviderValue, setActiveAuthProviderValue] =
     useState<(typeof AUTH_PROVIDER_OPTIONS)[number]['value']>('local_managed');
+
+  const savedThemePackRef = useRef<ThemePackId>('default');
+
+  useEffect(() => {
+    savedThemePackRef.current = resolveThemePackId(
+      currentUser?.theme_pack,
+      settings?.default_theme_pack,
+    );
+  }, [currentUser?.theme_pack, settings?.default_theme_pack]);
+
+  useEffect(() => {
+    if (!loading) {
+      applyThemePack(defaultThemePack);
+    }
+  }, [defaultThemePack, loading]);
+
+  useEffect(() => {
+    return () => {
+      applyThemePack(savedThemePackRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (loading) {
@@ -1915,6 +1938,7 @@ export function SettingsPanel({
         ]);
       const data = sanitizeOllamaDefaults(rawSettings);
       setSettings(data);
+      setDefaultThemePack(resolveThemePackId(data.default_theme_pack, null));
       setUserspacePreviewSettings(previewSettings);
       setAuthProviderConfig(providerConfig);
       setAuthGroups(groups);
@@ -2453,6 +2477,7 @@ export function SettingsPanel({
       }
 
       const dataToSave = {
+        default_theme_pack: defaultThemePack,
         server_name: normalizedServerName,
         authenticated_webgl_background_enabled:
           formData.authenticated_webgl_background_enabled ??
@@ -2463,6 +2488,7 @@ export function SettingsPanel({
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
+      setDefaultThemePack(resolveThemePackId(updated.default_theme_pack, null));
       setFormData((prev) => ({
         ...prev,
         server_name: normalizedServerName,
@@ -2499,9 +2525,9 @@ export function SettingsPanel({
         updated.authenticated_webgl_background_enabled ?? true,
       );
       await onSettingsSaved?.();
-      toast.success('Server branding saved');
+      toast.success('Appearance settings saved');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save branding settings');
+      toast.error(err instanceof Error ? err.message : 'Failed to save appearance settings');
     } finally {
       setBrandingSaving(false);
     }
@@ -3621,7 +3647,7 @@ export function SettingsPanel({
                       : 'Password protected'
                 }
               >
-                <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
+                <Lock size={14} style={{ color: 'var(--color-success)' }} />
               </span>
             ) : (
               <span
@@ -3629,7 +3655,7 @@ export function SettingsPanel({
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '0.25rem',
-                  color: 'var(--error-color, #f44336)',
+                  color: 'var(--color-error)',
                   fontSize: '0.8em',
                 }}
               >
@@ -3661,7 +3687,7 @@ export function SettingsPanel({
                             : 'Password protected'
                       }
                     >
-                      <Lock size={14} style={{ color: 'var(--success-color, #4caf50)' }} />
+                      <Lock size={14} style={{ color: 'var(--color-success)' }} />
                     </span>
                   ) : (
                     <span
@@ -3669,7 +3695,7 @@ export function SettingsPanel({
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '0.25rem',
-                        color: 'var(--error-color, #f44336)',
+                        color: 'var(--color-error)',
                         fontSize: '0.8em',
                       }}
                     >
@@ -3698,91 +3724,163 @@ export function SettingsPanel({
         data-lpignore="true"
         data-1p-ignore="true"
       >
-        {/* Server Branding */}
+        {/* Appearance */}
         <fieldset
-          id="setting-server_branding"
-          className={highlightSetting === 'server_branding' ? 'highlight-setting' : ''}
+          id="setting-appearance"
+          className={highlightSetting === 'appearance' ? 'highlight-setting' : ''}
         >
-          <legend>Server Branding</legend>
+          <legend>Appearance</legend>
           <p className="fieldset-help">
-            Customize the server name displayed in the UI, API model name, and MCP server identity.
+            Choose the instance-wide default theme and customize server branding. The default theme
+            applies app-wide for users who have not picked their own theme from the user menu. Each
+            theme has matching light and dark modes.
           </p>
 
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: '1rem',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+              gap: '1.5rem',
               alignItems: 'start',
             }}
           >
             <div className="form-group">
-              <label>Server Name</label>
-              <input
-                type="text"
-                value={formData.server_name ?? settings?.server_name ?? 'Ragtime'}
-                onChange={(e) => setFormData({ ...formData, server_name: e.target.value })}
-                placeholder="Ragtime"
-              />
-            </div>
-
-            <div className="form-group">
-              <label
-                className="chat-toggle-control"
-                style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-              >
-                <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={
-                      formData.authenticated_webgl_background_enabled ??
-                      settings?.authenticated_webgl_background_enabled ??
-                      true
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        authenticated_webgl_background_enabled: e.target.checked,
-                      })
-                    }
-                  />
-                  <span className="toggle-slider"></span>
-                </label>
-                <span>Animated Background After Login</span>
-              </label>
+              <label>Default theme</label>
+              <div className="appearance-theme-grid">
+                {THEME_PACKS.map((pack) => {
+                  const selected = pack.id === defaultThemePack;
+                  return (
+                    <button
+                      type="button"
+                      key={pack.id}
+                      className="appearance-theme-card"
+                      aria-pressed={selected}
+                      disabled={!isAdmin}
+                      onClick={() => setDefaultThemePack(pack.id)}
+                    >
+                      <span className="appearance-theme-card-header">
+                        <span className="appearance-theme-card-name">{pack.label}</span>
+                        {selected && (
+                          <span className="appearance-theme-card-check">
+                            <Check size={18} />
+                          </span>
+                        )}
+                      </span>
+                      <span className="appearance-swatches" aria-hidden="true">
+                        <span
+                          className="appearance-swatch"
+                          style={{ background: pack.swatches.background }}
+                        />
+                        <span
+                          className="appearance-swatch"
+                          style={{ background: pack.swatches.surface }}
+                        />
+                        <span
+                          className="appearance-swatch"
+                          style={{ background: pack.swatches.primary }}
+                        />
+                        <span
+                          className="appearance-swatch appearance-swatch-sample"
+                          style={{
+                            background: pack.swatches.surface,
+                            color: pack.swatches.text,
+                            fontFamily: pack.headingFontPreview,
+                          }}
+                        >
+                          Aa
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
               <p className="field-help">
-                Show the WebGL gradient behind authenticated app pages. Disable this to use the
-                static theme background after login.
+                Set your own theme from the user menu in the top-right corner; that personal choice
+                overrides this default.
               </p>
             </div>
 
-            <div className="form-group">
-              <label
-                className="chat-toggle-control"
-                style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
+            <div
+              id="setting-server_branding"
+              className={highlightSetting === 'server_branding' ? 'highlight-setting' : ''}
+            >
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: '1rem',
+                  alignItems: 'start',
+                }}
               >
-                <label className="toggle-switch">
+                <div className="form-group">
+                  <label>Server Name</label>
                   <input
-                    type="checkbox"
-                    checked={
-                      formData.openapi_model_prefix_enabled ??
-                      settings?.openapi_model_prefix_enabled ??
-                      true
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        openapi_model_prefix_enabled: e.target.checked,
-                      })
-                    }
+                    type="text"
+                    value={formData.server_name ?? settings?.server_name ?? 'Ragtime'}
+                    onChange={(e) => setFormData({ ...formData, server_name: e.target.value })}
+                    placeholder="Ragtime"
                   />
-                  <span className="toggle-slider"></span>
-                </label>
-                <span>Prefix API Model Names</span>
-              </label>
-              <p className="field-help">
-                Add the server name before models listed by the OpenAI-compatible API.
-              </p>
+                </div>
+
+                <div className="form-group">
+                  <label
+                    className="chat-toggle-control"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
+                  >
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={
+                          formData.authenticated_webgl_background_enabled ??
+                          settings?.authenticated_webgl_background_enabled ??
+                          true
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            authenticated_webgl_background_enabled: e.target.checked,
+                          })
+                        }
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                    <span>Animated Background After Login</span>
+                  </label>
+                  <p className="field-help">
+                    Show the WebGL gradient behind authenticated app pages. Disable this to use the
+                    static theme background after login.
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label
+                    className="chat-toggle-control"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
+                  >
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={
+                          formData.openapi_model_prefix_enabled ??
+                          settings?.openapi_model_prefix_enabled ??
+                          true
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            openapi_model_prefix_enabled: e.target.checked,
+                          })
+                        }
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                    <span>Prefix API Model Names</span>
+                  </label>
+                  <p className="field-help">
+                    Add the server name before models listed by the OpenAI-compatible API.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -3790,14 +3888,16 @@ export function SettingsPanel({
             className="form-actions"
             style={{ borderTop: 'none', paddingTop: 0, marginTop: 'var(--space-md)' }}
           >
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleSaveBranding}
-              disabled={brandingSaving}
-            >
-              {brandingSaving ? 'Saving...' : 'Save Branding'}
-            </button>
+            {isAdmin && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={brandingSaving}
+                onClick={handleSaveBranding}
+              >
+                {brandingSaving ? 'Saving...' : 'Save Appearance'}
+              </button>
+            )}
           </div>
         </fieldset>
 
@@ -4329,7 +4429,7 @@ export function SettingsPanel({
               <p className="field-help">
                 Required for OpenAI LLM and optionally for OpenAI embeddings.
                 {window.location.protocol === 'http:' && (
-                  <span style={{ color: '#b8860b' }}>
+                  <span style={{ color: 'var(--color-warning)' }}>
                     {' '}
                     Warning: API keys are transmitted in plaintext over HTTP.
                   </span>
@@ -4367,7 +4467,7 @@ export function SettingsPanel({
                 <p className="field-error">{llmModelsError}</p>
               )}
               {window.location.protocol === 'http:' && (
-                <p className="field-help" style={{ color: '#b8860b' }}>
+                <p className="field-help" style={{ color: 'var(--color-warning)' }}>
                   Warning: API keys are transmitted in plaintext over HTTP.
                 </p>
               )}
@@ -4402,7 +4502,7 @@ export function SettingsPanel({
                 <p className="field-error">{llmModelsError}</p>
               )}
               {window.location.protocol === 'http:' && (
-                <p className="field-help" style={{ color: '#b8860b' }}>
+                <p className="field-help" style={{ color: 'var(--color-warning)' }}>
                   Warning: API keys are transmitted in plaintext over HTTP.
                 </p>
               )}
@@ -4530,10 +4630,10 @@ export function SettingsPanel({
                     className="field-help"
                     style={{
                       marginTop: '0.75rem',
-                      border: '1px solid var(--border-color)',
+                      border: '1px solid var(--color-border)',
                       borderRadius: '8px',
                       padding: '0.75rem',
-                      background: 'var(--bg-secondary)',
+                      background: 'var(--color-bg-secondary)',
                     }}
                   >
                     <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
@@ -4702,10 +4802,10 @@ export function SettingsPanel({
                     className="field-help"
                     style={{
                       marginTop: '0.75rem',
-                      border: '1px solid var(--border-color)',
+                      border: '1px solid var(--color-border)',
                       borderRadius: '8px',
                       padding: '0.75rem',
-                      background: 'var(--bg-secondary)',
+                      background: 'var(--color-bg-secondary)',
                     }}
                   >
                     <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
@@ -5105,7 +5205,9 @@ export function SettingsPanel({
 
           {/* Advanced Context & Token Settings */}
           <details style={{ marginBottom: '16px' }} id="setting-llm_advanced">
-            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+            <summary
+              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
+            >
               Advanced Settings
             </summary>
 
@@ -5821,10 +5923,10 @@ export function SettingsPanel({
                     style={{
                       padding: '0.5rem 1rem',
                       backgroundColor: hasMismatch
-                        ? 'var(--warning-bg, rgba(255, 152, 0, 0.1))'
-                        : 'var(--bg-secondary, #1e1e1e)',
+                        ? 'var(--color-warning-light)'
+                        : 'var(--color-bg-secondary)',
                       borderRadius: '4px',
-                      border: `1px solid ${hasMismatch ? 'var(--warning-color, #ff9800)' : 'var(--border-color, #3c3c3c)'}`,
+                      border: `1px solid ${hasMismatch ? 'var(--color-warning)' : 'var(--color-border)'}`,
                       fontFamily: 'var(--font-mono)',
                       fontSize: '1.1rem',
                       textAlign: 'center',
@@ -5836,7 +5938,7 @@ export function SettingsPanel({
                         {hasMismatch && (
                           <span
                             style={{
-                              color: 'var(--warning-color, #ff9800)',
+                              color: 'var(--color-warning)',
                               fontSize: '0.75rem',
                               marginLeft: '0.25rem',
                             }}
@@ -6185,7 +6287,9 @@ export function SettingsPanel({
 
           {/* Advanced Embedding Settings */}
           <details style={{ marginBottom: '16px' }} id="setting-embedding_advanced">
-            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+            <summary
+              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
+            >
               Advanced Settings
             </summary>
 
@@ -6496,7 +6600,7 @@ export function SettingsPanel({
                 <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
                   {(selectedOcrProvider === 'openai' || selectedOcrProvider === 'openrouter') && (
                     <p className="field-help" style={{ marginBottom: '8px' }}>
-                      <span style={{ color: 'var(--warning-color, #b58900)' }}>
+                      <span style={{ color: 'var(--color-warning)' }}>
                         <strong>API cost note:</strong> {selectedOcrProviderLabel} vision OCR sends
                         image content to the selected model for each processed image. Cost and
                         latency vary by model, image size, and OCR concurrency.
@@ -6504,7 +6608,7 @@ export function SettingsPanel({
                     </p>
                   )}
                   <p className="field-help">
-                    <span style={{ color: 'var(--warning-color, #b58900)' }}>
+                    <span style={{ color: 'var(--color-warning)' }}>
                       <strong>Performance note:</strong> Vision models are usually slower than
                       Tesseract depending on provider and model size.
                       <button
@@ -6531,8 +6635,8 @@ export function SettingsPanel({
                         style={{
                           marginTop: '12px',
                           padding: '12px',
-                          backgroundColor: 'var(--input-bg, var(--bg-secondary, #f5f5f5))',
-                          border: '1px solid var(--border-color, #ddd)',
+                          backgroundColor: 'var(--color-input-bg)',
+                          border: '1px solid var(--color-border)',
                           borderRadius: '6px',
                           fontSize: '0.9em',
                           color: 'var(--text-color, inherit)',
@@ -6920,7 +7024,9 @@ export function SettingsPanel({
               )}
 
               <details style={{ marginBottom: '16px' }} id="setting-authentication_advanced">
-                <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+                <summary
+                  style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
+                >
                   Advanced Settings
                 </summary>
 
@@ -7202,7 +7308,9 @@ export function SettingsPanel({
 
           {/* Advanced Search Settings */}
           <details style={{ marginBottom: '16px' }} id="setting-search_advanced">
-            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+            <summary
+              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
+            >
               Advanced Settings
             </summary>
 
@@ -7313,7 +7421,7 @@ export function SettingsPanel({
               className="form-row"
               style={{
                 marginTop: '1rem',
-                borderTop: '1px solid var(--border-color)',
+                borderTop: '1px solid var(--color-border)',
                 paddingTop: '1rem',
               }}
             >
@@ -7965,7 +8073,9 @@ export function SettingsPanel({
           </div>
 
           <details style={{ marginBottom: '16px' }} id="setting-userspace_advanced">
-            <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+            <summary
+              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
+            >
               Advanced Settings
             </summary>
 
@@ -8534,7 +8644,7 @@ export function SettingsPanel({
                               display: 'block',
                               fontWeight: 400,
                               fontSize: '0.85em',
-                              color: 'var(--text-muted, #888)',
+                              color: 'var(--color-text-muted)',
                             }}
                           >
                             {option.description}

@@ -315,6 +315,7 @@ class UserResponse(BaseModel):
     email: Optional[str]
     role: str
     auth_provider: str
+    theme_pack: Optional[str] = None
     role_manually_set: bool = False
     source_provider: Optional[str] = None
     source_synced_at: Optional[datetime] = None
@@ -578,6 +579,10 @@ class AuthStatusResponse(BaseModel):
         default=DEFAULT_SERVER_NAME,
         description="Configured server branding name",
     )
+    default_theme_pack: str = Field(
+        default="default",
+        description="Instance-wide default app theme pack for users without a personal choice.",
+    )
     authenticated_webgl_background_enabled: bool = Field(
         default=DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
         description="If True, show the animated WebGL gradient behind authenticated app pages.",
@@ -619,6 +624,7 @@ async def _user_response(user: User) -> UserResponse:
         email=user.email,
         role=user.role,
         auth_provider=user.authProvider,
+        theme_pack=getattr(user, "themePack", None),
         role_manually_set=user.roleManuallySet,
         source_provider=getattr(user, "sourceProvider", None),
         source_synced_at=getattr(user, "sourceSyncedAt", None),
@@ -819,6 +825,7 @@ async def get_auth_status(
     auth_methods = [AuthMethodStatus(**status) for status in await build_auth_method_statuses()]
     ldap_configured = any(method.key == "ldap" and method.configured for method in auth_methods)
     server_name = DEFAULT_SERVER_NAME
+    default_theme_pack = "default"
     authenticated_webgl_background_enabled = DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED
     chat_compaction_threshold_percent = DEFAULT_CHAT_COMPACTION_THRESHOLD_PERCENT
     chat_auto_compaction_threshold_percent = DEFAULT_CHAT_AUTO_COMPACTION_THRESHOLD_PERCENT
@@ -832,6 +839,7 @@ async def get_auth_status(
         configured_server_name = str(app_settings.get("server_name") or "").strip()
         if configured_server_name:
             server_name = configured_server_name
+        default_theme_pack = str(app_settings.get("default_theme_pack") or "default").strip() or "default"
         authenticated_webgl_background_enabled = bool(
             app_settings.get(
                 "authenticated_webgl_background_enabled",
@@ -881,6 +889,7 @@ async def get_auth_status(
         allowed_origins_open=((settings.allowed_origins == "*") if is_authenticated else False),
         auth_methods=auth_methods,
         server_name=server_name,
+        default_theme_pack=default_theme_pack,
         authenticated_webgl_background_enabled=authenticated_webgl_background_enabled,
         chat_compaction_threshold_percent=chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent=chat_auto_compaction_threshold_percent,
@@ -1209,6 +1218,44 @@ async def oauth2_token(
 async def get_current_user_info(user: User = Depends(get_current_user)):
     """Get current authenticated user info."""
     return await _user_response(user)
+
+
+class UpdateMePreferencesRequest(BaseModel):
+    """Self-service update of the current user's UI preferences."""
+
+    theme_pack: Optional[str] = Field(
+        default=None,
+        max_length=32,
+        description="App theme pack id, or null to inherit the global default.",
+    )
+
+
+def _normalize_theme_pack(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if not all(ch.isalnum() or ch in {"-", "_"} for ch in normalized):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid theme pack identifier",
+        )
+    return normalized
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_current_user_preferences(
+    body: UpdateMePreferencesRequest,
+    user: User = Depends(get_current_user),
+):
+    """Update the current user's own UI preferences (theme pack)."""
+    theme_pack = _normalize_theme_pack(body.theme_pack)
+    db = await get_db()
+    updated = await db.user.update(where={"id": user.id}, data={"themePack": theme_pack})
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return await _user_response(updated)
 
 
 # =============================================================================

@@ -1,16 +1,27 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { User, ChevronDown, LogOut, Moon, Sun, Monitor } from 'lucide-react';
+import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette } from 'lucide-react';
 import type { User as UserType } from '@/types';
-
-type Theme = 'light' | 'dark' | 'system';
+import { api } from '@/api';
+import {
+  THEME_PACKS,
+  type ThemePackId,
+  isThemePackId,
+  type ColorMode,
+  getStoredColorMode,
+  setColorMode,
+  setThemePack,
+  resolveThemePackId,
+  getThemePack,
+} from '@/theme';
 
 interface UserMenuProps {
   user: UserType;
   onLogout: () => void;
+  defaultThemePack?: string | null;
 }
 
-export function UserMenu({ user, onLogout }: UserMenuProps) {
+export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; right: number } | null>(
     null,
@@ -28,23 +39,18 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
     });
   }, []);
 
-  // Theme state
-  const [theme, setTheme] = useState<Theme>(() => {
-    const stored = localStorage.getItem('ragtime-theme') as Theme | null;
-    return stored || 'system';
-  });
-
-  // Apply theme changes
+  // Color mode (light/dark/system) — applied per browser via the shared util.
+  const [colorMode, setColorModeState] = useState<ColorMode>(() => getStoredColorMode());
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === 'system') {
-      root.removeAttribute('data-theme');
-      localStorage.removeItem('ragtime-theme');
-    } else {
-      root.setAttribute('data-theme', theme);
-      localStorage.setItem('ragtime-theme', theme);
-    }
-  }, [theme]);
+    setColorMode(colorMode);
+  }, [colorMode]);
+
+  const [themePack, setThemePackState] = useState<ThemePackId | null>(() =>
+    isThemePackId(user.theme_pack) ? user.theme_pack : null,
+  );
+  useEffect(() => {
+    setThemePackState(isThemePackId(user.theme_pack) ? user.theme_pack : null);
+  }, [user.theme_pack]);
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -88,24 +94,40 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
     return () => document.removeEventListener('keydown', handleEscape);
   }, []);
 
-  const getThemeIcon = () => {
-    if (theme === 'system') return <Monitor size={16} />;
-    if (theme === 'dark') return <Moon size={16} />;
+  const getModeIcon = () => {
+    if (colorMode === 'system') return <Monitor size={16} />;
+    if (colorMode === 'dark') return <Moon size={16} />;
     return <Sun size={16} />;
   };
 
-  const getThemeLabel = () => {
-    if (theme === 'system') return 'System';
-    if (theme === 'dark') return 'Dark';
+  const getModeLabel = () => {
+    if (colorMode === 'system') return 'System';
+    if (colorMode === 'dark') return 'Dark';
     return 'Light';
   };
 
-  const cycleTheme = () => {
-    setTheme((current) => {
+  const cycleMode = () => {
+    setColorModeState((current) => {
       if (current === 'dark') return 'light';
       if (current === 'light') return 'system';
       return 'dark';
     });
+  };
+
+  const cyclePack = () => {
+    const options: Array<ThemePackId | null> = [...THEME_PACKS.map((p) => p.id), null];
+    const index = options.indexOf(themePack);
+    const next = options[(index + 1) % options.length];
+    setThemePackState(next);
+    setThemePack(resolveThemePackId(next, defaultThemePack));
+    api.updateMyThemePack(next).catch(() => {});
+  };
+
+  const getPackLabel = () => {
+    if (themePack === null) {
+      return `System (${getThemePack(resolveThemePackId(null, defaultThemePack)).label})`;
+    }
+    return getThemePack(themePack).label;
   };
 
   return (
@@ -144,9 +166,14 @@ export function UserMenu({ user, onLogout }: UserMenuProps) {
 
             <div className="user-menu-divider" />
 
-            <button className="user-menu-item" onClick={cycleTheme}>
-              {getThemeIcon()}
-              <span>Theme: {getThemeLabel()}</span>
+            <button className="user-menu-item" onClick={cyclePack}>
+              <Palette size={16} />
+              <span>Theme: {getPackLabel()}</span>
+            </button>
+
+            <button className="user-menu-item" onClick={cycleMode}>
+              {getModeIcon()}
+              <span>Mode: {getModeLabel()}</span>
             </button>
 
             <div className="user-menu-divider" />

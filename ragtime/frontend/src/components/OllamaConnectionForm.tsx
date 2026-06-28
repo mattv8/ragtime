@@ -152,7 +152,7 @@ export function OllamaConnectionForm({
       </div>
 
       {connected && (
-        <p className="field-help" style={{ color: 'var(--success-color, #28a745)' }}>
+        <p className="field-help" style={{ color: 'var(--color-success)' }}>
           {models.length} model(s) available
         </p>
       )}

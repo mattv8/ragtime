@@ -17,6 +17,8 @@ export interface User {
   email: string | null;
   role: UserRole;
   auth_provider: AuthProvider;
+  /** Per-user app theme pack id; null/undefined means inherit the global default. */
+  theme_pack?: string | null;
   role_manually_set?: boolean;
   source_provider?: AuthProvider | null;
   source_synced_at?: string | null;
@@ -167,6 +169,7 @@ export interface AuthStatus {
   allowed_origins_open: boolean; // True if ALLOWED_ORIGINS=*
   auth_methods?: AuthMethodStatus[];
   server_name?: string;
+  default_theme_pack?: string;
   authenticated_webgl_background_enabled?: boolean;
   chat_compaction_threshold_percent?: number;
   chat_auto_compaction_threshold_percent?: number;
@@ -641,6 +644,7 @@ export interface AppSettings {
   id: string;
   // Server branding
   server_name: string;
+  default_theme_pack: string;
   authenticated_webgl_background_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   // Embedding Configuration (for FAISS indexing)
@@ -790,6 +794,7 @@ export interface AppSettings {
 export interface UpdateSettingsRequest {
   // Server branding
   server_name?: string;
+  default_theme_pack?: string;
   authenticated_webgl_background_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   // Embedding settings

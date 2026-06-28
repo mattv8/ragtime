@@ -470,6 +470,19 @@ export const api = {
   },
 
   /**
+   * Update the current user's own theme pack preference.
+   * Pass null to clear the personal choice and inherit the global default.
+   */
+  async updateMyThemePack(themePack: string | null): Promise<User> {
+    const response = await apiFetch(`${AUTH_BASE}/me`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme_pack: themePack }),
+    });
+    return handleResponse<User>(response);
+  },
+
+  /**
    * Get LDAP configuration (admin only)
    */
   async getLdapConfig(): Promise<LdapConfig> {

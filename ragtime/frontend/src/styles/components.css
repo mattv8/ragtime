@@ -1121,7 +1121,7 @@ textarea:focus {
   min-width: 15px;
   height: 15px;
   padding: 0 3px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--color-accent);
   color: #fff;
   font-size: 9px;
@@ -1168,7 +1168,7 @@ textarea:focus {
   min-width: 16px;
   height: 16px;
   padding: 0 3px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--color-accent);
   color: #fff;
   font-size: 9px;
@@ -1414,7 +1414,7 @@ textarea:focus {
   flex-shrink: 0;
   margin: 0;
   border: 1px solid color-mix(in srgb, var(--color-border) 85%, var(--color-text-muted));
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-secondary);
   cursor: pointer;
   transition:
@@ -2202,7 +2202,7 @@ textarea:focus {
   padding: 0 5px;
   min-height: 16px;
   border: 1px dashed var(--color-text-muted);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 9px;
   line-height: 1;
   text-transform: uppercase;
@@ -2510,7 +2510,7 @@ textarea:focus {
   width: 14px;
   height: 14px;
   margin: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--color-input-border);
   background: var(--color-input-bg);
   accent-color: var(--color-primary);
@@ -2818,7 +2818,7 @@ textarea:focus {
   content: '';
   width: 7px;
   height: 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   flex-shrink: 0;
   background: var(--userspace-branch-color, var(--color-border));
 }
@@ -2948,7 +2948,7 @@ textarea:focus {
   top: 50%;
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   transform: translate(-50%, -50%);
   background: var(--userspace-branch-color, var(--color-text-primary));
   border: 1px solid var(--color-bg-primary);
@@ -2975,7 +2975,7 @@ textarea:focus {
     transparent
   );
   pointer-events: none;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .userspace-snapshot-row-main {
@@ -3626,7 +3626,7 @@ textarea:focus {
   align-items: center;
   flex-shrink: 0;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--color-accent, var(--color-primary)) 14%, transparent);
   color: var(--color-accent, var(--color-primary));
   font-size: 10px;
@@ -3917,7 +3917,7 @@ textarea:focus {
   align-items: center;
   height: 16px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-family: var(--font-family, system-ui, sans-serif);
   font-size: 10px;
   font-weight: 600;
@@ -3950,9 +3950,9 @@ textarea:focus {
 
 .userspace-env-var-copy-btn.is-copied {
   opacity: 1;
-  background: #28a745;
+  background: var(--color-success);
   color: #fff;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .userspace-env-var-value-input {
@@ -4518,7 +4518,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--color-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-primary);
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -4562,7 +4562,7 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--color-border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-primary);
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -4602,8 +4602,8 @@ textarea:focus {
 .settings-inline-copy.is-copied {
   opacity: 1;
   pointer-events: auto;
-  background: #28a745;
-  border-color: #28a745;
+  background: var(--color-success);
+  border-color: var(--color-success);
   color: #fff;
 }
 
@@ -5067,8 +5067,8 @@ textarea {
 }
 
 .copy-error-btn.is-copied {
-  background: #28a745;
-  border-color: #28a745;
+  background: var(--color-success);
+  border-color: var(--color-success);
   color: #fff;
 }
 
@@ -5079,7 +5079,7 @@ textarea {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -5095,7 +5095,7 @@ textarea {
 }
 
 .copilot-device-copy-btn.is-copied {
-  background: #28a745;
+  background: var(--color-success);
   color: #fff;
 }
 
@@ -5652,7 +5652,7 @@ textarea {
 .chat-compaction-divider-label {
   padding: 2px 8px;
   border: 1px solid var(--color-border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--color-surface);
   white-space: nowrap;
 }
@@ -7449,7 +7449,7 @@ fieldset legend.legend-with-status .legend-divider {
 
 .mount-item {
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--color-surface);
 }
@@ -7632,7 +7632,7 @@ fieldset legend.legend-with-status .legend-divider {
   width: 40px;
   height: 4px;
   background: var(--color-bg-primary);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 
@@ -7640,7 +7640,7 @@ fieldset legend.legend-with-status .legend-divider {
   display: block;
   height: 100%;
   background: var(--color-accent);
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   transition: width 0.3s ease-out;
 }
 
@@ -8167,7 +8167,7 @@ fieldset legend.legend-with-status .legend-divider {
   min-width: 14px;
   height: 14px;
   padding: 0 3px;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: var(--color-accent, #4a90e2);
   color: #fff;
   margin-left: 2px;
@@ -8182,7 +8182,7 @@ fieldset legend.legend-with-status .legend-divider {
 .userspace-sqlite-checkbox-col .userspace-sqlite-row-checkbox {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border-color: color-mix(in srgb, var(--color-border) 80%, var(--color-text-muted));
   background: var(--color-bg-secondary);
 }
@@ -8271,7 +8271,7 @@ fieldset legend.legend-with-status .legend-divider {
 .userspace-sqlite-cell-input:focus {
   outline: 2px solid var(--color-accent, #4a90e2);
   outline-offset: -2px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 /* Select variant for schema type editing — same flush sizing */
 .userspace-sqlite-cell-select {
@@ -8495,4 +8495,127 @@ fieldset legend.legend-with-status .legend-divider {
 .userspace-object-explorer .userspace-sqlite-card-title input.userspace-sqlite-cell-input {
   min-width: 0;
   flex: 1;
+}
+
+/* =============================================================================
+   APPEARANCE / THEME PICKER
+   ============================================================================= */
+
+.appearance-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-md);
+  margin-top: var(--space-sm);
+}
+
+.appearance-theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.appearance-theme-card:hover {
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+}
+
+.appearance-theme-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-primary-light);
+}
+
+.appearance-theme-card[aria-pressed='true'] {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+}
+
+.appearance-theme-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.appearance-theme-card-name {
+  font-family: var(--font-heading);
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.appearance-theme-card-check {
+  color: var(--color-primary);
+  display: inline-flex;
+}
+
+.appearance-theme-card-desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: var(--leading-normal);
+}
+
+.appearance-swatches {
+  display: flex;
+  gap: var(--space-xs);
+}
+
+.appearance-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+}
+
+.appearance-swatch-sample {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.appearance-mode-toggle {
+  display: inline-flex;
+  gap: var(--space-xs);
+  padding: var(--space-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  margin-top: var(--space-sm);
+}
+
+.appearance-mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.appearance-mode-option:hover {
+  color: var(--color-text-primary);
+}
+
+.appearance-mode-option[aria-pressed='true'] {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-sm);
 }

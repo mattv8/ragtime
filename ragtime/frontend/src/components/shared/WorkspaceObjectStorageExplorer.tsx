@@ -77,31 +77,44 @@ export function WorkspaceObjectStorageExplorer({
 
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
-  const notify = useCallback((message: string, tone: 'success' | 'error') => {
-    if (onNotify) onNotify(message, tone);
-    if (tone === 'error') setError(message);
-  }, [onNotify]);
+  const notify = useCallback(
+    (message: string, tone: 'success' | 'error') => {
+      if (onNotify) onNotify(message, tone);
+      if (tone === 'error') setError(message);
+    },
+    [onNotify],
+  );
 
-  const loadObjects = useCallback(async (bucketName: string, nextPrefix: string) => {
-    setListingLoading(true);
-    setError(null);
-    try {
-      const result = await api.listUserSpaceObjectStorageObjects(workspaceId, bucketName, nextPrefix);
-      setListing(result);
-      setPrefix(result.prefix);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to load objects', 'error');
-    } finally {
-      setListingLoading(false);
-    }
-  }, [notify, workspaceId]);
+  const loadObjects = useCallback(
+    async (bucketName: string, nextPrefix: string) => {
+      setListingLoading(true);
+      setError(null);
+      try {
+        const result = await api.listUserSpaceObjectStorageObjects(
+          workspaceId,
+          bucketName,
+          nextPrefix,
+        );
+        setListing(result);
+        setPrefix(result.prefix);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to load objects', 'error');
+      } finally {
+        setListingLoading(false);
+      }
+    },
+    [notify, workspaceId],
+  );
 
-  const openBucket = useCallback(async (bucket: UserSpaceObjectStorageBucket) => {
-    setSelectedBucket(bucket);
-    setPrefix('');
-    setListing(null);
-    await loadObjects(bucket.name, '');
-  }, [loadObjects]);
+  const openBucket = useCallback(
+    async (bucket: UserSpaceObjectStorageBucket) => {
+      setSelectedBucket(bucket);
+      setPrefix('');
+      setListing(null);
+      await loadObjects(bucket.name, '');
+    },
+    [loadObjects],
+  );
 
   const closeBucket = useCallback(() => {
     setSelectedBucket(null);
@@ -118,108 +131,134 @@ export function WorkspaceObjectStorageExplorer({
     }
   }, [closeBucket, config, selectedBucket]);
 
-  const handleUploadFiles = useCallback(async (files: FileList | null) => {
-    if (!selectedBucket || !files || files.length === 0) return;
-    setUploading(true);
-    setError(null);
-    try {
-      for (const file of Array.from(files)) {
-        await api.uploadUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, file, prefix);
+  const handleUploadFiles = useCallback(
+    async (files: FileList | null) => {
+      if (!selectedBucket || !files || files.length === 0) return;
+      setUploading(true);
+      setError(null);
+      try {
+        for (const file of Array.from(files)) {
+          await api.uploadUserSpaceObjectStorageObject(
+            workspaceId,
+            selectedBucket.name,
+            file,
+            prefix,
+          );
+        }
+        notify(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}`, 'success');
+        await loadObjects(selectedBucket.name, prefix);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to upload', 'error');
+      } finally {
+        setUploading(false);
+        if (uploadInputRef.current) uploadInputRef.current.value = '';
       }
-      notify(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}`, 'success');
-      await loadObjects(selectedBucket.name, prefix);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to upload', 'error');
-    } finally {
-      setUploading(false);
-      if (uploadInputRef.current) uploadInputRef.current.value = '';
-    }
-  }, [loadObjects, notify, prefix, selectedBucket, workspaceId]);
+    },
+    [loadObjects, notify, prefix, selectedBucket, workspaceId],
+  );
 
-  const handleDownloadObject = useCallback(async (entry: UserSpaceObjectStorageEntry) => {
-    if (!selectedBucket) return;
-    try {
-      await api.downloadUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, entry.key);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to download', 'error');
-    }
-  }, [notify, selectedBucket, workspaceId]);
+  const handleDownloadObject = useCallback(
+    async (entry: UserSpaceObjectStorageEntry) => {
+      if (!selectedBucket) return;
+      try {
+        await api.downloadUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, entry.key);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to download', 'error');
+      }
+    },
+    [notify, selectedBucket, workspaceId],
+  );
 
-  const handleDeleteObject = useCallback(async (entry: UserSpaceObjectStorageEntry) => {
-    if (!selectedBucket) return;
-    try {
-      await api.deleteUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, entry.key);
-      notify(`Deleted ${entry.name}`, 'success');
-      await loadObjects(selectedBucket.name, prefix);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to delete object', 'error');
-    }
-  }, [loadObjects, notify, prefix, selectedBucket, workspaceId]);
+  const handleDeleteObject = useCallback(
+    async (entry: UserSpaceObjectStorageEntry) => {
+      if (!selectedBucket) return;
+      try {
+        await api.deleteUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, entry.key);
+        notify(`Deleted ${entry.name}`, 'success');
+        await loadObjects(selectedBucket.name, prefix);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to delete object', 'error');
+      }
+    },
+    [loadObjects, notify, prefix, selectedBucket, workspaceId],
+  );
 
-  const handleSaveObjectRename = useCallback(async (entry: UserSpaceObjectStorageEntry) => {
-    if (!selectedBucket) return;
-    const trimmed = objectRenameDraft.trim();
-    if (!trimmed || trimmed === entry.name) {
-      setRenamingKey(null);
-      return;
-    }
-    const parentSegment = prefix ? `${prefix}/` : '';
-    const newKey = `${parentSegment}${trimmed.replace(/^\/+/, '')}`;
-    setSavingObjectRename(true);
-    try {
-      await api.renameUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, entry.key, {
-        new_key: newKey,
-      });
-      notify(`Renamed to ${trimmed}`, 'success');
-      setRenamingKey(null);
-      await loadObjects(selectedBucket.name, prefix);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to rename object', 'error');
-    } finally {
-      setSavingObjectRename(false);
-    }
-  }, [loadObjects, notify, objectRenameDraft, prefix, selectedBucket, workspaceId]);
+  const handleSaveObjectRename = useCallback(
+    async (entry: UserSpaceObjectStorageEntry) => {
+      if (!selectedBucket) return;
+      const trimmed = objectRenameDraft.trim();
+      if (!trimmed || trimmed === entry.name) {
+        setRenamingKey(null);
+        return;
+      }
+      const parentSegment = prefix ? `${prefix}/` : '';
+      const newKey = `${parentSegment}${trimmed.replace(/^\/+/, '')}`;
+      setSavingObjectRename(true);
+      try {
+        await api.renameUserSpaceObjectStorageObject(workspaceId, selectedBucket.name, entry.key, {
+          new_key: newKey,
+        });
+        notify(`Renamed to ${trimmed}`, 'success');
+        setRenamingKey(null);
+        await loadObjects(selectedBucket.name, prefix);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to rename object', 'error');
+      } finally {
+        setSavingObjectRename(false);
+      }
+    },
+    [loadObjects, notify, objectRenameDraft, prefix, selectedBucket, workspaceId],
+  );
 
-  const handleDeleteBucket = useCallback(async (bucketName: string) => {
-    setDeletingBucket(bucketName);
-    try {
-      await api.deleteUserSpaceObjectStorageBucket(workspaceId, bucketName);
-      const next = await api.getUserSpaceObjectStorageConfig(workspaceId);
+  const handleDeleteBucket = useCallback(
+    async (bucketName: string) => {
+      setDeletingBucket(bucketName);
+      try {
+        await api.deleteUserSpaceObjectStorageBucket(workspaceId, bucketName);
+        const next = await api.getUserSpaceObjectStorageConfig(workspaceId);
+        onConfigChange(next);
+        notify(`Deleted bucket ${bucketName}`, 'success');
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to delete bucket', 'error');
+      } finally {
+        setDeletingBucket(null);
+      }
+    },
+    [notify, onConfigChange, workspaceId],
+  );
+
+  const handleSaveBucketRename = useCallback(
+    async (bucket: UserSpaceObjectStorageBucket) => {
+      const trimmed = bucketRenameDraft.trim().toLowerCase();
+      if (!trimmed || trimmed === bucket.name) {
+        setRenamingBucketName(null);
+        return;
+      }
+      setSavingBucketRename(true);
+      try {
+        const next = await api.updateUserSpaceObjectStorageBucket(workspaceId, bucket.name, {
+          new_name: trimmed,
+        });
+        onConfigChange(next);
+        notify(`Renamed bucket to ${trimmed}`, 'success');
+        setRenamingBucketName(null);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'Failed to rename bucket', 'error');
+      } finally {
+        setSavingBucketRename(false);
+      }
+    },
+    [bucketRenameDraft, notify, onConfigChange, workspaceId],
+  );
+
+  const handleWizardSaved = useCallback(
+    (next: UserSpaceObjectStorageConfig) => {
       onConfigChange(next);
-      notify(`Deleted bucket ${bucketName}`, 'success');
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to delete bucket', 'error');
-    } finally {
-      setDeletingBucket(null);
-    }
-  }, [notify, onConfigChange, workspaceId]);
-
-  const handleSaveBucketRename = useCallback(async (bucket: UserSpaceObjectStorageBucket) => {
-    const trimmed = bucketRenameDraft.trim().toLowerCase();
-    if (!trimmed || trimmed === bucket.name) {
-      setRenamingBucketName(null);
-      return;
-    }
-    setSavingBucketRename(true);
-    try {
-      const next = await api.updateUserSpaceObjectStorageBucket(workspaceId, bucket.name, {
-        new_name: trimmed,
-      });
-      onConfigChange(next);
-      notify(`Renamed bucket to ${trimmed}`, 'success');
-      setRenamingBucketName(null);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed to rename bucket', 'error');
-    } finally {
-      setSavingBucketRename(false);
-    }
-  }, [bucketRenameDraft, notify, onConfigChange, workspaceId]);
-
-  const handleWizardSaved = useCallback((next: UserSpaceObjectStorageConfig) => {
-    onConfigChange(next);
-    setShowBucketWizard(false);
-    setEditingBucket(null);
-  }, [onConfigChange]);
+      setShowBucketWizard(false);
+      setEditingBucket(null);
+    },
+    [onConfigChange],
+  );
 
   // Breadcrumb segments for prefix navigation
   const prefixSegments = prefix ? prefix.split('/') : [];
@@ -256,7 +295,11 @@ export function WorkspaceObjectStorageExplorer({
         <div className="userspace-object-toolbar">
           <nav className="userspace-sqlite-breadcrumb" aria-label="Object storage breadcrumb">
             <span className="userspace-sqlite-breadcrumb-item">
-              <button type="button" className="userspace-sqlite-breadcrumb-link" onClick={closeBucket}>
+              <button
+                type="button"
+                className="userspace-sqlite-breadcrumb-link"
+                onClick={closeBucket}
+              >
                 Buckets
               </button>
             </span>
@@ -318,14 +361,17 @@ export function WorkspaceObjectStorageExplorer({
                 onClick={() => uploadInputRef.current?.click()}
                 disabled={uploading}
               >
-                {uploading ? <Loader2 size={14} className="spinning" /> : <Upload size={14} />} Upload
+                {uploading ? <Loader2 size={14} className="spinning" /> : <Upload size={14} />}{' '}
+                Upload
               </button>
             )}
           </div>
         </div>
 
         <div className="userspace-object-meta">
-          <span>{listing?.total_objects ?? 0} object{(listing?.total_objects ?? 0) === 1 ? '' : 's'}</span>
+          <span>
+            {listing?.total_objects ?? 0} object{(listing?.total_objects ?? 0) === 1 ? '' : 's'}
+          </span>
           <span>{formatBytes(listing?.total_bytes ?? 0)}</span>
         </div>
 
@@ -333,13 +379,19 @@ export function WorkspaceObjectStorageExplorer({
 
         <div className="userspace-sqlite-table-wrapper">
           {listingLoading && !listing ? (
-            <div className="userspace-sqlite-empty"><Loader2 size={16} className="spinning" /> Loading…</div>
+            <div className="userspace-sqlite-empty">
+              <Loader2 size={16} className="spinning" /> Loading…
+            </div>
           ) : entries.length === 0 ? (
             <div className="userspace-sqlite-empty">
               <FileIcon size={24} />
               <p>This {prefix ? 'folder' : 'bucket'} is empty.</p>
               {canManage && (
-                <button type="button" className="btn btn-primary btn-sm" onClick={() => uploadInputRef.current?.click()}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => uploadInputRef.current?.click()}
+                >
                   <Upload size={14} /> Upload a file
                 </button>
               )}
@@ -372,7 +424,9 @@ export function WorkspaceObjectStorageExplorer({
                         </td>
                         <td>—</td>
                         <td>Folder</td>
-                        <td>{entry.object_count} item{entry.object_count === 1 ? '' : 's'}</td>
+                        <td>
+                          {entry.object_count} item{entry.object_count === 1 ? '' : 's'}
+                        </td>
                         <td className="userspace-sqlite-actions-col" />
                       </tr>
                     );
@@ -391,8 +445,14 @@ export function WorkspaceObjectStorageExplorer({
                             onClick={(event) => event.stopPropagation()}
                             onBlur={() => void handleSaveObjectRename(entry)}
                             onKeyDown={(event) => {
-                              if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
-                              if (event.key === 'Escape') { event.preventDefault(); setRenamingKey(null); }
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              }
+                              if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setRenamingKey(null);
+                              }
                             }}
                             disabled={savingObjectRename}
                           />
@@ -457,7 +517,8 @@ export function WorkspaceObjectStorageExplorer({
     <div className="userspace-object-explorer">
       <div className="userspace-object-header">
         <p className="userspace-muted" style={{ margin: 0 }}>
-          S3-compatible object storage with auto-injected credentials at runtime. Click a bucket to browse its files.
+          S3-compatible object storage with auto-injected credentials at runtime. Click a bucket to
+          browse its files.
         </p>
         {canManage && (
           <button
@@ -476,7 +537,9 @@ export function WorkspaceObjectStorageExplorer({
       {error && <div className="userspace-object-error">{error}</div>}
 
       {loading ? (
-        <div className="userspace-sqlite-empty"><Loader2 size={16} className="spinning" /> Loading…</div>
+        <div className="userspace-sqlite-empty">
+          <Loader2 size={16} className="spinning" /> Loading…
+        </div>
       ) : !config ? (
         <div className="userspace-sqlite-empty">
           <HardDrive size={24} />
@@ -487,7 +550,11 @@ export function WorkspaceObjectStorageExplorer({
           <HardDrive size={24} />
           <p>No buckets yet.</p>
           {canManage && (
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => setShowBucketWizard(true)}>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setShowBucketWizard(true)}
+            >
               <Plus size={14} /> New Bucket
             </button>
           )}
@@ -507,22 +574,38 @@ export function WorkspaceObjectStorageExplorer({
                         className="userspace-sqlite-cell-input"
                         autoFocus
                         value={bucketRenameDraft}
-                        onChange={(event) => setBucketRenameDraft(event.target.value.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase())}
+                        onChange={(event) =>
+                          setBucketRenameDraft(
+                            event.target.value.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase(),
+                          )
+                        }
                         onBlur={() => void handleSaveBucketRename(bucket)}
                         onKeyDown={(event) => {
-                          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
-                          if (event.key === 'Escape') { event.preventDefault(); setRenamingBucketName(null); }
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            event.currentTarget.blur();
+                          }
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            setRenamingBucketName(null);
+                          }
                         }}
                         disabled={savingBucketRename}
                       />
                     </div>
                   </div>
                 ) : (
-                  <button type="button" className="userspace-sqlite-card-main" onClick={() => void openBucket(bucket)}>
+                  <button
+                    type="button"
+                    className="userspace-sqlite-card-main"
+                    onClick={() => void openBucket(bucket)}
+                  >
                     <div className="userspace-sqlite-card-title">
                       <HardDrive size={16} />
                       <span title={bucket.name}>{bucket.name}</span>
-                      {bucket.is_default && <span className="userspace-sqlite-card-badge">default</span>}
+                      {bucket.is_default && (
+                        <span className="userspace-sqlite-card-badge">default</span>
+                      )}
                     </div>
                     <div className="userspace-sqlite-card-meta">
                       <span>{bucket.description || 'No description'}</span>
@@ -560,7 +643,11 @@ export function WorkspaceObjectStorageExplorer({
                     <DeleteConfirmButton
                       onDelete={() => handleDeleteBucket(bucket.name)}
                       className="btn btn-danger btn-sm"
-                      title={config.buckets.length <= 1 ? 'At least one bucket must remain' : 'Delete bucket'}
+                      title={
+                        config.buckets.length <= 1
+                          ? 'At least one bucket must remain'
+                          : 'Delete bucket'
+                      }
                       buttonText="Delete"
                       disabled={config.buckets.length <= 1 || deletingBucket === bucket.name}
                     />

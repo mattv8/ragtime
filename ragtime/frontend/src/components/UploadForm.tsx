@@ -294,7 +294,7 @@ export function UploadForm({
       />
 
       <details style={{ marginBottom: '16px' }}>
-        <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+        <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
           Advanced Options
         </summary>
         <IndexConfigFields
@@ -328,7 +328,7 @@ export function UploadForm({
           >
             <div className="icon">↑</div>
             <div>Drag & drop an archive file here, or click to browse</div>
-            <div style={{ fontSize: '0.85rem', color: '#888', marginTop: 8 }}>
+            <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginTop: 8 }}>
               Supported: .zip, .tar, .tar.gz, .tar.bz2
             </div>
             {file && <div className="file-name">{file.name}</div>}
@@ -408,7 +408,7 @@ export function UploadForm({
         {/* Advanced options with current patterns */}
         <details open={patternsExpanded} style={{ marginBottom: '16px' }}>
           <summary
-            style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}
+            style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
             onClick={(e) => {
               e.preventDefault();
               setPatternsExpanded(!patternsExpanded);

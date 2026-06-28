@@ -864,7 +864,7 @@ export function GitIndexWizard({
           style={{
             marginBottom: '16px',
             padding: '12px',
-            background: 'var(--bg-tertiary)',
+            background: 'var(--color-bg-tertiary)',
             borderRadius: '8px',
             fontSize: '13px',
           }}
@@ -887,7 +887,13 @@ export function GitIndexWizard({
             <label>
               Branch
               {loadingBranches && (
-                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>
+                <span
+                  style={{
+                    marginLeft: '0.5rem',
+                    color: 'var(--color-text-muted)',
+                    fontSize: '0.85em',
+                  }}
+                >
                   (loading...)
                 </span>
               )}
@@ -967,7 +973,7 @@ export function GitIndexWizard({
                   : `${gitHistoryDepth} commits`}
             </span>
           </div>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
             {gitHistoryDepth === 0
               ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
               : gitHistoryDepth === 1
@@ -977,7 +983,7 @@ export function GitIndexWizard({
         </div>
 
         <details style={{ marginBottom: '16px' }}>
-          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+          <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
             Advanced Options
           </summary>
           <IndexConfigFields
@@ -1054,7 +1060,13 @@ export function GitIndexWizard({
             <label>
               Branch
               {loadingBranches && (
-                <span style={{ marginLeft: '0.5rem', color: '#888', fontSize: '0.85em' }}>
+                <span
+                  style={{
+                    marginLeft: '0.5rem',
+                    color: 'var(--color-text-muted)',
+                    fontSize: '0.85em',
+                  }}
+                >
                   (loading...)
                 </span>
               )}
@@ -1084,7 +1096,7 @@ export function GitIndexWizard({
             {branchError && (
               <small
                 style={{
-                  color: '#f87171',
+                  color: 'var(--color-error)',
                   fontSize: '0.85em',
                   display: 'block',
                   marginTop: '0.25rem',
@@ -1132,7 +1144,9 @@ export function GitIndexWizard({
             />
             Private repository (requires authentication)
             {checkingVisibility && (
-              <span style={{ color: '#888', fontSize: '0.85em' }}>(checking...)</span>
+              <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85em' }}>
+                (checking...)
+              </span>
             )}
           </label>
         </div>
@@ -1142,7 +1156,7 @@ export function GitIndexWizard({
             className="form-group"
             style={{
               marginLeft: '1.5rem',
-              borderLeft: '2px solid #444',
+              borderLeft: '2px solid var(--color-border-strong)',
               paddingLeft: '1rem',
               marginBottom: '1rem',
             }}
@@ -1153,12 +1167,12 @@ export function GitIndexWizard({
                 style={{
                   marginBottom: '12px',
                   padding: '12px',
-                  background: 'rgba(34, 197, 94, 0.1)',
+                  background: 'var(--color-success-light)',
                   borderRadius: '8px',
-                  border: '1px solid rgba(34, 197, 94, 0.3)',
+                  border: '1px solid var(--color-success-border)',
                 }}
               >
-                <span style={{ color: '#22c55e' }}>
+                <span style={{ color: 'var(--color-success)' }}>
                   Token stored - will use existing credentials.
                 </span>
                 <button
@@ -1169,9 +1183,9 @@ export function GitIndexWizard({
                     padding: '4px 8px',
                     fontSize: '12px',
                     background: 'transparent',
-                    border: '1px solid #666',
+                    border: '1px solid var(--color-border-strong)',
                     borderRadius: '4px',
-                    color: '#888',
+                    color: 'var(--color-text-muted)',
                     cursor: 'pointer',
                   }}
                 >
@@ -1186,12 +1200,12 @@ export function GitIndexWizard({
                 style={{
                   marginBottom: '12px',
                   padding: '12px',
-                  background: 'rgba(251, 191, 36, 0.1)',
+                  background: 'var(--color-warning-light)',
                   borderRadius: '8px',
-                  border: '1px solid rgba(251, 191, 36, 0.3)',
+                  border: '1px solid var(--color-warning-border)',
                 }}
               >
-                <span style={{ color: '#fbbf24' }}>
+                <span style={{ color: 'var(--color-warning)' }}>
                   Stored token no longer works - please provide a new token.
                 </span>
               </div>
@@ -1211,7 +1225,7 @@ export function GitIndexWizard({
                 />
                 <small
                   style={{
-                    color: '#888',
+                    color: 'var(--color-text-muted)',
                     fontSize: '0.85em',
                     display: 'block',
                     marginTop: '0.25rem',
@@ -1266,7 +1280,7 @@ export function GitIndexWizard({
                   : `${gitHistoryDepth} commits`}
             </span>
           </div>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
             {gitHistoryDepth === 0
               ? 'Full history: Indexes all commits. Large repos may take 30+ min to clone.'
               : gitHistoryDepth === 1
@@ -1276,7 +1290,7 @@ export function GitIndexWizard({
         </div>
 
         <details style={{ marginBottom: '16px' }}>
-          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+          <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
             Advanced Options
           </summary>
           <IndexConfigFields
@@ -1349,7 +1363,7 @@ export function GitIndexWizard({
               style={{
                 maxHeight: '200px',
                 overflowY: 'auto',
-                background: 'var(--bg-tertiary)',
+                background: 'var(--color-bg-tertiary)',
                 borderRadius: '8px',
                 padding: '8px',
               }}
@@ -1417,7 +1431,7 @@ export function GitIndexWizard({
                   : `${gitHistoryDepth} commits`}
             </span>
           </div>
-          <small style={{ color: '#888', fontSize: '0.8rem' }}>
+          <small style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
             {gitHistoryDepth === 0
               ? `Full history: Indexes all commits.${analysisResult.commit_history?.total_commits ? ` (${analysisResult.commit_history.total_commits.toLocaleString()} commits)` : ''} Large repos may take 30+ min to clone.`
               : gitHistoryDepth === 1
@@ -1439,7 +1453,7 @@ export function GitIndexWizard({
           open={patternsExpanded}
           onToggle={(e) => setPatternsExpanded((e.target as HTMLDetailsElement).open)}
         >
-          <summary style={{ cursor: 'pointer', color: '#60a5fa', marginBottom: '8px' }}>
+          <summary style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}>
             Advanced Options
           </summary>
 
@@ -1549,7 +1563,7 @@ export function GitIndexWizard({
                 style={{
                   height: 8,
                   borderRadius: 999,
-                  background: 'var(--bg-tertiary)',
+                  background: 'var(--color-bg-tertiary)',
                   overflow: 'hidden',
                 }}
               >
@@ -1557,14 +1571,19 @@ export function GitIndexWizard({
                   style={{
                     height: '100%',
                     width: `${displayPercent}%`,
-                    background: 'var(--accent, #60a5fa)',
+                    background: 'var(--color-accent)',
                     transition: 'width 200ms ease',
                   }}
                 />
               </div>
               {indexingJob.phase !== 'cloning' && indexingJob.total_files > 0 && (
                 <small
-                  style={{ color: '#888', fontSize: '0.8rem', display: 'block', marginTop: '6px' }}
+                  style={{
+                    color: 'var(--color-text-muted)',
+                    fontSize: '0.8rem',
+                    display: 'block',
+                    marginTop: '6px',
+                  }}
                 >
                   {indexingJob.processed_files}/{indexingJob.total_files} files
                   {indexingJob.total_chunks > 0

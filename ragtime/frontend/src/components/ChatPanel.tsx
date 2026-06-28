@@ -61,6 +61,7 @@ import {
   Download,
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
+import { getThemeFontFamily } from '@/theme';
 import type {
   Conversation,
   ChatContextReference,
@@ -1897,6 +1898,7 @@ const ChartDisplay = memo(function ChartDisplay({
       textColor: styles.getPropertyValue('--color-text-secondary').trim() || '#9ca3af',
       textMuted: styles.getPropertyValue('--color-text-muted').trim() || '#6b7280',
       gridColor: styles.getPropertyValue('--color-border').trim() || '#374151',
+      fontFamily: getThemeFontFamily(),
     };
   }, []);
 
@@ -1909,6 +1911,7 @@ const ChartDisplay = memo(function ChartDisplay({
         }
 
         const colors = getThemeColors();
+        Chart.defaults.font.family = colors.fontFamily;
         const dpr = window.devicePixelRatio || 1;
 
         // Calculate display size
@@ -1924,25 +1927,29 @@ const ChartDisplay = memo(function ChartDisplay({
         canvasRef.current.style.height = displayHeight + 'px';
 
         // Theme-aware options for axes and legends
+        const themeFont = { family: colors.fontFamily };
         const themeOptions = {
           color: colors.textColor,
+          font: themeFont,
           plugins: {
             legend: {
               labels: {
                 color: colors.textColor,
+                font: themeFont,
               },
             },
             title: {
               color: colors.textColor,
+              font: themeFont,
             },
           },
           scales: {
             x: {
-              ticks: { color: colors.textColor },
+              ticks: { color: colors.textColor, font: themeFont },
               grid: { color: colors.gridColor },
             },
             y: {
-              ticks: { color: colors.textColor },
+              ticks: { color: colors.textColor, font: themeFont },
               grid: { color: colors.gridColor },
             },
           },
@@ -1988,6 +1995,17 @@ const ChartDisplay = memo(function ChartDisplay({
       }
     };
   }, [chartData, createChart]);
+
+  // Recreate the chart when the theme pack or color mode changes so canvas-rendered
+  // fonts and colors (which cannot inherit CSS) track the active theme.
+  useEffect(() => {
+    const observer = new MutationObserver(() => createChart());
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'data-theme-pack'],
+    });
+    return () => observer.disconnect();
+  }, [createChart]);
 
   const handleDownloadChartCsv = useCallback(() => {
     const { columns, rows } = getChartTable(chartData);
@@ -16529,7 +16547,7 @@ export function ChatPanel({
                 <div
                   style={{
                     marginBottom: 16,
-                    border: '1px solid #fcd34d',
+                    border: '1px solid var(--color-warning-border)',
                     borderRadius: 8,
                     overflow: 'hidden',
                   }}
@@ -16541,7 +16559,7 @@ export function ChatPanel({
                       alignItems: 'center',
                       gap: 8,
                       padding: '6px 10px',
-                      background: '#fffbeb',
+                      background: 'var(--color-warning-light)',
                     }}
                   >
                     <span
@@ -16549,7 +16567,7 @@ export function ChatPanel({
                         fontSize: 12,
                         fontWeight: 700,
                         letterSpacing: '0.04em',
-                        color: '#92400e',
+                        color: 'var(--color-warning)',
                       }}
                     >
                       COMPACTION MARKER
@@ -16615,8 +16633,8 @@ export function ChatPanel({
                           fontSize: 12,
                           fontWeight: 700,
                           letterSpacing: '0.03em',
-                          color: '#2451a6',
-                          background: '#dbe7f7',
+                          color: 'var(--color-info)',
+                          background: 'var(--color-info-light)',
                           padding: '4px 10px',
                           borderRadius: 6,
                         }}
@@ -16635,8 +16653,8 @@ export function ChatPanel({
                       <span
                         style={{
                           fontSize: 12,
-                          color: '#2451a6',
-                          background: '#dbe7f7',
+                          color: 'var(--color-info)',
+                          background: 'var(--color-info-light)',
                           padding: '3px 8px',
                           borderRadius: 4,
                         }}
@@ -16671,8 +16689,8 @@ export function ChatPanel({
                             fontSize: 12,
                             fontWeight: 700,
                             letterSpacing: '0.03em',
-                            color: '#92400e',
-                            background: '#fef3c7',
+                            color: 'var(--color-warning)',
+                            background: 'var(--color-warning-light)',
                             padding: '3px 8px',
                             borderRadius: 4,
                           }}

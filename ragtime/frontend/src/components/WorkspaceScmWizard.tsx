@@ -2259,7 +2259,7 @@ export function WorkspaceScmWizard({
                                 style={{
                                   width: `${Math.min(100, Math.round((archiveExportTask.processed_files / Math.max(1, archiveExportTask.total_files)) * 100))}%`,
                                   height: '100%',
-                                  background: 'var(--color-accent, #3b82f6)',
+                                  background: 'var(--color-accent)',
                                   transition: 'width 0.2s linear',
                                 }}
                               />
@@ -2340,7 +2340,7 @@ export function WorkspaceScmWizard({
                                 style={{
                                   width: `${progress.percent}%`,
                                   height: '100%',
-                                  background: 'var(--color-accent, #3b82f6)',
+                                  background: 'var(--color-accent)',
                                   transition: 'width 0.2s linear',
                                 }}
                               />
@@ -2661,7 +2661,7 @@ export function WorkspaceScmWizard({
                           padding: '8px 10px',
                           borderRadius: 6,
                           border: '1px solid var(--color-warning, #d69d2a)',
-                          background: 'rgba(214, 157, 42, 0.08)',
+                          background: 'var(--color-warning-light)',
                         }}
                       >
                         <AlertCircle
@@ -3123,11 +3123,11 @@ export function WorkspaceScmWizard({
                       alignItems: 'center',
                       padding: 12,
                       borderRadius: 8,
-                      border: `1px solid ${sqlImportResult.phase === 'completed' ? 'var(--color-success, #2b7a2b)' : 'var(--color-danger, #c53030)'}`,
+                      border: `1px solid ${sqlImportResult.phase === 'completed' ? 'var(--color-success, #2b7a2b)' : 'var(--color-error)'}`,
                       background:
                         sqlImportResult.phase === 'completed'
-                          ? 'rgba(43, 122, 43, 0.08)'
-                          : 'rgba(197, 48, 48, 0.08)',
+                          ? 'var(--color-success-light)'
+                          : 'var(--color-error-light)',
                     }}
                   >
                     {sqlImportResult.phase === 'completed' ? (
@@ -3243,7 +3243,7 @@ export function WorkspaceScmWizard({
                   <div
                     style={{
                       padding: 12,
-                      border: '1px solid var(--color-danger, #c53030)',
+                      border: '1px solid var(--color-error)',
                       borderRadius: 8,
                     }}
                   >
@@ -3258,7 +3258,7 @@ export function WorkspaceScmWizard({
                             fontFamily: 'var(--font-mono)',
                             fontSize: 11,
                             padding: '2px 0',
-                            color: 'var(--color-danger, #c53030)',
+                            color: 'var(--color-error)',
                           }}
                         >
                           {error}
@@ -3317,7 +3317,7 @@ export function WorkspaceScmWizard({
                     padding: 12,
                     borderRadius: 8,
                     border: '1px solid var(--color-warning, #d69d2a)',
-                    background: 'rgba(214, 157, 42, 0.08)',
+                    background: 'var(--color-warning-light)',
                   }}
                 >
                   <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
@@ -3454,8 +3454,8 @@ export function WorkspaceScmWizard({
                       alignItems: 'flex-start',
                       padding: 12,
                       borderRadius: 8,
-                      border: '1px solid var(--color-danger, #c53030)',
-                      background: 'rgba(197, 48, 48, 0.08)',
+                      border: '1px solid var(--color-error)',
+                      background: 'var(--color-error-light)',
                     }}
                   >
                     <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
@@ -3477,7 +3477,7 @@ export function WorkspaceScmWizard({
                       padding: 12,
                       border: '1px solid var(--color-success, #2b7a2b)',
                       borderRadius: 8,
-                      background: 'rgba(43, 122, 43, 0.08)',
+                      background: 'var(--color-success-light)',
                     }}
                   >
                     <Check size={16} style={{ flexShrink: 0 }} />
@@ -3597,7 +3597,7 @@ export function WorkspaceScmWizard({
                     padding: 12,
                     border: '1px solid var(--color-success, #2b7a2b)',
                     borderRadius: 8,
-                    background: 'rgba(43, 122, 43, 0.08)',
+                    background: 'var(--color-success-light)',
                   }}
                 >
                   <Check size={16} style={{ flexShrink: 0 }} />

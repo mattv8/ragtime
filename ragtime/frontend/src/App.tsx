@@ -35,6 +35,7 @@ import type {
 } from '@/types';
 import type { OAuthParams } from '@/components';
 import { BrandName } from '@/utils/buildEnvironment';
+import { setThemePack, resolveThemePackId } from '@/theme';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'users' | 'settings';
@@ -307,7 +308,9 @@ export function App() {
       if (!hasEncryptionWarning) {
         window.sessionStorage.removeItem(ENCRYPTION_KEY_ERROR_DISMISS_KEY);
       }
-    } catch {}
+    } catch (error) {
+      console.error('Failed to refresh configuration warnings', error);
+    }
   }, []);
 
   useEffect(() => {
@@ -362,13 +365,15 @@ export function App() {
 
         // Only try to get current user if we might be authenticated
         // This avoids unnecessary 401 errors in the console
+        let resolvedUser: User | null = null;
         try {
-          const user = await api.getCurrentUser();
-          setCurrentUser(user);
+          resolvedUser = await api.getCurrentUser();
+          setCurrentUser(resolvedUser);
         } catch {
           // Not authenticated, that's fine - show login page
           setCurrentUser(null);
         }
+        setThemePack(resolveThemePackId(resolvedUser?.theme_pack, status.default_theme_pack));
       } catch (err) {
         console.error('Failed to check auth status:', err);
         // If we can't check auth, assume not authenticated
@@ -409,6 +414,7 @@ export function App() {
         setAuthenticatedWebglBackgroundEnabled(
           status.authenticated_webgl_background_enabled ?? true,
         );
+        setThemePack(resolveThemePackId(user.theme_pack, status.default_theme_pack));
       } catch (err) {
         console.error('Failed to refresh auth status after login:', err);
       }
@@ -926,7 +932,11 @@ export function App() {
           </div>
           <div className="topnav-actions">
             <MemoryStatus />
-            <UserMenu user={currentUser} onLogout={handleLogout} />
+            <UserMenu
+              user={currentUser}
+              onLogout={handleLogout}
+              defaultThemePack={authStatus?.default_theme_pack}
+            />
           </div>
         </nav>
         <SecurityBanner

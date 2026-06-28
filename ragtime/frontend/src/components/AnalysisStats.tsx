@@ -41,18 +41,18 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
     stats.push({
       value: formatMemory(result.memory_estimate.steady_memory_mb),
       label: 'Steady-State RAM',
-      color: '#22c55e',
+      color: 'var(--color-success)',
     });
     stats.push({
       value: formatMemory(result.memory_estimate.peak_memory_mb),
       label: 'Peak RAM (loading)',
-      color: '#f59e0b',
+      color: 'var(--color-warning)',
     });
     if (result.total_memory_with_existing_mb) {
       stats.push({
         value: formatMemory(result.total_memory_with_existing_mb),
         label: 'Total w/ Existing',
-        color: '#60a5fa',
+        color: 'var(--color-accent)',
       });
     }
   }
@@ -63,7 +63,7 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
   const bottomRow = stats.slice(midpoint);
 
   const statBoxStyle: React.CSSProperties = {
-    background: 'var(--bg-tertiary)',
+    background: 'var(--color-bg-tertiary)',
     padding: '12px',
     borderRadius: '8px',
     textAlign: 'center',
@@ -82,12 +82,12 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
                 style={{
                   fontSize: '1.5rem',
                   fontWeight: 'bold',
-                  color: stat.color || 'var(--accent)',
+                  color: stat.color || 'var(--color-accent)',
                 }}
               >
                 {stat.value}
               </div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              <div style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}>
                 {stat.label}
               </div>
             </div>
@@ -101,12 +101,12 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
                   style={{
                     fontSize: '1.5rem',
                     fontWeight: 'bold',
-                    color: stat.color || 'var(--accent)',
+                    color: stat.color || 'var(--color-accent)',
                   }}
                 >
                   {stat.value}
                 </div>
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                <div style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}>
                   {stat.label}
                 </div>
               </div>
@@ -117,7 +117,9 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
 
       {/* Memory note with dimension info */}
       {result.memory_estimate && (
-        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '8px' }}>
+        <div
+          style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', marginTop: '8px' }}
+        >
           RAM estimates based on {result.memory_estimate.embedding_dimension}-dim embeddings. Peak
           memory occurs during index loading.{' '}
           {onNavigateToSettings ? (
@@ -127,7 +129,11 @@ export function AnalysisStats({ result, onNavigateToSettings }: AnalysisStatsPro
                 e.preventDefault();
                 onNavigateToSettings();
               }}
-              style={{ color: '#60a5fa', textDecoration: 'underline', cursor: 'pointer' }}
+              style={{
+                color: 'var(--color-accent)',
+                textDecoration: 'underline',
+                cursor: 'pointer',
+              }}
             >
               Use sequential loading
             </a>

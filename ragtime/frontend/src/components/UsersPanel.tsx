@@ -62,6 +62,10 @@ const CHART_PALETTE = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#
 function useThemeColors() {
   const read = useCallback(() => {
     const s = getComputedStyle(document.documentElement);
+    const fontFamily = s.getPropertyValue('--font-body').trim();
+    if (fontFamily) {
+      ChartJS.defaults.font.family = fontFamily;
+    }
     return {
       text: s.getPropertyValue('--color-text-primary').trim() || '#f1f5f9',
       textSecondary: s.getPropertyValue('--color-text-secondary').trim() || '#94a3b8',
@@ -75,7 +79,7 @@ function useThemeColors() {
     const observer = new MutationObserver(() => setColors(read()));
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ['data-theme', 'data-theme-pack'],
     });
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const handler = () => setColors(read());

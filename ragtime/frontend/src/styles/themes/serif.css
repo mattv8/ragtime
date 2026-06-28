@@ -1,0 +1,233 @@
+/* =============================================================================
+   THEME PACK: SERIF
+   A mature, contemporary, editorial pack inspired by Claude's style guide:
+   warm parchment surfaces, serif headings, warm-toned neutrals, ring-style
+   depth, and sharper corners than the default pack.
+
+   Activated by [data-theme-pack='serif'] on <html>. Composes with the color
+   mode (data-theme=light|dark|absent) exactly like the default pack:
+     - base block        -> dark color mode (mirrors :root in theme.css)
+     - [data-theme=light] -> explicit light parchment
+     - @media light       -> system-preference light parchment
+   Only tokens are overridden here; all component CSS reads those tokens, so the
+   pack applies app-wide without per-component rules.
+   ============================================================================= */
+
+/* Pack-wide tokens (shared across every color mode): typography + sharper radii */
+[data-theme-pack='serif'] {
+  --font-heading: var(--font-serif);
+  --font-body: var(--font-serif);
+
+  --radius-xs: 1px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 5px;
+  --radius-xl: 8px;
+  --radius-full: 9999px;
+}
+
+/* Serif - Dark color mode (default base, mirrors :root) */
+[data-theme-pack='serif'] {
+  color-scheme: dark light;
+
+  --color-bg-primary: #141413;
+  --color-bg-secondary: #1e1d1b;
+  --color-bg-tertiary: #30302e;
+
+  --color-surface: #1e1d1b;
+  --color-surface-hover: #30302e;
+  --color-surface-active: #3d3d3a;
+
+  --color-text-primary: #f5f4ed;
+  --color-text-secondary: #b0aea5;
+  --color-text-muted: #87867f;
+  --color-text-inverse: #141413;
+
+  --color-primary: #d97757;
+  --color-primary-hover: #e08a6c;
+  --color-primary-light: rgba(217, 119, 87, 0.18);
+  --color-primary-soft: rgba(217, 119, 87, 0.24);
+  --color-primary-border: rgba(217, 119, 87, 0.4);
+
+  --color-accent: #d97757;
+  --color-accent-hover: #c96442;
+  --color-accent-light: rgba(217, 119, 87, 0.16);
+
+  --color-success: #7bbf7b;
+  --color-success-light: rgba(123, 191, 123, 0.15);
+  --color-success-border: rgba(123, 191, 123, 0.3);
+
+  --color-error: #e07a7a;
+  --color-error-light: rgba(224, 122, 122, 0.15);
+  --color-error-border: rgba(224, 122, 122, 0.3);
+
+  --color-warning: #d9a441;
+  --color-warning-light: rgba(217, 164, 65, 0.15);
+  --color-warning-border: rgba(217, 164, 65, 0.3);
+
+  --color-info: #6db3f2;
+  --color-info-light: rgba(109, 179, 242, 0.15);
+  --color-info-border: rgba(109, 179, 242, 0.3);
+
+  --login-gradient-start: #0f0f0e;
+  --login-gradient-middle: #1a1916;
+  --login-gradient-end: #2e2a24;
+  --login-gradient-base: #141413;
+  --login-gradient-opacity: 0.72;
+  --login-gradient-wash: rgba(20, 20, 19, 0.66);
+  --login-card-bg: rgba(20, 20, 19, 0.55);
+  --login-card-border: rgba(217, 119, 87, 0.28);
+  --login-card-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+
+  --color-terminal-surface: #0d0d0c;
+
+  --color-border: rgba(245, 244, 237, 0.1);
+  --color-border-strong: rgba(245, 244, 237, 0.18);
+
+  --color-input-bg: rgba(0, 0, 0, 0.25);
+  --color-input-border: rgba(245, 244, 237, 0.14);
+  --color-input-focus: var(--color-primary);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 48px rgba(0, 0, 0, 0.6);
+}
+
+/* Serif - Light color mode (warm parchment) */
+[data-theme-pack='serif'][data-theme='light'] {
+  color-scheme: light;
+
+  --color-bg-primary: #f5f4ed;
+  --color-bg-secondary: #faf9f5;
+  --color-bg-tertiary: #e8e6dc;
+
+  --color-surface: #faf9f5;
+  --color-surface-hover: #f0eee6;
+  --color-surface-active: #e8e6dc;
+
+  --color-text-primary: #141413;
+  --color-text-secondary: #5e5d59;
+  --color-text-muted: #87867f;
+  --color-text-inverse: #faf9f5;
+
+  --color-primary: #c96442;
+  --color-primary-hover: #b5543a;
+  --color-primary-light: rgba(201, 100, 66, 0.12);
+  --color-primary-soft: rgba(201, 100, 66, 0.18);
+  --color-primary-border: rgba(201, 100, 66, 0.3);
+
+  --color-accent: #d97757;
+  --color-accent-hover: #c96442;
+  --color-accent-light: rgba(217, 119, 87, 0.14);
+
+  --color-success: #3f7e4e;
+  --color-success-light: rgba(63, 126, 78, 0.12);
+  --color-success-border: rgba(63, 126, 78, 0.3);
+
+  --color-error: #b53333;
+  --color-error-light: rgba(181, 51, 51, 0.1);
+  --color-error-border: rgba(181, 51, 51, 0.28);
+
+  --color-warning: #b8762e;
+  --color-warning-light: rgba(184, 118, 46, 0.12);
+  --color-warning-border: rgba(184, 118, 46, 0.3);
+
+  --color-info: #3898ec;
+  --color-info-light: rgba(56, 152, 236, 0.12);
+  --color-info-border: rgba(56, 152, 236, 0.3);
+
+  --login-gradient-start: #f5f4ed;
+  --login-gradient-middle: #ece9dd;
+  --login-gradient-end: #d8cdbb;
+  --login-gradient-base: #faf9f5;
+  --login-gradient-opacity: 0.82;
+  --login-gradient-wash: rgba(245, 244, 237, 0.4);
+  --login-card-bg: rgba(250, 249, 245, 0.8);
+  --login-card-border: rgba(201, 100, 66, 0.25);
+  --login-card-shadow: 0 24px 60px rgba(20, 20, 19, 0.12);
+
+  --color-terminal-surface: #1f1e1c;
+
+  --color-border: #e8e6dc;
+  --color-border-strong: #d1cfc5;
+
+  --color-input-bg: #faf9f5;
+  --color-input-border: #e0ddd0;
+  --color-input-focus: #3898ec;
+
+  --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.05);
+  --shadow-md: 0 0 0 1px rgba(20, 20, 19, 0.06), 0 4px 16px rgba(20, 20, 19, 0.05);
+  --shadow-lg: 0 4px 24px rgba(20, 20, 19, 0.08);
+  --shadow-xl: 0 24px 48px -8px rgba(20, 20, 19, 0.12);
+}
+
+/* Serif - System preference light (no explicit color mode chosen) */
+@media (prefers-color-scheme: light) {
+  [data-theme-pack='serif']:not([data-theme='dark']) {
+    color-scheme: light;
+
+    --color-bg-primary: #f5f4ed;
+    --color-bg-secondary: #faf9f5;
+    --color-bg-tertiary: #e8e6dc;
+
+    --color-surface: #faf9f5;
+    --color-surface-hover: #f0eee6;
+    --color-surface-active: #e8e6dc;
+
+    --color-text-primary: #141413;
+    --color-text-secondary: #5e5d59;
+    --color-text-muted: #87867f;
+    --color-text-inverse: #faf9f5;
+
+    --color-primary: #c96442;
+    --color-primary-hover: #b5543a;
+    --color-primary-light: rgba(201, 100, 66, 0.12);
+    --color-primary-soft: rgba(201, 100, 66, 0.18);
+    --color-primary-border: rgba(201, 100, 66, 0.3);
+
+    --color-accent: #d97757;
+    --color-accent-hover: #c96442;
+    --color-accent-light: rgba(217, 119, 87, 0.14);
+
+    --color-success: #3f7e4e;
+    --color-success-light: rgba(63, 126, 78, 0.12);
+    --color-success-border: rgba(63, 126, 78, 0.3);
+
+    --color-error: #b53333;
+    --color-error-light: rgba(181, 51, 51, 0.1);
+    --color-error-border: rgba(181, 51, 51, 0.28);
+
+    --color-warning: #b8762e;
+    --color-warning-light: rgba(184, 118, 46, 0.12);
+    --color-warning-border: rgba(184, 118, 46, 0.3);
+
+    --color-info: #3898ec;
+    --color-info-light: rgba(56, 152, 236, 0.12);
+    --color-info-border: rgba(56, 152, 236, 0.3);
+
+    --login-gradient-start: #f5f4ed;
+    --login-gradient-middle: #ece9dd;
+    --login-gradient-end: #d8cdbb;
+    --login-gradient-base: #faf9f5;
+    --login-gradient-opacity: 0.82;
+    --login-gradient-wash: rgba(245, 244, 237, 0.4);
+    --login-card-bg: rgba(250, 249, 245, 0.8);
+    --login-card-border: rgba(201, 100, 66, 0.25);
+    --login-card-shadow: 0 24px 60px rgba(20, 20, 19, 0.12);
+
+    --color-terminal-surface: #1f1e1c;
+
+    --color-border: #e8e6dc;
+    --color-border-strong: #d1cfc5;
+
+    --color-input-bg: #faf9f5;
+    --color-input-border: #e0ddd0;
+    --color-input-focus: #3898ec;
+
+    --shadow-sm: 0 1px 2px rgba(20, 20, 19, 0.05);
+    --shadow-md: 0 0 0 1px rgba(20, 20, 19, 0.06), 0 4px 16px rgba(20, 20, 19, 0.05);
+    --shadow-lg: 0 4px 24px rgba(20, 20, 19, 0.08);
+    --shadow-xl: 0 24px 48px -8px rgba(20, 20, 19, 0.12);
+  }
+}

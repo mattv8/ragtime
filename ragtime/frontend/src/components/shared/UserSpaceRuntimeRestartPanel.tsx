@@ -251,10 +251,10 @@ export function UserSpaceRuntimeRestartPanel({
     <div
       className={className}
       style={{
-        border: '1px solid var(--border-color)',
+        border: '1px solid var(--color-border)',
         borderRadius: '8px',
         padding: '0.625rem 0.75rem',
-        background: 'var(--bg-secondary)',
+        background: 'var(--color-bg-secondary)',
         ...style,
       }}
     >
@@ -333,7 +333,7 @@ export function UserSpaceRuntimeRestartPanel({
               style={{
                 maxHeight: '180px',
                 overflowY: 'auto',
-                borderTop: '1px solid var(--border-color)',
+                borderTop: '1px solid var(--color-border)',
                 paddingTop: '0.375rem',
               }}
             >
@@ -345,7 +345,7 @@ export function UserSpaceRuntimeRestartPanel({
                     justifyContent: 'space-between',
                     gap: '0.625rem',
                     padding: '0.25rem 0',
-                    borderBottom: '1px solid var(--border-color)',
+                    borderBottom: '1px solid var(--color-border)',
                     alignItems: 'flex-start',
                   }}
                 >

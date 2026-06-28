@@ -137,6 +137,7 @@ model AppSettings {
 
   // Server Identity
   serverName                          String  @default("Ragtime") @map("server_name") // Customizable server/model name
+  defaultThemePack                    String  @default("default") @map("default_theme_pack") // Instance-wide default app theme pack for users without a personal choice
   authenticatedWebglBackgroundEnabled Boolean @default(true) @map("authenticated_webgl_background_enabled")
   openapiModelPrefixEnabled           Boolean @default(true) @map("openapi_model_prefix_enabled")
 
@@ -835,6 +836,7 @@ model User {
   displayName     String?       @map("display_name")
   role            UserRole      @default(user)
   roleManuallySet Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
+  themePack       String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
   lastLoginAt     DateTime?     @map("last_login_at")
 
   createdAt DateTime @default(now()) @map("created_at")

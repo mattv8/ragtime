@@ -562,6 +562,10 @@ class AppSettings(BaseModel):
         default=DEFAULT_SERVER_NAME,
         description="Server display name (shown in UI and API model name)",
     )
+    default_theme_pack: str = Field(
+        default="default",
+        description="Instance-wide default app theme pack for users without a personal choice",
+    )
     authenticated_webgl_background_enabled: bool = Field(
         default=DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
         description="If True, show the animated WebGL gradient behind authenticated app pages.",
@@ -1264,6 +1268,7 @@ class UpdateSettingsRequest(BaseModel):
 
     # Server branding
     server_name: Optional[str] = None
+    default_theme_pack: Optional[str] = None
     authenticated_webgl_background_enabled: Optional[bool] = None
     openapi_model_prefix_enabled: Optional[bool] = None
     # Embedding settings
