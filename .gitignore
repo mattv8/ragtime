@@ -101,3 +101,4 @@ ragtime/indexer/static/dist/
 .swarm/
 .opencode/
 .omo/
+.ruff_cache
