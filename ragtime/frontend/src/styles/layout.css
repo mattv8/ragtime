@@ -1648,7 +1648,7 @@ legend {
   font-size: var(--text-sm);
   cursor: pointer;
   transition: all var(--transition-fast);
-  font-family: var(--font-sans);
+  font-family: inherit;
 }
 
 /* Compact variant — used in inline headers (e.g. SQLite inspector) */

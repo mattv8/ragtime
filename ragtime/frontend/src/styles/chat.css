@@ -3721,11 +3721,11 @@ button.tool-call-userspace-write-path-link:hover {
   white-space: nowrap;
 }
 .visualization-branch-label span {
-  color: var(--color-text-subtle);
+  color: var(--color-text-muted);
 }
 .live-data-refresh-error {
   margin: var(--space-sm) 0 0 0;
-  color: var(--color-danger);
+  color: var(--color-error);
   font-size: var(--text-xs);
 }
 .datatable-table-wrapper {

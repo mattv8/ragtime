@@ -12,7 +12,7 @@
   justify-content: center;
   gap: var(--space-sm);
   padding: 10px 20px;
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: var(--text-sm);
   font-weight: 500;
   line-height: 1.25;
@@ -188,7 +188,7 @@ select,
 textarea {
   width: 100%;
   padding: 10px 14px;
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: var(--text-base);
   color: var(--color-text-primary);
   background: var(--color-input-bg);
@@ -801,9 +801,9 @@ textarea:focus {
 .admin-ws-error {
   padding: var(--space-sm);
   margin-bottom: var(--space-sm);
-  color: var(--color-danger);
+  color: var(--color-error);
   font-size: var(--text-sm);
-  background: var(--color-danger-bg, rgba(220, 53, 69, 0.08));
+  background: var(--color-error-light);
   border-radius: var(--radius-sm);
 }
 
@@ -868,7 +868,7 @@ textarea:focus {
   border: none;
   cursor: pointer;
   font-size: var(--text-xs);
-  color: var(--color-text);
+  color: var(--color-text-primary);
 }
 
 .admin-ws-group-header:hover {
@@ -914,7 +914,7 @@ textarea:focus {
   background: none;
   cursor: pointer;
   font-size: var(--text-sm);
-  color: var(--color-text);
+  color: var(--color-text-primary);
   text-align: left;
 }
 
@@ -942,7 +942,7 @@ textarea:focus {
   font-size: 9px;
   padding: 1px 5px;
   border-radius: var(--radius-sm);
-  background: var(--color-primary-bg, rgba(59, 130, 246, 0.12));
+  background: var(--color-primary-light);
   color: var(--color-primary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -987,7 +987,7 @@ textarea:focus {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
-  color: var(--color-text);
+  color: var(--color-text-primary);
 }
 
 .userspace-filepath-input {
@@ -1399,7 +1399,7 @@ textarea:focus {
   user-select: none;
   font-size: var(--text-sm);
   font-weight: 600;
-  color: var(--color-text);
+  color: var(--color-text-primary);
 }
 
 .tool-group-header:hover {
@@ -1615,7 +1615,7 @@ textarea:focus {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
-  color: var(--color-text);
+  color: var(--color-text-primary);
   font-size: var(--text-sm);
   font-family: inherit;
   line-height: 1.4;
@@ -1713,7 +1713,7 @@ textarea:focus {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.4;
-  font-family: var(--font-sans);
+  font-family: inherit;
   display: block;
   field-sizing: content;
   transition:
@@ -1731,7 +1731,7 @@ textarea:focus {
   border-color: var(--color-input-border) !important;
   border-radius: var(--radius-md) !important;
   color: var(--color-text-primary) !important;
-  font-family: var(--font-sans) !important;
+  font-family: inherit !important;
   margin: 0 !important;
   min-height: 42px !important;
   padding: 8px 10px !important;
@@ -1787,11 +1787,11 @@ textarea:focus {
 }
 
 .tool-group-tab-rename:hover {
-  color: var(--color-text);
+  color: var(--color-text-primary);
 }
 
 .tool-group-tab-delete:hover {
-  color: var(--color-danger);
+  color: var(--color-error);
 }
 
 .tool-group-tab-add {
@@ -1801,7 +1801,7 @@ textarea:focus {
 }
 
 .tool-group-tab-add:hover {
-  color: var(--color-text);
+  color: var(--color-text-primary);
   border-color: var(--color-text-muted);
 }
 
@@ -2360,7 +2360,7 @@ textarea:focus {
 
 .userspace-new-file-btn:hover {
   background: var(--color-surface-hover);
-  color: var(--color-text);
+  color: var(--color-text-primary);
 }
 
 .userspace-new-file-btn:focus {
@@ -3249,7 +3249,7 @@ textarea:focus {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--font-family-mono);
+  font-family: var(--font-mono);
 }
 
 .userspace-snapshot-diff-overlay-nav-meta {
@@ -3898,7 +3898,7 @@ textarea:focus {
 }
 
 .userspace-env-var-key {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--color-text-primary);
@@ -3918,7 +3918,7 @@ textarea:focus {
   height: 16px;
   padding: 0 6px;
   border-radius: var(--radius-full);
-  font-family: var(--font-family, system-ui, sans-serif);
+  font-family: inherit;
   font-size: 10px;
   font-weight: 600;
   color: var(--color-text-muted);
@@ -4139,7 +4139,7 @@ textarea:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
   font-weight: 500;
   color: var(--color-text-primary);
@@ -5164,7 +5164,7 @@ textarea {
   gap: var(--space-xs);
   width: 100%;
   padding: 10px 14px;
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: var(--text-base);
   color: var(--color-text-primary);
   background: var(--color-input-bg);
@@ -5881,7 +5881,7 @@ textarea {
   border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-text-primary);
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: var(--text-sm);
   transition: all var(--transition-fast);
 }
@@ -5982,7 +5982,7 @@ textarea {
   box-shadow: none !important;
   background: transparent;
   color: var(--color-text-primary);
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: var(--text-base);
   outline: none;
 }
@@ -6203,7 +6203,7 @@ textarea {
 .toast-info {
   background: var(--color-info-light, var(--color-surface-hover));
   border: 1px solid var(--color-info-border, var(--color-border));
-  color: var(--color-info, var(--color-text));
+  color: var(--color-info);
 }
 
 .toast-message {
@@ -8602,7 +8602,7 @@ fieldset legend.legend-with-status .legend-divider {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-text-secondary);
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: var(--text-sm);
   cursor: pointer;
   transition:
