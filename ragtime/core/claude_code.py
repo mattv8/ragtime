@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -18,6 +20,11 @@ CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 CLAUDE_CODE_COMMAND = "claude"
 CLAUDE_CODE_AUTH_SESSION_TTL_SECONDS = 10 * 60
 _AUTH_URL_RE = re.compile(r"https://claude\.com/cai/oauth/authorize\?\S+")
+_CLAUDE_STATUS_PROCESS_TIMEOUT_SECONDS = 5.0
+_CLAUDE_AUTH_STATUS_PROCESS_TIMEOUT_SECONDS = 10.0
+_PROCESS_TERMINATE_GRACE_SECONDS = 2.0
+_TIMEOUT_EXCEPTIONS = (TimeoutError, asyncio.TimeoutError)
+_TIMEOUT_OR_CANCEL_EXCEPTIONS = (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError)
 
 # Anthropic REST endpoint and headers for OAuth (Claude Code subscription) calls.
 # This is the same public /v1/models endpoint used for API-key auth, but the
@@ -28,6 +35,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_OAUTH_BETA = "oauth-2025-04-20"
 _CLAUDE_CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
 _KEYCHAIN_SERVICE = "Claude Code-credentials"
+_STATUS_IN_FLIGHT: tuple[asyncio.AbstractEventLoop, asyncio.Task["ClaudeCodeStatus"]] | None = None
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,110 @@ class ClaudeCodeLoginStart:
     expires_in: int
 
 
+@dataclass(frozen=True)
+class _ClaudeCommandResult:
+    returncode: int | None
+    output: str
+    timed_out: bool = False
+    error: str | None = None
+
+
+async def _terminate_process(process: asyncio.subprocess.Process, *, process_group: bool = False) -> None:
+    """Terminate a CLI process and reap it so status probes cannot leak children."""
+    if process.returncode is not None:
+        return
+
+    pid = getattr(process, "pid", None)
+    if process_group and os.name != "nt" and isinstance(pid, int) and pid > 0:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGTERM)
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
+        return
+    except _TIMEOUT_EXCEPTIONS:
+        pass
+
+    if process_group and os.name != "nt" and isinstance(pid, int) and pid > 0:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGKILL)
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+
+    with contextlib.suppress(*_TIMEOUT_EXCEPTIONS):
+        await asyncio.wait_for(process.wait(), timeout=_PROCESS_TERMINATE_GRACE_SECONDS)
+
+
+async def _run_claude_command(command: str, *args: str, timeout: float) -> _ClaudeCommandResult:
+    """Run a short Claude CLI probe with hard timeout and guaranteed cleanup."""
+    process: asyncio.subprocess.Process | None = None
+    subprocess_kwargs: dict[str, Any] = {}
+    use_process_group = os.name != "nt"
+    if os.name != "nt":
+        subprocess_kwargs["start_new_session"] = True
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **subprocess_kwargs,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except _TIMEOUT_EXCEPTIONS:
+            await _terminate_process(process, process_group=use_process_group)
+            return _ClaudeCommandResult(returncode=process.returncode, output="", timed_out=True)
+        output = (stdout or stderr).decode(errors="replace").strip()
+        return _ClaudeCommandResult(returncode=process.returncode, output=output)
+    except asyncio.CancelledError:
+        if process is not None:
+            await _terminate_process(process, process_group=use_process_group)
+        raise
+    except OSError as exc:
+        return _ClaudeCommandResult(returncode=None, output="", error=str(exc))
+
+
 async def get_claude_code_status() -> ClaudeCodeStatus:
+    """Return non-sensitive Claude Code CLI/token status.
+
+    Concurrent callers share only the in-flight live probe. There is no TTL
+    auth cache, so completed status checks never mask later auth changes.
+    """
+    global _STATUS_IN_FLIGHT
+
+    loop = asyncio.get_running_loop()
+    current = _STATUS_IN_FLIGHT
+    if current is not None:
+        task_loop, task = current
+        if task_loop is loop and not task.done():
+            return await asyncio.shield(task)
+
+    task = loop.create_task(_probe_claude_code_status())
+    _STATUS_IN_FLIGHT = (loop, task)
+
+    def _clear_in_flight(done_task: asyncio.Task[ClaudeCodeStatus]) -> None:
+        global _STATUS_IN_FLIGHT
+        if _STATUS_IN_FLIGHT == (loop, done_task):
+            _STATUS_IN_FLIGHT = None
+        if not done_task.cancelled():
+            with contextlib.suppress(Exception):
+                done_task.exception()
+
+    task.add_done_callback(_clear_in_flight)
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if _STATUS_IN_FLIGHT == (loop, task) and task.done():
+            _STATUS_IN_FLIGHT = None
+
+
+async def _probe_claude_code_status() -> ClaudeCodeStatus:
     """Return non-sensitive Claude Code CLI/token status."""
     command = shutil.which(CLAUDE_CODE_COMMAND)
     has_oauth_token = bool(os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV, "").strip())
@@ -84,53 +195,40 @@ async def get_claude_code_status() -> ClaudeCodeStatus:
 
     version: str | None = None
     error: str | None = None
-    try:
-        process = await asyncio.create_subprocess_exec(
-            command,
-            "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5.0)
-        output = (stdout or stderr).decode(errors="replace").strip()
-        version = output.splitlines()[0] if output else None
-        if process.returncode not in (0, None):
-            error = output or f"claude --version exited with status {process.returncode}."
-    except TimeoutError:
+    version_result = await _run_claude_command(command, "--version", timeout=_CLAUDE_STATUS_PROCESS_TIMEOUT_SECONDS)
+    if version_result.timed_out:
         error = "claude --version timed out."
-    except OSError as exc:
-        error = str(exc)
+    elif version_result.error:
+        error = version_result.error
+    else:
+        output = version_result.output
+        version = output.splitlines()[0] if output else None
+        if version_result.returncode not in (0, None):
+            error = output or f"claude --version exited with status {version_result.returncode}."
 
     has_cli_auth = False
     auth_method: str | None = None
     subscription_type: str | None = None
     auth_error: str | None = None
-    try:
-        process = await asyncio.create_subprocess_exec(
-            command,
-            "auth",
-            "status",
-            "--json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10.0)
-        output = (stdout or stderr).decode(errors="replace").strip()
-        if process.returncode in (0, None):
-            has_cli_auth = True
-            try:
-                payload = json.loads(output) if output else {}
-            except json.JSONDecodeError:
-                payload = {}
-            if isinstance(payload, dict):
-                auth_method = str(payload.get("authMethod") or payload.get("auth_method") or "").strip() or None
-                subscription_type = str(payload.get("subscriptionType") or payload.get("subscription_type") or "").strip() or None
-        elif output:
-            auth_error = output
-    except TimeoutError:
-        auth_error = "claude auth status timed out."
-    except OSError as exc:
-        auth_error = str(exc)
+    if not error:
+        auth_result = await _run_claude_command(command, "auth", "status", "--json", timeout=_CLAUDE_AUTH_STATUS_PROCESS_TIMEOUT_SECONDS)
+        if auth_result.timed_out:
+            auth_error = "claude auth status timed out."
+        elif auth_result.error:
+            auth_error = auth_result.error
+        else:
+            output = auth_result.output
+            if auth_result.returncode in (0, None):
+                has_cli_auth = True
+                try:
+                    payload = json.loads(output) if output else {}
+                except json.JSONDecodeError:
+                    payload = {}
+                if isinstance(payload, dict):
+                    auth_method = str(payload.get("authMethod") or payload.get("auth_method") or "").strip() or None
+                    subscription_type = str(payload.get("subscriptionType") or payload.get("subscription_type") or "").strip() or None
+            elif output:
+                auth_error = output
 
     return ClaudeCodeStatus(
         installed=True,
@@ -273,7 +371,7 @@ async def start_claude_code_login() -> tuple[ClaudeCodeLoginStart, ClaudeCodeLog
                 break
             try:
                 chunk = await asyncio.wait_for(process.stdout.read(1), timeout=max(0.1, deadline - asyncio.get_running_loop().time()))
-            except TimeoutError:
+            except _TIMEOUT_EXCEPTIONS:
                 break
             if not chunk:
                 break
@@ -315,14 +413,21 @@ async def complete_claude_code_login(session: ClaudeCodeLoginSession, pasted_cod
     if session.process.stdin is None:
         raise RuntimeError("Claude Code login session is not accepting input. Start authorization again.")
 
-    session.process.stdin.write(f"{code}\n".encode())
-    await session.process.stdin.drain()
-    session.process.stdin.close()
-    if session.process.stdout is None:
-        await asyncio.wait_for(session.process.wait(), timeout=60.0)
-        return ""
-    output = await asyncio.wait_for(session.process.stdout.read(), timeout=60.0)
-    await asyncio.wait_for(session.process.wait(), timeout=5.0)
+    try:
+        session.process.stdin.write(f"{code}\n".encode())
+        await session.process.stdin.drain()
+        session.process.stdin.close()
+        if session.process.stdout is None:
+            await asyncio.wait_for(session.process.wait(), timeout=60.0)
+            return ""
+        output = await asyncio.wait_for(session.process.stdout.read(), timeout=60.0)
+        await asyncio.wait_for(session.process.wait(), timeout=5.0)
+    except _TIMEOUT_OR_CANCEL_EXCEPTIONS:
+        await _terminate_process(session.process)
+        raise
+    except Exception:
+        await _terminate_process(session.process)
+        raise
     text = output.decode(errors="replace").strip()
     if session.process.returncode not in (0, None):
         raise RuntimeError(text or f"Claude Code login exited with status {session.process.returncode}.")
