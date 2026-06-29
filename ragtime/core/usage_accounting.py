@@ -22,6 +22,71 @@ from ragtime.core.tokenization import count_tokens
 logger = get_logger(__name__)
 
 
+_PROVIDER_MODEL_METRIC_KEYS = (
+    "total_requests",
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_tokens",
+    "failed_count",
+    "interrupted_count",
+)
+
+
+def normalize_usage_provider_model(provider: str | None, model: str | None) -> tuple[str, str]:
+    """Return canonical provider plus unscoped model id for usage analytics."""
+    raw_provider = str(provider or "").strip()
+    raw_model = str(model or "").strip()
+
+    if "::" in raw_provider:
+        scoped_provider, scoped_model = raw_provider.split("::", 1)
+        scoped_provider = scoped_provider.strip()
+        scoped_model = scoped_model.strip()
+        if scoped_provider:
+            raw_provider = scoped_provider
+        if not raw_model or raw_model == provider:
+            raw_model = scoped_model
+
+    if "::" in raw_model:
+        scoped_provider, scoped_model = raw_model.split("::", 1)
+        scoped_provider = scoped_provider.strip()
+        scoped_model = scoped_model.strip()
+        if not raw_provider and scoped_provider:
+            raw_provider = scoped_provider
+        raw_model = scoped_model
+
+    return normalize_provider_name(raw_provider, model_id=raw_model), raw_model
+
+
+def normalize_provider_model_rows(
+    rows: list[dict[str, Any]],
+    *,
+    extra_group_keys: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Normalize and coalesce provider/model aggregate rows from mixed old/new data."""
+    grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
+
+    for row in rows:
+        normalized = dict(row)
+        provider, model = normalize_usage_provider_model(
+            normalized.get("provider"),
+            normalized.get("model"),
+        )
+        normalized["provider"] = provider
+        normalized["model"] = model
+
+        key = tuple(normalized.get(field) for field in ("provider", "model", "request_source", *extra_group_keys))
+        existing = grouped.get(key)
+        if existing is None:
+            grouped[key] = normalized
+            continue
+
+        for metric in _PROVIDER_MODEL_METRIC_KEYS:
+            if metric in normalized:
+                existing[metric] = int(existing.get(metric) or 0) + int(normalized.get(metric) or 0)
+
+    return list(grouped.values())
+
+
 def _usage_attempt_status(status: str | UsageAttemptStatus) -> UsageAttemptStatus:
     return status if isinstance(status, UsageAttemptStatus) else UsageAttemptStatus(status)
 
@@ -73,14 +138,15 @@ async def create_usage_attempt(
     """Create a usage attempt record at request start. Returns the attempt ID."""
     attempt_id = str(uuid.uuid4())
     try:
+        normalized_provider, normalized_model = normalize_usage_provider_model(provider, model)
         db = await get_db()
         await db.userusageattempt.create(
             data={
                 "id": attempt_id,
                 "userId": user_id,
                 "requestSource": request_source,
-                "provider": provider,
-                "model": model,
+                "provider": normalized_provider,
+                "model": normalized_model,
                 "conversationId": conversation_id,
                 "inputTokens": input_tokens,
                 "totalTokens": input_tokens,
@@ -138,10 +204,13 @@ async def finalize_usage_attempt(
             update_data["inputTokens"] = input_tokens
         if failure_reason is not None:
             update_data["failureReason"] = failure_reason[:500] if failure_reason else None
-        if provider is not None:
-            update_data["provider"] = provider
-        if model is not None:
-            update_data["model"] = model
+        if provider is not None or model is not None:
+            normalized_provider, normalized_model = normalize_usage_provider_model(
+                provider if provider is not None else existing.provider,
+                model if model is not None else existing.model,
+            )
+            update_data["provider"] = normalized_provider
+            update_data["model"] = normalized_model
 
         # Compute total
         final_input = input_tokens if input_tokens is not None else existing.inputTokens
@@ -237,13 +306,7 @@ async def get_user_usage_summary(
         ORDER BY total_tokens DESC
     """
 
-    rows = await db.query_raw(query, *params)
-    for row in rows:
-        row["provider"] = normalize_provider_name(
-            row.get("provider"),
-            model_id=row.get("model"),
-        )
-    return rows
+    return await db.query_raw(query, *params)
 
 
 async def get_provider_model_breakdown(
@@ -285,6 +348,8 @@ async def get_provider_model_breakdown(
     """
 
     rows = await db.query_raw(query, *params)
+    rows = normalize_provider_model_rows(rows)
+    rows.sort(key=lambda row: int(row.get("total_tokens") or 0), reverse=True)
     return rows
 
 
@@ -420,4 +485,11 @@ async def get_daily_provider_failures(
     """
 
     rows = await db.query_raw(query, *params)
+    rows = normalize_provider_model_rows(rows, extra_group_keys=("date",))
+    rows.sort(
+        key=lambda row: (
+            str(row.get("date") or ""),
+            -(int(row.get("failed_count") or 0) + int(row.get("interrupted_count") or 0)),
+        )
+    )
     return rows

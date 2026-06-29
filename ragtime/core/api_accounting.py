@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
-from ragtime.core.model_limits import normalize_provider_name
+from ragtime.core.usage_accounting import normalize_provider_model_rows, normalize_usage_provider_model
 
 logger = get_logger(__name__)
 
@@ -30,13 +30,14 @@ async def log_api_request(
 ) -> None:
     """Record an API HTTP request."""
     try:
+        normalized_provider, normalized_model = normalize_usage_provider_model(provider, model)
         db = await get_db()
         await db.apirequestlog.create(
             data={
                 "id": str(uuid.uuid4()),
                 "userId": user_id,
-                "provider": provider,
-                "model": model,
+                "provider": normalized_provider,
+                "model": normalized_model,
                 "endpoint": endpoint,
                 "httpMethod": http_method,
                 "statusCode": status_code,
@@ -78,13 +79,7 @@ async def get_api_daily_trend(
         ORDER BY date ASC
     """
 
-    rows = await db.query_raw(query, *params)
-    for row in rows:
-        row["provider"] = normalize_provider_name(
-            row.get("provider"),
-            model_id=row.get("model"),
-        )
-    return rows
+    return await db.query_raw(query, *params)
 
 
 async def get_api_provider_model_breakdown(
@@ -123,4 +118,7 @@ async def get_api_provider_model_breakdown(
         ORDER BY total_requests DESC
     """
 
-    return await db.query_raw(query, *params)
+    rows = await db.query_raw(query, *params)
+    rows = normalize_provider_model_rows(rows)
+    rows.sort(key=lambda row: int(row.get("total_requests") or 0), reverse=True)
+    return rows
