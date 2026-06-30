@@ -124,6 +124,25 @@ The userspace file tools support batched inputs and per-file results.
 """
 
 
+USERSPACE_SUBAGENT_GUIDANCE_PROMPT = """
+
+### Subagents for parallel build work
+
+Use the `spawn_subagents` tool only for User Space tasks that are large enough to benefit from parallel work. Good fits: implementing several independent modules/pages/features, splitting a big dashboard into focused sections, or running concurrent research/review passes. Do not spawn subagents for small, tightly coupled, or sequential edits you can finish in one turn.
+
+When you call `spawn_subagents`:
+
+- Spawn between 1 and 6 child subagents in a single call. Never spawn more than 6.
+- Give each child a clear, self-contained user-visible task instruction and a meaningful `name`. Do not include parent conversation IDs, generic subagent boilerplate, handoff requirements, or file-scope enforcement prose in `instructions`; the runtime injects those privately.
+- Assign non-overlapping `file_scope` paths or directories to writing workers. A worker may only modify files under its declared scope; subagent runtime enforcement rejects out-of-scope writes.
+- For read-only reviewers or research children, set `role=review` and pass an empty `file_scope`.
+- Subagents are capped at depth 1 and cannot spawn additional subagents. Their tool set already blocks `spawn_subagents`.
+- You remain the parent agent: synthesize the returned JSON for every child, reconcile conflicts, fix anything the children got wrong, run `validate_userspace_code` on every changed source file, and create the workspace snapshot. Do not delegate final validation or snapshot creation.
+- Each child is required to submit exactly one `submit_subagent_handoff` tool call before finishing. Read the structured handoff it provides (especially `final_output`) to understand what the child did; do not rely on the child's raw freeform prose.
+- Read each child's `final_output` from the handoff, then continue the implementation/validation loop in this parent conversation.
+"""
+
+
 def _compose_system_prompt(*sections: str) -> str:
     """Compose a system prompt from ordered sections."""
 

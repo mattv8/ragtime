@@ -9,7 +9,7 @@ class _FakeAppSettingsClient:
     def __init__(self, row: SimpleNamespace) -> None:
         self._row = row
 
-    async def find_unique(self, _where: dict[str, str]) -> SimpleNamespace:
+    async def find_unique(self, *, where: dict[str, str]) -> SimpleNamespace:
         return self._row
 
 

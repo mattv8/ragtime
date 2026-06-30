@@ -180,6 +180,7 @@ from ragtime.rag.prompts import (
     UI_VISUALIZATION_CHAT_PROMPT,
     UI_VISUALIZATION_COMMON_PROMPT,
     UI_VISUALIZATION_USERSPACE_PROMPT,
+    USERSPACE_SUBAGENT_GUIDANCE_PROMPT,
     build_chat_diagnostics_prompt_addition,
     build_current_time_turn_reminder_line,
     build_current_user_prompt_fragment,
@@ -227,6 +228,13 @@ from ragtime.userspace.models import (
 )
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
+from ragtime.userspace.subagent_service import (
+    SUBAGENT_HANDOFF_TOOL_NAME,
+    SUBAGENT_MAX_DEPTH,
+    SUBAGENT_PRIVATE_PROMPT_CONTEXT_KEY,
+    SUBAGENT_TOOL_NAME,
+    subagent_service,
+)
 
 logger = get_logger(__name__)
 
@@ -8327,11 +8335,29 @@ class RAGComponents:
         user_id: str,
         accessible_workspace_modes: Optional[dict[str, str]] = None,
         is_admin: bool = False,
+        subagent_file_scope: Optional[list[str]] = None,
+        workspace_context: Optional[dict[str, Any]] = None,
     ) -> list[StructuredTool]:
         """Create request-scoped User Space file tools for agentic artifact editing."""
 
         accessible_modes_local: dict[str, str] = dict(accessible_workspace_modes or {})
         primary_workspace_id = workspace_id
+        normalized_subagent_scope = {str(path or "").strip().replace("\\", "/").strip("/") for path in (subagent_file_scope or []) if str(path or "").strip()}
+
+        def _assert_subagent_write_scope(path: str, *, label: str = "path") -> None:
+            if not normalized_subagent_scope:
+                return
+            normalized_path = str(path or "").strip().replace("\\", "/").strip("/")
+            if not normalized_path:
+                raise ToolException(f"Invalid {label}: path is required.")
+            allowed = any(normalized_path == scope_path or normalized_path.startswith(f"{scope_path}/") for scope_path in normalized_subagent_scope)
+            if not allowed:
+                allowed_list = ", ".join(sorted(normalized_subagent_scope))
+                raise ToolException(f"Subagent write rejected: {normalized_path} is outside this subagent's declared file scope ({allowed_list}).")
+
+        def _assert_subagent_target_workspace(target_workspace_id: str) -> None:
+            if normalized_subagent_scope and target_workspace_id != primary_workspace_id:
+                raise ToolException("Subagent write rejected: declared file scopes only apply to the active parent workspace.")
 
         async def _resolve_target_workspace(
             requested_workspace_id: Optional[str],
@@ -8838,6 +8864,13 @@ class RAGComponents:
                 description=(
                     "Optional batched mode: list of {path, replacements} entries to patch multiple files in one call. "
                     "Each entry is processed independently with per-file success/failure reporting."
+                ),
+            )
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=(
+                    "Optional target workspace ID for cross-workspace access. Omit to patch this workspace. "
+                    "Scoped subagents may only patch the active parent workspace."
                 ),
             )
             reason: str = Field(
@@ -9916,10 +9949,12 @@ class RAGComponents:
             target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
+            _assert_subagent_target_workspace(workspace_id)
             await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
+            _assert_subagent_write_scope(normalized_path)
             try:
                 await userspace_service.delete_workspace_file(
                     workspace_id,
@@ -10005,6 +10040,8 @@ class RAGComponents:
             normalized_new_path = (new_path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_old_path or not normalized_new_path:
                 raise ToolException("Invalid path: old_path and new_path are required.")
+            _assert_subagent_write_scope(normalized_old_path, label="old_path")
+            _assert_subagent_write_scope(normalized_new_path, label="new_path")
             try:
                 result = await userspace_service.move_workspace_file(
                     workspace_id,
@@ -10088,11 +10125,19 @@ class RAGComponents:
             replacements: list[Any] | None = None,
             patches: list[Any] | None = None,
             reason: str = "",
+            workspace_id: Optional[str] = None,
             **_: Any,
         ) -> str:
             del reason
             # Batched mode: iterate per patch entry and aggregate results.
             if patches:
+                # Pre-validate the requested workspace and subagent scope before
+                # batch aggregation so cross-workspace/scope violations surface
+                # as ToolExceptions rather than silent per-entry failures.
+                target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
+                _assert_subagent_target_workspace(target_ws)
+                await userspace_service.enforce_workspace_role(target_ws, target_uid, "editor")
+
                 normalized_entries: list[dict[str, Any]] = []
                 for item in patches:
                     raw = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
@@ -10110,6 +10155,7 @@ class RAGComponents:
                     return await patch_userspace_file(
                         path=entry.get("path") or "",
                         replacements=entry.get("replacements") or [],
+                        workspace_id=target_ws,
                     )
 
                 return await _run_userspace_batch(
@@ -10118,11 +10164,16 @@ class RAGComponents:
                     entries=normalized_entries,
                     invoke_entry=_invoke_patch_entry,
                 )
+            target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
+            workspace_id = target_ws
+            user_id = target_uid
+            _assert_subagent_target_workspace(workspace_id)
             await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
             normalized_path = (path or "").strip().replace("\\", "/").lstrip("/")
             if not normalized_path:
                 raise ToolException("Invalid path: path is required.")
+            _assert_subagent_write_scope(normalized_path)
 
             try:
                 file_data = await userspace_service.get_workspace_file(workspace_id, normalized_path, user_id)
@@ -10467,6 +10518,7 @@ class RAGComponents:
             path = (path or "").strip()
             if not path:
                 raise ToolException("path is required. Provide a relative workspace file path (for example: dashboard/main.ts).")
+            _assert_subagent_write_scope(path)
             if content is None:
                 self._record_userspace_failure(
                     workspace_id or primary_workspace_id,
@@ -10496,6 +10548,7 @@ class RAGComponents:
             target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
+            _assert_subagent_target_workspace(workspace_id)
             await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
 
             warnings: list[str] = []
@@ -10982,6 +11035,11 @@ class RAGComponents:
             **_: Any,
         ) -> str:
             del reason
+            if normalized_subagent_scope:
+                raise ToolException(
+                    "Subagent snapshot rejected: snapshots cover the full workspace and cannot be constrained to the declared file scope. "
+                    "Leave snapshot creation to the parent agent after it reviews all subagent outputs."
+                )
             await userspace_service.enforce_workspace_role(workspace_id, user_id, "editor")
             snapshot = await userspace_service.create_snapshot(
                 workspace_id,
@@ -11617,6 +11675,12 @@ class RAGComponents:
             target_ws, target_uid = await _resolve_target_workspace(workspace_id, "write")
             workspace_id = target_ws
             user_id = target_uid
+            _assert_subagent_target_workspace(workspace_id)
+            if normalized_subagent_scope:
+                raise ToolException(
+                    "Subagent terminal execution rejected: shell commands cannot be constrained to the declared file scope. "
+                    "Use scoped file tools and validate_userspace_code instead."
+                )
             command = (command or "").strip()
             if not command:
                 raise ToolException("command is required and must not be empty.")
@@ -12062,6 +12126,72 @@ class RAGComponents:
         ]
 
         dynamic_mcp_tools = await _build_dynamic_workspace_mcp_tools({tool.name for tool in static_tools})
+
+        is_subagent_child = isinstance(workspace_context, dict) and bool(
+            workspace_context.get("subagent_parent_conversation_id") or workspace_context.get("subagent_depth") is not None
+        )
+        if is_subagent_child and SUBAGENT_HANDOFF_TOOL_NAME not in {tool.name for tool in static_tools}:
+
+            class SubmitSubagentHandoffInput(BaseModel):
+                final_output: str = Field(
+                    description="Required non-empty markdown summary of the child's work for the parent.",
+                    min_length=1,
+                )
+                summary: Optional[str] = Field(
+                    default=None,
+                    description="Optional one-line summary of what was done.",
+                )
+                files_changed: list[str] = Field(
+                    default_factory=list,
+                    description="Optional list of workspace-relative files changed by this subagent.",
+                )
+                files_reviewed: list[str] = Field(
+                    default_factory=list,
+                    description="Optional list of workspace-relative files reviewed by this subagent.",
+                )
+                validation_performed: list[str] = Field(
+                    default_factory=list,
+                    description="Optional validation commands or checks performed by this subagent.",
+                )
+                remaining_risks: list[str] = Field(
+                    default_factory=list,
+                    description="Optional remaining risks or blockers the parent should know about.",
+                )
+
+            async def submit_subagent_handoff(
+                final_output: str,
+                summary: Optional[str] = None,
+                files_changed: Optional[list[str]] = None,
+                files_reviewed: Optional[list[str]] = None,
+                validation_performed: Optional[list[str]] = None,
+                remaining_risks: Optional[list[str]] = None,
+            ) -> str:
+                payload: dict[str, Any] = {"status": "accepted", "final_output": final_output}
+                if summary is not None:
+                    payload["summary"] = summary
+                if files_changed:
+                    payload["files_changed"] = files_changed
+                if files_reviewed:
+                    payload["files_reviewed"] = files_reviewed
+                if validation_performed:
+                    payload["validation_performed"] = validation_performed
+                if remaining_risks:
+                    payload["remaining_risks"] = remaining_risks
+                return json.dumps(payload, indent=2)
+
+            static_tools.append(
+                _create_userspace_tool(
+                    coroutine=submit_subagent_handoff,
+                    name=SUBAGENT_HANDOFF_TOOL_NAME,
+                    description=(
+                        "Submit a structured handoff to the parent agent exactly once before finishing. "
+                        "The parent only consumes the output of this tool; any freeform prose outside this tool call is ignored. "
+                        "Provide a non-empty markdown final_output plus optional structured fields: summary, files_changed, files_reviewed, validation_performed, remaining_risks."
+                    ),
+                    args_schema=SubmitSubagentHandoffInput,
+                )
+            )
+
         return [*static_tools, *dynamic_mcp_tools]
 
     @staticmethod
@@ -13019,6 +13149,112 @@ class RAGComponents:
             )
         return tools
 
+    async def _create_spawn_subagents_tool(
+        self,
+        *,
+        workspace_id: str,
+        user_id: str,
+        parent_conversation_id: Optional[str],
+        parent_task_id: Optional[str],
+        parent_model: Optional[str],
+        workspace_context: dict[str, Any],
+        blocked_tool_names: set[str],
+        disabled_builtin_tool_ids: Optional[set[str]],
+        current_time_context: Optional[dict[str, Any]],
+    ) -> Optional[StructuredTool]:
+        if SUBAGENT_TOOL_NAME in blocked_tool_names:
+            return None
+        if not workspace_id or not user_id or not parent_conversation_id:
+            return None
+        if int(workspace_context.get("subagent_depth") or 0) >= SUBAGENT_MAX_DEPTH:
+            return None
+
+        parent = await repository.get_conversation(parent_conversation_id)
+        if not parent or parent.parent_conversation_id or not parent.subagents_enabled:
+            return None
+
+        class SpawnSubAgentSpecInput(BaseModel):
+            name: str = Field(description="Short display name for this subagent, e.g. 'API worker' or 'Reviewer'.")
+            role: str = Field(default="worker", description="Subagent role. Use 'review' for read-only self-review agents.")
+            instructions: str = Field(
+                description=(
+                    "Complete, self-contained user-visible task instructions for this subagent. "
+                    "Do not include parent conversation IDs, generic handoff requirements, or file-scope enforcement boilerplate."
+                )
+            )
+            file_scope: list[str] = Field(
+                default_factory=list,
+                description=(
+                    "Non-overlapping workspace file or directory paths this subagent may write. Review agents or read-only subtasks should pass an empty list."
+                ),
+            )
+            model: Optional[str] = Field(
+                default=None,
+                description="Optional model override in provider::model format. Must be one of the configured available chat models.",
+            )
+
+        class SpawnSubAgentsInput(BaseModel):
+            subagents: list[SpawnSubAgentSpecInput] = Field(min_length=1, max_length=6, description="Between 1 and 6 subagents to run concurrently.")
+            reason: str = Field(default="", description="Brief description of why these subagents are being spawned.")
+
+        configured_model_identifiers = [
+            str(identifier or "") for identifier in (self._app_settings or {}).get("allowed_chat_models") or [] if str(identifier or "").strip()
+        ]
+        if not configured_model_identifiers:
+            configured_model_identifiers = [
+                str(parent_model or parent.model or ""),
+                str((self._app_settings or {}).get("default_chat_model") or ""),
+                str((self._app_settings or {}).get("llm_model") or ""),
+            ]
+        allowed_model_keys = {
+            variant
+            for identifier in configured_model_identifiers
+            if str(identifier or "").strip()
+            for variant in self._model_key_variants_for_subagent_override(identifier)
+        }
+
+        async def spawn_subagents(subagents: list[Any], reason: str = "") -> str:
+            del reason
+            raw_specs: list[dict[str, Any]] = []
+            for item in subagents:
+                raw = item.model_dump(mode="python") if isinstance(item, BaseModel) else item
+                if isinstance(raw, dict):
+                    raw_specs.append(raw)
+            if not raw_specs:
+                raise ToolException("spawn_subagents requires at least one valid subagent spec.")
+
+            for spec in raw_specs:
+                model = str(spec.get("model") or "").strip()
+                if model and self._model_key_variants_for_subagent_override(model).isdisjoint(allowed_model_keys):
+                    allowed_list = ", ".join(sorted(allowed_model_keys)) or "none configured"
+                    raise ToolException(f"Subagent model is not available for chat: {model}. Allowed models: {allowed_list}")
+
+            return await subagent_service.spawn_subagents(
+                parent_conversation_id=parent_conversation_id,
+                parent_task_id=parent_task_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                parent_model=parent_model or parent.model,
+                specs=raw_specs,
+                workspace_context=workspace_context,
+                blocked_tool_names=blocked_tool_names,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                current_time_context=current_time_context,
+            )
+
+        return StructuredTool.from_function(
+            coroutine=spawn_subagents,
+            name=SUBAGENT_TOOL_NAME,
+            description=(
+                "Spawn 1 to 6 User Space subagents that run concurrently as child conversations. "
+                "Use this for parallel implementation, research, tests, and self-review. Each non-review worker must declare non-overlapping file_scope paths; "
+                "review subagents are read-only. The returned JSON contains each child conversation_id, task_id, status, and actionable final output. "
+                "Subagents cannot spawn their own subagents."
+            ),
+            args_schema=SpawnSubAgentsInput,
+            handle_tool_error=True,
+        )
+
     async def _build_request_runtime_context(
         self,
         *,
@@ -13031,6 +13267,8 @@ class RAGComponents:
         current_user_context: Optional[dict[str, Any]] = None,
         current_time_context: Optional[dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        conversation_model: Optional[str] = None,
+        chat_task_id: Optional[str] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
@@ -13206,7 +13444,23 @@ class RAGComponents:
                 request_user_id,
                 accessible_workspace_modes=accessible_workspace_modes,
                 is_admin=request_is_admin,
+                subagent_file_scope=(workspace_context or {}).get("subagent_file_scope") if isinstance(workspace_context, dict) else None,
+                workspace_context=workspace_context,
             )
+            spawn_tool = await self._create_spawn_subagents_tool(
+                workspace_id=workspace_id,
+                user_id=request_user_id,
+                parent_conversation_id=conversation_id,
+                parent_task_id=chat_task_id,
+                parent_model=conversation_model,
+                workspace_context=workspace_context or {},
+                blocked_tool_names=blocked_tool_names or set(),
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                current_time_context=current_time_context,
+            )
+            if spawn_tool is not None:
+                userspace_tools.append(spawn_tool)
+                prompt_additions += "\n\n" + USERSPACE_SUBAGENT_GUIDANCE_PROMPT.strip()
             workspace_builtin_tools: list[StructuredTool] = []
             if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
                 workspace_builtin_tools = self._build_chat_diagnostic_tools(
@@ -13219,6 +13473,8 @@ class RAGComponents:
             runtime_tools.extend(workspace_builtin_tools)
             if conversation_export_tool is not None:
                 runtime_tools.append(conversation_export_tool)
+            if blocked_tool_names:
+                runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
             runtime_tools = self._apply_mode_specific_tool_description_overrides(
                 runtime_tools,
                 mode="userspace",
@@ -13257,6 +13513,9 @@ class RAGComponents:
                 has_live_data_tools=bool(allowed_tool_config_ids),
                 workspace_continuity=continuity_ctx,
             )
+            subagent_private_prompt = (workspace_context or {}).get(SUBAGENT_PRIVATE_PROMPT_CONTEXT_KEY)
+            if isinstance(subagent_private_prompt, str) and subagent_private_prompt.strip():
+                prompt_additions += "\n\n" + subagent_private_prompt.strip()
             if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
                 prompt_additions += build_chat_diagnostics_prompt_addition(
                     include_terminal=False,
@@ -13688,6 +13947,27 @@ class RAGComponents:
             return normalized_prefix, remainder
 
         return None, model
+
+    def _model_key_variants_for_subagent_override(self, model: str) -> set[str]:
+        """Return comparable model keys for subagent override allow-list checks."""
+        provider, parsed_model = self._parse_provider_scoped_model(model)
+        if provider and parsed_model:
+            normalized = f"{provider}::{parsed_model}".lower()
+        else:
+            normalized = (parsed_model or model or "").strip().lstrip("/").lower()
+        if not normalized:
+            return set()
+
+        variants = {normalized}
+        if "::" in normalized:
+            _provider, _, model_id = normalized.partition("::")
+            if model_id:
+                variants.add(model_id.lstrip("/"))
+                if "/" in model_id:
+                    variants.add(model_id.split("/", 1)[1].lower())
+        elif "/" in normalized:
+            variants.add(normalized.split("/", 1)[1].lower())
+        return {variant for variant in variants if variant}
 
     def _model_id_variants_for_provider_resolution(self, model_id: str) -> set[str]:
         """Return comparable model ID variants for bare and publisher-prefixed IDs."""
@@ -14755,6 +15035,8 @@ class RAGComponents:
                 current_user_context=current_user_context,
                 current_time_context=current_time_context,
                 conversation_id=conversation_id,
+                conversation_model=conversation_model,
+                chat_task_id=chat_task_id,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             )
             system_prompt = self._build_request_system_prompt(
@@ -15059,6 +15341,8 @@ class RAGComponents:
                 current_user_context=current_user_context,
                 current_time_context=current_time_context,
                 conversation_id=conversation_id,
+                conversation_model=conversation_model,
+                chat_task_id=chat_task_id,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             )
         except Exception as e:

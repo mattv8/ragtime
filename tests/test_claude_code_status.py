@@ -11,8 +11,8 @@ from ragtime.core.claude_code import ClaudeCodeStatus
 
 class _HangingProcess:
     def __init__(self) -> None:
-        self.returncode = None
-        self.pid = None
+        self.returncode: int | None = None
+        self.pid: int | None = None
         self.communicate_started = asyncio.Event()
         self.terminated = False
         self.killed = False
@@ -75,7 +75,7 @@ class ClaudeCodeStatusTests(unittest.IsolatedAsyncioTestCase):
         process = _PidProcess()
 
         with mock.patch("os.killpg") as killpg:
-            await claude_code._terminate_process(process, process_group=False)
+            await claude_code._terminate_process(process, process_group=False)  # type: ignore[arg-type]
 
         killpg.assert_not_called()
         self.assertTrue(process.terminated)
@@ -85,7 +85,7 @@ class ClaudeCodeStatusTests(unittest.IsolatedAsyncioTestCase):
         process = _PidProcess()
 
         with mock.patch("os.killpg") as killpg:
-            await claude_code._terminate_process(process, process_group=True)
+            await claude_code._terminate_process(process, process_group=True)  # type: ignore[arg-type]
 
         killpg.assert_called_once_with(12345, signal.SIGTERM)
         self.assertFalse(process.terminated)
@@ -95,7 +95,7 @@ class ClaudeCodeStatusTests(unittest.IsolatedAsyncioTestCase):
         process = _PidProcess(wait_timeouts=1)
 
         with mock.patch("os.killpg") as killpg:
-            await claude_code._terminate_process(process, process_group=True)
+            await claude_code._terminate_process(process, process_group=True)  # type: ignore[arg-type]
 
         self.assertEqual(
             killpg.mock_calls,

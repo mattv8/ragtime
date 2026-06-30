@@ -59,6 +59,7 @@ import {
   Share2,
   GitBranch,
   Download,
+  ArrowLeft,
 } from 'lucide-react';
 import { api, type ChatTaskStreamEvent } from '@/api';
 import { getThemeFontFamily } from '@/theme';
@@ -177,6 +178,8 @@ const CHAT_BUILT_IN_TOOL_IDS = CHAT_BUILT_IN_TOOLS.map((tool) => tool.id);
 const CHAT_BUILT_IN_TOOL_ID_SET = new Set(CHAT_BUILT_IN_TOOL_IDS);
 const WEB_BROWSE_TOOL_ID = 'web_browse';
 const WEB_READ_PDF_TOOL_ID = 'web_read_pdf';
+const WORKSPACE_SUBAGENTS_TOOL_ID = 'spawn_subagents';
+const SUBAGENT_HANDOFF_TOOL_ID = 'submit_subagent_handoff';
 const COMPACTION_TASK_USER_MESSAGE = '__ragtime_compaction__';
 
 function isCompactionTask(task: ChatTask | null | undefined): boolean {
@@ -205,6 +208,13 @@ const WORKSPACE_BUILT_IN_TOOL_ID_SET = new Set(['web_search', 'web_read_pdf', 'w
 const WORKSPACE_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter((tool) =>
   WORKSPACE_BUILT_IN_TOOL_ID_SET.has(tool.id),
 );
+const WORKSPACE_SUBAGENTS_TOOL: UserSpaceAvailableTool = {
+  id: WORKSPACE_SUBAGENTS_TOOL_ID,
+  name: 'Subagents',
+  tool_type: 'workspace-built-in',
+  description:
+    'Allow this workspace chat to spawn read-linked child agents for parallel work and review.',
+};
 const VISIBLE_CHAT_BUILT_IN_TOOLS = CHAT_BUILT_IN_TOOLS.filter(
   (tool) => tool.id !== WEB_READ_PDF_TOOL_ID,
 );
@@ -1294,6 +1304,12 @@ function mergeConversationFromWorkspaceSnapshot(
   const incomingUpdatedAt = conversationUpdatedAtMs(incoming);
   const currentUpdatedAt = conversationUpdatedAtMs(current);
   const incomingIsNewer = incomingUpdatedAt > currentUpdatedAt;
+  const mergedChildConversationIds = Array.from(
+    new Set([
+      ...(current.subagent_conversation_ids || []),
+      ...(incoming.subagent_conversation_ids || []),
+    ]),
+  );
   // Workspace state snapshots can occasionally arrive without message payloads;
   // never let an empty incoming list wipe a populated local conversation.
   if (current.messages.length > 0 && incoming.messages.length === 0) {
@@ -1302,6 +1318,7 @@ function mergeConversationFromWorkspaceSnapshot(
       ...incoming,
       model: incomingIsNewer ? incoming.model || current.model : current.model || incoming.model,
       messages: current.messages,
+      subagent_conversation_ids: mergedChildConversationIds,
     };
   }
   const shouldUseIncomingMessages =
@@ -1315,6 +1332,7 @@ function mergeConversationFromWorkspaceSnapshot(
     model: incomingIsNewer ? incoming.model || current.model : current.model || incoming.model,
     // Preserve optimistic local messages when the workspace snapshot has the same timestamp.
     messages: shouldUseIncomingMessages ? incoming.messages : current.messages,
+    subagent_conversation_ids: mergedChildConversationIds,
   };
 }
 
@@ -3799,6 +3817,7 @@ interface ToolCallDisplayProps {
   ) => void;
   onVisualizationDisplayError?: (message: string) => void;
   onOpenWorkspaceFile?: (path: string) => void;
+  onOpenSubagentConversation?: (conversationId: string) => void;
   inChatSearchQuery?: string;
   inChatSearchOptions?: InChatSearchOptions;
 }
@@ -4720,6 +4739,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   onLiveVisualizationRefreshSuccess,
   onVisualizationDisplayError,
   onOpenWorkspaceFile,
+  onOpenSubagentConversation,
   inChatSearchQuery = '',
   inChatSearchOptions = EMPTY_IN_CHAT_SEARCH_OPTIONS,
 }: ToolCallDisplayProps) {
@@ -5782,6 +5802,19 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           onDisplayError={onVisualizationDisplayError}
         />
       </div>
+    );
+  }
+
+  // Dedicated subagent orchestration UI: avoid raw JSON for spawn_subagents.
+  if (toolCall.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
+    return (
+      <SubAgentToolDisplay
+        toolCall={toolCall}
+        workspaceId={workspaceId}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
+        onOpenSubagentConversation={onOpenSubagentConversation}
+        showToolCalls={true}
+      />
     );
   }
 
@@ -7816,6 +7849,20 @@ interface StreamingSegment {
   reasoningParts?: ReasoningPart[]; // For reasoning segments - ordered text/tool parts
 }
 
+function pushSubagentToolSegment(segments: StreamingSegment[], toolCall: ActiveToolCall) {
+  if (toolCall.tool === SUBAGENT_HANDOFF_TOOL_ID) {
+    // A child should hand off once, but if the model retries the tool call, show the latest output.
+    const previousHandoffIndex = segments.findIndex(
+      (segment) => segment.type === 'tool' && segment.toolCall?.tool === SUBAGENT_HANDOFF_TOOL_ID,
+    );
+    if (previousHandoffIndex >= 0) {
+      segments.splice(previousHandoffIndex, 1);
+    }
+  }
+
+  segments.push({ type: 'tool', toolCall });
+}
+
 // Memoized component for rendering streaming segments efficiently
 // Collapsible reasoning/thinking display
 
@@ -7835,6 +7882,7 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
   workspaceId,
   conversationId,
   onOpenWorkspaceFile,
+  onOpenSubagentConversation,
   inChatSearchQuery = '',
   inChatSearchOptions = EMPTY_IN_CHAT_SEARCH_OPTIONS,
 }: {
@@ -7847,6 +7895,7 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
+  onOpenSubagentConversation?: (conversationId: string) => void;
   inChatSearchQuery?: string;
   inChatSearchOptions?: InChatSearchOptions;
 }) {
@@ -8094,6 +8143,7 @@ export const ReasoningDisplay = memo(function ReasoningDisplay({
                     workspaceId={workspaceId}
                     conversationId={conversationId}
                     onOpenWorkspaceFile={onOpenWorkspaceFile}
+                    onOpenSubagentConversation={onOpenSubagentConversation}
                     inChatSearchQuery={inChatSearchQuery}
                     inChatSearchOptions={inChatSearchOptions}
                   />
@@ -8125,6 +8175,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   workspaceId,
   conversationId,
   onOpenWorkspaceFile,
+  onOpenSubagentConversation,
   inChatSearchQuery = '',
   inChatSearchOptions = EMPTY_IN_CHAT_SEARCH_OPTIONS,
 }: {
@@ -8133,9 +8184,20 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
   workspaceId?: string;
   conversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
+  onOpenSubagentConversation?: (conversationId: string) => void;
   inChatSearchQuery?: string;
   inChatSearchOptions?: InChatSearchOptions;
 }) {
+  if (segment.type === 'tool' && segment.toolCall?.tool === SUBAGENT_HANDOFF_TOOL_ID) {
+    return (
+      <SubAgentHandoffDisplay
+        toolCall={segment.toolCall}
+        conversationId={conversationId}
+        workspaceId={workspaceId}
+      />
+    );
+  }
+
   if (segment.type === 'reasoning' && segment.content) {
     return (
       <ReasoningDisplay
@@ -8157,6 +8219,21 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
     showToolCalls &&
     !isHiddenToolCall(segment.toolCall)
   ) {
+    if (segment.toolCall.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
+      return (
+        <ToolCallDisplay
+          toolCall={segment.toolCall}
+          defaultExpanded={false}
+          workspaceId={workspaceId}
+          conversationId={conversationId}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
+          onOpenSubagentConversation={onOpenSubagentConversation}
+          inChatSearchQuery={inChatSearchQuery}
+          inChatSearchOptions={inChatSearchOptions}
+        />
+      );
+    }
+
     return (
       <div className="chat-tool-calls">
         <ToolCallDisplay
@@ -8165,6 +8242,7 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
           workspaceId={workspaceId}
           conversationId={conversationId}
           onOpenWorkspaceFile={onOpenWorkspaceFile}
+          onOpenSubagentConversation={onOpenSubagentConversation}
           inChatSearchQuery={inChatSearchQuery}
           inChatSearchOptions={inChatSearchOptions}
         />
@@ -8185,6 +8263,566 @@ const StreamingSegmentDisplay = memo(function StreamingSegmentDisplay({
     );
   }
   return null;
+});
+
+function extractSubagentHandoffOutput(toolCall: ActiveToolCall): string {
+  const inputRecord = asRecord(toolCall.input);
+  const inputFinalOutput = inputRecord?.final_output;
+  if (typeof inputFinalOutput === 'string' && inputFinalOutput.trim()) {
+    return inputFinalOutput;
+  }
+
+  if (typeof toolCall.output === 'string' && toolCall.output.trim()) {
+    try {
+      const parsed = asRecord(JSON.parse(toolCall.output));
+      const outputFinalOutput = parsed?.final_output;
+      if (typeof outputFinalOutput === 'string' && outputFinalOutput.trim()) {
+        return outputFinalOutput;
+      }
+    } catch {
+      return toolCall.output;
+    }
+  }
+
+  return '';
+}
+
+const SubAgentHandoffDisplay = memo(function SubAgentHandoffDisplay({
+  toolCall,
+  conversationId,
+  workspaceId,
+}: {
+  toolCall: ActiveToolCall;
+  conversationId?: string;
+  workspaceId?: string;
+}) {
+  const finalOutput = extractSubagentHandoffOutput(toolCall);
+
+  return (
+    <div className="subagent-handoff-output">
+      <div className="subagent-handoff-separator" aria-hidden="true" />
+      <div className="markdown-content subagent-handoff-markdown">
+        {finalOutput ? (
+          <MemoizedMarkdown
+            content={finalOutput}
+            conversationId={conversationId}
+            workspaceId={workspaceId}
+            enableTableExports={false}
+          />
+        ) : (
+          <span className="chat-subagent-stream-empty">No subagent handoff output captured.</span>
+        )}
+      </div>
+    </div>
+  );
+});
+
+interface SubAgentRunInfo {
+  conversationId: string;
+  taskId: string;
+  name: string;
+  role: string;
+  index: number;
+  status: string;
+  finalOutput?: string;
+  fileScope?: string[];
+  instructions?: string;
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+}
+
+function parseSubagentToolCall(toolCall: ActiveToolCall): SubAgentRunInfo[] {
+  const inputRecord = asRecord(toolCall.input);
+  const inputAgents = Array.isArray(inputRecord?.subagents) ? inputRecord.subagents : [];
+
+  let outputRecord: Record<string, unknown> | null = null;
+  if (typeof toolCall.output === 'string' && toolCall.output.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(toolCall.output);
+      outputRecord = asRecord(parsed);
+    } catch {
+      outputRecord = null;
+    }
+  }
+  const outputAgents = Array.isArray(outputRecord?.subagents) ? outputRecord.subagents : [];
+
+  const count = Math.max(inputAgents.length, outputAgents.length);
+  if (count === 0) {
+    // Defensive fallback: at least show that the tool was called.
+    return [
+      {
+        conversationId: '',
+        taskId: '',
+        name: 'Subagents',
+        role: 'worker',
+        index: 0,
+        status: toolCall.status === 'running' ? 'running' : 'completed',
+      },
+    ];
+  }
+
+  return Array.from({ length: count }, (_, index) => {
+    const inputAgent = asRecord(inputAgents[index]) || {};
+    const outputAgent = asRecord(outputAgents[index]) || {};
+    const fallbackName = `Subagent ${index + 1}`;
+
+    return {
+      conversationId:
+        typeof outputAgent.conversation_id === 'string'
+          ? outputAgent.conversation_id
+          : typeof inputAgent.conversation_id === 'string'
+            ? inputAgent.conversation_id
+            : '',
+      taskId:
+        typeof outputAgent.task_id === 'string'
+          ? outputAgent.task_id
+          : typeof inputAgent.task_id === 'string'
+            ? inputAgent.task_id
+            : '',
+      name:
+        typeof outputAgent.name === 'string' && outputAgent.name.trim().length > 0
+          ? outputAgent.name
+          : typeof inputAgent.name === 'string' && inputAgent.name.trim().length > 0
+            ? inputAgent.name
+            : fallbackName,
+      role:
+        typeof outputAgent.role === 'string' && outputAgent.role.trim().length > 0
+          ? outputAgent.role
+          : typeof inputAgent.role === 'string' && inputAgent.role.trim().length > 0
+            ? inputAgent.role
+            : 'worker',
+      index,
+      status:
+        typeof outputAgent.status === 'string'
+          ? outputAgent.status
+          : toolCall.status === 'running'
+            ? 'running'
+            : 'completed',
+      finalOutput: typeof outputAgent.final_output === 'string' ? outputAgent.final_output : '',
+      fileScope: parseStringArray(
+        outputAgent.file_scope ?? inputAgent.file_scope ?? outputRecord?.file_scope,
+      ),
+      instructions: typeof inputAgent.instructions === 'string' ? inputAgent.instructions : '',
+    };
+  });
+}
+
+const SubAgentStreamCard = memo(function SubAgentStreamCard({
+  run,
+  workspaceId,
+  showToolCalls,
+  onOpenWorkspaceFile,
+  onOpenSubagentConversation,
+}: {
+  run: SubAgentRunInfo;
+  workspaceId?: string;
+  showToolCalls: boolean;
+  onOpenWorkspaceFile?: (path: string) => void;
+  onOpenSubagentConversation?: (conversationId: string) => void;
+}) {
+  const [segments, setSegments] = useState<StreamingSegment[]>([]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        for await (const data of api.streamChatTask(
+          run.taskId,
+          0,
+          controller.signal,
+          workspaceId,
+        )) {
+          if (data.type === 'completion' || data.completed) break;
+          const state = data.type === 'state' && data.state ? data.state : data;
+          const nextSegments: StreamingSegment[] = [];
+          const rawEvents = Array.isArray(state.events) ? state.events : [];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          for (const ev of rawEvents as any[]) {
+            const channel = getChatEventChannel(ev);
+            if (channel === 'final' && ev.type === 'content') {
+              nextSegments.push({ type: 'content', content: ev.content || '', isComplete: false });
+              continue;
+            }
+            const reasoningContent = getReasoningEventContent(ev);
+            if (channel === 'analysis' && reasoningContent) {
+              nextSegments.push({
+                type: 'reasoning',
+                content: reasoningContent,
+                isComplete: false,
+              });
+              continue;
+            }
+            if (ev.type === 'tool') {
+              const normalizedToolEvent = normalizeStreamingToolEvent(ev) as Extract<
+                StreamingRenderEvent,
+                { type: 'tool' }
+              >;
+              pushSubagentToolSegment(nextSegments, normalizedToolEvent.toolCall);
+            }
+          }
+          if (nextSegments.length === 0 && typeof state.content === 'string' && state.content) {
+            nextSegments.push({ type: 'content', content: state.content, isComplete: false });
+          }
+          setSegments(nextSegments);
+        }
+      } catch (err) {
+        if (!(err instanceof Error) || err.name !== 'AbortError') {
+          console.error('Subagent stream error:', err);
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [run.taskId, workspaceId]);
+
+  const statusClass = (status: string) => {
+    const normalized = status.toLowerCase();
+    if (normalized === 'completed' || normalized === 'success')
+      return 'chat-subagent-stream-status-completed';
+    if (normalized === 'failed' || normalized === 'error')
+      return 'chat-subagent-stream-status-failed';
+    if (normalized === 'running') return 'chat-subagent-stream-status-running';
+    return 'chat-subagent-stream-status-pending';
+  };
+
+  const openConversation = () => {
+    if (!run.conversationId) return;
+    onOpenSubagentConversation?.(run.conversationId);
+  };
+
+  const handleCardClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('button, a, input, select, textarea, summary')) return;
+    openConversation();
+  };
+
+  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openConversation();
+  };
+
+  return (
+    <div
+      className={`chat-subagent-stream-card ${run.conversationId ? 'chat-subagent-stream-card-clickable' : ''}`}
+      role={run.conversationId ? 'button' : undefined}
+      tabIndex={run.conversationId ? 0 : undefined}
+      aria-label={run.conversationId ? `Open ${run.name} chat session` : undefined}
+      onClick={handleCardClick}
+      onKeyDown={handleCardKeyDown}
+    >
+      <div className="chat-subagent-stream-header">
+        <span className="chat-subagent-stream-title">{run.name}</span>
+        <span className="chat-subagent-stream-role">{run.role}</span>
+        <span className={`chat-subagent-stream-status ${statusClass(run.status)}`}>
+          {run.status}
+        </span>
+        {run.fileScope && run.fileScope.length > 0 && (
+          <span className="chat-subagent-stream-scope" title={run.fileScope.join(', ')}>
+            scope: {run.fileScope.join(', ')}
+          </span>
+        )}
+      </div>
+      <div className="chat-subagent-stream-body">
+        {run.instructions && (
+          <div className="chat-subagent-user-prompt">
+            <div className="chat-subagent-user-prompt-label">Prompt</div>
+            <div className="markdown-content">
+              <MemoizedMarkdown content={run.instructions} workspaceId={workspaceId} />
+            </div>
+          </div>
+        )}
+        {segments.length > 0 ? (
+          segments.map((segment, idx) => (
+            <StreamingSegmentDisplay
+              key={`${run.taskId}-${idx}-${segment.type}`}
+              segment={segment}
+              showToolCalls={showToolCalls}
+              workspaceId={workspaceId}
+              conversationId={run.conversationId}
+              onOpenWorkspaceFile={onOpenWorkspaceFile}
+              onOpenSubagentConversation={onOpenSubagentConversation}
+            />
+          ))
+        ) : (
+          <div className="chat-subagent-stream-empty">Waiting for subagent output...</div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+function messageContentToText(content: string | ContentPart[] | null | undefined): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (part.type === 'text' && typeof part.text === 'string') return part.text;
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function buildSubagentTranscriptSegments(message: ChatMessage): StreamingSegment[] {
+  const segments: StreamingSegment[] = [];
+  const rawEvents = Array.isArray(message.events) ? message.events : [];
+
+  if (rawEvents.length > 0) {
+    for (const ev of rawEvents as Array<MessageEvent & Record<string, unknown>>) {
+      const channel = getChatEventChannel(ev);
+      if (channel === 'final' && ev.type === 'content' && typeof ev.content === 'string') {
+        segments.push({ type: 'content', content: ev.content, isComplete: true });
+        continue;
+      }
+
+      const reasoningContent = getReasoningEventContent(ev);
+      if (channel === 'analysis' && reasoningContent) {
+        segments.push({ type: 'reasoning', content: reasoningContent, isComplete: true });
+        continue;
+      }
+
+      if (channel === 'commentary' && ev.type === 'tool') {
+        const normalizedToolEvent = normalizeStreamingToolEvent(ev) as Extract<
+          StreamingRenderEvent,
+          { type: 'tool' }
+        >;
+        normalizedToolEvent.toolCall.status = 'complete';
+        pushSubagentToolSegment(segments, normalizedToolEvent.toolCall);
+      }
+    }
+  }
+
+  if (segments.length === 0) {
+    const content = messageContentToText(message.content);
+    if (content) segments.push({ type: 'content', content, isComplete: true });
+  }
+
+  return segments;
+}
+
+const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
+  run,
+  workspaceId,
+  showToolCalls,
+  onOpenWorkspaceFile,
+  onOpenSubagentConversation,
+}: {
+  run: SubAgentRunInfo;
+  workspaceId?: string;
+  showToolCalls: boolean;
+  onOpenWorkspaceFile?: (path: string) => void;
+  onOpenSubagentConversation?: (conversationId: string) => void;
+}) {
+  const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!run.conversationId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const child = await api.getConversation(run.conversationId, workspaceId);
+        if (!cancelled) setConversation(child);
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : 'Failed to load subagent transcript');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [run.conversationId, workspaceId]);
+
+  const statusClass = (status: string) => {
+    const normalized = status.toLowerCase();
+    if (normalized === 'completed' || normalized === 'success')
+      return 'chat-subagent-stream-status-completed';
+    if (normalized === 'failed' || normalized === 'error')
+      return 'chat-subagent-stream-status-failed';
+    if (normalized === 'running') return 'chat-subagent-stream-status-running';
+    return 'chat-subagent-stream-status-pending';
+  };
+
+  const promptText = useMemo(() => {
+    if (run.instructions) return run.instructions;
+    const firstUserMessage = conversation?.messages.find((message) => message.role === 'user');
+    return messageContentToText(firstUserMessage?.content);
+  }, [conversation?.messages, run.instructions]);
+
+  const responseMessages = useMemo(() => {
+    if (!conversation?.messages) return [];
+    let skippedFirstUser = false;
+    return conversation.messages.filter((message) => {
+      if (!skippedFirstUser && message.role === 'user') {
+        skippedFirstUser = true;
+        return false;
+      }
+      return true;
+    });
+  }, [conversation?.messages]);
+
+  const openConversation = () => {
+    if (!run.conversationId) return;
+    onOpenSubagentConversation?.(run.conversationId);
+  };
+
+  const handleCardClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('button, a, input, select, textarea, summary')) return;
+    openConversation();
+  };
+
+  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openConversation();
+  };
+
+  const hasTranscript = responseMessages.length > 0;
+
+  return (
+    <div
+      className={`chat-subagent-stream-card ${run.conversationId ? 'chat-subagent-stream-card-clickable' : ''}`}
+      role={run.conversationId ? 'button' : undefined}
+      tabIndex={run.conversationId ? 0 : undefined}
+      aria-label={run.conversationId ? `Open ${run.name} chat session` : undefined}
+      onClick={handleCardClick}
+      onKeyDown={handleCardKeyDown}
+    >
+      <div className="chat-subagent-stream-header">
+        <span className="chat-subagent-stream-title">{run.name}</span>
+        <span className="chat-subagent-stream-role">{run.role}</span>
+        <span className={`chat-subagent-stream-status ${statusClass(run.status)}`}>
+          {run.status}
+        </span>
+        {run.fileScope && run.fileScope.length > 0 && (
+          <span className="chat-subagent-stream-scope" title={run.fileScope.join(', ')}>
+            scope: {run.fileScope.join(', ')}
+          </span>
+        )}
+      </div>
+      <div className="chat-subagent-stream-body">
+        {promptText && (
+          <div className="chat-subagent-user-prompt">
+            <div className="chat-subagent-user-prompt-label">Prompt</div>
+            <div className="markdown-content">
+              <MemoizedMarkdown content={promptText} workspaceId={workspaceId} />
+            </div>
+          </div>
+        )}
+        {hasTranscript ? (
+          responseMessages.map((message, messageIndex) => (
+            <div
+              className={`chat-subagent-transcript-message chat-subagent-transcript-message-${message.role}`}
+              key={message.message_id || `${run.taskId || run.index}-${messageIndex}`}
+            >
+              {buildSubagentTranscriptSegments(message).map((segment, segmentIndex) => (
+                <StreamingSegmentDisplay
+                  key={`${message.message_id || messageIndex}-${segmentIndex}-${segment.type}`}
+                  segment={segment}
+                  showToolCalls={showToolCalls}
+                  workspaceId={workspaceId}
+                  conversationId={run.conversationId}
+                  onOpenWorkspaceFile={onOpenWorkspaceFile}
+                  onOpenSubagentConversation={onOpenSubagentConversation}
+                />
+              ))}
+            </div>
+          ))
+        ) : run.finalOutput ? (
+          <div className="markdown-content">
+            <MemoizedMarkdown
+              content={run.finalOutput}
+              conversationId={run.conversationId}
+              workspaceId={workspaceId}
+              enableTableExports={false}
+            />
+          </div>
+        ) : loadError ? (
+          <div className="chat-subagent-stream-empty">{loadError}</div>
+        ) : (
+          <div className="chat-subagent-stream-empty">Loading subagent transcript...</div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+const SubAgentToolDisplay = memo(function SubAgentToolDisplay({
+  toolCall,
+  workspaceId,
+  onOpenWorkspaceFile,
+  onOpenSubagentConversation,
+  showToolCalls,
+}: {
+  toolCall: ActiveToolCall;
+  workspaceId?: string;
+  onOpenWorkspaceFile?: (path: string) => void;
+  onOpenSubagentConversation?: (conversationId: string) => void;
+  showToolCalls: boolean;
+}) {
+  const runs = useMemo(() => parseSubagentToolCall(toolCall), [toolCall]);
+
+  const statusClass = (status: string) => {
+    const normalized = status.toLowerCase();
+    if (normalized === 'completed' || normalized === 'success')
+      return 'chat-subagent-stream-status-completed';
+    if (normalized === 'failed' || normalized === 'error')
+      return 'chat-subagent-stream-status-failed';
+    if (normalized === 'running') return 'chat-subagent-stream-status-running';
+    return 'chat-subagent-stream-status-pending';
+  };
+
+  const aggregateStatus = useMemo(() => {
+    if (runs.length === 0) return toolCall.status === 'running' ? 'running' : 'completed';
+    if (runs.every((run) => ['completed', 'success'].includes(run.status.toLowerCase()))) {
+      return 'completed';
+    }
+    if (runs.some((run) => ['failed', 'error'].includes(run.status.toLowerCase()))) {
+      return 'failed';
+    }
+    return 'running';
+  }, [runs, toolCall.status]);
+
+  const isComplete = aggregateStatus === 'completed';
+  const displayStatus = isComplete ? 'Done' : aggregateStatus === 'failed' ? 'Failed' : 'Running';
+
+  return (
+    <div className={`chat-subagent-tool-block chat-subagent-tool-block-${aggregateStatus}`}>
+      <div className="chat-subagent-tool-header-row">
+        <div className="chat-subagent-tool-header">
+          <span className="chat-subagent-tool-icon">
+            <Bot size={14} />
+          </span>
+          <span className="chat-subagent-tool-title">Subagents</span>
+          <span className="chat-subagent-tool-count">
+            {runs.length} agent{runs.length !== 1 ? 's' : ''}
+          </span>
+          <span className={`chat-subagent-stream-status ${statusClass(aggregateStatus)}`}>
+            {displayStatus}
+          </span>
+        </div>
+      </div>
+      <div className="chat-subagent-tool-cards">
+        {runs.map((run) => (
+          <SubAgentTranscriptCard
+            key={run.taskId || run.conversationId || run.index}
+            run={run}
+            workspaceId={workspaceId}
+            showToolCalls={showToolCalls}
+            onOpenWorkspaceFile={onOpenWorkspaceFile}
+            onOpenSubagentConversation={onOpenSubagentConversation}
+          />
+        ))}
+      </div>
+    </div>
+  );
 });
 
 // Default context limit fallback when model not found in API response
@@ -8695,6 +9333,15 @@ const HighlightedText = memo(function HighlightedText({
   return <>{segments}</>;
 });
 
+export interface WorkspaceBuiltInToolControls {
+  builtInTools: UserSpaceAvailableTool[];
+  selectedBuiltInToolIds: Set<string>;
+  onToggleBuiltInTool: (toolId: string) => void;
+  onBulkBuiltInToggle: (selected: boolean) => void;
+  saving: boolean;
+  readOnly: boolean;
+}
+
 interface ChatPanelProps {
   currentUser: User;
   debugMode?: boolean;
@@ -8710,6 +9357,7 @@ interface ChatPanelProps {
   onWorkspaceToolSelectionChange?: (selection: UserSpaceToolSelection) => void;
   workspaceToolGroups?: ToolGroupInfo[];
   workspaceSavingTools?: boolean;
+  onWorkspaceBuiltInToolsChange?: (controls: WorkspaceBuiltInToolControls | null) => void;
   conversationShareableUserIds?: string[];
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
   onTaskComplete?: () => void;
@@ -8771,6 +9419,7 @@ export function ChatPanel({
   onWorkspaceToolSelectionChange,
   workspaceToolGroups,
   workspaceSavingTools = false,
+  onWorkspaceBuiltInToolsChange,
   conversationShareableUserIds,
   onUserMessageSubmitted,
   onTaskComplete,
@@ -8805,6 +9454,16 @@ export function ChatPanel({
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [expandedSubagentParents, setExpandedSubagentParents] = useState<Record<string, boolean>>(
+    {},
+  );
+  const expandedSubagentParentsRef = useRef<Record<string, boolean>>({});
+  const [subagentConversationsByParent, setSubagentConversationsByParent] = useState<
+    Record<string, Conversation[]>
+  >({});
+  const [subagentLoadErrorsByParent, setSubagentLoadErrorsByParent] = useState<
+    Record<string, string | null>
+  >({});
   const [isConversationSwitchLoading, setIsConversationSwitchLoading] = useState(false);
   const [isCreatingFreshConversation, setIsCreatingFreshConversation] = useState(false);
   const [messageSegments, setMessageSegments] = useState<RichChatSegment[]>(EMPTY_RICH_SEGMENTS);
@@ -8836,6 +9495,7 @@ export function ChatPanel({
 
   const [streamingContent, setStreamingContent] = useState('');
   const [streamingEvents, setStreamingEvents] = useState<StreamingRenderEvent[]>([]);
+  const [activeSubagentRuns, setActiveSubagentRuns] = useState<SubAgentRunInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(!embedded);
   const [sidebarWidth, setSidebarWidth] = useState(280);
@@ -9525,7 +10185,9 @@ export function ChatPanel({
   const [showArchiveModal, setShowArchiveModal] = useState(false);
   const [archiveSearchQuery, setArchiveSearchQuery] = useState('');
   const isAdmin = currentUser.role === 'admin';
-  const isReadOnly = readOnly && !(allowAdminReadOnlyBypass && isAdmin);
+  const isReadOnly =
+    (readOnly && !(allowAdminReadOnlyBypass && isAdmin)) ||
+    Boolean(activeConversation?.is_subagent || activeConversation?.parent_conversation_id);
   const effectiveReadOnlyMessage =
     readOnlyMessage ||
     'Workspace is read-only. Viewers can review messages but cannot send prompts.';
@@ -9538,6 +10200,10 @@ export function ChatPanel({
 
   // Inline confirmation for delete (conversation ID waiting for confirmation)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  useEffect(() => {
+    expandedSubagentParentsRef.current = expandedSubagentParents;
+  }, [expandedSubagentParents]);
 
   useEffect(() => {
     setPendingDeleteIdx(null);
@@ -9837,12 +10503,23 @@ export function ChatPanel({
     workspaceId || activeConversation?.workspace_id || activeConversation?.workspaceId,
   );
   const conversationBuiltInTools = hasWorkspaceConversationContext
-    ? VISIBLE_WORKSPACE_BUILT_IN_TOOLS
+    ? [WORKSPACE_SUBAGENTS_TOOL, ...VISIBLE_WORKSPACE_BUILT_IN_TOOLS]
     : VISIBLE_CHAT_BUILT_IN_TOOLS;
+  const chatMenuBuiltInTools = conversationBuiltInTools.filter(
+    (tool) => tool.id !== WORKSPACE_SUBAGENTS_TOOL_ID,
+  );
   const selectedConversationBuiltInToolIdSet = useMemo(() => {
     const disabledIds = new Set(conversationDisabledBuiltInToolIds);
-    return new Set(CHAT_BUILT_IN_TOOL_IDS.filter((id) => !disabledIds.has(id)));
-  }, [conversationDisabledBuiltInToolIds]);
+    const selected = new Set(CHAT_BUILT_IN_TOOL_IDS.filter((id) => !disabledIds.has(id)));
+    if (hasWorkspaceConversationContext && activeConversation?.subagents_enabled !== false) {
+      selected.add(WORKSPACE_SUBAGENTS_TOOL_ID);
+    }
+    return selected;
+  }, [
+    activeConversation?.subagents_enabled,
+    conversationDisabledBuiltInToolIds,
+    hasWorkspaceConversationContext,
+  ]);
   const effectiveToolGroupIdSet = useMemo(
     () => new Set(effectiveToolGroupIds),
     [effectiveToolGroupIds],
@@ -10804,12 +11481,22 @@ export function ChatPanel({
         // Accumulate content
         currentContent += ev.content;
       } else if (channel === 'commentary' && ev.type === 'tool') {
-        if (currentReasoning && !isVisualizationToolCall(ev.toolCall)) {
+        // The subagent handoff is rendered inside the spawn_subagents subagent
+        // card (subagent-handoff-output container); never duplicate it as a
+        // standalone card in the parent's own message stream.
+        if (ev.toolCall.tool === SUBAGENT_HANDOFF_TOOL_ID) {
+          continue;
+        }
+        if (
+          currentReasoning &&
+          ev.toolCall.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
+          !isVisualizationToolCall(ev.toolCall)
+        ) {
           currentReasoningParts.push({ type: 'tool', toolCall: ev.toolCall });
         } else {
           flushReasoning(true);
           flushContent();
-          segments.push({ type: 'tool', toolCall: ev.toolCall });
+          pushSubagentToolSegment(segments, ev.toolCall);
         }
       }
     }
@@ -10831,6 +11518,13 @@ export function ChatPanel({
   const isStreamingForActiveConversation =
     isStreaming &&
     (streamingConversationId === null || streamingConversationId === activeConversation?.id);
+  const activeSubagentAnchorIndex =
+    activeSubagentRuns.length > 0
+      ? consolidatedSegments.findIndex(
+          (segment) =>
+            segment.type === 'tool' && segment.toolCall?.tool === WORKSPACE_SUBAGENTS_TOOL_ID,
+        )
+      : -1;
 
   // Save showToolCalls preference to localStorage
   useEffect(() => {
@@ -10958,15 +11652,27 @@ export function ChatPanel({
             return conversation;
           }
 
+          const existingChildIds = existing.subagent_conversation_ids || [];
+          const nextChildIds = conversation.subagent_conversation_ids || [];
+          const mergedChildIds = Array.from(new Set([...existingChildIds, ...nextChildIds]));
+          const childIdsChanged =
+            mergedChildIds.length !== existingChildIds.length ||
+            mergedChildIds.some((id, index) => id !== existingChildIds[index]);
+
           if (
             existing.active_task_id !== conversation.active_task_id ||
             existing.title !== conversation.title ||
             existing.model !== conversation.model ||
             existing.message_count !== conversation.message_count ||
-            existing.updated_at !== conversation.updated_at
+            existing.updated_at !== conversation.updated_at ||
+            childIdsChanged
           ) {
             changed = true;
-            return { ...existing, ...conversation };
+            return {
+              ...existing,
+              ...conversation,
+              subagent_conversation_ids: mergedChildIds,
+            };
           }
 
           return existing;
@@ -11006,6 +11712,7 @@ export function ChatPanel({
           }
           return mergeConversationFromWorkspaceSnapshot(current, matchingConversation);
         }
+        if (current?.parent_conversation_id) return current;
         return matchingConversation ?? visibleConversations[0] ?? null;
       });
 
@@ -11086,6 +11793,7 @@ export function ChatPanel({
 
       const visibleConversations = data.filter((conversation) => {
         const linkedWorkspaceId = getConversationWorkspaceId(conversation);
+        if (conversation.parent_conversation_id) return false;
         if (workspaceId) {
           if (linkedWorkspaceId !== workspaceId) return false;
           if (conversation.id === activeConversationRef.current?.id) return true;
@@ -11603,7 +12311,35 @@ export function ChatPanel({
 
   const handleToggleConversationBuiltInTool = useCallback(
     async (toolId: string) => {
-      if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
+      if (!activeConversation || isConversationViewer) return;
+      if (toolId === WORKSPACE_SUBAGENTS_TOOL_ID) {
+        if (!hasWorkspaceConversationContext) return;
+        const nextEnabled = activeConversation.subagents_enabled === false;
+        setSavingTools(true);
+        try {
+          await api.updateConversationTools(activeConversation.id, {
+            tool_selection_mode: effectiveConversationToolSelection.mode,
+            tool_config_ids: effectiveConversationToolSelection.toolIds,
+            tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+            disabled_builtin_tool_ids: conversationDisabledBuiltInToolIds,
+            subagents_enabled: nextEnabled,
+          });
+          const updatedConversation: Conversation = {
+            ...activeConversation,
+            subagents_enabled: nextEnabled,
+          };
+          setActiveConversation(updatedConversation);
+          setConversations((prev) =>
+            prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+          );
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Failed to update subagents setting');
+        } finally {
+          setSavingTools(false);
+        }
+        return;
+      }
+      if (hasWorkspaceConversationContext) return;
       if (!CHAT_BUILT_IN_TOOL_ID_SET.has(toolId)) return;
 
       const nextDisabled = new Set(conversationDisabledBuiltInToolIds);
@@ -11632,6 +12368,7 @@ export function ChatPanel({
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
+          subagents_enabled: activeConversation.subagents_enabled !== false,
         });
         const updatedConversation: Conversation = {
           ...activeConversation,
@@ -11659,10 +12396,13 @@ export function ChatPanel({
 
   const handleBulkConversationBuiltInToggle = useCallback(
     async (selected: boolean) => {
-      if (!activeConversation || isConversationViewer || hasWorkspaceConversationContext) return;
+      if (!activeConversation || isConversationViewer) return;
       const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
       const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
       const previous = conversationDisabledBuiltInToolIdsRef.current;
+      const nextSubagentsEnabled = hasWorkspaceConversationContext
+        ? selected
+        : activeConversation.subagents_enabled !== false;
       setConversationDisabledBuiltInToolIds(normalized);
       setSavingTools(true);
 
@@ -11672,10 +12412,12 @@ export function ChatPanel({
           tool_config_ids: effectiveConversationToolSelection.toolIds,
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
+          subagents_enabled: nextSubagentsEnabled,
         });
         const updatedConversation: Conversation = {
           ...activeConversation,
           disabled_builtin_tool_ids: normalized,
+          subagents_enabled: nextSubagentsEnabled,
         };
         setActiveConversation(updatedConversation);
         setConversations((prev) =>
@@ -11695,6 +12437,119 @@ export function ChatPanel({
       isConversationViewer,
     ],
   );
+
+  const handleBulkWorkspaceBuiltInToggle = useCallback(
+    async (selected: boolean) => {
+      if (!activeConversation || isConversationViewer || !hasWorkspaceConversationContext) return;
+
+      setSavingTools(true);
+      try {
+        await api.updateConversationTools(activeConversation.id, {
+          tool_selection_mode: effectiveConversationToolSelection.mode,
+          tool_config_ids: effectiveConversationToolSelection.toolIds,
+          tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+          disabled_builtin_tool_ids: conversationDisabledBuiltInToolIds,
+          subagents_enabled: selected,
+        });
+        const updatedConversation: Conversation = {
+          ...activeConversation,
+          subagents_enabled: selected,
+        };
+        setActiveConversation(updatedConversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+        );
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update subagents setting');
+      } finally {
+        setSavingTools(false);
+      }
+    },
+    [
+      activeConversation,
+      conversationDisabledBuiltInToolIds,
+      effectiveConversationToolSelection,
+      hasWorkspaceConversationContext,
+      isConversationViewer,
+    ],
+  );
+
+  const handleBulkChatMenuBuiltInToggle = useCallback(
+    async (selected: boolean) => {
+      if (!hasWorkspaceConversationContext) {
+        await handleBulkConversationBuiltInToggle(selected);
+        return;
+      }
+      if (!activeConversation || isConversationViewer) return;
+
+      const nextDisabled = selected ? [] : CHAT_BUILT_IN_TOOL_IDS;
+      const normalized = normalizeDisabledBuiltInToolIds(nextDisabled);
+      const previous = conversationDisabledBuiltInToolIdsRef.current;
+      setConversationDisabledBuiltInToolIds(normalized);
+      setSavingTools(true);
+
+      try {
+        await api.updateConversationTools(activeConversation.id, {
+          tool_selection_mode: effectiveConversationToolSelection.mode,
+          tool_config_ids: effectiveConversationToolSelection.toolIds,
+          tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+          disabled_builtin_tool_ids: normalized,
+          subagents_enabled: activeConversation.subagents_enabled !== false,
+        });
+        const updatedConversation: Conversation = {
+          ...activeConversation,
+          disabled_builtin_tool_ids: normalized,
+        };
+        setActiveConversation(updatedConversation);
+        setConversations((prev) =>
+          prev.map((c) => (c.id === updatedConversation.id ? updatedConversation : c)),
+        );
+      } catch (err) {
+        setConversationDisabledBuiltInToolIds(previous);
+        setError(err instanceof Error ? err.message : 'Failed to update built-in tool selection');
+      } finally {
+        setSavingTools(false);
+      }
+    },
+    [
+      activeConversation,
+      effectiveConversationToolSelection,
+      handleBulkConversationBuiltInToggle,
+      hasWorkspaceConversationContext,
+      isConversationViewer,
+    ],
+  );
+
+  useEffect(() => {
+    return () => onWorkspaceBuiltInToolsChange?.(null);
+  }, [onWorkspaceBuiltInToolsChange]);
+
+  useEffect(() => {
+    if (!onWorkspaceBuiltInToolsChange) return;
+    if (!embedded || !hasWorkspaceConversationContext || !activeConversation) {
+      onWorkspaceBuiltInToolsChange(null);
+      return;
+    }
+
+    onWorkspaceBuiltInToolsChange({
+      builtInTools: [WORKSPACE_SUBAGENTS_TOOL],
+      selectedBuiltInToolIds: selectedConversationBuiltInToolIdSet,
+      onToggleBuiltInTool: handleToggleConversationBuiltInTool,
+      onBulkBuiltInToggle: handleBulkWorkspaceBuiltInToggle,
+      saving: savingTools,
+      readOnly: !canUseConversationTools,
+    });
+  }, [
+    activeConversation,
+    canUseConversationTools,
+    embedded,
+    handleBulkWorkspaceBuiltInToggle,
+    handleToggleConversationBuiltInTool,
+    hasWorkspaceConversationContext,
+    onWorkspaceBuiltInToolsChange,
+    savingTools,
+    selectedConversationBuiltInToolIdSet,
+  ]);
 
   const formatUserLabel = useCallback(
     (user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
@@ -11807,6 +12662,111 @@ export function ChatPanel({
                 return;
               }
               connectTaskStreamRef.current?.(data.task_id, conversationId);
+              return;
+            }
+
+            if (data.event === 'subagent_spawned' && data.conversation_id && data.task_id) {
+              if (activeConversationRef.current?.id !== conversationId) return;
+              const childConversationId = String(data.conversation_id);
+              const childRun: SubAgentRunInfo = {
+                conversationId: childConversationId,
+                taskId: data.task_id,
+                name: data.name || `Subagent ${data.index || ''}`.trim(),
+                role: data.role || 'worker',
+                index: Number(data.index || 0),
+                status: 'running',
+              };
+              setActiveSubagentRuns((current) => {
+                if (current.some((run) => run.taskId === childRun.taskId)) return current;
+                return [...current, childRun].sort((a, b) => a.index - b.index);
+              });
+              setConversations((prev) =>
+                prev.map((conv) => {
+                  if (conv.id !== conversationId) return conv;
+                  const ids = conv.subagent_conversation_ids || [];
+                  if (ids.includes(childConversationId)) return conv;
+                  return { ...conv, subagent_conversation_ids: [...ids, childConversationId] };
+                }),
+              );
+              if (expandedSubagentParentsRef.current[conversationId]) {
+                const placeholderChild: Conversation = {
+                  id: childConversationId,
+                  title: childRun.name,
+                  model: activeConversationRef.current?.model || '',
+                  messages: [],
+                  total_tokens: 0,
+                  active_task_id: childRun.taskId,
+                  tool_output_mode: 'default',
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                  parent_conversation_id: conversationId,
+                  subagent_role: childRun.role,
+                  subagent_index: childRun.index,
+                  subagent_conversation_ids: [],
+                  is_subagent: true,
+                  read_only: true,
+                };
+                setSubagentLoadErrorsByParent((current) => ({
+                  ...current,
+                  [conversationId]: null,
+                }));
+                setSubagentConversationsByParent((current) => {
+                  const existing = current[conversationId] || [];
+                  if (existing.some((child) => child.id === childConversationId)) {
+                    return current;
+                  }
+                  return {
+                    ...current,
+                    [conversationId]: [...existing, placeholderChild].sort(
+                      (left, right) => (left.subagent_index || 0) - (right.subagent_index || 0),
+                    ),
+                  };
+                });
+              }
+              return;
+            }
+
+            if (data.event === 'subagent_completed' && data.task_id) {
+              if (activeConversationRef.current?.id !== conversationId) return;
+              setActiveSubagentRuns((current) =>
+                current.map((run) =>
+                  run.taskId === data.task_id
+                    ? { ...run, status: data.status || 'completed' }
+                    : run,
+                ),
+              );
+              if (data.conversation_id) {
+                void api
+                  .getConversation(data.conversation_id, workspaceId)
+                  .then((child) => {
+                    setSubagentLoadErrorsByParent((current) => ({
+                      ...current,
+                      [conversationId]: null,
+                    }));
+                    setSubagentConversationsByParent((current) => {
+                      const children = current[conversationId] || [];
+                      const existingIndex = children.findIndex(
+                        (existing) => existing.id === child.id,
+                      );
+                      if (existingIndex < 0) {
+                        return {
+                          ...current,
+                          [conversationId]: [...children, child].sort(
+                            (left, right) =>
+                              (left.subagent_index || 0) - (right.subagent_index || 0),
+                          ),
+                        };
+                      }
+                      return {
+                        ...current,
+                        [conversationId]: children.map((existing) =>
+                          existing.id === child.id ? child : existing,
+                        ),
+                      };
+                    });
+                  })
+                  .catch(() => undefined);
+              }
               return;
             }
 
@@ -11931,6 +12891,7 @@ export function ChatPanel({
       setStreamingConversationId(ownerConversationId);
       setIsPollingTask(true);
       setIsStreaming(true);
+      setActiveSubagentRuns([]);
 
       // Create new abort controller for this stream
       const abortController = new AbortController();
@@ -12506,6 +13467,16 @@ export function ChatPanel({
       if (requestId === selectConversationRequestIdRef.current && isSwitchingConversation) {
         setIsConversationSwitchLoading(false);
       }
+    }
+  };
+
+  const openSubagentConversation = async (conversationId: string) => {
+    if (!conversationId) return;
+    try {
+      const childConversation = await api.getConversation(conversationId, workspaceId);
+      await selectConversation(childConversation);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load subagent conversation');
     }
   };
 
@@ -14176,12 +15147,418 @@ export function ChatPanel({
   }, [memberPickerUsers, conversationOwnerId, conversationShareableUserIds]);
   const showInlineToolSelector = canUseConversationTools;
 
+  const loadSubagentConversations = useCallback(
+    async (parentConversationId: string, childIds: string[]) => {
+      if (childIds.length === 0) {
+        setSubagentConversationsByParent((current) => ({ ...current, [parentConversationId]: [] }));
+        setSubagentLoadErrorsByParent((current) => ({ ...current, [parentConversationId]: null }));
+        return;
+      }
+
+      setSubagentLoadErrorsByParent((current) => ({ ...current, [parentConversationId]: null }));
+      const results = await Promise.allSettled(
+        childIds.map((childId) => api.getConversation(childId, workspaceId)),
+      );
+      const loadedChildren = results
+        .filter(
+          (result): result is PromiseFulfilledResult<Conversation> => result.status === 'fulfilled',
+        )
+        .map((result) => result.value);
+      const failureCount = results.length - loadedChildren.length;
+
+      setSubagentConversationsByParent((current) => ({
+        ...current,
+        [parentConversationId]: loadedChildren,
+      }));
+      setSubagentLoadErrorsByParent((current) => ({
+        ...current,
+        [parentConversationId]:
+          failureCount > 0
+            ? `Failed to load ${failureCount} subagent conversation${failureCount === 1 ? '' : 's'}.`
+            : null,
+      }));
+    },
+    [workspaceId],
+  );
+
+  const toggleSubagentParent = useCallback(
+    async (conv: Conversation, event: React.MouseEvent) => {
+      event.stopPropagation();
+      const childIds = conv.subagent_conversation_ids || [];
+      if (childIds.length === 0) return;
+      const nextExpanded = !expandedSubagentParents[conv.id];
+      setExpandedSubagentParents((current) => ({ ...current, [conv.id]: nextExpanded }));
+      if (!nextExpanded) return;
+      try {
+        await loadSubagentConversations(conv.id, childIds);
+      } catch (err) {
+        setSubagentLoadErrorsByParent((current) => ({
+          ...current,
+          [conv.id]: 'Failed to load subagent conversations.',
+        }));
+        setError(err instanceof Error ? err.message : 'Failed to load subagent conversations');
+      }
+    },
+    [expandedSubagentParents, loadSubagentConversations],
+  );
+
+  const renderWorkspaceConversationRow = (
+    conversation: Conversation,
+    options?: {
+      isSubagentChild?: boolean;
+      branchSearchMatch?: ConversationBranchSearchMatch;
+    },
+  ) => {
+    const isSubagentChild = options?.isSubagentChild ?? false;
+    const isSelected = activeConversation?.id === conversation.id;
+    const isEditing = editingTitle === conversation.id;
+    const isLive = Boolean(conversation.active_task_id) || (isSelected && Boolean(activeTask));
+    const isInterruptedTask =
+      !isLive &&
+      (isSelected ? Boolean(interruptedTask) : interruptedConversationIds.has(conversation.id));
+    const isInterrupted = isInterruptedTask && !interruptDismissed;
+    const branchSearchMatch = options?.branchSearchMatch;
+    const branchSearchTooltip = branchSearchMatch
+      ? getBranchSearchTooltip(branchSearchMatch)
+      : null;
+    const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
+    const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
+    const childCount = conversation.subagent_conversation_ids?.length || 0;
+    const hasSubagentChildren = childCount > 0 && !isSubagentChild;
+    const isSubagentExpanded =
+      hasSubagentChildren &&
+      Boolean(expandedSubagentParents[conversation.id]) &&
+      !deferredWorkspaceConversationSearchQuery.trim();
+
+    const handleSelect = () => {
+      setIsWorkspaceConversationMenuOpen(false);
+      void selectConversationFromSearchResult(
+        conversation,
+        branchSearchMatch,
+        workspaceConversationSearchQuery,
+      );
+    };
+
+    return (
+      <div
+        key={conversation.id}
+        role="option"
+        tabIndex={0}
+        aria-selected={isSelected}
+        className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}${isSubagentChild ? ' chat-workspace-conversation-item-subagent' : ''}`}
+        onClick={() => {
+          handleSelect();
+        }}
+        onKeyDown={(event) => {
+          if (isEditing) {
+            return;
+          }
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            handleSelect();
+          }
+        }}
+      >
+        <div className="chat-workspace-conversation-content">
+          {isEditing ? (
+            <textarea
+              ref={(el) => {
+                if (el) {
+                  el.style.height = 'auto';
+                  el.style.height = `${el.scrollHeight}px`;
+                }
+              }}
+              value={titleInput}
+              onChange={(e) => {
+                setTitleInput(e.target.value);
+                e.target.style.height = 'auto';
+                e.target.style.height = `${e.target.scrollHeight}px`;
+              }}
+              onBlur={() => void saveTitle(conversation.id)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void saveTitle(conversation.id);
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setEditingTitle(null);
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+              autoFocus
+              rows={1}
+              className="chat-title-input chat-workspace-conversation-title-input"
+            />
+          ) : (
+            <>
+              <span className="model-selector-item-name chat-workspace-conversation-item-name">
+                {hasSubagentChildren && !deferredWorkspaceConversationSearchQuery.trim() && (
+                  <button
+                    type="button"
+                    className="chat-subagent-expand-btn chat-workspace-conversation-expand-btn"
+                    onClick={(event) => void toggleSubagentParent(conversation, event)}
+                    aria-label={isSubagentExpanded ? 'Collapse subagents' : 'Expand subagents'}
+                    title={isSubagentExpanded ? 'Collapse subagents' : 'Expand subagents'}
+                  >
+                    {isSubagentExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </button>
+                )}
+                {deferredWorkspaceConversationSearchQuery.trim() ? (
+                  <HighlightedText
+                    text={conversation.title || 'Untitled Chat'}
+                    query={workspaceConversationSearchQuery}
+                  />
+                ) : (
+                  conversation.title || 'Untitled Chat'
+                )}
+              </span>
+              {isSubagentChild && (
+                <span className="chat-workspace-conversation-subagent-label">
+                  Read-only subagent session
+                </span>
+              )}
+              {hasSubagentChildren && !deferredWorkspaceConversationSearchQuery.trim() && (
+                <span className="chat-workspace-conversation-subagent-label">
+                  {childCount} subagent{childCount === 1 ? '' : 's'}
+                </span>
+              )}
+              {branchSearchLabel && (
+                <span
+                  className="chat-branch-search-chip chat-workspace-branch-search-chip chat-branch-search-jump-target"
+                  title={branchSearchTooltip ?? undefined}
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setIsWorkspaceConversationMenuOpen(false);
+                    void jumpToBranchSearchResult(
+                      conversation,
+                      branchSearchMatch,
+                      workspaceConversationSearchQuery,
+                    );
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setIsWorkspaceConversationMenuOpen(false);
+                      void jumpToBranchSearchResult(
+                        conversation,
+                        branchSearchMatch,
+                        workspaceConversationSearchQuery,
+                      );
+                    }
+                  }}
+                >
+                  <GitBranch size={11} />
+                  {branchSearchLabel}
+                </span>
+              )}
+              {(() => {
+                const snippet = deferredWorkspaceConversationSearchQuery.trim()
+                  ? buildConversationSnippet(conversation, workspaceConversationSearchQuery)
+                  : null;
+                if (!snippet && !branchSearchMatch) return null;
+                return (
+                  <>
+                    {snippet && (
+                      <div
+                        className="chat-conversation-snippet chat-workspace-conversation-snippet"
+                        title={snippet}
+                      >
+                        <HighlightedText text={snippet} query={workspaceConversationSearchQuery} />
+                      </div>
+                    )}
+                    {branchSearchMatch && (
+                      <div
+                        className="chat-conversation-snippet chat-conversation-branch-snippet chat-workspace-conversation-snippet chat-branch-search-jump-target"
+                        title={branchSnippet || branchSearchTooltip || undefined}
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setIsWorkspaceConversationMenuOpen(false);
+                          void jumpToBranchSearchResult(
+                            conversation,
+                            branchSearchMatch,
+                            workspaceConversationSearchQuery,
+                          );
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setIsWorkspaceConversationMenuOpen(false);
+                            void jumpToBranchSearchResult(
+                              conversation,
+                              branchSearchMatch,
+                              workspaceConversationSearchQuery,
+                            );
+                          }
+                        }}
+                      >
+                        <span className="chat-branch-search-snippet-label">
+                          <GitBranch size={11} />
+                          Branch match
+                        </span>
+                        {branchSnippet ? (
+                          <HighlightedText
+                            text={branchSnippet}
+                            query={workspaceConversationSearchQuery}
+                          />
+                        ) : (
+                          <span>{branchSearchTooltip}</span>
+                        )}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </>
+          )}
+        </div>
+
+        {!isEditing && !isSubagentChild && (
+          <div
+            className="chat-workspace-conversation-actions"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {deleteConfirmId === conversation.id ? (
+              <>
+                <button
+                  type="button"
+                  className="chat-action-btn confirm-delete"
+                  onClick={(e) => void confirmDeleteConversation(conversation.id, e)}
+                  title="Confirm delete"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="chat-action-btn cancel-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteConfirmId(null);
+                  }}
+                  title="Cancel"
+                >
+                  <X size={14} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="chat-action-btn"
+                  onClick={(e) => startEditingTitle(conversation, e)}
+                  title="Rename"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="chat-action-btn"
+                  onClick={(e) => void deleteConversation(conversation.id, e)}
+                  title="Delete"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {isInterrupted && (
+          <button
+            type="button"
+            className="chat-workspace-interrupt-dismiss is-inline"
+            title="Conversation interrupted — click to dismiss"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (workspaceId) dismissInterruptAlert(currentUser.id, workspaceId);
+              setInterruptDismissed(true);
+            }}
+          >
+            <AlertCircle size={12} className="alert-icon chat-workspace-conversation-interrupted" />
+            <Slash size={12} className="dismiss-icon" aria-hidden />
+          </button>
+        )}
+        {isLive && (
+          <MiniLoadingSpinner
+            variant="icon"
+            size={14}
+            title="Processing in background"
+            ariaHidden
+          />
+        )}
+      </div>
+    );
+  };
+
+  const renderSubagentChildState = (
+    parentConversationId: string,
+    childIds: string[],
+    children: Conversation[],
+    variant: 'sidebar' | 'workspace',
+  ) => {
+    const loadError = subagentLoadErrorsByParent[parentConversationId];
+    const retryButton = (
+      <button
+        type="button"
+        className="chat-subagent-retry-btn"
+        onClick={(event) => {
+          event.stopPropagation();
+          void loadSubagentConversations(parentConversationId, childIds);
+        }}
+      >
+        Retry
+      </button>
+    );
+
+    if (children.length > 0) {
+      return (
+        <>
+          {children.map((child) =>
+            variant === 'workspace'
+              ? renderWorkspaceConversationRow(child, { isSubagentChild: true })
+              : renderConversationItem(child, {
+                  isSubagentChild: true,
+                  onClickOverride: async () => {
+                    await selectConversation(child);
+                  },
+                }),
+          )}
+          {loadError && (
+            <div className="chat-subagent-loading chat-subagent-loading-error">
+              <span>{loadError}</span>
+              {retryButton}
+            </div>
+          )}
+        </>
+      );
+    }
+
+    if (loadError) {
+      return (
+        <div className="chat-subagent-loading chat-subagent-loading-error">
+          <span>{loadError}</span>
+          {retryButton}
+        </div>
+      );
+    }
+
+    return <div className="chat-subagent-loading">Loading subagents...</div>;
+  };
+
   const renderConversationItem = (
     conv: Conversation,
     options?: {
       searchQuery?: string;
       onClickOverride?: () => void | Promise<void>;
       branchSearchMatch?: ConversationBranchSearchMatch;
+      isSubagentChild?: boolean;
     },
   ) => {
     const searchQuery = options?.searchQuery ?? '';
@@ -14196,6 +15573,9 @@ export function ChatPanel({
       ? getBranchSearchTooltip(branchSearchMatch)
       : null;
     const branchSearchLabel = branchSearchMatch ? getBranchSearchLabel(branchSearchMatch) : null;
+    const childCount = conv.subagent_conversation_ids?.length || 0;
+    const hasSubagentChildren = childCount > 0;
+    const isSubagentExpanded = Boolean(expandedSubagentParents[conv.id]);
     const handleItemClick =
       options?.onClickOverride ??
       (() => selectConversationFromSearchResult(conv, branchSearchMatch, searchQuery));
@@ -14207,7 +15587,7 @@ export function ChatPanel({
     return (
       <div
         key={conv.id}
-        className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
+        className={`chat-conversation-item ${isActive ? 'active' : ''}${editingTitle === conv.id ? ' is-renaming' : ''}${branchSearchMatch ? ' branch-search-result' : ''}${options?.isSubagentChild ? ' chat-conversation-item-subagent' : ''}`}
         onClick={() => {
           void handleItemClick();
         }}
@@ -14242,6 +15622,17 @@ export function ChatPanel({
         ) : (
           <>
             <div className="chat-conversation-title">
+              {hasSubagentChildren && !searchQuery.trim() && (
+                <button
+                  type="button"
+                  className="chat-subagent-expand-btn"
+                  onClick={(event) => void toggleSubagentParent(conv, event)}
+                  aria-label={isSubagentExpanded ? 'Collapse subagents' : 'Expand subagents'}
+                  title={isSubagentExpanded ? 'Collapse subagents' : 'Expand subagents'}
+                >
+                  {isSubagentExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </button>
+              )}
               {conv.active_task_id && (
                 <span className="chat-task-indicator" title="Processing in background">
                   <MiniLoadingSpinner variant="icon" size={12} />
@@ -14274,6 +15665,14 @@ export function ChatPanel({
                 </span>
               )}
               <span className="chat-meta-time">{metaTimestamp}</span>
+              {options?.isSubagentChild && (
+                <span className="chat-meta-time">Read-only subagent</span>
+              )}
+              {hasSubagentChildren && !options?.isSubagentChild && (
+                <span className="chat-meta-time">
+                  {childCount} subagent{childCount === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
             {snippet && (
               <div className="chat-conversation-snippet" title={snippet}>
@@ -14307,7 +15706,7 @@ export function ChatPanel({
             )}
           </>
         )}
-        {editingTitle !== conv.id && (
+        {editingTitle !== conv.id && !options?.isSubagentChild && (
           <div className="chat-conversation-actions">
             {deleteConfirmId === conv.id ? (
               <>
@@ -14667,11 +16066,24 @@ export function ChatPanel({
                   );
                 }
 
-                const renderItem = (conv: Conversation) =>
-                  renderConversationItem(conv, {
+                const renderItem = (conv: Conversation) => {
+                  const row = renderConversationItem(conv, {
                     searchQuery: trimmedQuery,
                     branchSearchMatch: sidebarBranchSearchMatches[conv.id],
                   });
+                  const expanded = expandedSubagentParents[conv.id] && !trimmedQuery;
+                  const childIds = conv.subagent_conversation_ids || [];
+                  const children = subagentConversationsByParent[conv.id] || [];
+                  if (!expanded) return row;
+                  return (
+                    <div key={`parent-${conv.id}`} className="chat-subagent-parent-group">
+                      {row}
+                      <div className="chat-subagent-child-list">
+                        {renderSubagentChildState(conv.id, childIds, children, 'sidebar')}
+                      </div>
+                    </div>
+                  );
+                };
 
                 if (isAdmin) {
                   // Re-group filtered list so admin grouping still works while searching.
@@ -14952,295 +16364,39 @@ export function ChatPanel({
                               );
                             }
                             return filtered.map((conversation) => {
-                              const isSelected = conversation.id === activeConversation.id;
-                              const isEditing = editingTitle === conversation.id;
-                              const isLive =
-                                Boolean(conversation.active_task_id) ||
-                                (isSelected && Boolean(activeTask));
-                              const isInterruptedTask =
-                                !isLive &&
-                                (isSelected
-                                  ? Boolean(interruptedTask)
-                                  : interruptedConversationIds.has(conversation.id));
-                              const isRawInterrupted = isInterruptedTask;
-                              const isInterrupted = isRawInterrupted && !interruptDismissed;
                               const branchSearchMatch =
                                 deferredWorkspaceConversationSearchQuery.trim()
                                   ? workspaceBranchSearchMatches[conversation.id]
                                   : undefined;
-                              const branchSearchTooltip = branchSearchMatch
-                                ? getBranchSearchTooltip(branchSearchMatch)
-                                : null;
-                              const branchSearchLabel = branchSearchMatch
-                                ? getBranchSearchLabel(branchSearchMatch)
-                                : null;
-                              const branchSnippet = branchSearchMatch?.snippet?.trim() || null;
+                              const childCount =
+                                conversation.subagent_conversation_ids?.length || 0;
+                              const expanded =
+                                Boolean(expandedSubagentParents[conversation.id]) && !needle;
+                              const childIds = conversation.subagent_conversation_ids || [];
+                              const children = subagentConversationsByParent[conversation.id] || [];
+
+                              const row = renderWorkspaceConversationRow(conversation, {
+                                branchSearchMatch,
+                              });
+
+                              if (!childCount || !expanded) {
+                                return row;
+                              }
 
                               return (
                                 <div
-                                  key={conversation.id}
-                                  role="option"
-                                  tabIndex={0}
-                                  aria-selected={isSelected}
-                                  className={`model-selector-item chat-workspace-conversation-item ${isSelected ? 'is-selected' : ''}${branchSearchMatch ? ' branch-search-result' : ''}`}
-                                  onClick={() => {
-                                    setIsWorkspaceConversationMenuOpen(false);
-                                    void selectConversationFromSearchResult(
-                                      conversation,
-                                      branchSearchMatch,
-                                      workspaceConversationSearchQuery,
-                                    );
-                                  }}
-                                  onKeyDown={(event) => {
-                                    if (isEditing) {
-                                      return;
-                                    }
-                                    if (event.key === 'Enter' || event.key === ' ') {
-                                      event.preventDefault();
-                                      setIsWorkspaceConversationMenuOpen(false);
-                                      void selectConversationFromSearchResult(
-                                        conversation,
-                                        branchSearchMatch,
-                                        workspaceConversationSearchQuery,
-                                      );
-                                    }
-                                  }}
+                                  key={`parent-group-${conversation.id}`}
+                                  className="chat-workspace-conversation-parent-group"
                                 >
-                                  <div className="chat-workspace-conversation-content">
-                                    {isEditing ? (
-                                      <textarea
-                                        ref={(el) => {
-                                          if (el) {
-                                            el.style.height = 'auto';
-                                            el.style.height = `${el.scrollHeight}px`;
-                                          }
-                                        }}
-                                        value={titleInput}
-                                        onChange={(e) => {
-                                          setTitleInput(e.target.value);
-                                          e.target.style.height = 'auto';
-                                          e.target.style.height = `${e.target.scrollHeight}px`;
-                                        }}
-                                        onBlur={() => void saveTitle(conversation.id)}
-                                        onKeyDown={(e) => {
-                                          e.stopPropagation();
-                                          if (e.key === 'Enter' && !e.shiftKey) {
-                                            e.preventDefault();
-                                            void saveTitle(conversation.id);
-                                          }
-                                          if (e.key === 'Escape') {
-                                            e.preventDefault();
-                                            setEditingTitle(null);
-                                          }
-                                        }}
-                                        onClick={(e) => e.stopPropagation()}
-                                        autoFocus
-                                        rows={1}
-                                        className="chat-title-input chat-workspace-conversation-title-input"
-                                      />
-                                    ) : (
-                                      <>
-                                        <span className="model-selector-item-name chat-workspace-conversation-item-name">
-                                          {deferredWorkspaceConversationSearchQuery.trim() ? (
-                                            <HighlightedText
-                                              text={conversation.title || 'Untitled Chat'}
-                                              query={workspaceConversationSearchQuery}
-                                            />
-                                          ) : (
-                                            conversation.title || 'Untitled Chat'
-                                          )}
-                                        </span>
-                                        {branchSearchLabel && (
-                                          <span
-                                            className="chat-branch-search-chip chat-workspace-branch-search-chip chat-branch-search-jump-target"
-                                            title={branchSearchTooltip ?? undefined}
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              setIsWorkspaceConversationMenuOpen(false);
-                                              void jumpToBranchSearchResult(
-                                                conversation,
-                                                branchSearchMatch,
-                                                workspaceConversationSearchQuery,
-                                              );
-                                            }}
-                                            onKeyDown={(event) => {
-                                              if (event.key === 'Enter' || event.key === ' ') {
-                                                event.preventDefault();
-                                                event.stopPropagation();
-                                                setIsWorkspaceConversationMenuOpen(false);
-                                                void jumpToBranchSearchResult(
-                                                  conversation,
-                                                  branchSearchMatch,
-                                                  workspaceConversationSearchQuery,
-                                                );
-                                              }
-                                            }}
-                                          >
-                                            <GitBranch size={11} />
-                                            {branchSearchLabel}
-                                          </span>
-                                        )}
-                                        {(() => {
-                                          const snippet =
-                                            deferredWorkspaceConversationSearchQuery.trim()
-                                              ? buildConversationSnippet(
-                                                  conversation,
-                                                  workspaceConversationSearchQuery,
-                                                )
-                                              : null;
-                                          if (!snippet && !branchSearchMatch) return null;
-                                          return (
-                                            <>
-                                              {snippet && (
-                                                <div
-                                                  className="chat-conversation-snippet chat-workspace-conversation-snippet"
-                                                  title={snippet}
-                                                >
-                                                  <HighlightedText
-                                                    text={snippet}
-                                                    query={workspaceConversationSearchQuery}
-                                                  />
-                                                </div>
-                                              )}
-                                              {branchSearchMatch && (
-                                                <div
-                                                  className="chat-conversation-snippet chat-conversation-branch-snippet chat-workspace-conversation-snippet chat-branch-search-jump-target"
-                                                  title={
-                                                    branchSnippet ||
-                                                    branchSearchTooltip ||
-                                                    undefined
-                                                  }
-                                                  role="button"
-                                                  tabIndex={0}
-                                                  onClick={(event) => {
-                                                    event.stopPropagation();
-                                                    setIsWorkspaceConversationMenuOpen(false);
-                                                    void jumpToBranchSearchResult(
-                                                      conversation,
-                                                      branchSearchMatch,
-                                                      workspaceConversationSearchQuery,
-                                                    );
-                                                  }}
-                                                  onKeyDown={(event) => {
-                                                    if (
-                                                      event.key === 'Enter' ||
-                                                      event.key === ' '
-                                                    ) {
-                                                      event.preventDefault();
-                                                      event.stopPropagation();
-                                                      setIsWorkspaceConversationMenuOpen(false);
-                                                      void jumpToBranchSearchResult(
-                                                        conversation,
-                                                        branchSearchMatch,
-                                                        workspaceConversationSearchQuery,
-                                                      );
-                                                    }
-                                                  }}
-                                                >
-                                                  <span className="chat-branch-search-snippet-label">
-                                                    <GitBranch size={11} />
-                                                    Branch match
-                                                  </span>
-                                                  {branchSnippet ? (
-                                                    <HighlightedText
-                                                      text={branchSnippet}
-                                                      query={workspaceConversationSearchQuery}
-                                                    />
-                                                  ) : (
-                                                    <span>{branchSearchTooltip}</span>
-                                                  )}
-                                                </div>
-                                              )}
-                                            </>
-                                          );
-                                        })()}
-                                      </>
+                                  {row}
+                                  <div className="chat-workspace-conversation-children">
+                                    {renderSubagentChildState(
+                                      conversation.id,
+                                      childIds,
+                                      children,
+                                      'workspace',
                                     )}
                                   </div>
-
-                                  {!isEditing && (
-                                    <div
-                                      className="chat-workspace-conversation-actions"
-                                      onClick={(event) => event.stopPropagation()}
-                                    >
-                                      {deleteConfirmId === conversation.id ? (
-                                        <>
-                                          <button
-                                            type="button"
-                                            className="chat-action-btn confirm-delete"
-                                            onClick={(e) =>
-                                              void confirmDeleteConversation(conversation.id, e)
-                                            }
-                                            title="Confirm delete"
-                                          >
-                                            <Check size={14} />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="chat-action-btn cancel-delete"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setDeleteConfirmId(null);
-                                            }}
-                                            title="Cancel"
-                                          >
-                                            <X size={14} />
-                                          </button>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <button
-                                            type="button"
-                                            className="chat-action-btn"
-                                            onClick={(e) => startEditingTitle(conversation, e)}
-                                            title="Rename"
-                                          >
-                                            <Pencil size={14} />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="chat-action-btn"
-                                            onClick={(e) =>
-                                              void deleteConversation(conversation.id, e)
-                                            }
-                                            title="Delete"
-                                          >
-                                            <Trash2 size={14} />
-                                          </button>
-                                        </>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {isInterrupted && (
-                                    <button
-                                      type="button"
-                                      className="chat-workspace-interrupt-dismiss is-inline"
-                                      title="Conversation interrupted — click to dismiss"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (workspaceId)
-                                          dismissInterruptAlert(currentUser.id, workspaceId);
-                                        setInterruptDismissed(true);
-                                      }}
-                                    >
-                                      <AlertCircle
-                                        size={12}
-                                        className="alert-icon chat-workspace-conversation-interrupted"
-                                      />
-                                      <Slash size={12} className="dismiss-icon" aria-hidden />
-                                    </button>
-                                  )}
-                                  {isLive && (
-                                    <MiniLoadingSpinner
-                                      variant="icon"
-                                      size={14}
-                                      title="Processing in background"
-                                      ariaHidden
-                                    />
-                                  )}
                                 </div>
                               );
                             });
@@ -15350,10 +16506,10 @@ export function ChatPanel({
                     selectedToolIds={resolvedEffectiveToolIdSet}
                     toolSelectionMode={effectiveToolSelection.mode}
                     onSelectionChange={handleToolSelectionChange}
-                    builtInTools={conversationBuiltInTools}
+                    builtInTools={chatMenuBuiltInTools}
                     selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                     onToggleBuiltInTool={handleToggleConversationBuiltInTool}
-                    onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
+                    onBulkBuiltInToggle={handleBulkChatMenuBuiltInToggle}
                     selectedToolGroupIds={effectiveToolGroupIdSet}
                     toolGroups={effectiveToolGroups}
                     disabled={false}
@@ -15437,6 +16593,35 @@ export function ChatPanel({
             {/* Messages */}
             {!isMessagesCollapsed && (
               <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
+                {embedded && activeConversation?.parent_conversation_id && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary chat-parent-nav-btn"
+                    onClick={async () => {
+                      const parentId = activeConversation.parent_conversation_id;
+                      if (!parentId) return;
+                      const parentConv = conversations.find((c) => c.id === parentId);
+                      if (parentConv) {
+                        await selectConversation(parentConv);
+                      } else {
+                        try {
+                          const fetched = await api.getConversation(parentId, workspaceId);
+                          await selectConversation(fetched);
+                        } catch (err) {
+                          setError(
+                            err instanceof Error
+                              ? err.message
+                              : 'Failed to load parent conversation',
+                          );
+                        }
+                      }
+                    }}
+                    title="Return to parent conversation"
+                  >
+                    <ArrowLeft size={14} aria-hidden="true" />
+                    <span>Parent</span>
+                  </button>
+                )}
                 {isConversationSwitchLoading || isCreatingFreshConversation ? (
                   renderMessageBubbleSkeletons()
                 ) : activeConversation.messages.length === 0 && !isStreaming ? (
@@ -15598,6 +16783,8 @@ export function ChatPanel({
                                             channel === 'commentary' &&
                                             ev.type === 'tool' &&
                                             pendingReasoning &&
+                                            ev.tool !== SUBAGENT_HANDOFF_TOOL_ID &&
+                                            ev.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
                                             !isVisualizationToolName(ev.tool)
                                           ) {
                                             pendingReasoningParts.push({
@@ -15615,26 +16802,67 @@ export function ChatPanel({
                                           } else {
                                             // Final content and visualization artifacts break reasoning adjacency.
                                             flushReasoning();
+                                            // The subagent handoff is rendered inside the
+                                            // spawn_subagents subagent card (subagent-handoff-output
+                                            // container); never duplicate it as a standalone card in
+                                            // the parent's own message.
+                                            if (
+                                              ev.type === 'tool' &&
+                                              ev.tool === SUBAGENT_HANDOFF_TOOL_ID
+                                            ) {
+                                              continue;
+                                            }
                                             if (
                                               channel === 'commentary' &&
                                               ev.type === 'tool' &&
                                               showToolCalls
                                             ) {
+                                              const toolCall = {
+                                                tool: ev.tool,
+                                                input: ev.input,
+                                                output: ev.output,
+                                                presentation: ev.presentation,
+                                                connection: ev.connection,
+                                                mcp: ev.mcp,
+                                                status: 'complete' as const,
+                                              };
+                                              if (ev.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
+                                                result.push(
+                                                  <ToolCallDisplay
+                                                    key={`event-${evIdx}`}
+                                                    toolCall={toolCall}
+                                                    defaultExpanded={false}
+                                                    conversationId={activeConversation.id}
+                                                    workspaceId={workspaceId}
+                                                    siblingEvents={msg.events}
+                                                    messageId={msg.message_id}
+                                                    messageIndex={idx}
+                                                    eventIndex={evIdx}
+                                                    onLiveVisualizationRefreshSuccess={
+                                                      handleLiveVisualizationRefreshSuccess
+                                                    }
+                                                    onVisualizationDisplayError={toastActions.error}
+                                                    onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                    onOpenSubagentConversation={
+                                                      openSubagentConversation
+                                                    }
+                                                    inChatSearchQuery={
+                                                      inChatSearchOpen
+                                                        ? inChatSearchTrimmedQuery
+                                                        : ''
+                                                    }
+                                                    inChatSearchOptions={activeInChatSearchOptions}
+                                                  />,
+                                                );
+                                                continue;
+                                              }
                                               result.push(
                                                 <div
                                                   key={`event-${evIdx}`}
                                                   className="chat-tool-calls"
                                                 >
                                                   <ToolCallDisplay
-                                                    toolCall={{
-                                                      tool: ev.tool,
-                                                      input: ev.input,
-                                                      output: ev.output,
-                                                      presentation: ev.presentation,
-                                                      connection: ev.connection,
-                                                      mcp: ev.mcp,
-                                                      status: 'complete',
-                                                    }}
+                                                    toolCall={toolCall}
                                                     defaultExpanded={false}
                                                     conversationId={activeConversation.id}
                                                     workspaceId={workspaceId}
@@ -16205,18 +17433,46 @@ export function ChatPanel({
                     {isStreamingForActiveConversation && consolidatedSegments.length > 0 && (
                       <div className="chat-message chat-message-assistant chat-message-streaming-active">
                         <div className="chat-message-content">
-                          {consolidatedSegments.map((segment, idx) => (
-                            <StreamingSegmentDisplay
-                              key={`segment-${idx}-${segment.type}`}
-                              segment={segment}
-                              showToolCalls={showToolCalls}
-                              workspaceId={workspaceId}
-                              conversationId={activeConversation.id}
-                              onOpenWorkspaceFile={onOpenWorkspaceFile}
-                              inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
-                              inChatSearchOptions={activeInChatSearchOptions}
-                            />
-                          ))}
+                          {consolidatedSegments.map((segment, idx) => {
+                            if (
+                              idx === activeSubagentAnchorIndex &&
+                              segment.type === 'tool' &&
+                              segment.toolCall?.tool === WORKSPACE_SUBAGENTS_TOOL_ID
+                            ) {
+                              return (
+                                <div
+                                  key={`segment-${idx}-subagents`}
+                                  className="chat-subagent-active-runs"
+                                  aria-label="Subagents"
+                                >
+                                  {activeSubagentRuns.map((run) => (
+                                    <SubAgentStreamCard
+                                      key={run.taskId}
+                                      run={run}
+                                      workspaceId={workspaceId}
+                                      showToolCalls={showToolCalls}
+                                      onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                      onOpenSubagentConversation={openSubagentConversation}
+                                    />
+                                  ))}
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <StreamingSegmentDisplay
+                                key={`segment-${idx}-${segment.type}`}
+                                segment={segment}
+                                showToolCalls={showToolCalls}
+                                workspaceId={workspaceId}
+                                conversationId={activeConversation.id}
+                                onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                onOpenSubagentConversation={openSubagentConversation}
+                                inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
+                                inChatSearchOptions={activeInChatSearchOptions}
+                              />
+                            );
+                          })}
                           <div className="chat-message-streaming">
                             {(() => {
                               const runningTool = consolidatedSegments.find(
@@ -16389,10 +17645,10 @@ export function ChatPanel({
                           selectedToolIds={resolvedEffectiveToolIdSet}
                           toolSelectionMode={effectiveToolSelection.mode}
                           onSelectionChange={handleToolSelectionChange}
-                          builtInTools={conversationBuiltInTools}
+                          builtInTools={chatMenuBuiltInTools}
                           selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                           onToggleBuiltInTool={handleToggleConversationBuiltInTool}
-                          onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
+                          onBulkBuiltInToggle={handleBulkChatMenuBuiltInToggle}
                           selectedToolGroupIds={effectiveToolGroupIdSet}
                           toolGroups={effectiveToolGroups}
                           openDirection="up"
@@ -16422,10 +17678,10 @@ export function ChatPanel({
                             selectedToolIds={resolvedEffectiveToolIdSet}
                             toolSelectionMode={effectiveToolSelection.mode}
                             onSelectionChange={handleToolSelectionChange}
-                            builtInTools={conversationBuiltInTools}
+                            builtInTools={chatMenuBuiltInTools}
                             selectedBuiltInToolIds={selectedConversationBuiltInToolIdSet}
                             onToggleBuiltInTool={handleToggleConversationBuiltInTool}
-                            onBulkBuiltInToggle={handleBulkConversationBuiltInToggle}
+                            onBulkBuiltInToggle={handleBulkChatMenuBuiltInToggle}
                             selectedToolGroupIds={effectiveToolGroupIdSet}
                             toolGroups={effectiveToolGroups}
                             openDirection="up"

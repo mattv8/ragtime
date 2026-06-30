@@ -2164,6 +2164,10 @@ class IndexerRepository:
         model: Optional[str] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        parent_conversation_id: Optional[str] = None,
+        subagent_role: Optional[str] = None,
+        subagent_index: Optional[int] = None,
+        subagents_enabled: bool = True,
     ) -> Conversation:
         """Create a new conversation."""
         db = await self._get_db()
@@ -2181,6 +2185,10 @@ class IndexerRepository:
                 "totalTokens": 0,
                 "userId": user_id,
                 "workspaceId": workspace_id,
+                "parentConversationId": parent_conversation_id,
+                "subagentRole": subagent_role,
+                "subagentIndex": subagent_index,
+                "subagentsEnabled": subagents_enabled,
                 "toolSelectionMode": "default_all",
             },
             include={"user": True},
@@ -2198,6 +2206,8 @@ class IndexerRepository:
             return None
 
         conv = self._prisma_conversation_to_model(prisma_conv)
+        if not conv.parent_conversation_id:
+            await self.attach_child_conversation_ids_many([conv])
         return await self.attach_message_snapshot_links(conv)
 
     async def list_conversations(
@@ -2248,6 +2258,7 @@ class IndexerRepository:
             where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
         else:
             where_parts.append("c.workspace_id IS NULL")
+        where_parts.append("c.parent_conversation_id IS NULL")
 
         if workspace_id is None and not include_all:
             if not user_id:
@@ -2292,6 +2303,18 @@ class IndexerRepository:
         ordered_conversations = [prisma_convs_by_id[conversation_id] for conversation_id in conversation_ids if conversation_id in prisma_convs_by_id]
 
         conversations = [self._prisma_conversation_to_model(c) for c in ordered_conversations]
+        conversations = await self.attach_child_conversation_ids_many(conversations)
+        return await self.attach_message_snapshot_links_many(conversations)
+
+    async def list_subagent_conversations(self, parent_conversation_id: str) -> list[Conversation]:
+        """List child subagent conversations for a parent conversation."""
+        db = await self._get_db()
+        prisma_convs = await db.conversation.find_many(
+            where={"parentConversationId": parent_conversation_id},
+            include={"user": True},
+            order=[{"subagentIndex": "asc"}, {"createdAt": "asc"}],
+        )
+        conversations = [self._prisma_conversation_to_model(c) for c in prisma_convs]
         return await self.attach_message_snapshot_links_many(conversations)
 
     async def list_conversation_summaries(
@@ -2310,6 +2333,7 @@ class IndexerRepository:
             where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
         else:
             where_parts.append("c.workspace_id IS NULL")
+        where_parts.append("c.parent_conversation_id IS NULL")
 
         if workspace_id is None and not include_all:
             if not user_id:
@@ -2345,6 +2369,10 @@ class IndexerRepository:
                 c.total_tokens,
                 c.active_task_id,
                 c.active_branch_id,
+                c.subagents_enabled,
+                c.parent_conversation_id,
+                c.subagent_role,
+                c.subagent_index,
                 c.created_at,
                 c.updated_at
             FROM conversations c
@@ -2353,7 +2381,7 @@ class IndexerRepository:
             ORDER BY c.updated_at DESC
             """)
 
-        return [
+        summaries = [
             ConversationSummaryResponse(
                 id=str(row.get("id") or ""),
                 title=str(row.get("title") or "Untitled Chat"),
@@ -2366,11 +2394,40 @@ class IndexerRepository:
                 total_tokens=int(row.get("total_tokens") or 0),
                 active_task_id=row.get("active_task_id"),
                 active_branch_id=row.get("active_branch_id"),
+                subagents_enabled=bool(row.get("subagents_enabled", True)),
+                parent_conversation_id=row.get("parent_conversation_id"),
+                subagent_role=row.get("subagent_role"),
+                subagent_index=row.get("subagent_index"),
                 created_at=cast(datetime, row.get("created_at")),
                 updated_at=cast(datetime, row.get("updated_at")),
             )
             for row in rows
         ]
+        child_ids_by_parent = await self.get_subagent_conversation_ids_by_parent([summary.id for summary in summaries])
+        for summary in summaries:
+            summary.subagent_conversation_ids = child_ids_by_parent.get(summary.id, [])
+        return summaries
+
+    async def get_subagent_conversation_ids_by_parent(self, parent_conversation_ids: list[str]) -> dict[str, list[str]]:
+        """Return child subagent conversation IDs keyed by parent conversation ID."""
+        parent_ids = [parent_id for parent_id in dict.fromkeys(parent_conversation_ids) if parent_id]
+        if not parent_ids:
+            return {}
+        db = await self._get_db()
+        quoted_ids = ", ".join(_sql_quote_literal(parent_id) for parent_id in parent_ids)
+        rows = await db.query_raw(f"""
+            SELECT parent_conversation_id, id
+            FROM conversations
+            WHERE parent_conversation_id IN ({quoted_ids})
+            ORDER BY parent_conversation_id, subagent_index ASC NULLS LAST, created_at ASC, id ASC
+            """)
+        result: dict[str, list[str]] = {}
+        for row in rows:
+            parent_id = str(row.get("parent_conversation_id") or "")
+            child_id = str(row.get("id") or "")
+            if parent_id and child_id:
+                result.setdefault(parent_id, []).append(child_id)
+        return result
 
     async def count_conversations(
         self,
@@ -2388,6 +2445,7 @@ class IndexerRepository:
             where_parts.append(f"c.workspace_id = {_sql_quote_literal(workspace_id)}")
         else:
             where_parts.append("c.workspace_id IS NULL")
+        where_parts.append("c.parent_conversation_id IS NULL")
 
         if workspace_id is None and not include_all:
             if not user_id:
@@ -3887,6 +3945,18 @@ class IndexerRepository:
             decorated.append(await self.attach_message_snapshot_links(conversation) or conversation)
         return decorated
 
+    async def attach_child_conversation_ids_many(self, conversations: list[Conversation]) -> list[Conversation]:
+        """Attach child subagent conversation IDs to parent conversation rows."""
+        parent_ids = [conversation.id for conversation in conversations if not conversation.parent_conversation_id]
+        if not parent_ids:
+            return conversations
+
+        child_ids_by_parent = await self.get_subagent_conversation_ids_by_parent(parent_ids)
+
+        for conversation in conversations:
+            conversation.subagent_conversation_ids = child_ids_by_parent.get(conversation.id, [])
+        return conversations
+
     async def link_assistant_snapshot_tool_calls(
         self,
         conversation: Optional[Conversation],
@@ -4192,6 +4262,10 @@ class IndexerRepository:
             messages=messages,
             total_tokens=total_tokens,
             disabled_builtin_tool_ids=_normalize_string_list(getattr(prisma_conv, "disabledBuiltinToolIds", [])),
+            subagents_enabled=bool(getattr(prisma_conv, "subagentsEnabled", True)),
+            parent_conversation_id=getattr(prisma_conv, "parentConversationId", None),
+            subagent_role=getattr(prisma_conv, "subagentRole", None),
+            subagent_index=getattr(prisma_conv, "subagentIndex", None),
             tool_selection_mode=tool_selection_mode,
             created_at=created_at,
             updated_at=updated_at,

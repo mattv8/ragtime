@@ -2155,6 +2155,13 @@ export interface Conversation {
   active_task_id: string | null; // ID of currently running background task
   active_branch_id?: string | null; // ID of currently active chat branch
   disabled_builtin_tool_ids?: string[];
+  subagents_enabled?: boolean;
+  parent_conversation_id?: string | null;
+  subagent_role?: string | null;
+  subagent_index?: number | null;
+  subagent_conversation_ids?: string[];
+  is_subagent?: boolean;
+  read_only?: boolean;
   tool_selection_mode?: ToolSelectionMode;
   tool_output_mode: ToolOutputMode; // Per-conversation tool output preference
   created_at: string;
@@ -2174,6 +2181,13 @@ export interface ConversationSummary {
   total_tokens: number;
   active_task_id: string | null;
   active_branch_id?: string | null;
+  subagents_enabled?: boolean;
+  parent_conversation_id?: string | null;
+  subagent_role?: string | null;
+  subagent_index?: number | null;
+  subagent_conversation_ids?: string[];
+  is_subagent?: boolean;
+  read_only?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -2323,6 +2337,7 @@ export interface UpdateConversationToolsRequest {
   tool_group_ids?: string[];
   tool_selection_mode?: ToolSelectionMode;
   disabled_builtin_tool_ids?: string[];
+  subagents_enabled?: boolean;
 }
 
 // =============================================================================

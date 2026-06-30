@@ -156,7 +156,7 @@ import { formatMountSyncInterval, MOUNT_SYNC_DEFAULT_SECONDS } from '@/utils/mou
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
-import { ChatPanel } from './ChatPanel';
+import { ChatPanel, type WorkspaceBuiltInToolControls } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
 import { ConstrainedPathBrowser } from './ConstrainedPathBrowser';
@@ -889,6 +889,8 @@ export function UserSpacePanel({
   const [branchRestoreSnapshotId, setBranchRestoreSnapshotId] = useState<string | null>(null);
   const [availableTools, setAvailableTools] = useState<UserSpaceAvailableTool[]>([]);
   const [toolGroups, setToolGroups] = useState<ToolGroupInfo[]>([]);
+  const [workspaceBuiltInToolControls, setWorkspaceBuiltInToolControls] =
+    useState<WorkspaceBuiltInToolControls | null>(null);
   const [pendingWorkspaceToolSelection, setPendingWorkspaceToolSelection] = useState<{
     workspaceId: string;
     selection: UserSpaceToolSelection;
@@ -4289,6 +4291,17 @@ export function UserSpacePanel({
     },
     [activeWorkspace, canEditWorkspace],
   );
+
+  const handleWorkspaceBuiltInToolsChange = useCallback(
+    (controls: WorkspaceBuiltInToolControls | null) => {
+      setWorkspaceBuiltInToolControls(controls);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    setWorkspaceBuiltInToolControls(null);
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     return () => {
@@ -8723,12 +8736,17 @@ export function UserSpacePanel({
               selectedToolIds={selectedToolIds}
               toolSelectionMode={effectiveWorkspaceToolSelection.mode}
               onSelectionChange={handleWorkspaceToolSelectionChange}
+              builtInTools={workspaceBuiltInToolControls?.builtInTools ?? []}
+              selectedBuiltInToolIds={workspaceBuiltInToolControls?.selectedBuiltInToolIds}
+              onToggleBuiltInTool={workspaceBuiltInToolControls?.onToggleBuiltInTool}
+              onBulkBuiltInToggle={workspaceBuiltInToolControls?.onBulkBuiltInToggle}
               selectedToolGroupIds={selectedToolGroupIds}
               toolGroups={toolGroups}
               disabled={!activeWorkspaceId}
-              readOnly={!canEditWorkspace}
-              saving={savingWorkspaceTools}
+              readOnly={!canEditWorkspace || workspaceBuiltInToolControls?.readOnly === true}
+              saving={savingWorkspaceTools || workspaceBuiltInToolControls?.saving === true}
               title="Workspace Tools"
+              workspaceBuiltInSectionLabel="Built-in"
             />
             <button
               className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'}`}
@@ -9026,6 +9044,7 @@ export function UserSpacePanel({
                 onWorkspaceToolSelectionChange={handleWorkspaceToolSelectionChange}
                 workspaceToolGroups={toolGroups}
                 workspaceSavingTools={savingWorkspaceTools}
+                onWorkspaceBuiltInToolsChange={handleWorkspaceBuiltInToolsChange}
                 conversationShareableUserIds={workspaceChatShareableUserIds}
                 onUserMessageSubmitted={handleUserMessageSubmitted}
                 onConversationStateChange={handleConversationStateChange}

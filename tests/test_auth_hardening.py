@@ -109,7 +109,7 @@ class ModelsEndpointAuthTests(unittest.TestCase):
         with mock.patch("ragtime.api.routes.settings") as mock_settings:
             mock_settings.api_key = "secret-key"
             with self.assertRaises(HTTPException) as ctx:
-                asyncio.get_event_loop().run_until_complete(verify_api_key(authorization=None))
+                asyncio.run(verify_api_key(authorization=None))
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_verify_api_key_raises_on_wrong_key(self) -> None:
@@ -123,7 +123,7 @@ class ModelsEndpointAuthTests(unittest.TestCase):
         with mock.patch("ragtime.api.routes.settings") as mock_settings:
             mock_settings.api_key = "secret-key"
             with self.assertRaises(HTTPException) as ctx:
-                asyncio.get_event_loop().run_until_complete(verify_api_key(authorization="Bearer wrong-key"))
+                asyncio.run(verify_api_key(authorization="Bearer wrong-key"))
         self.assertEqual(ctx.exception.status_code, 401)
 
     def test_verify_api_key_passes_with_correct_bearer(self) -> None:
@@ -135,7 +135,7 @@ class ModelsEndpointAuthTests(unittest.TestCase):
         with mock.patch("ragtime.api.routes.settings") as mock_settings:
             mock_settings.api_key = "secret-key"
             # Should not raise
-            asyncio.get_event_loop().run_until_complete(verify_api_key(authorization="Bearer secret-key"))
+            asyncio.run(verify_api_key(authorization="Bearer secret-key"))
 
     def test_verify_api_key_passes_when_no_key_configured(self) -> None:
         """verify_api_key is a no-op when API_KEY is not configured."""
@@ -146,7 +146,7 @@ class ModelsEndpointAuthTests(unittest.TestCase):
         with mock.patch("ragtime.api.routes.settings") as mock_settings:
             mock_settings.api_key = ""
             # Should not raise even without an Authorization header
-            asyncio.get_event_loop().run_until_complete(verify_api_key(authorization=None))
+            asyncio.run(verify_api_key(authorization=None))
 
 
 # ---------------------------------------------------------------------------

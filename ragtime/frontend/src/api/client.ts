@@ -2724,6 +2724,7 @@ export const api = {
     tool_group_ids: string[];
     tool_selection_mode: 'default_all' | 'custom';
     disabled_builtin_tool_ids: string[];
+    subagents_enabled: boolean;
   }> {
     const response = await apiFetch(`${API_BASE}/conversations/${conversationId}/tools`);
     const data = await handleResponse<{
@@ -2731,12 +2732,14 @@ export const api = {
       tool_group_ids?: string[];
       tool_selection_mode?: 'default_all' | 'custom';
       disabled_builtin_tool_ids?: string[];
+      subagents_enabled?: boolean;
     }>(response);
     return {
       tool_config_ids: data.tool_config_ids || [],
       tool_group_ids: data.tool_group_ids || [],
       tool_selection_mode: data.tool_selection_mode || 'custom',
       disabled_builtin_tool_ids: data.disabled_builtin_tool_ids || [],
+      subagents_enabled: data.subagents_enabled !== false,
     };
   },
 

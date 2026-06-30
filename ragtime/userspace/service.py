@@ -1268,9 +1268,12 @@ class UserSpaceService:
         self._workspace_archive_semaphore = asyncio.Semaphore(self._positive_int_env("USERSPACE_ARCHIVE_CONCURRENCY", 2))
         self._workspace_archive_operation_locks: dict[str, asyncio.Lock] = {}
         self._workspace_archive_operation_locks_lock = asyncio.Lock()
+        self._workspace_file_mutation_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._workspace_file_mutation_locks_lock = asyncio.Lock()
         self._workspace_archive_export_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_archive_export_task_statuses: dict[str, _WorkspaceArchiveExportTaskRecord] = {}
         self._workspace_archive_export_active_task_ids_by_workspace: dict[str, str] = {}
+
         self._workspace_archive_import_tasks: dict[str, asyncio.Task[None]] = {}
         self._workspace_archive_import_task_statuses: dict[str, _WorkspaceArchiveImportTaskRecord] = {}
         self._workspace_archive_import_active_task_ids_by_workspace: dict[str, str] = {}
@@ -1333,6 +1336,19 @@ class UserSpaceService:
         # Rehydrate persistent archive export history from task sidecars.
         self._rehydrate_workspace_archive_export_task_statuses()
         self._rehydrate_workspace_sqlite_import_task_statuses()
+
+    async def _get_workspace_file_mutation_lock(self, workspace_id: str, normalized_path: str) -> asyncio.Lock:
+        key = (workspace_id, normalized_path.strip("/"))
+        async with self._workspace_file_mutation_locks_lock:
+            lock = self._workspace_file_mutation_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._workspace_file_mutation_locks[key] = lock
+            return lock
+
+    async def _get_workspace_file_mutation_locks(self, workspace_id: str, normalized_paths: list[str]) -> list[asyncio.Lock]:
+        keys = sorted({path.strip("/") for path in normalized_paths if path.strip("/")})
+        return [await self._get_workspace_file_mutation_lock(workspace_id, key) for key in keys]
 
     @staticmethod
     def _positive_int_env(name: str, default_value: int) -> int:
@@ -18890,14 +18906,16 @@ class UserSpaceService:
             workspace_id,
             normalized_path,
         )
-        stat = await asyncio.to_thread(
-            self._write_workspace_file_sync,
-            file_path,
-            request.content,
-            request.artifact_type,
-            request.live_data_connections,
-            request.live_data_checks,
-        )
+        mutation_lock = await self._get_workspace_file_mutation_lock(workspace_id, normalized_path)
+        async with mutation_lock:
+            stat = await asyncio.to_thread(
+                self._write_workspace_file_sync,
+                file_path,
+                request.content,
+                request.artifact_type,
+                request.live_data_connections,
+                request.live_data_checks,
+            )
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
             [normalized_path],
@@ -18978,7 +18996,9 @@ class UserSpaceService:
             workspace_id,
             normalized_path,
         )
-        await asyncio.to_thread(self._delete_workspace_file_sync, file_path)
+        mutation_lock = await self._get_workspace_file_mutation_lock(workspace_id, normalized_path)
+        async with mutation_lock:
+            await asyncio.to_thread(self._delete_workspace_file_sync, file_path)
 
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,
@@ -19032,16 +19052,23 @@ class UserSpaceService:
             normalized_new,
         )
 
+        mutation_locks = await self._get_workspace_file_mutation_locks(workspace_id, [normalized_old, normalized_new])
+        for mutation_lock in mutation_locks:
+            await mutation_lock.acquire()
         try:
-            await asyncio.to_thread(
-                self._move_workspace_file_sync,
-                source_path,
-                target_path,
-            )
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="File not found") from exc
-        except FileExistsError as exc:
-            raise HTTPException(status_code=409, detail="Target file already exists") from exc
+            try:
+                await asyncio.to_thread(
+                    self._move_workspace_file_sync,
+                    source_path,
+                    target_path,
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=404, detail="File not found") from exc
+            except FileExistsError as exc:
+                raise HTTPException(status_code=409, detail="Target file already exists") from exc
+        finally:
+            for mutation_lock in reversed(mutation_locks):
+                mutation_lock.release()
 
         await self.clear_workspace_changed_file_acknowledgements_for_paths_for_all_users(
             workspace_id,

@@ -9,6 +9,7 @@ Also handles scheduled filesystem re-indexing tasks.
 
 import asyncio
 import contextlib
+import contextvars
 import copy
 import json
 import time
@@ -16,6 +17,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+
+try:
+    # LangChain propagates the active `astream_events` callback collector through
+    # this contextvar. Background tasks reset it so a subagent task (started from
+    # inside the parent's `astream_events` tool call) does not inherit the
+    # parent's stream and leak the child's tokens/tool calls into it.
+    from langchain_core.runnables.config import var_child_runnable_config as _LC_CHILD_RUNNABLE_CONFIG_VAR
+except Exception:  # pragma: no cover - defensive import guard
+    _LC_CHILD_RUNNABLE_CONFIG_VAR: contextvars.ContextVar[Any] | None = None  # type: ignore[no-redef]
 
 from ragtime.core.app_settings import SettingsCache
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
@@ -418,6 +428,7 @@ class BackgroundTaskService:
 
     def __init__(self):
         self._running_tasks: Dict[str, asyncio.Task] = {}
+        self._subagent_children_by_parent_task: Dict[str, set[str]] = {}
         self._shutdown = False
         self._cleanup_task: Optional[asyncio.Task] = None
         self._filesystem_scheduler_task: Optional[asyncio.Task] = None
@@ -1531,9 +1542,22 @@ class BackgroundTaskService:
                     logger.warning(f"Task {task_id}: Could not update task status (database may be disconnected): {db_err}")
             finally:
                 self._running_tasks.pop(task_id, None)
+                self._subagent_children_by_parent_task.pop(task_id, None)
 
-        # Create and track the task
-        asyncio_task = asyncio.create_task(run())
+        # Create and track the task.
+        #
+        # Every background task is a fresh top-level agent run. When a parent
+        # agent spawns subagents, `spawn_subagents` runs *inside* the parent's
+        # `astream_events` context, so a plain `create_task` would copy the
+        # parent's LangChain callback contextvar into the child. That routes the
+        # child's streamed tokens and tool calls (including its
+        # `submit_subagent_handoff`) back into the parent's own event stream and
+        # `response_content`. Run the task in a context where the LangChain
+        # runnable-config contextvar is cleared so each task streams in isolation.
+        task_context = contextvars.copy_context()
+        if _LC_CHILD_RUNNABLE_CONFIG_VAR is not None:
+            task_context.run(_LC_CHILD_RUNNABLE_CONFIG_VAR.set, None)
+        asyncio_task = asyncio.create_task(run(), context=task_context)
 
         # We need to get task_id synchronously, so we'll use a placeholder
         # The actual task ID will be set inside the coroutine
@@ -1727,12 +1751,31 @@ class BackgroundTaskService:
         Returns:
             True if task was found and cancelled
         """
+        self.cancel_subagent_children(task_id)
         if task_id in self._running_tasks:
             task = self._running_tasks[task_id]
             if not task.done():
                 task.cancel()
                 return True
         return False
+
+    def register_subagent_children(self, parent_task_id: str, child_task_ids: list[str]) -> None:
+        if not parent_task_id or not child_task_ids:
+            return
+        self._subagent_children_by_parent_task.setdefault(parent_task_id, set()).update(task_id for task_id in child_task_ids if task_id)
+
+    def cancel_subagent_children(self, parent_task_id: str) -> None:
+        child_task_ids = self._subagent_children_by_parent_task.pop(parent_task_id, set())
+        for child_task_id in child_task_ids:
+            task = self._running_tasks.get(child_task_id)
+            if task and not task.done():
+                task.cancel()
+
+    async def await_task(self, task_id: str) -> None:
+        task = self._running_tasks.get(task_id)
+        if task is None:
+            return
+        await task
 
     def is_task_running(self, task_id: str) -> bool:
         """Check if a task is currently running."""

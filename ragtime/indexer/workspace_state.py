@@ -29,6 +29,14 @@ def _to_conversation_response(conversation: Conversation) -> ConversationRespons
         active_task_id=conversation.active_task_id,
         active_branch_id=conversation.active_branch_id,
         disabled_builtin_tool_ids=conversation.disabled_builtin_tool_ids,
+        subagents_enabled=conversation.subagents_enabled,
+        parent_conversation_id=conversation.parent_conversation_id,
+        subagent_role=conversation.subagent_role,
+        subagent_index=conversation.subagent_index,
+        subagent_conversation_ids=conversation.subagent_conversation_ids,
+        is_subagent=bool(conversation.parent_conversation_id),
+        read_only=bool(conversation.parent_conversation_id),
+        tool_selection_mode=conversation.tool_selection_mode,
         tool_output_mode=conversation.tool_output_mode,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
@@ -51,6 +59,13 @@ def _summary_to_conversation_response(
         total_tokens=summary.total_tokens,
         active_task_id=summary.active_task_id,
         active_branch_id=summary.active_branch_id,
+        subagents_enabled=summary.subagents_enabled,
+        parent_conversation_id=summary.parent_conversation_id,
+        subagent_role=summary.subagent_role,
+        subagent_index=summary.subagent_index,
+        subagent_conversation_ids=summary.subagent_conversation_ids,
+        is_subagent=bool(summary.parent_conversation_id),
+        read_only=bool(summary.parent_conversation_id),
         created_at=summary.created_at,
         updated_at=summary.updated_at,
     )
@@ -96,6 +111,10 @@ async def build_workspace_chat_state(
     summary_ids = {summary.id for summary in conversation_summaries}
     if selected_conversation_id in summary_ids:
         selected_id = selected_conversation_id
+    elif selected_conversation_id:
+        candidate = await repository.get_conversation(selected_conversation_id)
+        if candidate and candidate.workspace_id == workspace_id:
+            selected_id = selected_conversation_id
     elif conversation_summaries:
         selected_id = conversation_summaries[0].id
 
@@ -113,7 +132,10 @@ async def build_workspace_chat_state(
     conversations = [_summary_to_conversation_response(summary) for summary in conversation_summaries]
     if selected_conversation is not None:
         selected_response = _to_conversation_response(selected_conversation)
-        conversations = [(selected_response if conversation.id == selected_response.id else conversation) for conversation in conversations]
+        if selected_response.id in {conversation.id for conversation in conversations}:
+            conversations = [(selected_response if conversation.id == selected_response.id else conversation) for conversation in conversations]
+        else:
+            conversations.append(selected_response)
 
     return WorkspaceChatStateResponse(
         conversations=conversations,

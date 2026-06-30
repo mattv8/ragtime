@@ -2459,6 +2459,11 @@ class Conversation(BaseModel):
     total_tokens: int = Field(default=0)
     active_task_id: Optional[str] = Field(default=None, description="ID of currently running background task")
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
+    subagents_enabled: bool = Field(default=True, description="Whether this conversation may spawn User Space subagents")
+    parent_conversation_id: Optional[str] = Field(default=None, description="Parent conversation ID when this is a subagent conversation")
+    subagent_role: Optional[str] = Field(default=None, description="Display role for a subagent conversation")
+    subagent_index: Optional[int] = Field(default=None, description="Stable display order among sibling subagents")
+    subagent_conversation_ids: List[str] = Field(default_factory=list, description="Child subagent conversation IDs")
     tool_selection_mode: str = Field(default="custom")
     tool_output_mode: ToolOutputMode = Field(
         default=ToolOutputMode.DEFAULT,
@@ -2598,6 +2603,13 @@ class ConversationResponse(BaseModel):
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
     disabled_builtin_tool_ids: List[str] = Field(default_factory=list)
+    subagents_enabled: bool = True
+    parent_conversation_id: Optional[str] = None
+    subagent_role: Optional[str] = None
+    subagent_index: Optional[int] = None
+    subagent_conversation_ids: List[str] = Field(default_factory=list)
+    is_subagent: bool = False
+    read_only: bool = False
     tool_selection_mode: str = Field(default="custom")
     tool_output_mode: ToolOutputMode = Field(default=ToolOutputMode.DEFAULT)
     created_at: datetime
@@ -2618,6 +2630,13 @@ class ConversationSummaryResponse(BaseModel):
     total_tokens: int = 0
     active_task_id: Optional[str] = None
     active_branch_id: Optional[str] = None
+    subagents_enabled: bool = True
+    parent_conversation_id: Optional[str] = None
+    subagent_role: Optional[str] = None
+    subagent_index: Optional[int] = None
+    subagent_conversation_ids: List[str] = Field(default_factory=list)
+    is_subagent: bool = False
+    read_only: bool = False
     created_at: datetime
     updated_at: datetime
 

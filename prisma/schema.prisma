@@ -1051,6 +1051,18 @@ model Conversation {
   // Built-in chat diagnostic tools explicitly disabled for this conversation
   disabledBuiltinToolIds Json @default("[]") @map("disabled_builtin_tool_ids")
 
+  // Whether this conversation can orchestrate User Space subagents.
+  subagentsEnabled Boolean @default(true) @map("subagents_enabled")
+
+  // Parent conversation for read-only subagent child conversations.
+  parentConversationId String?        @map("parent_conversation_id")
+  parentConversation   Conversation?  @relation("ConversationSubagents", fields: [parentConversationId], references: [id], onDelete: Cascade)
+  subagentConversations Conversation[] @relation("ConversationSubagents")
+
+  // Subagent display metadata.
+  subagentRole  String? @map("subagent_role")
+  subagentIndex Int?    @map("subagent_index")
+
   // Background task tracking - active task for this conversation
   activeTaskId String? @map("active_task_id")
 
@@ -1080,7 +1092,9 @@ model Conversation {
 
   @@index([userId])
   @@index([activeTaskId])
+  @@index([parentConversationId])
   @@index([workspaceId, updatedAt])
+  @@index([workspaceId, parentConversationId, updatedAt], map: "conversations_workspace_parent_updated_idx")
   @@index([userId, workspaceId, updatedAt])
   @@map("conversations")
 }

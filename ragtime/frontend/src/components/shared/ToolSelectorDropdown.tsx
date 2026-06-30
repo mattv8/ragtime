@@ -48,6 +48,7 @@ interface ToolSelectorDropdownProps {
   readOnly?: boolean;
   saving?: boolean;
   title?: string;
+  workspaceBuiltInSectionLabel?: string;
   /** When provided, renders a "Show tool calls" toggle at the bottom of the dropdown. */
   showToolCalls?: boolean;
   onToggleToolCalls?: (value: boolean) => void;
@@ -69,6 +70,7 @@ export function ToolSelectorDropdown({
   readOnly = false,
   saving = false,
   title = 'Tools',
+  workspaceBuiltInSectionLabel = 'Workspace Tools',
   showToolCalls,
   onToggleToolCalls,
 }: ToolSelectorDropdownProps) {
@@ -217,6 +219,14 @@ export function ToolSelectorDropdown({
   const filteredBuiltInTools = useMemo(
     () => builtInTools.filter(toolMatchesSearch),
     [builtInTools, toolMatchesSearch],
+  );
+  const filteredWorkspaceBuiltInTools = useMemo(
+    () => filteredBuiltInTools.filter((tool) => tool.tool_type === 'workspace-built-in'),
+    [filteredBuiltInTools],
+  );
+  const filteredChatBuiltInTools = useMemo(
+    () => filteredBuiltInTools.filter((tool) => tool.tool_type !== 'workspace-built-in'),
+    [filteredBuiltInTools],
   );
   const filteredGroups = useMemo(() => {
     if (!isSearching) return groups;
@@ -415,8 +425,20 @@ export function ToolSelectorDropdown({
             <div className="userspace-tool-list model-selector-dropdown-inner">
               {builtInTools.length > 0 && (
                 <div className="userspace-tool-builtins">
-                  <div className="userspace-tool-section-label">Built-in</div>
-                  {filteredBuiltInTools.map(renderBuiltInToolItem)}
+                  {filteredWorkspaceBuiltInTools.length > 0 && (
+                    <>
+                      <div className="userspace-tool-section-label">
+                        {workspaceBuiltInSectionLabel}
+                      </div>
+                      {filteredWorkspaceBuiltInTools.map(renderBuiltInToolItem)}
+                    </>
+                  )}
+                  {filteredChatBuiltInTools.length > 0 && (
+                    <>
+                      <div className="userspace-tool-section-label">Built-in</div>
+                      {filteredChatBuiltInTools.map(renderBuiltInToolItem)}
+                    </>
+                  )}
                 </div>
               )}
               {builtInTools.length > 0 && availableTools.length > 0 && (

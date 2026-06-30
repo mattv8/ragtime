@@ -10892,6 +10892,14 @@ def _to_conversation_response(conv: Conversation) -> ConversationResponse:
         active_task_id=conv.active_task_id,
         active_branch_id=conv.active_branch_id,
         disabled_builtin_tool_ids=_normalize_disabled_builtin_tool_ids(conv.disabled_builtin_tool_ids),
+        subagents_enabled=conv.subagents_enabled,
+        parent_conversation_id=conv.parent_conversation_id,
+        subagent_role=conv.subagent_role,
+        subagent_index=conv.subagent_index,
+        subagent_conversation_ids=conv.subagent_conversation_ids,
+        is_subagent=bool(conv.parent_conversation_id),
+        read_only=bool(conv.parent_conversation_id),
+        tool_selection_mode=conv.tool_selection_mode,
         tool_output_mode=conv.tool_output_mode,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
@@ -11586,6 +11594,11 @@ async def _assert_workspace_access(workspace_id: Optional[str], user: User, requ
 
 def _workspace_chat_required_role(workspace_id: Optional[str]) -> str:
     return "viewer" if workspace_id else "editor"
+
+
+def _assert_conversation_mutable(conv: Any) -> None:
+    if getattr(conv, "parent_conversation_id", None) or getattr(conv, "parentConversationId", None):
+        raise HTTPException(status_code=403, detail="Subagent conversations are read-only")
 
 
 async def _resolve_selected_tool_ids_for_request(
@@ -12686,6 +12699,11 @@ async def delete_conversation(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    conv = await repository.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
+
     success = await repository.delete_conversation(conversation_id)
     if not success:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -12709,6 +12727,11 @@ async def update_conversation_title(
     )
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    existing_conv = await repository.get_conversation(conversation_id)
+    if not existing_conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(existing_conv)
 
     title = body.get("title", "").strip()
     if not title:
@@ -12738,6 +12761,11 @@ async def update_conversation_model(
     )
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    existing_conv = await repository.get_conversation(conversation_id)
+    if not existing_conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(existing_conv)
 
     model = body.get("model", "").strip()
     model = model.lstrip("/")
@@ -12784,6 +12812,11 @@ async def update_conversation_tool_output_mode(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    existing_conv = await repository.get_conversation(conversation_id)
+    if not existing_conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(existing_conv)
+
     mode = body.get("tool_output_mode", "").strip()
     if mode not in ["default", "show", "hide", "auto"]:
         raise HTTPException(
@@ -12819,6 +12852,11 @@ async def truncate_conversation(
     if not has_access:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    existing_conv = await repository.get_conversation(conversation_id)
+    if not existing_conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(existing_conv)
+
     conv = await repository.truncate_messages(conversation_id, keep_count)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -12847,6 +12885,7 @@ async def compact_conversation(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
     if conv.active_task_id:
         raise HTTPException(status_code=409, detail="Conversation is currently processing")
 
@@ -12947,6 +12986,7 @@ async def update_conversation_compaction_marker(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
 
     target_index: Optional[int] = None
     if request.message_id:
@@ -13015,6 +13055,7 @@ async def restore_message_snapshot(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
 
     effective_workspace_id = workspace_id or conv.workspace_id
     if not effective_workspace_id:
@@ -13377,6 +13418,7 @@ async def send_message(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
     return await _send_message_to_loaded_conversation(
         conv,
         request,
@@ -13412,6 +13454,7 @@ async def send_message_stream(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
 
     _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
         conv,
@@ -13787,6 +13830,7 @@ async def retry_visualization(
     conversation = await repository.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conversation)
 
     _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
         conversation,
@@ -14384,6 +14428,7 @@ async def send_message_background(
     conv = await repository.get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    _assert_conversation_mutable(conv)
 
     _, blocked_tool_names, workspace_context = await _resolve_workspace_runtime_scope(
         conv,
@@ -14753,6 +14798,13 @@ async def cancel_chat_task(
 
     # Cancel the task
     background_task_service.cancel_task(task_id)
+    parent_conv = await repository.get_conversation(task.conversation_id)
+    if parent_conv and parent_conv.subagent_conversation_ids:
+        for child_conversation_id in parent_conv.subagent_conversation_ids:
+            child_task = await repository.get_active_task_for_conversation(child_conversation_id)
+            if child_task:
+                background_task_service.cancel_task(child_task.id)
+                await repository.cancel_chat_task(child_task.id)
     updated_task = await repository.cancel_chat_task(task_id)
 
     if not updated_task:
@@ -14818,6 +14870,7 @@ async def update_conversation_members(
         conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        _assert_conversation_mutable(conversation)
 
         workspace_id = getattr(conversation, "workspaceId", None)
         if workspace_id:
@@ -14893,6 +14946,7 @@ async def get_conversation_tools(
             "tool_group_ids": tool_group_ids,
             "tool_selection_mode": tool_selection_mode,
             "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(getattr(conversation, "disabledBuiltinToolIds", [])),
+            "subagents_enabled": bool(getattr(conversation, "subagentsEnabled", True)),
         }
     finally:
         await db.disconnect()
@@ -14912,6 +14966,7 @@ async def update_conversation_tools(
         conversation = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
+        _assert_conversation_mutable(conversation)
 
         workspace_id = getattr(conversation, "workspaceId", None)
         if workspace_id:
@@ -14929,6 +14984,8 @@ async def update_conversation_tools(
             raise HTTPException(status_code=400, detail="tool_selection_mode must be 'default_all' or 'custom'")
         has_builtin_update = "disabled_builtin_tool_ids" in request
         disabled_builtin_tool_ids = _normalize_disabled_builtin_tool_ids(request.get("disabled_builtin_tool_ids", []))
+        has_subagents_enabled_update = "subagents_enabled" in request
+        subagents_enabled = bool(request.get("subagents_enabled", True))
 
         # Delete existing selections
         await db.conversationtoolselection.delete_many(where={"conversationId": conversation_id})
@@ -14942,9 +14999,12 @@ async def update_conversation_tools(
         for group_id in tool_group_ids:
             await db.conversationtoolgroupselection.create(data={"conversationId": conversation_id, "toolGroupId": group_id})
 
+        conversation_update_data: dict[str, Any] = {"toolSelectionMode": tool_selection_mode}
+        if has_subagents_enabled_update:
+            conversation_update_data["subagentsEnabled"] = subagents_enabled
         await db.conversation.update(
             where={"id": conversation_id},
-            data={"toolSelectionMode": tool_selection_mode},
+            data=conversation_update_data,  # type: ignore[arg-type]
         )
         if has_builtin_update:
             await db.conversation.update(
