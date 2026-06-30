@@ -948,11 +948,12 @@ class UserSpaceRuntimeService:
 
     async def _probe_public_preview_origin_cached(self, preview_origin: str) -> bool:
         probe_url = build_preview_probe_url(preview_origin)
+        cache_key = f"{preview_origin.rstrip('/')}|{probe_url}"
         ok = await self._run_cached_probe(
             cache=self._public_preview_probe_cache,
-            cache_key=probe_url,
+            cache_key=cache_key,
             ttl_seconds=_RUNTIME_PUBLIC_PREVIEW_PROBE_CACHE_TTL_SECONDS,
-            inflight_key=f"public-preview:{probe_url}",
+            inflight_key=f"public-preview:{cache_key}",
             probe=lambda: self._probe_public_preview_origin(
                 preview_origin,
                 probe_url,
