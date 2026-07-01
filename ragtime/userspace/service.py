@@ -239,6 +239,7 @@ from ragtime.userspace.models import (
 )
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
+from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
 
@@ -3136,6 +3137,7 @@ class UserSpaceService:
                         workspace_id=workspace.id,
                         model=resolved_model,
                     )
+                await self._mark_workspace_code_index_dirty(workspace.id, operation="reindex")
                 self._set_workspace_duplicate_task_phase(
                     task_id,
                     "completed",
@@ -4061,6 +4063,7 @@ class UserSpaceService:
                 workspace_id,
                 "archive_import",
             )
+            await self._mark_workspace_code_index_dirty(workspace_id, operation="reindex")
             await self._update_workspace_archive_import_task_phase(
                 workspace_id,
                 task_id,
@@ -11920,6 +11923,7 @@ class UserSpaceService:
             request,
             preview,
         )
+        await self._mark_workspace_code_index_dirty(workspace_id, operation="reindex")
 
         return UserSpaceWorkspaceScmSyncResponse(
             workspace_id=workspace_id,
@@ -13511,6 +13515,14 @@ class UserSpaceService:
         workspace_dir = self._workspace_dir(workspace_id)
         if workspace_dir.exists():
             await asyncio.to_thread(shutil.rmtree, workspace_dir)
+        try:
+            await workspace_code_index_service.delete_workspace_index(workspace_id)
+        except Exception:
+            logger.debug(
+                "Failed to delete workspace code index for workspace=%s",
+                workspace_id,
+                exc_info=True,
+            )
 
     async def enforce_workspace_role(
         self,
@@ -18767,6 +18779,23 @@ class UserSpaceService:
         )
         return base_result
 
+    async def _mark_workspace_code_index_dirty(
+        self,
+        workspace_id: str,
+        relative_path: str = "",
+        operation: Literal["upsert", "delete", "reindex"] = "upsert",
+    ) -> None:
+        try:
+            await workspace_code_index_service.mark_dirty(workspace_id, relative_path, operation)
+        except Exception:
+            logger.debug(
+                "Failed to mark workspace code index dirty for workspace=%s path=%s operation=%s",
+                workspace_id,
+                relative_path,
+                operation,
+                exc_info=True,
+            )
+
     async def upsert_workspace_file(
         self,
         workspace_id: str,
@@ -18927,6 +18956,8 @@ class UserSpaceService:
         if normalized == ".ragtime/runtime-entrypoint.json":
             self.invalidate_entrypoint_cache(workspace_id)
 
+        await self._mark_workspace_code_index_dirty(workspace_id, normalized_path, "upsert")
+
         return UserSpaceFileResponse(
             path=normalized_path,
             content=request.content,
@@ -19012,6 +19043,8 @@ class UserSpaceService:
         if normalized == ".ragtime/runtime-entrypoint.json":
             self.invalidate_entrypoint_cache(workspace_id)
 
+        await self._mark_workspace_code_index_dirty(workspace_id, normalized_path, "delete")
+
     async def move_workspace_file(
         self,
         workspace_id: str,
@@ -19076,6 +19109,8 @@ class UserSpaceService:
         )
 
         await self._touch_workspace(workspace_id)
+        await self._mark_workspace_code_index_dirty(workspace_id, normalized_old, "delete")
+        await self._mark_workspace_code_index_dirty(workspace_id, normalized_new, "upsert")
         return {"old_path": normalized_old, "new_path": normalized_new}
 
     @staticmethod
@@ -19483,6 +19518,7 @@ class UserSpaceService:
 
         await self.clear_workspace_changed_file_acknowledgements_for_all_users(workspace_id)
         await self._touch_workspace(workspace_id)
+        await self._mark_workspace_code_index_dirty(workspace_id, operation="reindex")
 
         return UserSpaceSnapshot(
             id=str(row.get("id") or ""),
@@ -19862,6 +19898,7 @@ class UserSpaceService:
             await self._set_current_snapshot_cursor(workspace_id, target_snapshot_id, branch_id)
 
         await self._touch_workspace(workspace_id)
+        await self._mark_workspace_code_index_dirty(workspace_id, operation="reindex")
         return await self.get_snapshot_timeline(workspace_id, user_id)
 
     async def create_snapshot_branch(

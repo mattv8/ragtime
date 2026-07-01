@@ -5,8 +5,9 @@ import html
 import json
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -21,6 +22,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from ragtime.core.app_settings import get_app_settings
@@ -45,6 +47,7 @@ from ragtime.indexer.models import (
     FetchBranchesResponse,
     RepoVisibilityResponse,
     ToolType,
+    WorkspaceCodeIndexJobResponse,
 )
 from ragtime.indexer.repository import repository
 from ragtime.indexer.tool_health import tool_health_monitor
@@ -178,6 +181,7 @@ from ragtime.userspace.models import (
 from ragtime.userspace.runtime_service import userspace_runtime_service
 from ragtime.userspace.service import userspace_service
 from ragtime.userspace.share_auth import share_auth_token_from_request
+from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
 
@@ -3193,3 +3197,162 @@ async def query_workspace_sqlite_database(
         row_count=result.row_count,
         truncated=result.truncated,
     )
+
+
+# -----------------------------------------------------------------------------
+# Admin: Hidden User Space code indexes
+# -----------------------------------------------------------------------------
+
+
+class WorkspaceCodeIndexAdminItem(BaseModel):
+    """Admin-visible summary of one workspace code index."""
+
+    workspace_id: str = Field(description="Workspace identifier")
+    workspace_name: str = Field(description="Workspace display name")
+    index_name: str = Field(description="Internal pgvector index name")
+    status: str = Field(description="Current index status")
+    file_count: int = Field(description="Number of indexed files")
+    chunk_count: int = Field(description="Number of indexed chunks")
+    symbol_count: int = Field(description="Number of extracted symbols")
+    dirty_path_count: int = Field(description="Number of pending dirty paths")
+    last_indexed_at: Optional[datetime] = Field(default=None, description="Last successful indexing timestamp")
+    last_reconciled_at: Optional[datetime] = Field(default=None, description="Last reconciliation timestamp")
+    last_error: Optional[str] = Field(default=None, description="Most recent error message")
+    created_at: datetime = Field(description="State row creation timestamp")
+    updated_at: datetime = Field(description="State row last update timestamp")
+
+
+class WorkspaceCodeIndexAdminActionResponse(BaseModel):
+    """Response from a code index admin action."""
+
+    workspace_id: str
+    success: bool
+
+
+class WorkspaceCodeIndexReconcileResponse(BaseModel):
+    """Response from a manual reconcile-now request."""
+
+    scheduled_count: int = Field(description="Number of workspaces scheduled for reconciliation")
+
+
+@router.get(
+    "/code-indexes",
+    response_model=List[WorkspaceCodeIndexAdminItem],
+    tags=["User Space Code Indexes"],
+)
+async def list_workspace_code_indexes(_user: Any = Depends(require_admin)):
+    """List all hidden workspace code index states. Admin only."""
+    db = await get_db()
+    rows = await db.query_raw(
+        """
+        SELECT
+            s.workspace_id,
+            w.name AS workspace_name,
+            s.index_name,
+            s.status,
+            s.file_count,
+            s.chunk_count,
+            s.symbol_count,
+            COUNT(d.id)::int AS dirty_path_count,
+            s.last_indexed_at,
+            s.last_reconciled_at,
+            s.last_error,
+            s.created_at,
+            s.updated_at
+        FROM workspace_code_index_states s
+        JOIN workspaces w ON w.id = s.workspace_id
+        LEFT JOIN workspace_code_index_dirty_paths d ON d.workspace_id = s.workspace_id
+        GROUP BY
+            s.workspace_id,
+            w.name,
+            s.index_name,
+            s.status,
+            s.file_count,
+            s.chunk_count,
+            s.symbol_count,
+            s.last_indexed_at,
+            s.last_reconciled_at,
+            s.last_error,
+            s.created_at,
+            s.updated_at
+        ORDER BY s.updated_at DESC
+        """
+    )
+    return [WorkspaceCodeIndexAdminItem(**row) for row in rows]
+
+
+@router.get(
+    "/code-indexes/jobs",
+    response_model=List[WorkspaceCodeIndexJobResponse],
+    tags=["User Space Code Indexes"],
+)
+async def list_workspace_code_index_jobs(
+    limit: int = Query(default=200, ge=1, le=1000),
+    _user: Any = Depends(require_admin),
+):
+    """List recent hidden workspace code indexing jobs. Admin only."""
+    db = await get_db()
+    rows = await db.query_raw(
+        f"""
+        SELECT
+            j.id,
+            j.workspace_id,
+            w.name AS workspace_name,
+            j.index_name,
+            j.status,
+            j.phase,
+            j.total_files,
+            j.processed_files,
+            j.total_chunks,
+            j.processed_chunks,
+            j.current_file,
+            j.error_message,
+            j.created_at,
+            j.started_at,
+            j.completed_at
+        FROM workspace_code_index_jobs j
+        JOIN workspaces w ON w.id = j.workspace_id
+        ORDER BY j.created_at DESC
+        LIMIT {limit}
+        """
+    )
+    return [WorkspaceCodeIndexJobResponse(**row) for row in rows]
+
+
+@router.post(
+    "/code-indexes/{workspace_id}/reindex",
+    response_model=WorkspaceCodeIndexAdminActionResponse,
+    tags=["User Space Code Indexes"],
+)
+async def reindex_workspace_code_index(
+    workspace_id: str,
+    _user: Any = Depends(require_admin),
+):
+    """Mark a workspace code index for full reindexing. Admin only."""
+    await workspace_code_index_service.mark_dirty(workspace_id, operation="reindex")
+    return WorkspaceCodeIndexAdminActionResponse(workspace_id=workspace_id, success=True)
+
+
+@router.delete(
+    "/code-indexes/{workspace_id}",
+    response_model=WorkspaceCodeIndexAdminActionResponse,
+    tags=["User Space Code Indexes"],
+)
+async def delete_workspace_code_index_admin(
+    workspace_id: str,
+    _user: Any = Depends(require_admin),
+):
+    """Delete a hidden workspace code index and all related state. Admin only."""
+    await workspace_code_index_service.delete_workspace_index(workspace_id)
+    return WorkspaceCodeIndexAdminActionResponse(workspace_id=workspace_id, success=True)
+
+
+@router.post(
+    "/code-indexes/reconcile-now",
+    response_model=WorkspaceCodeIndexReconcileResponse,
+    tags=["User Space Code Indexes"],
+)
+async def reconcile_workspace_code_indexes_now(_user: Any = Depends(require_admin)):
+    """Schedule reconciliation for all persisted dirty code index rows plus missing baselines. Admin only."""
+    scheduled = await workspace_code_index_service.reconcile_stale_workspaces(include_missing=True)
+    return WorkspaceCodeIndexReconcileResponse(scheduled_count=len(scheduled))

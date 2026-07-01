@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
@@ -57,6 +57,10 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SERVER_NAME,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
+    DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+    DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+    DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+    DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
     DEFAULT_USERSPACE_DUPLICATE_COPY_CHATS,
     DEFAULT_USERSPACE_DUPLICATE_COPY_FILES,
     DEFAULT_USERSPACE_DUPLICATE_COPY_METADATA,
@@ -1086,6 +1090,28 @@ class AppSettings(BaseModel):
         le=USERSPACE_PRIMITIVE_ARCHIVE_MAX_ENTRIES,
         description="Maximum number of files extracted from one User Space archive primitive request.",
     )
+    userspace_code_index_enabled: bool = Field(
+        default=DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+        description="Enable automatic indexing of User Space workspace code.",
+    )
+    userspace_code_index_debounce_seconds: int = Field(
+        default=DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+        ge=0,
+        le=3600,
+        description="Seconds to debounce User Space code index dirty-path processing after the most recent change.",
+    )
+    userspace_code_index_reconcile_interval_seconds: int = Field(
+        default=DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
+        ge=10,
+        le=86400,
+        description="Seconds between background reconciliations of persisted User Space code index dirty paths.",
+    )
+    userspace_code_index_max_attempts: int = Field(
+        default=DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+        ge=1,
+        le=20,
+        description="Maximum retry attempts for a failed User Space code index dirty path before it is ignored.",
+    )
 
     # Index Archive Extraction Limits
     archive_max_total_size_bytes: int = Field(
@@ -1557,6 +1583,28 @@ class UpdateSettingsRequest(BaseModel):
     userspace_mount_sync_timezone: Optional[str] = Field(
         default=None,
         description="IANA timezone used with userspace_mount_sync_start_minute.",
+    )
+    userspace_code_index_enabled: Optional[bool] = Field(
+        default=None,
+        description="Enable hidden per-workspace User Space code indexes.",
+    )
+    userspace_code_index_debounce_seconds: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=3600,
+        description="Seconds to debounce User Space code index dirty-path processing after the most recent change.",
+    )
+    userspace_code_index_reconcile_interval_seconds: Optional[int] = Field(
+        default=None,
+        ge=10,
+        le=86400,
+        description="Seconds between background reconciliations of persisted User Space code index dirty paths.",
+    )
+    userspace_code_index_max_attempts: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=20,
+        description="Maximum retry attempts for a failed User Space code index dirty path before it is ignored.",
     )
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
@@ -2078,6 +2126,72 @@ class FilesystemAnalysisJobResponse(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
     result: Optional[FilesystemAnalysisResult] = None
+
+
+class WorkspaceCodeIndexJobStatus(str, Enum):
+    """Status of a hidden User Space workspace code indexing job."""
+
+    PENDING = "pending"
+    INDEXING = "indexing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class WorkspaceCodeIndexJobPhase(str, Enum):
+    """Granular phase of a hidden User Space workspace code indexing job."""
+
+    COLLECTING = "collecting"
+    LOADING_FILES = "loading_files"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    INDEXING_SYMBOLS = "indexing_symbols"
+    FINALIZING = "finalizing"
+
+
+class WorkspaceCodeIndexJobResponse(BaseModel):
+    """Response for a hidden workspace code indexing job."""
+
+    id: str
+    workspace_id: str
+    workspace_name: str
+    index_name: str
+    status: WorkspaceCodeIndexJobStatus
+    phase: WorkspaceCodeIndexJobPhase = WorkspaceCodeIndexJobPhase.COLLECTING
+    total_files: int = 0
+    processed_files: int = 0
+    total_chunks: int = 0
+    processed_chunks: int = 0
+    current_file: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def progress_percent(self) -> float:
+        """Phase-aware progress for User Space code indexing jobs."""
+        if self.status == WorkspaceCodeIndexJobStatus.COMPLETED:
+            return 100.0
+        if self.status in (WorkspaceCodeIndexJobStatus.PENDING, WorkspaceCodeIndexJobStatus.FAILED):
+            return 0.0
+        if self.phase == WorkspaceCodeIndexJobPhase.COLLECTING:
+            return 0.0
+        if self.phase == WorkspaceCodeIndexJobPhase.LOADING_FILES:
+            if self.total_files > 0:
+                return (self.processed_files / self.total_files) * 70.0
+            return 0.0
+        if self.phase == WorkspaceCodeIndexJobPhase.CHUNKING:
+            return 75.0
+        if self.phase == WorkspaceCodeIndexJobPhase.EMBEDDING:
+            if self.total_chunks > 0:
+                return min(99.0, 80.0 + (self.processed_chunks / self.total_chunks) * 19.0)
+            return 80.0
+        if self.phase == WorkspaceCodeIndexJobPhase.INDEXING_SYMBOLS:
+            return 98.0
+        if self.phase == WorkspaceCodeIndexJobPhase.FINALIZING:
+            return 99.0
+        return 0.0
 
 
 class ToolGroup(BaseModel):

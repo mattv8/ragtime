@@ -30,6 +30,7 @@ import type {
   FilesystemIndexJob,
   SchemaIndexJob,
   PdmIndexJob,
+  UserSpaceCodeIndexJob,
   ConfigurationWarning,
   UserSpacePreviewWarning,
 } from '@/types';
@@ -226,6 +227,9 @@ export function App() {
 
   // PDM indexer state
   const [pdmJobs, setPdmJobs] = useState<PdmIndexJob[]>([]);
+
+  // Hidden User Space code index jobs
+  const [userspaceCodeJobs, setUserspaceCodeJobs] = useState<UserSpaceCodeIndexJob[]>([]);
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
@@ -666,6 +670,15 @@ export function App() {
     [loadPdmJobs],
   );
 
+  const loadUserSpaceCodeJobs = useCallback(async () => {
+    try {
+      const jobs = await api.listUserSpaceCodeIndexJobs();
+      setUserspaceCodeJobs(jobs);
+    } catch (err) {
+      console.warn('Failed to load User Space code index jobs:', err);
+    }
+  }, []);
+
   // Initial load for indexer data: only when indexer view is visible.
   useEffect(() => {
     if (currentUser && isAdmin && isIndexerView) {
@@ -674,6 +687,7 @@ export function App() {
       loadFilesystemJobs();
       loadSchemaJobs();
       loadPdmJobs();
+      loadUserSpaceCodeJobs();
     }
   }, [
     currentUser,
@@ -684,7 +698,25 @@ export function App() {
     loadFilesystemJobs,
     loadSchemaJobs,
     loadPdmJobs,
+    loadUserSpaceCodeJobs,
   ]);
+
+  // Auto-refresh only while hidden User Space code index jobs are active.
+  useEffect(() => {
+    if (!currentUser || !isAdmin || !isIndexerView) return;
+
+    const hasActiveUserSpaceCodeJob = userspaceCodeJobs.some(
+      (j) => j.status === 'pending' || j.status === 'indexing',
+    );
+
+    if (!hasActiveUserSpaceCodeJob) return;
+
+    const interval = setInterval(() => {
+      loadUserSpaceCodeJobs();
+    }, INDEXER_ACTIVE_POLL_MS);
+
+    return () => clearInterval(interval);
+  }, [currentUser, isAdmin, isIndexerView, userspaceCodeJobs, loadUserSpaceCodeJobs]);
 
   // Auto-refresh only while filesystem jobs are active.
   useEffect(() => {
@@ -1068,6 +1100,7 @@ export function App() {
                 filesystemJobs={filesystemJobs}
                 schemaJobs={schemaJobs}
                 pdmJobs={pdmJobs}
+                userspaceCodeJobs={userspaceCodeJobs}
                 loading={jobsLoading}
                 error={jobsError}
                 onJobsChanged={loadJobs}

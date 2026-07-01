@@ -237,6 +237,7 @@ from ragtime.userspace.subagent_service import (
     SUBAGENT_TOOL_NAME,
     subagent_service,
 )
+from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
 
@@ -8481,6 +8482,33 @@ class RAGComponents:
                 description="Brief description of why the code assay is needed",
             )
 
+        class SearchUserSpaceCodeInput(BaseModel):
+            workspace_id: Optional[str] = Field(
+                default=None,
+                description=("Optional target workspace ID for cross-workspace access. Omit to search this workspace's code index."),
+            )
+            query: str = Field(description="Natural-language or symbol query for the active workspace codebase.")
+            mode: Literal["semantic", "symbols", "hybrid"] = Field(
+                default="hybrid",
+                description="Search mode: semantic chunks, symbol names/signatures, or hybrid.",
+            )
+            max_results: int = Field(
+                default=8,
+                ge=1,
+                le=25,
+                description="Maximum code matches to return.",
+            )
+            max_chars_per_result: int = Field(
+                default=1200,
+                ge=200,
+                le=6000,
+                description="Maximum snippet characters per result.",
+            )
+            reason: str = Field(
+                default="",
+                description="Brief description of why workspace code search is needed",
+            )
+
         class ReadUserSpaceFileInput(BaseModel):
             class ReadEntryInput(BaseModel):
                 path: str = Field(description="Relative path from the workspace files root to read.")
@@ -9485,6 +9513,28 @@ class RAGComponents:
                 env_vars=env_var_items,
                 count=len(env_var_items),
             )
+
+        async def search_userspace_code(
+            query: str,
+            mode: Literal["semantic", "symbols", "hybrid"] = "hybrid",
+            max_results: int = 8,
+            max_chars_per_result: int = 1200,
+            reason: str = "",
+            workspace_id: Optional[str] = None,
+            **_: Any,
+        ) -> str:
+            del reason
+            target_ws, _target_uid = await _resolve_target_workspace(workspace_id, "read")
+            payload = await workspace_code_index_service.search_workspace_code(
+                workspace_id=target_ws,
+                query=query,
+                mode=mode,
+                max_results=max_results,
+                max_chars_per_result=max_chars_per_result,
+            )
+            if isinstance(payload, dict):
+                payload = {"tool": "search_userspace_code", **payload}
+            return json.dumps(payload, indent=2)
 
         async def discover_userspace_primitives(
             include_session: bool = True,
@@ -11981,6 +12031,15 @@ class RAGComponents:
                 args_schema=ListUserSpaceFilesInput,
             ),
             _create_userspace_tool(
+                coroutine=search_userspace_code,
+                name="search_userspace_code",
+                description=(
+                    "Hidden workspace-code retrieval tool. Search the active User Space workspace's canonical source files "
+                    "by semantic content and symbols before broad file reads. It never searches mounted external files or runtime mirrors."
+                ),
+                args_schema=SearchUserSpaceCodeInput,
+            ),
+            _create_userspace_tool(
                 coroutine=list_userspace_env_vars,
                 name="list_userspace_env_vars",
                 description=(
@@ -13178,9 +13237,7 @@ class RAGComponents:
 
         configured_model_identifiers = dedupe_subagent_model_ids(subagent_model_ids)
         if subagent_model_ids is None:
-            configured_model_identifiers = self._resolve_subagent_allowed_model_ids(
-                parent_model=parent_model or parent.model
-            )
+            configured_model_identifiers = self._resolve_subagent_allowed_model_ids(parent_model=parent_model or parent.model)
         model_id_set = set(configured_model_identifiers)
 
         class SpawnSubAgentSpecInput(BaseModel):
@@ -13229,12 +13286,8 @@ class RAGComponents:
                 if model and model not in model_id_set:
                     if configured_model_identifiers:
                         allowed_list = ", ".join(configured_model_identifiers)
-                        raise ToolException(
-                            f"Invalid subagent model: {model}. Use one of these exact model IDs: {allowed_list}"
-                        )
-                    raise ToolException(
-                        f"Invalid subagent model: {model}. No chat models are configured; omit `model` so the child inherits the parent model."
-                    )
+                        raise ToolException(f"Invalid subagent model: {model}. Use one of these exact model IDs: {allowed_list}")
+                    raise ToolException(f"Invalid subagent model: {model}. No chat models are configured; omit `model` so the child inherits the parent model.")
 
             return await subagent_service.spawn_subagents(
                 parent_conversation_id=parent_conversation_id,
@@ -13964,9 +14017,7 @@ class RAGComponents:
         parent_model: Optional[str],
     ) -> list[str]:
         """Return the exact model IDs a subagent override may use."""
-        allowed = dedupe_subagent_model_ids(
-            (self._app_settings or {}).get("allowed_chat_models")
-        )
+        allowed = dedupe_subagent_model_ids((self._app_settings or {}).get("allowed_chat_models"))
         if not allowed:
             allowed = dedupe_subagent_model_ids(
                 [

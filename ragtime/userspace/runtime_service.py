@@ -57,6 +57,7 @@ from ragtime.userspace.preview_probe import (
 )
 from ragtime.userspace.runtime_errors import RuntimeVersionConflictError
 from ragtime.userspace.service import userspace_service
+from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
 
@@ -2660,6 +2661,15 @@ class UserSpaceRuntimeService:
             [normalized_path],
         )
         await userspace_service.touch_workspace(workspace_id)
+        try:
+            await workspace_code_index_service.mark_dirty(workspace_id, normalized_path, "upsert")
+        except Exception:
+            logger.debug(
+                "Failed to mark workspace code index dirty for runtime write workspace=%s path=%s",
+                workspace_id,
+                normalized_path,
+                exc_info=True,
+            )
 
     async def runtime_fs_read(
         self,
@@ -2736,6 +2746,15 @@ class UserSpaceRuntimeService:
         session = await self.ensure_workspace_preview_session(workspace_id, user_id)
         await self._runtime_provider_delete_file(session.provider_session_id, normalized_path)
         await userspace_service.touch_workspace(workspace_id)
+        try:
+            await workspace_code_index_service.mark_dirty(workspace_id, normalized_path, "delete")
+        except Exception:
+            logger.debug(
+                "Failed to mark workspace code index dirty for runtime delete workspace=%s path=%s",
+                workspace_id,
+                normalized_path,
+                exc_info=True,
+            )
         await self._audit(
             workspace_id,
             "runtime_fs_delete",
@@ -3143,6 +3162,17 @@ class UserSpaceRuntimeService:
             )
 
         await userspace_service.touch_workspace(workspace_id)
+        try:
+            await workspace_code_index_service.mark_dirty(workspace_id, normalized_old, "delete")
+            await workspace_code_index_service.mark_dirty(workspace_id, normalized_new, "upsert")
+        except Exception:
+            logger.debug(
+                "Failed to mark workspace code index dirty for collab rename workspace=%s old_path=%s new_path=%s",
+                workspace_id,
+                normalized_old,
+                normalized_new,
+                exc_info=True,
+            )
         await self._audit(
             workspace_id,
             "collab_file_rename",
@@ -3185,6 +3215,15 @@ class UserSpaceRuntimeService:
         model = self._collab_doc_model(db)
         await model.delete_many(where={"workspaceId": workspace_id, "filePath": normalized_path})
         await userspace_service.touch_workspace(workspace_id)
+        try:
+            await workspace_code_index_service.mark_dirty(workspace_id, normalized_path, "delete")
+        except Exception:
+            logger.debug(
+                "Failed to mark workspace code index dirty for collab delete workspace=%s path=%s",
+                workspace_id,
+                normalized_path,
+                exc_info=True,
+            )
         await self._audit(
             workspace_id,
             "collab_file_delete",

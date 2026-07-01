@@ -785,6 +785,11 @@ export interface AppSettings {
   userspace_sqlite_import_max_bytes: number;
   userspace_primitive_upload_max_bytes: number;
   userspace_primitive_archive_max_entries: number;
+  // User Space Code Index Settings
+  userspace_code_index_enabled: boolean;
+  userspace_code_index_debounce_seconds: number;
+  userspace_code_index_reconcile_interval_seconds: number;
+  userspace_code_index_max_attempts: number;
   // Index Archive Extraction Limits
   archive_max_total_size_bytes: number;
   archive_max_file_count: number;
@@ -926,9 +931,65 @@ export interface UpdateSettingsRequest {
   userspace_sqlite_import_max_bytes?: number;
   userspace_primitive_upload_max_bytes?: number;
   userspace_primitive_archive_max_entries?: number;
+  userspace_code_index_enabled?: boolean;
+  userspace_code_index_debounce_seconds?: number;
+  userspace_code_index_reconcile_interval_seconds?: number;
+  userspace_code_index_max_attempts?: number;
   // Index Archive Extraction Limits
   archive_max_total_size_bytes?: number;
   archive_max_file_count?: number;
+}
+
+export interface UserSpaceCodeIndexAdminItem {
+  workspace_id: string;
+  workspace_name: string;
+  index_name: string;
+  status: string;
+  file_count: number;
+  chunk_count: number;
+  symbol_count: number;
+  dirty_path_count: number;
+  last_indexed_at: string | null;
+  last_reconciled_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type UserSpaceCodeIndexJobPhase =
+  | 'collecting'
+  | 'loading_files'
+  | 'chunking'
+  | 'embedding'
+  | 'indexing_symbols'
+  | 'finalizing';
+
+export interface UserSpaceCodeIndexJob {
+  id: string;
+  workspace_id: string;
+  workspace_name: string;
+  index_name: string;
+  status: 'pending' | 'indexing' | 'completed' | 'failed';
+  phase: UserSpaceCodeIndexJobPhase | null;
+  progress_percent: number;
+  total_files: number;
+  processed_files: number;
+  total_chunks: number;
+  processed_chunks: number;
+  current_file: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface UserSpaceCodeIndexAdminActionResponse {
+  workspace_id: string;
+  success: boolean;
+}
+
+export interface UserSpaceCodeIndexReconcileResponse {
+  scheduled_count: number;
 }
 
 // Ollama Connection Testing

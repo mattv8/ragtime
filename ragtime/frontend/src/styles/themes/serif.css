@@ -17,6 +17,7 @@
 [data-theme-pack='serif'] {
   --font-heading: var(--font-serif);
   --font-body: var(--font-serif);
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
 
   --radius-xs: 1px;
   --radius-sm: 2px;

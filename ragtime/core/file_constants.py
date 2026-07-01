@@ -463,6 +463,7 @@ LANG_MAPPING: dict[str, str | None] = {
     ".mk": "make",
     ".dockerfile": "dockerfile",
     # Data formats
+    ".json": None,
     ".jsonl": "json",
     ".ndjson": "json",
     # Documentation
@@ -552,6 +553,7 @@ LANG_MAPPING: dict[str, str | None] = {
     "gemfile": "ruby",
     "gemspec": "ruby",
     "ipynb": "json",
+    "json": None,
     "jsonl": "json",
     "textproto": "proto",
     # Markup

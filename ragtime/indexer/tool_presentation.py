@@ -8,7 +8,7 @@ CONVERSATION_TOOL_RERUN_KIND = "conversation_tool"
 CHAT_DIAGNOSTIC_RERUN_KIND = "chat_diagnostic"
 TERMINAL_CONNECTION_TOOL_TYPES = frozenset({"ssh_shell"})
 HIDDEN_TOOL_VISIBILITY = "hidden"
-HIDDEN_PRESENTATION_TOOL_NAMES = frozenset({"create_download_link"})
+HIDDEN_PRESENTATION_TOOL_NAMES = frozenset({"create_download_link", "search_userspace_code"})
 
 
 def _string_value(value: Any) -> str:

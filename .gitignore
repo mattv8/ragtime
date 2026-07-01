@@ -98,7 +98,9 @@ ragtime/indexer/static/dist/
 
 # Devtools
 .playwright-mcp/
+
+# Agent session scratch files
 .swarm/
 .opencode/
 .omo/
-.ruff_cache
+.ruff_cache/

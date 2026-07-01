@@ -284,6 +284,10 @@ function Example(props: Props) {
         # falls back to recursive chunking at paragraph/sentence boundaries.
         self.assertTrue(chunking._is_extension_mapped_to_plain_text(".pdf"))
         self.assertTrue(chunking._is_extension_mapped_to_plain_text("pdf"))
+        # Large JSON lockfiles can wedge the AST detector; treat JSON as
+        # structured text and split recursively instead.
+        self.assertTrue(chunking._is_extension_mapped_to_plain_text(".json"))
+        self.assertTrue(chunking._is_extension_mapped_to_plain_text("json"))
         # .txt / .csv have dotted entries; both forms resolve.
         self.assertTrue(chunking._is_extension_mapped_to_plain_text(".txt"))
         self.assertTrue(chunking._is_extension_mapped_to_plain_text("txt"))

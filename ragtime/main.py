@@ -101,6 +101,7 @@ from ragtime.userspace.share_auth import (
     set_share_auth_cookie,
     share_auth_token_from_request,
 )
+from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 # Import indexer routes (always available now that it's part of ragtime)
 # Import MCP routes and transport for HTTP API access
@@ -234,11 +235,13 @@ async def lifespan(app: FastAPI):
     userspace_service.schedule_workspace_sqlite_import_recovery()
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
+    await workspace_code_index_service.start()
     # Start MCP session manager (enable/disable checked at request time)
     async with mcp_lifespan_manager():
         yield
 
     # Cleanup - cancel the startup Git policy reconciliation task
+    await workspace_code_index_service.stop()
     await userspace_service.shutdown_git_drift_reconciliation()
     await userspace_service.shutdown_workspace_mount_watch()
     await userspace_service.shutdown_workspace_scm_watch()

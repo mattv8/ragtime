@@ -2,7 +2,13 @@ import { useEffect, useState } from 'react';
 import { ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { api } from '@/api';
 import { formatElapsedTime } from '@/utils';
-import type { IndexJob, FilesystemIndexJob, SchemaIndexJob, PdmIndexJob } from '@/types';
+import type {
+  IndexJob,
+  FilesystemIndexJob,
+  SchemaIndexJob,
+  PdmIndexJob,
+  UserSpaceCodeIndexJob,
+} from '@/types';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { useToast, ToastContainer } from './shared/Toast';
 
@@ -11,6 +17,7 @@ interface JobsTableProps {
   filesystemJobs?: FilesystemIndexJob[];
   schemaJobs?: SchemaIndexJob[];
   pdmJobs?: PdmIndexJob[];
+  userspaceCodeJobs?: UserSpaceCodeIndexJob[];
   loading: boolean;
   error: string | null;
   onJobsChanged?: () => void;
@@ -26,7 +33,7 @@ interface JobsTableProps {
 type UnifiedJob = {
   id: string;
   name: string;
-  type: 'document' | 'filesystem' | 'schema' | 'pdm';
+  type: 'document' | 'filesystem' | 'schema' | 'pdm' | 'userspace_code';
   status: string;
   progress: number;
   totalFiles: number;
@@ -52,13 +59,21 @@ type UnifiedJob = {
   totalDocuments?: number;
   processedDocuments?: number;
   skippedDocuments?: number;
+  // User Space code-specific fields
+  currentFile?: string | null;
 };
+
+type ActionableJobType = 'document' | 'filesystem' | 'schema' | 'pdm';
 
 const RECENT_LIMIT = 5;
 const TERMINAL_JOB_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function isTerminalJobStatus(status: string): boolean {
   return TERMINAL_JOB_STATUSES.has(status);
+}
+
+function isActionableJobType(type: UnifiedJob['type']): type is ActionableJobType {
+  return type !== 'userspace_code';
 }
 
 function getCommonIndexingJobPhase(
@@ -353,6 +368,60 @@ function toUnifiedPdmJob(job: PdmIndexJob): UnifiedJob {
   };
 }
 
+function getUserSpaceCodePhaseLabel(phase: string | null | undefined): string {
+  switch (phase) {
+    case 'collecting':
+      return 'Collecting files';
+    case 'loading_files':
+      return 'Loading files';
+    case 'chunking':
+      return 'Chunking';
+    case 'embedding':
+      return 'Embedding';
+    case 'indexing_symbols':
+      return 'Indexing symbols';
+    case 'finalizing':
+      return 'Finalizing';
+    default:
+      return 'Indexing workspace files';
+  }
+}
+
+function clampProgressPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function toUnifiedUserSpaceCodeJob(job: UserSpaceCodeIndexJob): UnifiedJob {
+  const commonPhase = getCommonIndexingJobPhase(job.status);
+  let phase = commonPhase?.phase ?? '';
+  let progress = commonPhase?.progress ?? clampProgressPercent(job.progress_percent);
+
+  if (!commonPhase && job.status === 'indexing') {
+    progress = clampProgressPercent(job.progress_percent);
+    phase = getUserSpaceCodePhaseLabel(job.phase);
+  }
+
+  return {
+    id: job.id,
+    name: job.workspace_name || job.index_name,
+    type: 'userspace_code',
+    status: job.status,
+    progress,
+    totalFiles: job.total_files,
+    processedFiles: job.processed_files,
+    skippedFiles: 0,
+    totalChunks: job.total_chunks,
+    processedChunks: job.processed_chunks,
+    errorMessage: job.error_message,
+    createdAt: job.created_at,
+    startedAt: job.started_at,
+    completedAt: job.completed_at,
+    phase,
+    currentFile: job.current_file,
+  };
+}
+
 function getElapsedDuration(job: UnifiedJob, nowMs: number): string {
   const startTimestamp = job.startedAt ?? job.createdAt;
   const startMs = new Date(startTimestamp).getTime();
@@ -377,6 +446,7 @@ export function JobsTable({
   filesystemJobs = [],
   schemaJobs = [],
   pdmJobs = [],
+  userspaceCodeJobs = [],
   loading,
   error,
   onJobsChanged,
@@ -499,6 +569,7 @@ export function JobsTable({
     ...filesystemJobs.map(toUnifiedFilesystemJob),
     ...schemaJobs.map(toUnifiedSchemaJob),
     ...pdmJobs.map(toUnifiedPdmJob),
+    ...userspaceCodeJobs.map(toUnifiedUserSpaceCodeJob),
   ];
 
   // Filter and sort
@@ -692,6 +763,7 @@ export function JobsTable({
                     job.status === 'pending' ||
                     job.status === 'processing' ||
                     job.status === 'indexing';
+                  const actionableJobType = isActionableJobType(job.type) ? job.type : null;
 
                   return (
                     <tr key={`${job.type}-${job.id}`}>
@@ -703,7 +775,9 @@ export function JobsTable({
                               ? 'Filesystem'
                               : job.type === 'pdm'
                                 ? 'PDM'
-                                : 'Schema'}
+                                : job.type === 'userspace_code'
+                                  ? 'User Space Code'
+                                  : 'Schema'}
                         </span>
                       </td>
                       <td data-label="Name" title={job.name}>
@@ -781,6 +855,27 @@ export function JobsTable({
                                 ) : job.type === 'pdm' ? (
                                   // PDM jobs: phase already shows doc progress, just show chunk count
                                   <>{job.totalChunks.toLocaleString()} chunks</>
+                                ) : job.type === 'userspace_code' ? (
+                                  // User Space code jobs: show chunk progress during chunk-heavy
+                                  // phases, files/current file otherwise
+                                  ['Embedding', 'Indexing symbols', 'Finalizing'].includes(
+                                    job.phase,
+                                  ) && job.totalChunks > 0 ? (
+                                    <>
+                                      {job.processedChunks.toLocaleString()}/
+                                      {job.totalChunks.toLocaleString()} chunks
+                                    </>
+                                  ) : job.currentFile ? (
+                                    <>
+                                      {job.processedFiles.toLocaleString()}/
+                                      {job.totalFiles.toLocaleString()} files ({job.currentFile})
+                                    </>
+                                  ) : (
+                                    <>
+                                      {job.processedFiles.toLocaleString()}/
+                                      {job.totalFiles.toLocaleString()} files
+                                    </>
+                                  )
                                 ) : // Document jobs: show appropriate progress based on phase
                                 job.phase === 'Embedding' ? (
                                   <>
@@ -822,6 +917,10 @@ export function JobsTable({
                                   <>No files to index</>
                                 )}
                               </>
+                            ) : job.type === 'userspace_code' ? (
+                              <>
+                                {job.totalFiles} files, {job.totalChunks} chunks
+                              </>
                             ) : (
                               <>
                                 {job.totalFiles} files, {job.totalChunks} chunks
@@ -847,12 +946,13 @@ export function JobsTable({
                           ) : (
                             <>
                               {isActive &&
+                                actionableJobType &&
                                 (cancelConfirmId === job.id ? (
                                   <div style={{ display: 'flex', gap: '4px' }}>
                                     <button
                                       className="action-btn action-btn-confirm"
                                       onClick={() =>
-                                        confirmCancel(job.id, job.type, job.toolConfigId)
+                                        confirmCancel(job.id, actionableJobType, job.toolConfigId)
                                       }
                                       title="Confirm cancel"
                                     >
@@ -876,12 +976,13 @@ export function JobsTable({
                                   </button>
                                 ))}
                               {(job.status === 'failed' || job.status === 'cancelled') &&
+                                actionableJobType &&
                                 (retryConfirmId === job.id ? (
                                   <div style={{ display: 'flex', gap: '4px' }}>
                                     <button
                                       className="action-btn action-btn-confirm"
                                       onClick={() =>
-                                        confirmRetry(job.id, job.type, job.toolConfigId)
+                                        confirmRetry(job.id, actionableJobType, job.toolConfigId)
                                       }
                                       title="Confirm retry"
                                     >

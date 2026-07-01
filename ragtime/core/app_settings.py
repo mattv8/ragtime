@@ -52,6 +52,10 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
     DEFAULT_TOOL_OUTPUT_MODE,
+    DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+    DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+    DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+    DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
     DEFAULT_USERSPACE_DUPLICATE_COPY_CHATS,
     DEFAULT_USERSPACE_DUPLICATE_COPY_FILES,
     DEFAULT_USERSPACE_DUPLICATE_COPY_METADATA,
@@ -537,6 +541,26 @@ class SettingsCache:
                     "userspaceMountSyncTimezone",
                     None,
                 ),
+                "userspace_code_index_enabled": getattr(
+                    prisma_settings,
+                    "userspaceCodeIndexEnabled",
+                    DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+                ),
+                "userspace_code_index_debounce_seconds": getattr(
+                    prisma_settings,
+                    "userspaceCodeIndexDebounceSeconds",
+                    DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+                ),
+                "userspace_code_index_reconcile_interval_seconds": getattr(
+                    prisma_settings,
+                    "userspaceCodeIndexReconcileIntervalSeconds",
+                    DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
+                ),
+                "userspace_code_index_max_attempts": getattr(
+                    prisma_settings,
+                    "userspaceCodeIndexMaxAttempts",
+                    DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+                ),
             }
             return self._settings
         except Exception as e:
@@ -642,6 +666,10 @@ class SettingsCache:
                 "userspace_mount_sync_interval_seconds": DEFAULT_USERSPACE_MOUNT_SYNC_INTERVAL_SECONDS,
                 "userspace_mount_sync_start_minute": None,
                 "userspace_mount_sync_timezone": None,
+                "userspace_code_index_enabled": DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+                "userspace_code_index_debounce_seconds": DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+                "userspace_code_index_reconcile_interval_seconds": DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
+                "userspace_code_index_max_attempts": DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
             }
 
     async def get_tool_configs(self) -> List[dict]:

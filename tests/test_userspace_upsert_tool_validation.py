@@ -142,6 +142,30 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(should_truncate_stream_display_output("generic_tool", output))
 
+    async def test_search_userspace_code_tool_delegates_to_workspace_index_service(self) -> None:
+        tool = await self._tool("search_userspace_code")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        with mock.patch(
+            "ragtime.rag.components.workspace_code_index_service.search_workspace_code",
+            new_callable=mock.AsyncMock,
+            return_value={"status": "ready", "results": [{"path": "src/app.py"}]},
+        ) as search_workspace_code:
+            raw = await coroutine(query="where is startup configured?", max_results=3)
+
+        payload = json.loads(raw)
+        self.assertEqual(payload["tool"], "search_userspace_code")
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["results"], [{"path": "src/app.py"}])
+        search_workspace_code.assert_awaited_once_with(
+            workspace_id="workspace-1",
+            query="where is startup configured?",
+            mode="hybrid",
+            max_results=3,
+            max_chars_per_result=1200,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

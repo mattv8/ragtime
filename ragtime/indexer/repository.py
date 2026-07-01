@@ -68,6 +68,10 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
     DEFAULT_TOOL_OUTPUT_MODE,
+    DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+    DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+    DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+    DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
     DEFAULT_USERSPACE_DUPLICATE_COPY_CHATS,
     DEFAULT_USERSPACE_DUPLICATE_COPY_FILES,
     DEFAULT_USERSPACE_DUPLICATE_COPY_METADATA,
@@ -1403,6 +1407,26 @@ class IndexerRepository:
                 "userspaceMountSyncTimezone",
                 None,
             ),
+            userspace_code_index_enabled=getattr(
+                settings,
+                "userspaceCodeIndexEnabled",
+                DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
+            ),
+            userspace_code_index_debounce_seconds=getattr(
+                settings,
+                "userspaceCodeIndexDebounceSeconds",
+                DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
+            ),
+            userspace_code_index_reconcile_interval_seconds=getattr(
+                settings,
+                "userspaceCodeIndexReconcileIntervalSeconds",
+                DEFAULT_USERSPACE_CODE_INDEX_RECONCILE_INTERVAL_SECONDS,
+            ),
+            userspace_code_index_max_attempts=getattr(
+                settings,
+                "userspaceCodeIndexMaxAttempts",
+                DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
+            ),
             userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(getattr(settings, "userspaceSqliteImportMaxBytes", None)),
             userspace_primitive_upload_max_bytes=clamp_userspace_primitive_upload_max_bytes(getattr(settings, "userspacePrimitiveUploadMaxBytes", None)),
             userspace_primitive_archive_max_entries=clamp_userspace_primitive_archive_max_entries(
@@ -1551,6 +1575,10 @@ class IndexerRepository:
             "userspace_mount_sync_interval_seconds": "userspaceMountSyncIntervalSeconds",
             "userspace_mount_sync_start_minute": "userspaceMountSyncStartMinute",
             "userspace_mount_sync_timezone": "userspaceMountSyncTimezone",
+            "userspace_code_index_enabled": "userspaceCodeIndexEnabled",
+            "userspace_code_index_debounce_seconds": "userspaceCodeIndexDebounceSeconds",
+            "userspace_code_index_reconcile_interval_seconds": "userspaceCodeIndexReconcileIntervalSeconds",
+            "userspace_code_index_max_attempts": "userspaceCodeIndexMaxAttempts",
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
             "userspace_primitive_upload_max_bytes": "userspacePrimitiveUploadMaxBytes",
             "userspace_primitive_archive_max_entries": "userspacePrimitiveArchiveMaxEntries",
@@ -4932,19 +4960,27 @@ class IndexerRepository:
                         valid_pdm_indexes.add(f"pdm_{tool_safe_name}")
                     valid_pdm_indexes.add(f"pdm_{tool.id}")
 
-            # Clean up orphaned filesystem embeddings
+            # Clean up orphaned filesystem embeddings. Hidden User Space code
+            # indexes intentionally have no ToolConfig, so preserve them by prefix.
+            from ragtime.userspace.workspace_code_index_service import USERSPACE_WORKSPACE_CODE_INDEX_PREFIX
+
+            userspace_code_index_like = f"{USERSPACE_WORKSPACE_CODE_INDEX_PREFIX}%"
             if valid_filesystem_indexes:
                 valid_list = ", ".join(f"'{n}'" for n in valid_filesystem_indexes)
-                result = await db.execute_raw(f"DELETE FROM filesystem_embeddings WHERE index_name NOT IN ({valid_list})")
+                result = await db.execute_raw(
+                    f"DELETE FROM filesystem_embeddings WHERE index_name NOT IN ({valid_list}) AND index_name NOT LIKE '{userspace_code_index_like}'"
+                )
                 deleted["filesystem_embeddings"] = result if isinstance(result, int) else 0
 
-                result = await db.execute_raw(f"DELETE FROM filesystem_file_metadata WHERE index_name NOT IN ({valid_list})")
+                result = await db.execute_raw(
+                    f"DELETE FROM filesystem_file_metadata WHERE index_name NOT IN ({valid_list}) AND index_name NOT LIKE '{userspace_code_index_like}'"
+                )
                 deleted["filesystem_file_metadata"] = result if isinstance(result, int) else 0
             else:
                 # No valid indexes - delete all orphans (only if tables have data)
-                result = await db.execute_raw("DELETE FROM filesystem_embeddings")
+                result = await db.execute_raw(f"DELETE FROM filesystem_embeddings WHERE index_name NOT LIKE '{userspace_code_index_like}'")
                 deleted["filesystem_embeddings"] = result if isinstance(result, int) else 0
-                result = await db.execute_raw("DELETE FROM filesystem_file_metadata")
+                result = await db.execute_raw(f"DELETE FROM filesystem_file_metadata WHERE index_name NOT LIKE '{userspace_code_index_like}'")
                 deleted["filesystem_file_metadata"] = result if isinstance(result, int) else 0
 
             # Clean up orphaned schema embeddings

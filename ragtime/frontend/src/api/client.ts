@@ -84,6 +84,10 @@ import type {
   DeleteUserSpaceWorkspaceEnvVarResponse,
   UpsertUserSpaceGlobalEnvVarRequest,
   DeleteUserSpaceGlobalEnvVarResponse,
+  UserSpaceCodeIndexAdminActionResponse,
+  UserSpaceCodeIndexAdminItem,
+  UserSpaceCodeIndexJob,
+  UserSpaceCodeIndexReconcileResponse,
   UserSpaceObjectStorageConfig,
   CreateUserSpaceObjectStorageBucketRequest,
   UpdateUserSpaceObjectStorageBucketRequest,
@@ -3505,6 +3509,47 @@ export const api = {
       },
     );
     return handleResponse<DeleteUserSpaceGlobalEnvVarResponse>(response);
+  },
+
+  async listUserSpaceCodeIndexes(): Promise<UserSpaceCodeIndexAdminItem[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/code-indexes`);
+    return handleResponse<UserSpaceCodeIndexAdminItem[]>(response);
+  },
+
+  async listUserSpaceCodeIndexJobs(): Promise<UserSpaceCodeIndexJob[]> {
+    const response = await apiFetch(`${API_BASE}/userspace/code-indexes/jobs`);
+    return handleResponse<UserSpaceCodeIndexJob[]>(response);
+  },
+
+  async reindexUserSpaceCodeIndex(
+    workspaceId: string,
+  ): Promise<UserSpaceCodeIndexAdminActionResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/code-indexes/${encodeURIComponent(workspaceId)}/reindex`,
+      {
+        method: 'POST',
+      },
+    );
+    return handleResponse<UserSpaceCodeIndexAdminActionResponse>(response);
+  },
+
+  async deleteUserSpaceCodeIndex(
+    workspaceId: string,
+  ): Promise<UserSpaceCodeIndexAdminActionResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/code-indexes/${encodeURIComponent(workspaceId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+    return handleResponse<UserSpaceCodeIndexAdminActionResponse>(response);
+  },
+
+  async reconcileUserSpaceCodeIndexes(): Promise<UserSpaceCodeIndexReconcileResponse> {
+    const response = await apiFetch(`${API_BASE}/userspace/code-indexes/reconcile-now`, {
+      method: 'POST',
+    });
+    return handleResponse<UserSpaceCodeIndexReconcileResponse>(response);
   },
 
   async getLatestUserSpaceRuntimeRestartTask(): Promise<UserSpaceRuntimeRestartBatchTask> {

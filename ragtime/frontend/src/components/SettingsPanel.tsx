@@ -32,6 +32,7 @@ import { OllamaConnectionForm } from './OllamaConnectionForm';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { Popover } from './Popover';
 import { InlineCopyButton } from './shared/InlineCopyButton';
+import { UserSpaceCodeIndexesModal } from './shared/UserSpaceCodeIndexesModal';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
@@ -55,7 +56,6 @@ import {
 
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import {
-  buildUserSpacePreviewSandboxAttribute,
   getUserSpacePreviewSandboxFlagValues,
   normalizeUserSpacePreviewSandboxFlags,
 } from '@/utils/userspacePreview/sandbox';
@@ -2022,6 +2022,10 @@ export function SettingsPanel({
         userspace_sqlite_import_max_bytes: data.userspace_sqlite_import_max_bytes,
         userspace_primitive_upload_max_bytes: data.userspace_primitive_upload_max_bytes,
         userspace_primitive_archive_max_entries: data.userspace_primitive_archive_max_entries,
+        userspace_code_index_debounce_seconds: data.userspace_code_index_debounce_seconds,
+        userspace_code_index_reconcile_interval_seconds:
+          data.userspace_code_index_reconcile_interval_seconds,
+        userspace_code_index_max_attempts: data.userspace_code_index_max_attempts,
         archive_max_total_size_bytes: data.archive_max_total_size_bytes,
         archive_max_file_count: data.archive_max_file_count,
 
@@ -2839,6 +2843,7 @@ export function SettingsPanel({
   // OCR Configuration
   const [userspaceSaving, setUserspaceSaving] = useState(false);
   const [showSandboxModal, setShowSandboxModal] = useState(false);
+  const [showCodeIndexesModal, setShowCodeIndexesModal] = useState(false);
   const [showGlobalEnvVarsModal, setShowGlobalEnvVarsModal] = useState(false);
   const [globalEnvVars, setGlobalEnvVars] = useState<UserSpaceWorkspaceEnvVar[]>([]);
   const [globalEnvVarsLoading, setGlobalEnvVarsLoading] = useState(false);
@@ -3019,11 +3024,6 @@ export function SettingsPanel({
     userspacePreviewSettings,
   ]);
 
-  const userspacePreviewSandboxAttribute = useMemo(
-    () => buildUserSpacePreviewSandboxAttribute(effectiveUserSpacePreviewSandboxFlags),
-    [effectiveUserSpacePreviewSandboxFlags],
-  );
-
   const setUserSpacePreviewSandboxFlags = useCallback(
     (flags: string[]) => {
       const fallbackFlags = userspacePreviewSettings?.userspace_preview_sandbox_default_flags ?? [];
@@ -3076,7 +3076,7 @@ export function SettingsPanel({
     } finally {
       setUserspaceSaving(false);
     }
-  }, [effectiveUserSpacePreviewSandboxFlags, toast]);
+  }, [effectiveUserSpacePreviewSandboxFlags, onSettingsSaved, toast]);
 
   const [staleBranchSaving, setStaleBranchSaving] = useState(false);
   const handleSaveStaleBranchThreshold = useCallback(async () => {
@@ -3098,6 +3098,10 @@ export function SettingsPanel({
         userspace_sqlite_import_max_bytes: formData.userspace_sqlite_import_max_bytes,
         userspace_primitive_upload_max_bytes: formData.userspace_primitive_upload_max_bytes,
         userspace_primitive_archive_max_entries: formData.userspace_primitive_archive_max_entries,
+        userspace_code_index_debounce_seconds: formData.userspace_code_index_debounce_seconds,
+        userspace_code_index_reconcile_interval_seconds:
+          formData.userspace_code_index_reconcile_interval_seconds,
+        userspace_code_index_max_attempts: formData.userspace_code_index_max_attempts,
         http_proxy_safe_timeout_seconds: formData.http_proxy_safe_timeout_seconds,
       });
       setSettings(updated);
@@ -3115,6 +3119,10 @@ export function SettingsPanel({
         userspace_sqlite_import_max_bytes: updated.userspace_sqlite_import_max_bytes,
         userspace_primitive_upload_max_bytes: updated.userspace_primitive_upload_max_bytes,
         userspace_primitive_archive_max_entries: updated.userspace_primitive_archive_max_entries,
+        userspace_code_index_debounce_seconds: updated.userspace_code_index_debounce_seconds,
+        userspace_code_index_reconcile_interval_seconds:
+          updated.userspace_code_index_reconcile_interval_seconds,
+        userspace_code_index_max_attempts: updated.userspace_code_index_max_attempts,
         http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
       await onSettingsSaved?.();
@@ -3137,7 +3145,11 @@ export function SettingsPanel({
     formData.userspace_sqlite_import_max_bytes,
     formData.userspace_primitive_upload_max_bytes,
     formData.userspace_primitive_archive_max_entries,
+    formData.userspace_code_index_debounce_seconds,
+    formData.userspace_code_index_reconcile_interval_seconds,
+    formData.userspace_code_index_max_attempts,
     formData.http_proxy_safe_timeout_seconds,
+    onSettingsSaved,
   ]);
 
   const loadGlobalEnvVars = useCallback(async () => {
@@ -8055,18 +8067,28 @@ export function SettingsPanel({
                 Control which HTML iframe sandbox flags are granted to User Space previews.
               </p>
               <div className="form-group">
-                <p className="field-help">
-                  <strong>{effectiveUserSpacePreviewSandboxFlags.length}</strong> of{' '}
-                  {(userspacePreviewSettings?.userspace_preview_sandbox_flag_options ?? []).length}{' '}
-                  sandbox flags enabled. Sandbox attribute:{' '}
-                  <code>{userspacePreviewSandboxAttribute || '(empty)'}</code>
-                </p>
                 <button
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => setShowSandboxModal(true)}
                 >
                   Configure Sandbox Flags
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h4 style={{ margin: '0 0 8px' }}>Workspace Code Indexes</h4>
+              <p className="fieldset-help" style={{ marginBottom: 12 }}>
+                Inspect and manage per-workspace code indexes used by User Space agents.
+              </p>
+              <div className="form-group">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowCodeIndexesModal(true)}
+                >
+                  Manage Code Indexes
                 </button>
               </div>
             </div>
@@ -8512,6 +8534,83 @@ export function SettingsPanel({
                 })()}
               </div>
             </div>
+
+            <div className="form-row">
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>User Space Code Index Debounce</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Delay after workspace file writes before scheduling a hidden code-index update.
+                </p>
+                <input
+                  type="number"
+                  min="0"
+                  max="3600"
+                  step="1"
+                  value={
+                    formData.userspace_code_index_debounce_seconds ??
+                    settings?.userspace_code_index_debounce_seconds ??
+                    2
+                  }
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      userspace_code_index_debounce_seconds: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <p className="field-help">Range: 0 to 3600 seconds. Default: 2 seconds.</p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>User Space Code Index Reconcile Interval</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Background interval for recovering persisted dirty workspace code-index rows.
+                </p>
+                <input
+                  type="number"
+                  min="10"
+                  max="86400"
+                  step="1"
+                  value={
+                    formData.userspace_code_index_reconcile_interval_seconds ??
+                    settings?.userspace_code_index_reconcile_interval_seconds ??
+                    300
+                  }
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      userspace_code_index_reconcile_interval_seconds: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <p className="field-help">Range: 10 to 86400 seconds. Default: 300 seconds.</p>
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>User Space Code Index Max Attempts</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Retry cap for a dirty path before leaving its last error visible to admins.
+                </p>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  step="1"
+                  value={
+                    formData.userspace_code_index_max_attempts ??
+                    settings?.userspace_code_index_max_attempts ??
+                    3
+                  }
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      userspace_code_index_max_attempts: parseInt(e.target.value, 10),
+                    })
+                  }
+                />
+                <p className="field-help">Range: 1 to 20 attempts. Default: 3 attempts.</p>
+              </div>
+            </div>
           </details>
 
           <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
@@ -8703,6 +8802,11 @@ export function SettingsPanel({
         onCreateEnvVar={handleCreateGlobalEnvVar}
         onUpdateEnvVar={handleUpdateGlobalEnvVar}
         onDeleteEnvVar={handleDeleteGlobalEnvVar}
+      />
+
+      <UserSpaceCodeIndexesModal
+        isOpen={showCodeIndexesModal}
+        onClose={() => setShowCodeIndexesModal(false)}
       />
 
       {/* MCP Routes Panel Modal */}

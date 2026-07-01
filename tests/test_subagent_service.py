@@ -805,7 +805,10 @@ class SubAgentToolGatingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(tool)
         assert tool is not None
-        schema_text = json.dumps(tool.args_schema.model_json_schema())
+        args_schema = tool.args_schema
+        assert args_schema is not None
+        assert not isinstance(args_schema, dict)
+        schema_text = json.dumps(args_schema.model_json_schema())
         self.assertIn("Use one of these exact model IDs", schema_text)
         self.assertIn("openai::gpt-5.4-mini", schema_text)
         self.assertIn("openrouter::moonshotai/kimi-k2.6", schema_text)
@@ -830,9 +833,11 @@ class SubAgentToolGatingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(tool)
         assert tool is not None
+        coroutine = tool.coroutine
+        assert coroutine is not None
         with mock.patch("ragtime.rag.components.subagent_service.spawn_subagents", mock.AsyncMock(return_value="{}")):
             with self.assertRaisesRegex(ToolException, "Invalid subagent model") as ctx:
-                await tool.coroutine(
+                await coroutine(
                     subagents=[
                         {
                             "name": "Researcher",
@@ -863,9 +868,11 @@ class SubAgentToolGatingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(tool)
         assert tool is not None
+        coroutine = tool.coroutine
+        assert coroutine is not None
         spawn_mock = mock.AsyncMock(return_value='{"subagents": []}')
         with mock.patch("ragtime.rag.components.subagent_service.spawn_subagents", spawn_mock):
-            result = await tool.coroutine(
+            result = await coroutine(
                 subagents=[
                     {
                         "name": "Researcher",

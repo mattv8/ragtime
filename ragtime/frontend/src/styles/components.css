@@ -5452,6 +5452,10 @@ textarea {
   background: var(--color-warning-light);
   color: var(--color-warning);
 }
+.badge.type-userspace_code {
+  background: var(--color-info-light);
+  color: var(--color-info);
+}
 
 .badge.clickable {
   cursor: pointer;
