@@ -186,6 +186,7 @@ from ragtime.rag.prompts import (
     build_current_user_prompt_fragment,
     build_current_user_turn_reminder_line,
     build_index_system_prompt,
+    build_subagent_model_guidance_prompt,
     build_tool_system_prompt,
     build_userspace_entrypoint_nudge,
     build_userspace_mode_prompt_addition,
@@ -194,6 +195,7 @@ from ragtime.rag.prompts import (
     build_userspace_turn_reminder,
     build_userspace_turn_reminder_with_env_vars,
     build_workspace_continuity_context,
+    dedupe_subagent_model_ids,
 )
 from ragtime.rag.userspace_window_validator import find_cross_origin_window_access
 from ragtime.tools import get_all_tools, get_enabled_tools
@@ -13161,6 +13163,7 @@ class RAGComponents:
         blocked_tool_names: set[str],
         disabled_builtin_tool_ids: Optional[set[str]],
         current_time_context: Optional[dict[str, Any]],
+        subagent_model_ids: Optional[list[str]] = None,
     ) -> Optional[StructuredTool]:
         if SUBAGENT_TOOL_NAME in blocked_tool_names:
             return None
@@ -13172,6 +13175,13 @@ class RAGComponents:
         parent = await repository.get_conversation(parent_conversation_id)
         if not parent or parent.parent_conversation_id or not parent.subagents_enabled:
             return None
+
+        configured_model_identifiers = dedupe_subagent_model_ids(subagent_model_ids)
+        if subagent_model_ids is None:
+            configured_model_identifiers = self._resolve_subagent_allowed_model_ids(
+                parent_model=parent_model or parent.model
+            )
+        model_id_set = set(configured_model_identifiers)
 
         class SpawnSubAgentSpecInput(BaseModel):
             name: str = Field(description="Short display name for this subagent, e.g. 'API worker' or 'Reviewer'.")
@@ -13190,28 +13200,19 @@ class RAGComponents:
             )
             model: Optional[str] = Field(
                 default=None,
-                description="Optional model override in provider::model format. Must be one of the configured available chat models.",
+                description=(
+                    "Optional model override in provider::model format. "
+                    + (
+                        f"Use one of these exact model IDs: {', '.join(configured_model_identifiers)}. Omit `model` when no override fits."
+                        if configured_model_identifiers
+                        else "No chat models are configured; omit `model` so the child inherits the parent model."
+                    )
+                ),
             )
 
         class SpawnSubAgentsInput(BaseModel):
             subagents: list[SpawnSubAgentSpecInput] = Field(min_length=1, max_length=6, description="Between 1 and 6 subagents to run concurrently.")
             reason: str = Field(default="", description="Brief description of why these subagents are being spawned.")
-
-        configured_model_identifiers = [
-            str(identifier or "") for identifier in (self._app_settings or {}).get("allowed_chat_models") or [] if str(identifier or "").strip()
-        ]
-        if not configured_model_identifiers:
-            configured_model_identifiers = [
-                str(parent_model or parent.model or ""),
-                str((self._app_settings or {}).get("default_chat_model") or ""),
-                str((self._app_settings or {}).get("llm_model") or ""),
-            ]
-        allowed_model_keys = {
-            variant
-            for identifier in configured_model_identifiers
-            if str(identifier or "").strip()
-            for variant in self._model_key_variants_for_subagent_override(identifier)
-        }
 
         async def spawn_subagents(subagents: list[Any], reason: str = "") -> str:
             del reason
@@ -13225,9 +13226,15 @@ class RAGComponents:
 
             for spec in raw_specs:
                 model = str(spec.get("model") or "").strip()
-                if model and self._model_key_variants_for_subagent_override(model).isdisjoint(allowed_model_keys):
-                    allowed_list = ", ".join(sorted(allowed_model_keys)) or "none configured"
-                    raise ToolException(f"Subagent model is not available for chat: {model}. Allowed models: {allowed_list}")
+                if model and model not in model_id_set:
+                    if configured_model_identifiers:
+                        allowed_list = ", ".join(configured_model_identifiers)
+                        raise ToolException(
+                            f"Invalid subagent model: {model}. Use one of these exact model IDs: {allowed_list}"
+                        )
+                    raise ToolException(
+                        f"Invalid subagent model: {model}. No chat models are configured; omit `model` so the child inherits the parent model."
+                    )
 
             return await subagent_service.spawn_subagents(
                 parent_conversation_id=parent_conversation_id,
@@ -13447,6 +13454,7 @@ class RAGComponents:
                 subagent_file_scope=(workspace_context or {}).get("subagent_file_scope") if isinstance(workspace_context, dict) else None,
                 workspace_context=workspace_context,
             )
+            subagent_model_ids = self._resolve_subagent_allowed_model_ids(parent_model=conversation_model)
             spawn_tool = await self._create_spawn_subagents_tool(
                 workspace_id=workspace_id,
                 user_id=request_user_id,
@@ -13457,10 +13465,12 @@ class RAGComponents:
                 blocked_tool_names=blocked_tool_names or set(),
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 current_time_context=current_time_context,
+                subagent_model_ids=subagent_model_ids,
             )
             if spawn_tool is not None:
                 userspace_tools.append(spawn_tool)
                 prompt_additions += "\n\n" + USERSPACE_SUBAGENT_GUIDANCE_PROMPT.strip()
+                prompt_additions += build_subagent_model_guidance_prompt(subagent_model_ids)
             workspace_builtin_tools: list[StructuredTool] = []
             if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
                 workspace_builtin_tools = self._build_chat_diagnostic_tools(
@@ -13948,26 +13958,24 @@ class RAGComponents:
 
         return None, model
 
-    def _model_key_variants_for_subagent_override(self, model: str) -> set[str]:
-        """Return comparable model keys for subagent override allow-list checks."""
-        provider, parsed_model = self._parse_provider_scoped_model(model)
-        if provider and parsed_model:
-            normalized = f"{provider}::{parsed_model}".lower()
-        else:
-            normalized = (parsed_model or model or "").strip().lstrip("/").lower()
-        if not normalized:
-            return set()
-
-        variants = {normalized}
-        if "::" in normalized:
-            _provider, _, model_id = normalized.partition("::")
-            if model_id:
-                variants.add(model_id.lstrip("/"))
-                if "/" in model_id:
-                    variants.add(model_id.split("/", 1)[1].lower())
-        elif "/" in normalized:
-            variants.add(normalized.split("/", 1)[1].lower())
-        return {variant for variant in variants if variant}
+    def _resolve_subagent_allowed_model_ids(
+        self,
+        *,
+        parent_model: Optional[str],
+    ) -> list[str]:
+        """Return the exact model IDs a subagent override may use."""
+        allowed = dedupe_subagent_model_ids(
+            (self._app_settings or {}).get("allowed_chat_models")
+        )
+        if not allowed:
+            allowed = dedupe_subagent_model_ids(
+                [
+                    str(parent_model or ""),
+                    str((self._app_settings or {}).get("default_chat_model") or ""),
+                    str((self._app_settings or {}).get("llm_model") or ""),
+                ]
+            )
+        return allowed
 
     def _model_id_variants_for_provider_resolution(self, model_id: str) -> set[str]:
         """Return comparable model ID variants for bare and publisher-prefixed IDs."""

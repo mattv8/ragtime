@@ -11,7 +11,7 @@ from langchain_core.tools import StructuredTool, ToolException
 from ragtime.indexer.models import ChatTaskStatus
 from ragtime.indexer.routes import _assert_conversation_mutable
 from ragtime.rag.components import RAGComponents
-from ragtime.rag.prompts import USERSPACE_SUBAGENT_GUIDANCE_PROMPT
+from ragtime.rag.prompts import USERSPACE_SUBAGENT_GUIDANCE_PROMPT, build_subagent_model_guidance_prompt
 from ragtime.userspace.subagent_service import MAX_SUBAGENT_FANOUT, SUBAGENT_HANDOFF_TOOL_NAME, SUBAGENT_PRIVATE_PROMPT_CONTEXT_KEY, SubAgentService
 
 
@@ -555,24 +555,57 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SubAgentModelOverrideTests(unittest.TestCase):
-    def test_model_key_variants_match_scoped_bare_and_publisher_prefixed_forms(self) -> None:
-        components = RAGComponents()
+    def test_model_guidance_prompt_lists_exact_model_ids(self) -> None:
+        prompt = build_subagent_model_guidance_prompt(
+            [
+                "openai::gpt-5.4-mini",
+                "openrouter::moonshotai/kimi-k2.6",
+                "google::gemini-pro-latest",
+            ]
+        )
 
-        self.assertFalse(
-            components._model_key_variants_for_subagent_override("anthropic::claude-opus-4").isdisjoint(
-                components._model_key_variants_for_subagent_override("claude-opus-4")
-            )
-        )
-        self.assertFalse(
-            components._model_key_variants_for_subagent_override("openrouter::anthropic/claude-opus-4").isdisjoint(
-                components._model_key_variants_for_subagent_override("claude-opus-4")
-            )
-        )
-        self.assertTrue(
-            components._model_key_variants_for_subagent_override("openai::gpt-4.1").isdisjoint(
-                components._model_key_variants_for_subagent_override("claude-opus-4")
-            )
-        )
+        self.assertIn("Use exact `model` values from this list", prompt)
+        self.assertIn("`openai::gpt-5.4-mini`", prompt)
+        self.assertIn("`openrouter::moonshotai/kimi-k2.6`", prompt)
+        self.assertIn("`google::gemini-pro-latest`", prompt)
+        self.assertIn("research", prompt)
+        self.assertIn("coding", prompt)
+        self.assertIn("critique", prompt)
+
+    def test_model_guidance_prompt_handles_empty_model_list(self) -> None:
+        prompt = build_subagent_model_guidance_prompt([])
+
+        self.assertIn("No configured chat model allow-list", prompt)
+        self.assertIn("omit `model`", prompt)
+        self.assertIn("inherits the parent model", prompt)
+
+    def test_resolve_subagent_allowed_model_ids_uses_allowed_models_first(self) -> None:
+        components = RAGComponents()
+        components._app_settings = {
+            "allowed_chat_models": [
+                " openai::gpt-5.4-mini ",
+                "",
+                "openai::gpt-5.4-mini",
+                "openrouter::moonshotai/kimi-k2.6",
+            ],
+            "default_chat_model": "google::gemini-pro-latest",
+        }
+
+        model_ids = components._resolve_subagent_allowed_model_ids(parent_model="openai::parent")
+
+        self.assertEqual(model_ids, ["openai::gpt-5.4-mini", "openrouter::moonshotai/kimi-k2.6"])
+
+    def test_resolve_subagent_allowed_model_ids_falls_back_to_parent_default_and_llm_model(self) -> None:
+        components = RAGComponents()
+        components._app_settings = {
+            "allowed_chat_models": [],
+            "default_chat_model": "openai::default",
+            "llm_model": "openai::legacy",
+        }
+
+        model_ids = components._resolve_subagent_allowed_model_ids(parent_model="openai::parent")
+
+        self.assertEqual(model_ids, ["openai::parent", "openai::default", "openai::legacy"])
 
 
 class SubAgentToolScopeTests(unittest.IsolatedAsyncioTestCase):
@@ -671,6 +704,18 @@ class SubAgentPromptTests(unittest.TestCase):
         self.assertIn("non-overlapping `file_scope`", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
         self.assertIn("worker may only modify files under its declared scope", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
 
+    def test_guidance_encourages_general_parallel_decomposition(self) -> None:
+        self.assertIn("Do not limit subagents to refactors or dashboards", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+        self.assertIn("Do not spawn subagents for small, tightly coupled, or sequential edits", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+        self.assertIn("independent goals", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+        self.assertIn("Good fits include research", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+        self.assertIn("bug hypothesis", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+
+    def test_guidance_separates_parent_and_child_prompt_context(self) -> None:
+        self.assertIn("parent-owned context", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+        self.assertIn("concrete task", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+        self.assertIn("avoid polluting child prompts", USERSPACE_SUBAGENT_GUIDANCE_PROMPT)
+
 
 class SubAgentRouteReadOnlyTests(unittest.TestCase):
     def test_subagent_conversation_is_read_only(self) -> None:
@@ -692,8 +737,16 @@ class SubAgentRouteReadOnlyTests(unittest.TestCase):
 
 
 class SubAgentToolGatingTests(unittest.IsolatedAsyncioTestCase):
-    async def _create_spawn_tool(self, *, parent: Any, workspace_context: dict[str, object] | None = None) -> StructuredTool | None:
+    async def _create_spawn_tool(
+        self,
+        *,
+        parent: Any,
+        workspace_context: dict[str, object] | None = None,
+        app_settings: dict[str, object] | None = None,
+    ) -> StructuredTool | None:
         components = RAGComponents()
+        if app_settings is not None:
+            components._app_settings = app_settings
         with mock.patch(
             "ragtime.rag.components.repository",
             new=SimpleNamespace(get_conversation=mock.AsyncMock(return_value=parent)),
@@ -731,6 +784,103 @@ class SubAgentToolGatingTests(unittest.IsolatedAsyncioTestCase):
         )
         tool = await self._create_spawn_tool(parent=parent)
         self.assertIsNone(tool)
+
+    async def test_spawn_tool_model_schema_lists_exact_available_models(self) -> None:
+        parent = SimpleNamespace(
+            id="parent-1",
+            parent_conversation_id=None,
+            subagents_enabled=True,
+            model="openai::gpt-4.1",
+        )
+        tool = await self._create_spawn_tool(
+            parent=parent,
+            app_settings={
+                "allowed_chat_models": [
+                    "openai::gpt-5.4-mini",
+                    "openrouter::moonshotai/kimi-k2.6",
+                    "google::gemini-pro-latest",
+                ],
+            },
+        )
+
+        self.assertIsNotNone(tool)
+        assert tool is not None
+        schema_text = json.dumps(tool.args_schema.model_json_schema())
+        self.assertIn("Use one of these exact model IDs", schema_text)
+        self.assertIn("openai::gpt-5.4-mini", schema_text)
+        self.assertIn("openrouter::moonshotai/kimi-k2.6", schema_text)
+        self.assertIn("google::gemini-pro-latest", schema_text)
+
+    async def test_spawn_tool_rejects_invalid_model_with_available_models(self) -> None:
+        parent = SimpleNamespace(
+            id="parent-1",
+            parent_conversation_id=None,
+            subagents_enabled=True,
+            model="openai::gpt-4.1",
+        )
+        tool = await self._create_spawn_tool(
+            parent=parent,
+            app_settings={
+                "allowed_chat_models": [
+                    "openai::gpt-5.4-mini",
+                    "openrouter::moonshotai/kimi-k2.6",
+                ],
+            },
+        )
+
+        self.assertIsNotNone(tool)
+        assert tool is not None
+        with mock.patch("ragtime.rag.components.subagent_service.spawn_subagents", mock.AsyncMock(return_value="{}")):
+            with self.assertRaisesRegex(ToolException, "Invalid subagent model") as ctx:
+                await tool.coroutine(
+                    subagents=[
+                        {
+                            "name": "Researcher",
+                            "role": "review",
+                            "instructions": "Research the codebase",
+                            "file_scope": [],
+                            "model": "gpt-5.4-mini",
+                        }
+                    ],
+                    reason="test invalid model",
+                )
+
+        self.assertIn("Use one of these exact model IDs", str(ctx.exception))
+        self.assertIn("openai::gpt-5.4-mini", str(ctx.exception))
+        self.assertIn("openrouter::moonshotai/kimi-k2.6", str(ctx.exception))
+
+    async def test_spawn_tool_accepts_exact_model_override(self) -> None:
+        parent = SimpleNamespace(
+            id="parent-1",
+            parent_conversation_id=None,
+            subagents_enabled=True,
+            model="openai::gpt-4.1",
+        )
+        tool = await self._create_spawn_tool(
+            parent=parent,
+            app_settings={"allowed_chat_models": ["openai::gpt-5.4-mini"]},
+        )
+
+        self.assertIsNotNone(tool)
+        assert tool is not None
+        spawn_mock = mock.AsyncMock(return_value='{"subagents": []}')
+        with mock.patch("ragtime.rag.components.subagent_service.spawn_subagents", spawn_mock):
+            result = await tool.coroutine(
+                subagents=[
+                    {
+                        "name": "Researcher",
+                        "role": "review",
+                        "instructions": "Research the codebase",
+                        "file_scope": [],
+                        "model": "openai::gpt-5.4-mini",
+                    }
+                ],
+                reason="test exact model",
+            )
+
+        self.assertEqual(result, '{"subagents": []}')
+        spawn_mock.assert_awaited_once()
+        self.assertEqual(spawn_mock.call_args.kwargs["specs"][0]["model"], "openai::gpt-5.4-mini")
 
     async def test_spawn_tool_omitted_when_subagents_disabled(self) -> None:
         parent = SimpleNamespace(

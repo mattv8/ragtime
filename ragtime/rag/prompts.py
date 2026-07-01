@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from ragtime.core.entrypoint_status import EntrypointStatus
 from ragtime.core.user_identity import normalize_user_identity
@@ -126,21 +126,57 @@ The userspace file tools support batched inputs and per-file results.
 
 USERSPACE_SUBAGENT_GUIDANCE_PROMPT = """
 
-### Subagents for parallel build work
+### Subagents for parallel decomposition
 
-Use the `spawn_subagents` tool only for User Space tasks that are large enough to benefit from parallel work. Good fits: implementing several independent modules/pages/features, splitting a big dashboard into focused sections, or running concurrent research/review passes. Do not spawn subagents for small, tightly coupled, or sequential edits you can finish in one turn.
+Use the `spawn_subagents` tool when a User Space task has independent goals, surfaces, files, hypotheses, review angles, or validation paths that can run concurrently. Do not limit subagents to refactors or dashboards. Good fits include research, implementation, debugging, testing, review, migration, UX/a11y passes, data-flow audits, frontend/backend/data splits, and broad quality improvements where independent coverage improves speed or accuracy. Do not spawn subagents for small, tightly coupled, or sequential edits you can finish in one turn.
+
+Before spawning, decompose the work yourself. Keep parent-owned context in this conversation: overall user intent, global architecture decisions, merge strategy, final tradeoffs, final validation, and snapshot creation. Give children only the concrete task, relevant facts, success criteria, and any specific files or commands they need; avoid polluting child prompts with unrelated conversation history, parent reasoning, or global instructions the runtime already injects.
 
 When you call `spawn_subagents`:
 
-- Spawn between 1 and 6 child subagents in a single call. Never spawn more than 6.
+- Spawn between 1 and 6 child subagents in a single call. Never spawn more than 6. Prefer 2 to 4 children for broad parallel work unless the task naturally needs a different fanout.
 - Give each child a clear, self-contained user-visible task instruction and a meaningful `name`. Do not include parent conversation IDs, generic subagent boilerplate, handoff requirements, or file-scope enforcement prose in `instructions`; the runtime injects those privately.
+- Make child assignments narrow and independently useful. Split by feature area, file family, component boundary, data source, bug hypothesis, test target, visual/UX concern, or reviewer perspective rather than asking every child to inspect everything.
 - Assign non-overlapping `file_scope` paths or directories to writing workers. A worker may only modify files under its declared scope; subagent runtime enforcement rejects out-of-scope writes.
-- For read-only reviewers or research children, set `role=review` and pass an empty `file_scope`.
+- For read-only reviewers, researchers, auditors, or test investigators, set `role=review` and pass an empty `file_scope`.
 - Subagents are capped at depth 1 and cannot spawn additional subagents. Their tool set already blocks `spawn_subagents`.
 - You remain the parent agent: synthesize the returned JSON for every child, reconcile conflicts, fix anything the children got wrong, run `validate_userspace_code` on every changed source file, and create the workspace snapshot. Do not delegate final validation or snapshot creation.
 - Each child is required to submit exactly one `submit_subagent_handoff` tool call before finishing. Read the structured handoff it provides (especially `final_output`) to understand what the child did; do not rely on the child's raw freeform prose.
 - Read each child's `final_output` from the handoff, then continue the implementation/validation loop in this parent conversation.
 """
+
+
+def dedupe_subagent_model_ids(model_ids: Iterable[str] | None) -> list[str]:
+    """Return exact allowed model IDs, preserving order and removing blanks/duplicates."""
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for raw in model_ids or []:
+        identifier = str(raw or "").strip()
+        if not identifier or identifier in seen:
+            continue
+        seen.add(identifier)
+        normalized.append(identifier)
+    return normalized
+
+
+def build_subagent_model_guidance_prompt(available_model_ids: list[str] | None) -> str:
+    """Build a concise subagent model override guidance fragment."""
+    models = dedupe_subagent_model_ids(available_model_ids)
+    if not models:
+        return (
+            "\n### Subagent model overrides\n\n"
+            "No configured chat model allow-list is available. "
+            "When calling `spawn_subagents`, omit `model` so each child inherits the parent model."
+        )
+    listed = "\n".join(f"- `{model}`" for model in models)
+    return (
+        "\n### Subagent model overrides\n\n"
+        "You may override the model for each subagent by setting the `model` field in `spawn_subagents`. "
+        "Use exact `model` values from this list (provider::model format):\n\n"
+        f"{listed}\n\n"
+        "Pick models that fit the assigned role: research, coding, critique, or general guidance. "
+        "If none of these fits a given subagent, omit `model` so the child inherits the parent model."
+    )
 
 
 def _compose_system_prompt(*sections: str) -> str:
