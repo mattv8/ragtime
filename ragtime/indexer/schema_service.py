@@ -2103,6 +2103,7 @@ class SchemaIndexerService:
                 stored_hash = connection_config.get("schema_hash")
                 if stored_hash == schema_hash:
                     logger.info("Schema unchanged, skipping re-index")
+                    await self._update_schema_hash(job.tool_config_id, schema_hash)
                     job.status = SchemaIndexStatus.COMPLETED
                     job.completed_at = datetime.now(timezone.utc)
                     job.processed_tables = len(tables)
