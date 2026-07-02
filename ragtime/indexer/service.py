@@ -842,6 +842,39 @@ class IndexerService:
         logger.info(f"Cancelled job {job_id}")
         return True
 
+    async def shutdown(self) -> None:
+        """Cancel active document indexing tasks before process-pool teardown."""
+        logger.info("Document indexer service shutting down")
+
+        for job_id, job in list(self._active_jobs.items()):
+            task = self._processing_tasks.get(job_id)
+            if task is not None and task.done():
+                continue
+
+            self._cancellation_flags[job_id] = True
+            if job.status in (IndexStatus.PENDING, IndexStatus.PROCESSING):
+                job.status = IndexStatus.FAILED
+                job.error_message = "Job cancelled due to server shutdown"
+                job.completed_at = utc_now()
+                try:
+                    await repository.update_job(job)
+                except Exception as exc:
+                    logger.warning(f"Job {job_id}: Could not persist shutdown cancellation: {exc}")
+
+        for job_id, task in list(self._processing_tasks.items()):
+            if task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.info(f"Cancelled document indexing task {job_id}")
+
+        self._active_jobs.clear()
+        self._processing_tasks.clear()
+        self._cancellation_flags.clear()
+
     def _is_cancelled(self, job_id: str) -> bool:
         """Check if a job has been cancelled."""
         return self._cancellation_flags.get(job_id, False)
