@@ -189,7 +189,6 @@ from ragtime.indexer.background_tasks import (
 from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
 from ragtime.indexer.export_service import (
-    cleanup_expired_exports,
     content_disposition,
     content_source,
     create_export_spec,
@@ -13993,8 +13992,7 @@ async def create_conversation_export(
     workspace_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    """Create a short-lived authenticated download link for a conversation export."""
-    cleanup_expired_exports()
+    """Create an authenticated download link for a conversation export."""
     conversation = await repository.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -14032,7 +14030,7 @@ async def download_conversation_export(
     workspace_id: Optional[str] = None,
     user: User = Depends(get_current_user),
 ):
-    """Render and stream a short-lived conversation export just in time."""
+    """Render and stream a conversation export just in time."""
     verify_token(token, conversation_id, export_id, filename)
     spec = load_export_spec(conversation_id, export_id)
     if spec.get("filename") != filename:

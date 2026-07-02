@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import unittest
 from datetime import datetime, timezone
@@ -63,8 +65,27 @@ class ConversationExportServiceTests(unittest.TestCase):
         loaded_spec = export_service.load_export_spec("conversation-1", spec["id"])
 
         self.assertEqual(loaded_spec["id"], spec["id"])
-        self.assertEqual(export_service.cleanup_expired_exports(), 0)
         self.assertTrue(path.exists())
+
+    def test_verify_token_accepts_legacy_exp_payload(self) -> None:
+        expired_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        payload = {
+            "conversation_id": "conversation-1",
+            "export_id": "export-1",
+            "filename": "old.csv",
+            "exp": int(expired_at.timestamp()),
+        }
+        payload_b64 = export_service._base64_url_encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        signature = hmac.new(
+            export_service._secret(),
+            payload_b64.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        token = f"{payload_b64}.{export_service._base64_url_encode(signature)}"
+
+        verified = export_service.verify_token(token, "conversation-1", "export-1", "old.csv")
+
+        self.assertEqual(verified["exp"], int(expired_at.timestamp()))
 
     def test_render_table_formats_escape_formula_cells(self) -> None:
         spec = export_service.create_export_spec(
@@ -282,21 +303,6 @@ class ConversationExportServiceTests(unittest.TestCase):
         self.assertEqual(context["data_connection"]["request"], {"query": "select name, total from accounts limit 10"})
         self.assertEqual(context["columns"], ["name", "total"])
         self.assertEqual(context["rows"], [["Acme", 42]])
-
-    def test_cleanup_preserves_export_specs(self) -> None:
-        spec = export_service.create_export_spec(
-            conversation_id="conversation-1",
-            filename="old.csv",
-            export_format="csv",
-            source=export_service.table_source(["A"], [[1]]),
-        )
-        path = export_service.EXPORT_BASE_DIR / "conversation-1" / f"{spec['id']}.json"
-        payload = json.loads(path.read_text())
-        payload["expires_at"] = "2000-01-01T00:00:00+00:00"
-        path.write_text(json.dumps(payload), encoding="utf-8")
-
-        self.assertEqual(export_service.cleanup_expired_exports(), 0)
-        self.assertTrue(path.exists())
 
 
 if __name__ == "__main__":

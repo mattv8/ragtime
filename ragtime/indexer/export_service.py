@@ -30,7 +30,6 @@ logger = get_logger(__name__)
 
 EXPORT_SPEC_VERSION = 1
 EXPORT_DEFAULT_TTL_SECONDS = 60 * 60
-EXPORT_MAX_TTL_SECONDS = 24 * 60 * 60
 EXPORT_MAX_ROWS = 100_000
 EXPORT_MAX_CELL_CHARS = 32_000
 EXPORT_MAX_CONTENT_BYTES = 25 * 1024 * 1024
@@ -296,11 +295,6 @@ def load_export_spec(conversation_id: str, export_id: str) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Export spec is unreadable") from exc
     return spec
-
-
-def cleanup_expired_exports(now: datetime | None = None) -> int:
-    del now
-    return 0
 
 
 def table_source(columns: Any, rows: Any) -> dict[str, Any]:
