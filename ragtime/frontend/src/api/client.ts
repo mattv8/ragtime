@@ -3552,6 +3552,22 @@ export const api = {
     return handleResponse<UserSpaceCodeIndexReconcileResponse>(response);
   },
 
+  /**
+   * Cancel a pending or indexing User Space code index job.
+   */
+  async cancelUserSpaceCodeIndexJob(jobId: string): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/code-indexes/jobs/${encodeURIComponent(jobId)}/cancel`,
+      {
+        method: 'POST',
+      },
+    );
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new ApiError(data.detail || 'Cancel failed', response.status, data.detail);
+    }
+  },
+
   async getLatestUserSpaceRuntimeRestartTask(): Promise<UserSpaceRuntimeRestartBatchTask> {
     const response = await apiFetch(`${API_BASE}/userspace/admin/runtime-restart-task`);
     return handleResponse<UserSpaceRuntimeRestartBatchTask>(response);

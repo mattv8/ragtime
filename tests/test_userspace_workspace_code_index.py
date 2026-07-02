@@ -5,10 +5,13 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-from ragtime.indexer.models import UpdateSettingsRequest, WorkspaceCodeIndexJobResponse
+from fastapi import HTTPException
+
+from ragtime.indexer.models import UpdateSettingsRequest, WorkspaceCodeIndexJobResponse, WorkspaceCodeIndexJobStatus
 from ragtime.indexer.repository import IndexerRepository
 from ragtime.indexer.tool_presentation import HIDDEN_TOOL_VISIBILITY, normalize_tool_presentation
 from ragtime.userspace.routes import (
+    cancel_workspace_code_index_job,
     delete_workspace_code_index_admin,
     list_workspace_code_index_jobs,
     list_workspace_code_indexes,
@@ -328,6 +331,7 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
             await service._update_job_progress(
                 "job-1",
+                total_files=12,
                 processed_files=3,
                 current_file="src/app.py",
                 phase=WorkspaceCodeIndexJobPhase.EMBEDDING,
@@ -335,7 +339,371 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(fake_db.executed), 1)
         self.assertIn("phase = 'embedding'", fake_db.executed[0])
+        self.assertIn("total_files = 12", fake_db.executed[0])
         self.assertIn("processed_files = 3", fake_db.executed[0])
+
+    def test_settings_response_includes_userspace_code_index_concurrency_default(self) -> None:
+        from ragtime.indexer.models import SettingsResponse
+
+        settings = SettingsResponse()
+
+        self.assertEqual(settings.userspace_code_index_max_concurrency, 1)
+
+    def test_workspace_code_index_job_response_includes_queue_fields(self) -> None:
+        from datetime import datetime, timezone
+
+        from ragtime.indexer.models import WorkspaceCodeIndexJobResponse
+
+        response = WorkspaceCodeIndexJobResponse(
+            id="job-2",
+            workspace_id="workspace-2",
+            workspace_name="Workspace 2",
+            index_name="userspace_workspace_2",
+            status=WorkspaceCodeIndexJobStatus.PENDING,
+            waiting_for_job_id="job-1",
+            cancel_requested=True,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        self.assertEqual(response.waiting_for_job_id, "job-1")
+        self.assertTrue(response.cancel_requested)
+
+    async def test_queue_relink_sql_orders_pending_jobs(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.executed: list[str] = []
+
+            async def query_raw(self, query: str):
+                if "WHERE status = 'pending'" in query:
+                    return [{"id": "job-1"}, {"id": "job-2"}]
+                return []
+
+            async def execute_raw(self, query: str):
+                self.executed.append(query)
+                return 1
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            await service._relink_pending_jobs()
+
+        self.assertTrue(any("waiting_for_job_id = NULL" in query for query in fake_db.executed))
+        self.assertTrue(any("waiting_for_job_id = 'job-1'" in query for query in fake_db.executed))
+
+    async def test_relink_pending_jobs_points_head_at_running_job(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.executed: list[str] = []
+
+            async def query_raw(self, query: str):
+                if "status = 'indexing'" in query:
+                    return [{"id": "job-running"}]
+                if "WHERE status = 'pending'" in query:
+                    return [{"id": "job-1"}, {"id": "job-2"}]
+                return []
+
+            async def execute_raw(self, query: str):
+                self.executed.append(query)
+                return 1
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            await service._relink_pending_jobs()
+
+        self.assertTrue(any("waiting_for_job_id = 'job-running'" in query for query in fake_db.executed))
+        self.assertTrue(any("waiting_for_job_id = 'job-1'" in query for query in fake_db.executed))
+        self.assertFalse(any("waiting_for_job_id = NULL" in query for query in fake_db.executed))
+
+    async def test_delete_workspace_index_flags_active_job_cancelled(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.executed: list[str] = []
+
+            async def query_raw(self, query: str):
+                if "status = 'indexing'" in query and "workspace-1" in query:
+                    return [{"id": "job-9"}]
+                return []
+
+            async def execute_raw(self, query: str):
+                self.executed.append(query)
+                return 1
+
+        class FakeBackend:
+            async def delete_index(self, _index_name: str) -> None:
+                return None
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with (
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db),
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_pgvector_backend", return_value=FakeBackend()),
+        ):
+            await service.delete_workspace_index("workspace-1")
+
+        self.assertTrue(service._cancellation_flags.get("job-9"))
+        self.assertTrue(any("DELETE FROM workspace_code_index_jobs" in query for query in fake_db.executed))
+
+    async def test_workspace_queue_concurrency_setting_defaults_to_one(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch(
+            "ragtime.userspace.workspace_code_index_service.get_app_settings",
+            mock.AsyncMock(return_value={}),
+        ):
+            self.assertEqual(await service._max_concurrent_jobs(), 1)
+
+    async def test_claim_next_pending_job_does_not_depend_on_waiting_link(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.claim_query = ""
+
+            async def query_raw(self, query: str):
+                self.claim_query = query
+                return [{"id": "job-2", "workspace_id": "workspace-2"}]
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            claimed = await service._claim_next_pending_job()
+
+        self.assertEqual(claimed, ("job-2", "workspace-2"))
+        self.assertNotIn("waiting_for_job_id IS NULL", fake_db.claim_query)
+
+    async def test_claim_next_pending_job_skips_active_workspaces(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.claim_query = ""
+
+            async def query_raw(self, query: str):
+                self.claim_query = query
+                return [{"id": "job-2", "workspace_id": "workspace-2"}]
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+        service._active_workspace_ids = {"workspace-1"}
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            claimed = await service._claim_next_pending_job(service._active_workspace_ids)
+
+        self.assertEqual(claimed, ("job-2", "workspace-2"))
+        self.assertIn("workspace_id NOT IN ('workspace-1')", fake_db.claim_query)
+        self.assertNotIn("workspace_id NOT IN ()", fake_db.claim_query)
+
+    async def test_reindex_job_failure_does_not_double_fail(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            async def query_raw(self, query: str):
+                self.queries.append(query)
+                if "workspace_code_index_dirty_paths" in query and "SELECT" in query:
+                    return [{"id": "dirty-1", "path": "", "operation": "reindex"}]
+                return []
+
+            async def execute_raw(self, query: str):
+                self.queries.append(query)
+                return 1
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+        service.ensure_state = mock.AsyncMock(return_value="userspace_workspace_ws_1")  # type: ignore[method-assign]
+        service._refresh_state_counts = mock.AsyncMock()  # type: ignore[method-assign]
+        service.reindex_workspace = mock.AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+        service._fail_job = mock.AsyncMock()  # type: ignore[method-assign]
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            await service._process_dirty_workspace_for_job("ws-1", "job-1")
+
+        service._fail_job.assert_awaited_once_with("job-1", "boom")
+
+    async def test_cancelled_job_does_not_enqueue_follow_up(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import (
+            WorkspaceCodeIndexCancelled,
+            WorkspaceCodeIndexService,
+        )
+
+        service = WorkspaceCodeIndexService()
+        service._process_dirty_workspace_for_job = mock.AsyncMock(side_effect=WorkspaceCodeIndexCancelled)  # type: ignore[method-assign]
+        service._cancel_job = mock.AsyncMock()  # type: ignore[method-assign]
+        service._relink_pending_jobs = mock.AsyncMock()  # type: ignore[method-assign]
+        service._maybe_enqueue_follow_up = mock.AsyncMock()  # type: ignore[method-assign]
+
+        await service._run_claimed_job("ws-1", "job-1")
+
+        service._maybe_enqueue_follow_up.assert_not_awaited()
+        service._cancel_job.assert_awaited_once_with("job-1", "ws-1")
+
+    async def test_recover_orphaned_jobs_wakes_queue_runner(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            async def execute_raw(self, _query: str):
+                return 1
+
+            async def query_raw(self, query: str):
+                if "WHERE status = 'pending'" in query:
+                    return []
+                return []
+
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=FakeDb()):
+            await service._recover_orphaned_jobs()
+
+        self.assertTrue(service._queue_event.is_set())
+
+    async def test_cancel_job_returns_false_for_missing_job(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            async def query_raw(self, _query: str):
+                return []
+
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=FakeDb()):
+            result = await service.cancel_job("job-missing")
+
+        self.assertFalse(result)
+
+    async def test_cancel_job_returns_false_for_terminal_jobs(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        service = WorkspaceCodeIndexService()
+
+        for status in ("completed", "failed", "cancelled"):
+            with self.subTest(status=status):
+
+                class FakeDb:
+                    def __init__(self, job_status: str) -> None:
+                        self.job_status = job_status
+
+                    async def query_raw(self, _query: str):
+                        return [{"id": "job-1", "workspace_id": "ws-1", "status": self.job_status}]
+
+                fake_db = FakeDb(status)
+                with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+                    result = await service.cancel_job("job-1")
+                self.assertFalse(result)
+
+    async def test_cancel_job_cancels_pending_job_and_relinks_queue(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+                self.job_status = "pending"
+
+            async def query_raw(self, query: str):
+                if "status = 'indexing'" in query:
+                    # No running job in this scenario; relink seeds from nothing.
+                    return []
+                if "workspace_code_index_jobs" in query and "SELECT" in query:
+                    return [{"id": "job-1", "workspace_id": "ws-1", "status": self.job_status}]
+                if "WHERE status = 'pending'" in query:
+                    return [{"id": "job-2"}]
+                return []
+
+            async def execute_raw(self, query: str):
+                self.queries.append(query)
+                if "SET status = 'cancelled'" in query:
+                    self.job_status = "cancelled"
+                return 1
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            result = await service.cancel_job("job-1")
+
+        self.assertTrue(result)
+        self.assertTrue(any("status = 'cancelled'" in q for q in fake_db.queries))
+        self.assertTrue(any("current_file = NULL" in q for q in fake_db.queries))
+        self.assertTrue(any("completed_at = NOW()" in q for q in fake_db.queries))
+        self.assertTrue(any("cancel_requested = FALSE" in q for q in fake_db.queries))
+        self.assertTrue(any("waiting_for_job_id = NULL" in q for q in fake_db.queries))
+        self.assertTrue(service._queue_event.is_set())
+
+    async def test_cancel_job_flags_indexing_job_and_updates_db(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            async def query_raw(self, _query: str):
+                return [{"id": "job-1", "workspace_id": "ws-1", "status": "indexing"}]
+
+            async def execute_raw(self, query: str):
+                self.queries.append(query)
+                return 1
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
+            result = await service.cancel_job("job-1")
+
+        self.assertTrue(result)
+        self.assertTrue(service._cancellation_flags.get("job-1"))
+        self.assertTrue(any("cancel_requested = TRUE" in q for q in fake_db.queries))
+        self.assertFalse(any("status = 'cancelled'" in q for q in fake_db.queries))
+
+    async def test_cancel_job_handles_pending_to_indexing_race(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        class FakeDb:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+                self.select_count = 0
+
+            async def query_raw(self, query: str) -> list[dict[str, Any]]:
+                self.queries.append(query)
+                if "workspace_code_index_jobs" in query and "SELECT" in query:
+                    self.select_count += 1
+                    status = "pending" if self.select_count == 1 else "indexing"
+                    return [{"id": "job-1", "workspace_id": "ws-1", "status": status}]
+                return []
+
+            async def execute_raw(self, query: str) -> int:
+                self.queries.append(query)
+                if "status = 'cancelled'" in query:
+                    return 0
+                return 1
+
+        fake_db = FakeDb()
+        service = WorkspaceCodeIndexService()
+
+        with (
+            mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db),
+            mock.patch.object(service, "_relink_pending_jobs") as relink,
+        ):
+            result = await service.cancel_job("job-1")
+
+        self.assertTrue(result)
+        self.assertTrue(service._cancellation_flags.get("job-1"))
+        self.assertTrue(any("status = 'cancelled'" in q and "AND status = 'pending'" in q for q in fake_db.queries))
+        self.assertTrue(any("cancel_requested = TRUE" in q for q in fake_db.queries))
+        relink.assert_not_awaited()
 
     def test_userspace_code_context_tools_are_hidden_from_ui_presentation(self) -> None:
         for tool_name in ("search_userspace_code", "assay_userspace_code"):
@@ -555,6 +923,8 @@ class WorkspaceCodeIndexAdminRouteTests(unittest.IsolatedAsyncioTestCase):
                         "created_at": "2026-07-01T00:00:00Z",
                         "started_at": "2026-07-01T00:00:01Z",
                         "completed_at": None,
+                        "waiting_for_job_id": "job-0",
+                        "cancel_requested": True,
                     },
                     {
                         "id": "job-2",
@@ -572,6 +942,8 @@ class WorkspaceCodeIndexAdminRouteTests(unittest.IsolatedAsyncioTestCase):
                         "created_at": "2026-07-01T00:00:00Z",
                         "started_at": "2026-07-01T00:00:01Z",
                         "completed_at": "2026-07-01T00:00:02Z",
+                        "waiting_for_job_id": None,
+                        "cancel_requested": False,
                     },
                 ]
 
@@ -589,8 +961,12 @@ class WorkspaceCodeIndexAdminRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0].total_files, 20)
         self.assertEqual(result[0].processed_files, 20)
         self.assertEqual(result[0].current_file, "src/app.py")
+        self.assertEqual(result[0].waiting_for_job_id, "job-0")
+        self.assertTrue(result[0].cancel_requested)
         self.assertEqual(result[1].status, "failed")
         self.assertEqual(result[1].progress_percent, 0.0)
+        self.assertIsNone(result[1].waiting_for_job_id)
+        self.assertFalse(result[1].cancel_requested)
 
     async def test_reindex_endpoint_marks_workspace_dirty(self) -> None:
         fake_admin = SimpleNamespace(role="admin")
@@ -629,6 +1005,32 @@ class WorkspaceCodeIndexAdminRouteTests(unittest.IsolatedAsyncioTestCase):
 
         reconcile.assert_awaited_once_with(include_missing=True)
         self.assertEqual(result.scheduled_count, 2)
+
+    async def test_cancel_job_endpoint_returns_success_when_cancellable(self) -> None:
+        fake_admin = SimpleNamespace(role="admin")
+        with mock.patch.object(
+            workspace_code_index_service,
+            "cancel_job",
+            mock.AsyncMock(return_value=True),
+        ) as cancel_job:
+            result = await cancel_workspace_code_index_job("job-1", _user=fake_admin)
+
+        cancel_job.assert_awaited_once_with("job-1")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["job_id"], "job-1")
+
+    async def test_cancel_job_endpoint_returns_400_when_not_cancellable(self) -> None:
+        fake_admin = SimpleNamespace(role="admin")
+        with mock.patch.object(
+            workspace_code_index_service,
+            "cancel_job",
+            mock.AsyncMock(return_value=False),
+        ) as cancel_job:
+            with self.assertRaises(HTTPException) as ctx:
+                await cancel_workspace_code_index_job("job-1", _user=fake_admin)
+
+        cancel_job.assert_awaited_once_with("job-1")
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

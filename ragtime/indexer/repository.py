@@ -107,6 +107,7 @@ from ragtime.core.userspace_preview_sandbox import (
 )
 from ragtime.indexer.chat_events import with_event_channel
 from ragtime.indexer.models import (
+    DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
     SCHEMA_INDEXER_CAPABLE_TOOL_TYPES,
     AppSettings,
     ChatMessage,
@@ -1427,6 +1428,11 @@ class IndexerRepository:
                 "userspaceCodeIndexMaxAttempts",
                 DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
             ),
+            userspace_code_index_max_concurrency=getattr(
+                settings,
+                "userspaceCodeIndexMaxConcurrency",
+                DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
+            ),
             userspace_sqlite_import_max_bytes=clamp_userspace_sqlite_import_max_bytes(getattr(settings, "userspaceSqliteImportMaxBytes", None)),
             userspace_primitive_upload_max_bytes=clamp_userspace_primitive_upload_max_bytes(getattr(settings, "userspacePrimitiveUploadMaxBytes", None)),
             userspace_primitive_archive_max_entries=clamp_userspace_primitive_archive_max_entries(
@@ -1579,6 +1585,7 @@ class IndexerRepository:
             "userspace_code_index_debounce_seconds": "userspaceCodeIndexDebounceSeconds",
             "userspace_code_index_reconcile_interval_seconds": "userspaceCodeIndexReconcileIntervalSeconds",
             "userspace_code_index_max_attempts": "userspaceCodeIndexMaxAttempts",
+            "userspace_code_index_max_concurrency": "userspaceCodeIndexMaxConcurrency",
             "userspace_sqlite_import_max_bytes": "userspaceSqliteImportMaxBytes",
             "userspace_primitive_upload_max_bytes": "userspacePrimitiveUploadMaxBytes",
             "userspace_primitive_archive_max_entries": "userspacePrimitiveArchiveMaxEntries",

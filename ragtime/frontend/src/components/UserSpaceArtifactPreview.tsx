@@ -26,12 +26,8 @@ interface UserSpaceArtifactPreviewProps {
   onNetworkActivityChange?: (isActive: boolean) => void;
   onLiveDataWarningChange?: (warning: string | null) => void;
   onLiveDataTimeout?: (message: string, timeoutSeconds?: number | null) => void;
+  onPreviewOverlayMessage?: (message: string, tone?: 'success' | 'warning' | 'error') => void;
   onPreviewSessionExpired?: () => void;
-  previewNotice?: {
-    id: number;
-    message: string;
-    tone?: 'success' | 'error';
-  } | null;
 }
 
 export function UserSpaceArtifactPreview({
@@ -49,8 +45,8 @@ export function UserSpaceArtifactPreview({
   onNetworkActivityChange,
   onLiveDataWarningChange,
   onLiveDataTimeout,
+  onPreviewOverlayMessage,
   onPreviewSessionExpired,
-  previewNotice,
 }: UserSpaceArtifactPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [pendingExecutions, setPendingExecutions] = useState(0);
@@ -59,13 +55,6 @@ export function UserSpaceArtifactPreview({
   const [sandboxSettingsStatus, setSandboxSettingsStatus] = useState<'loading' | 'ready' | 'error'>(
     'loading',
   );
-  const [sandboxBlockedMessage, setSandboxBlockedMessage] = useState<string | null>(null);
-  const [liveDataExecutionError, setLiveDataExecutionError] = useState<string | null>(null);
-  const [activePreviewNotice, setActivePreviewNotice] = useState<{
-    id: number;
-    message: string;
-    tone?: 'success' | 'error';
-  } | null>(null);
 
   const normalizeOrigin = useCallback((value: string | null | undefined): string => {
     const raw = (value || '').trim();
@@ -141,8 +130,9 @@ export function UserSpaceArtifactPreview({
 
       if (event.data.type === USERSPACE_EXEC_MESSAGE_TYPES.SANDBOX_BLOCKED) {
         const message = typeof event.data.message === 'string' ? event.data.message.trim() : '';
-        setSandboxBlockedMessage(
+        onPreviewOverlayMessage?.(
           message || 'This action was blocked by the current preview sandbox policy.',
+          'error',
         );
         return;
       }
@@ -159,13 +149,10 @@ export function UserSpaceArtifactPreview({
             ? event.data.error.trim()
             : null;
         if (timeoutMessage) {
-          setLiveDataExecutionError(timeoutMessage);
           onLiveDataTimeout?.(
             timeoutMessage,
             typeof event.data.timeout_seconds === 'number' ? event.data.timeout_seconds : null,
           );
-        } else {
-          setLiveDataExecutionError(null);
         }
         onLiveDataWarningChange?.(warning);
         console.error('[UserSpacePreview] iframe execute error:', {
@@ -242,10 +229,7 @@ export function UserSpaceArtifactPreview({
         }
         const timeoutMessage = getTimeoutMessage(result);
         if (timeoutMessage) {
-          setLiveDataExecutionError(timeoutMessage);
           onLiveDataTimeout?.(timeoutMessage, result.timeout_seconds ?? null);
-        } else {
-          setLiveDataExecutionError(null);
         }
         onLiveDataWarningChange?.(
           typeof result.error === 'string' && result.error.trim() ? result.error : null,
@@ -255,10 +239,7 @@ export function UserSpaceArtifactPreview({
         const errorMessage = err instanceof Error ? err.message : String(err);
         const timeoutMessage = getTimeoutMessage({ error: errorMessage });
         if (timeoutMessage) {
-          setLiveDataExecutionError(timeoutMessage);
           onLiveDataTimeout?.(timeoutMessage, null);
-        } else {
-          setLiveDataExecutionError(null);
         }
         onLiveDataWarningChange?.(errorMessage || null);
         sendResult({
@@ -279,6 +260,7 @@ export function UserSpaceArtifactPreview({
       getTimeoutMessage,
       onLiveDataWarningChange,
       onLiveDataTimeout,
+      onPreviewOverlayMessage,
       onPreviewSessionExpired,
     ],
   );
@@ -307,25 +289,7 @@ export function UserSpaceArtifactPreview({
   useEffect(() => {
     setPendingExecutions(0);
     setPendingNetworkRequests(0);
-    setSandboxBlockedMessage(null);
-    setLiveDataExecutionError(null);
-    setActivePreviewNotice(null);
   }, [previewInstanceKey, runtimePreviewUrl]);
-
-  useEffect(() => {
-    if (!previewNotice) {
-      return;
-    }
-
-    setActivePreviewNotice(previewNotice);
-    const timer = window.setTimeout(() => {
-      setActivePreviewNotice((current) => (current?.id === previewNotice.id ? null : current));
-    }, 6000);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [previewNotice]);
 
   useEffect(() => {
     let cancelled = false;
@@ -411,25 +375,6 @@ export function UserSpaceArtifactPreview({
 
   return (
     <div className="userspace-preview-frame-wrap">
-      {activePreviewNotice ? (
-        <div
-          className={`userspace-preview-exec-notice userspace-preview-exec-notice-${activePreviewNotice.tone ?? 'success'}`}
-          role="status"
-          aria-live="polite"
-        >
-          {activePreviewNotice.message}
-        </div>
-      ) : null}
-      {sandboxBlockedMessage ? (
-        <div className="userspace-preview-exec-error" role="alert">
-          {sandboxBlockedMessage}
-        </div>
-      ) : null}
-      {liveDataExecutionError ? (
-        <div className="userspace-preview-exec-error" role="alert">
-          {liveDataExecutionError}
-        </div>
-      ) : null}
       <iframe
         ref={iframeRef}
         key={`${previewInstanceKey ?? ''}:${runtimePreviewUrl ?? ''}`}

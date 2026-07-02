@@ -1107,6 +1107,7 @@ export function App() {
                 onFilesystemJobsChanged={loadFilesystemJobs}
                 onSchemaJobsChanged={loadSchemaJobs}
                 onPdmJobsChanged={loadPdmJobs}
+                onUserSpaceCodeJobsChanged={loadUserSpaceCodeJobs}
                 onCancelFilesystemJob={handleCancelFilesystemJob}
                 onCancelSchemaJob={handleCancelSchemaJob}
                 onCancelPdmJob={handleCancelPdmJob}

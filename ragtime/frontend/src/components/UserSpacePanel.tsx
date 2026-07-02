@@ -191,6 +191,7 @@ interface CachedUserSpaceFile {
 }
 
 type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
+type UserSpaceOverlayTone = 'status' | 'success' | 'warning' | 'error';
 
 function SearchHighlightedText({ text, query }: { text: string; query: string }) {
   const needle = query.trim();
@@ -924,7 +925,7 @@ export function UserSpacePanel({
   const [previewNotice, setPreviewNotice] = useState<{
     id: number;
     message: string;
-    tone?: 'success' | 'error';
+    tone?: Exclude<UserSpaceOverlayTone, 'status'>;
   } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
@@ -4469,6 +4470,19 @@ export function UserSpacePanel({
     [activeWorkspaceId, currentUser.role, onNavigateToTools, toast],
   );
 
+  const handlePreviewOverlayMessage = useCallback(
+    (message: string, tone: Exclude<UserSpaceOverlayTone, 'status'> = 'error') => {
+      const normalized = message.trim();
+      if (!normalized) return;
+      setPreviewNotice({
+        id: Date.now(),
+        message: normalized,
+        tone,
+      });
+    },
+    [],
+  );
+
   const handleRestoreSnapshot = useCallback(
     async (snapshotId: string, snapshotBranchId?: string) => {
       if (!activeWorkspaceId || !canEditWorkspace) return;
@@ -7953,12 +7967,19 @@ export function UserSpacePanel({
     ? 'Open SQLite Inspector'
     : 'SQLite database is empty — open the inspector to initialize tables';
   const formattedError = useMemo(() => formatUserSpaceErrorMessage(error), [error]);
+  const liveDataWarningMessage = runtimeStatus?.live_data_warning?.trim() || null;
+  const visibleLiveDataWarningMessage =
+    liveDataWarningMessage && previewNotice?.message.trim() !== liveDataWarningMessage
+      ? liveDataWarningMessage
+      : null;
   const hasStatusOverlayContent = Boolean(
     loading ||
     creatingWorkspace ||
     duplicatingWorkspaceSourceId ||
     deletingWorkspaceId ||
     runtimeOverlayStatus ||
+    previewNotice ||
+    visibleLiveDataWarningMessage ||
     (formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId),
   );
   const statusOverlaySignature = useMemo(
@@ -7972,6 +7993,8 @@ export function UserSpacePanel({
         deletingWorkspaceId,
         deletingWorkspaceStatus,
         runtimeOverlayStatus,
+        previewNotice,
+        liveDataWarning: visibleLiveDataWarningMessage,
         formattedError:
           formattedError &&
           !creatingWorkspace &&
@@ -7989,9 +8012,22 @@ export function UserSpacePanel({
       deletingWorkspaceId,
       deletingWorkspaceStatus,
       runtimeOverlayStatus,
+      previewNotice,
+      visibleLiveDataWarningMessage,
       formattedError,
     ],
   );
+
+  useEffect(() => {
+    if (!previewNotice) return;
+    const timer = window.setTimeout(() => {
+      setPreviewNotice((current) => (current?.id === previewNotice.id ? null : current));
+    }, 6000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [previewNotice]);
 
   useEffect(() => {
     if (!hasStatusOverlayContent) {
@@ -8055,6 +8091,90 @@ export function UserSpacePanel({
       return next;
     });
   }, []);
+
+  const renderOverlayItem = (tone: UserSpaceOverlayTone, content: ReactNode) => {
+    const toneClass = tone === 'status' ? '' : ` userspace-${tone}`;
+    return (
+      <p className={`userspace-status userspace-status-overlay-item${toneClass}`}>{content}</p>
+    );
+  };
+
+  const renderUserspaceOverlay = (extraClassName = '') =>
+    hasStatusOverlayContent && statusOverlayVisible ? (
+      <div
+        className={`userspace-status-overlay${extraClassName}${statusOverlayFading ? ' is-fading' : ''}${statusOverlayPinned ? ' is-pinned' : ''}`}
+        role="status"
+        aria-live="polite"
+        onMouseEnter={() => {
+          setStatusOverlayInteracting(true);
+          setStatusOverlayFading(false);
+        }}
+        onMouseLeave={() => setStatusOverlayInteracting(false)}
+        onFocusCapture={() => {
+          setStatusOverlayInteracting(true);
+          setStatusOverlayFading(false);
+        }}
+        onBlurCapture={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            return;
+          }
+          setStatusOverlayInteracting(false);
+        }}
+        onClick={handleStatusOverlayClick}
+        title={
+          statusOverlayPinned
+            ? 'Pinned. Click to unpin and restore fade behavior.'
+            : 'Click to pin this notification. Click again to unpin.'
+        }
+      >
+        {loading && renderOverlayItem('status', 'Loading workspaces...')}
+        {creatingWorkspace &&
+          renderOverlayItem(
+            'status',
+            <>
+              <MiniLoadingSpinner variant="icon" size={14} />{' '}
+              {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
+            </>,
+          )}
+        {duplicatingWorkspaceSourceId &&
+          renderOverlayItem(
+            'status',
+            <>
+              <MiniLoadingSpinner variant="icon" size={14} />{' '}
+              {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
+            </>,
+          )}
+        {deletingWorkspaceId &&
+          renderOverlayItem(
+            'status',
+            <>
+              <MiniLoadingSpinner variant="icon" size={14} />{' '}
+              {deletingWorkspaceStatus || 'Deleting workspace...'}
+            </>,
+          )}
+        {runtimeOverlayStatus &&
+          !creatingWorkspace &&
+          !duplicatingWorkspaceSourceId &&
+          !deletingWorkspaceId &&
+          renderOverlayItem(
+            'status',
+            <>
+              <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
+            </>,
+          )}
+        {previewNotice && renderOverlayItem(previewNotice.tone ?? 'success', previewNotice.message)}
+        {visibleLiveDataWarningMessage &&
+          renderOverlayItem(
+            'warning',
+            `Possible live data query issue: ${visibleLiveDataWarningMessage}`,
+          )}
+        {formattedError &&
+          !creatingWorkspace &&
+          !duplicatingWorkspaceSourceId &&
+          !deletingWorkspaceId &&
+          renderOverlayItem('error', formattedError)}
+      </div>
+    ) : null;
 
   return (
     <div className={`userspace-layout${isFullscreen ? ' userspace-fullscreen' : ''}`}>
@@ -8776,73 +8896,7 @@ export function UserSpacePanel({
         </div>
       </div>
 
-      {/* === Floating status overlay (non-layout shifting) === */}
-      {hasStatusOverlayContent && statusOverlayVisible && (
-        <div
-          className={`userspace-status-overlay${statusOverlayFading ? ' is-fading' : ''}${statusOverlayPinned ? ' is-pinned' : ''}`}
-          role="status"
-          aria-live="polite"
-          onMouseEnter={() => {
-            setStatusOverlayInteracting(true);
-            setStatusOverlayFading(false);
-          }}
-          onMouseLeave={() => setStatusOverlayInteracting(false)}
-          onFocusCapture={() => {
-            setStatusOverlayInteracting(true);
-            setStatusOverlayFading(false);
-          }}
-          onBlurCapture={(event) => {
-            if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              return;
-            }
-            setStatusOverlayInteracting(false);
-          }}
-          onClick={handleStatusOverlayClick}
-          title={
-            statusOverlayPinned
-              ? 'Pinned. Click to unpin and restore fade behavior.'
-              : 'Click to pin this notification. Click again to unpin.'
-          }
-        >
-          {loading && (
-            <p className="userspace-status userspace-status-overlay-item">Loading workspaces...</p>
-          )}
-          {creatingWorkspace && (
-            <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} />{' '}
-              {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
-            </p>
-          )}
-          {duplicatingWorkspaceSourceId && (
-            <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} />{' '}
-              {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
-            </p>
-          )}
-          {deletingWorkspaceId && (
-            <p className="userspace-status userspace-status-overlay-item">
-              <MiniLoadingSpinner variant="icon" size={14} />{' '}
-              {deletingWorkspaceStatus || 'Deleting workspace...'}
-            </p>
-          )}
-          {runtimeOverlayStatus &&
-            !creatingWorkspace &&
-            !duplicatingWorkspaceSourceId &&
-            !deletingWorkspaceId && (
-              <p className="userspace-status userspace-status-overlay-item">
-                <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
-              </p>
-            )}
-          {formattedError &&
-            !creatingWorkspace &&
-            !duplicatingWorkspaceSourceId &&
-            !deletingWorkspaceId && (
-              <p className="userspace-error userspace-status userspace-status-overlay-item">
-                {formattedError}
-              </p>
-            )}
-        </div>
-      )}
+      {rightPaneCollapsed ? renderUserspaceOverlay(' userspace-status-overlay-root') : null}
 
       {/* === Main content: left pane (editor+chat) | right pane (preview+snapshots) === */}
       <div
@@ -9107,8 +9161,11 @@ export function UserSpacePanel({
           ref={rightPaneRef}
           style={{ display: rightPaneCollapsed ? 'none' : undefined }}
         >
-          {activeRightTab === 'preview' ? (
-            <div className="userspace-preview-section">
+          <div
+            className={`userspace-preview-section${activeRightTab === 'console' ? ' userspace-preview-section-console' : ''}`}
+          >
+            {rightPaneCollapsed ? null : renderUserspaceOverlay()}
+            {activeRightTab === 'preview' ? (
               <UserSpaceArtifactPreview
                 entryPath={previewEntryPath}
                 workspaceFiles={previewWorkspaceFiles}
@@ -9126,66 +9183,58 @@ export function UserSpacePanel({
                 onNetworkActivityChange={setPreviewNetworkActivity}
                 onLiveDataWarningChange={handleLiveDataWarningChange}
                 onLiveDataTimeout={handleLiveDataTimeout}
-                previewNotice={previewNotice}
+                onPreviewOverlayMessage={handlePreviewOverlayMessage}
                 onPreviewSessionExpired={handlePreviewSessionExpired}
               />
-            </div>
-          ) : (
-            <div className="userspace-preview-section" style={{ padding: 12 }}>
-              {runtimeCapSysAdminMissing && (
-                <div
-                  className="userspace-snapshot-item"
-                  style={{ marginBottom: 8, alignItems: 'flex-start' }}
-                >
+            ) : (
+              <>
+                {runtimeCapSysAdminMissing && (
                   <div
-                    className="userspace-snapshot-info"
-                    style={{
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
-                      gap: 4,
-                      overflow: 'visible',
-                    }}
+                    className="userspace-snapshot-item"
+                    style={{ marginBottom: 8, alignItems: 'flex-start' }}
                   >
-                    <strong>Runtime isolation notice</strong>
-                    <span
-                      className="userspace-muted"
-                      style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}
+                    <div
+                      className="userspace-snapshot-info"
+                      style={{
+                        flexDirection: 'column',
+                        alignItems: 'flex-start',
+                        gap: 4,
+                        overflow: 'visible',
+                      }}
                     >
-                      Runtime is running without CAP_SYS_ADMIN. Console commands run with reduced
-                      isolation (chroot fallback). Enable CAP_SYS_ADMIN on the runtime service for
-                      full namespace + pivot_root isolation.
+                      <strong>Runtime isolation notice</strong>
+                      <span
+                        className="userspace-muted"
+                        style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}
+                      >
+                        Runtime is running without CAP_SYS_ADMIN. Console commands run with reduced
+                        isolation (chroot fallback). Enable CAP_SYS_ADMIN on the runtime service for
+                        full namespace + pivot_root isolation.
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {runtimeStatus?.last_error && (
+                  <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
+                    <div className="userspace-snapshot-info">
+                      <strong>Error</strong>
+                      <span className="userspace-muted">{runtimeStatus.last_error}</span>
+                    </div>
+                  </div>
+                )}
+                <div className="userspace-runtime-terminal-wrap">
+                  <div ref={terminalContainerRef} className="userspace-runtime-terminal" />
+                </div>
+                {terminalReadOnly && (
+                  <div className="userspace-toolbar-actions" style={{ marginTop: 8 }}>
+                    <span className="userspace-muted">
+                      Terminal is read-only for your workspace role.
                     </span>
                   </div>
-                </div>
-              )}
-              {runtimeStatus?.last_error && (
-                <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
-                  <div className="userspace-snapshot-info">
-                    <strong>Error</strong>
-                    <span className="userspace-muted">{runtimeStatus.last_error}</span>
-                  </div>
-                </div>
-              )}
-              {runtimeStatus?.live_data_warning && (
-                <div className="userspace-snapshot-item" style={{ marginBottom: 8 }}>
-                  <div className="userspace-snapshot-info">
-                    <strong>Warning</strong>
-                    <span className="userspace-muted">{`Possible live data query issue: ${runtimeStatus.live_data_warning}`}</span>
-                  </div>
-                </div>
-              )}
-              <div className="userspace-runtime-terminal-wrap">
-                <div ref={terminalContainerRef} className="userspace-runtime-terminal" />
-              </div>
-              {terminalReadOnly && (
-                <div className="userspace-toolbar-actions" style={{ marginTop: 8 }}>
-                  <span className="userspace-muted">
-                    Terminal is read-only for your workspace role.
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </>
+            )}
+          </div>
 
           {/* Snapshots */}
           <div className="userspace-snapshots-section">

@@ -3309,7 +3309,9 @@ async def list_workspace_code_index_jobs(
             j.error_message,
             j.created_at,
             j.started_at,
-            j.completed_at
+            j.completed_at,
+            j.waiting_for_job_id,
+            j.cancel_requested
         FROM workspace_code_index_jobs j
         JOIN workspaces w ON w.id = j.workspace_id
         ORDER BY j.created_at DESC
@@ -3317,6 +3319,21 @@ async def list_workspace_code_index_jobs(
         """
     )
     return [WorkspaceCodeIndexJobResponse(**row) for row in rows]
+
+
+@router.post(
+    "/code-indexes/jobs/{job_id}/cancel",
+    tags=["User Space Code Indexes"],
+)
+async def cancel_workspace_code_index_job(
+    job_id: str,
+    _user: Any = Depends(require_admin),
+):
+    """Cancel a pending or indexing workspace code index job. Admin only."""
+    cancelled = await workspace_code_index_service.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(status_code=400, detail="Job cannot be cancelled")
+    return {"job_id": job_id, "success": True}
 
 
 @router.post(

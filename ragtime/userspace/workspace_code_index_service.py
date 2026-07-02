@@ -6,6 +6,7 @@ import os
 import re
 import uuid
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, cast
 
@@ -24,6 +25,11 @@ from ragtime.indexer.vector_utils import embed_documents_subbatched, get_embeddi
 logger = get_logger(__name__)
 
 DirtyOperation = Literal["upsert", "delete", "reindex"]
+
+
+class WorkspaceCodeIndexCancelled(Exception):
+    """Raised when a running code-index job is cancelled mid-flight."""
+
 
 _DEFAULT_DEBOUNCE_SECONDS = 2
 _DEFAULT_RECONCILE_INTERVAL_SECONDS = 300
@@ -107,7 +113,13 @@ class WorkspaceCodeIndexService:
         self._max_attempts_override = max_attempts
         self._filesystem_indexer = FilesystemIndexerService()
         self._worker_task: asyncio.Task[None] | None = None
+        self._queue_runner_task: asyncio.Task[None] | None = None
         self._workspace_tasks: dict[str, asyncio.Task[None]] = {}
+        self._active_job_tasks: dict[str, asyncio.Task[None]] = {}
+        self._active_workspace_ids: set[str] = set()
+        self._cancellation_flags: dict[str, bool] = {}
+        self._queue_event = asyncio.Event()
+        self._queue_lock = asyncio.Lock()
         self._shutdown = False
 
     async def _debounce_seconds(self) -> float:
@@ -138,6 +150,14 @@ class WorkspaceCodeIndexService:
             _DEFAULT_MAX_DIRTY_ATTEMPTS,
             min_value=1,
             max_value=20,
+        )
+
+    async def _max_concurrent_jobs(self) -> int:
+        return await _load_code_index_setting_int(
+            "userspace_code_index_max_concurrency",
+            1,
+            min_value=1,
+            max_value=8,
         )
 
     async def _enabled(self) -> bool:
@@ -305,46 +325,316 @@ class WorkspaceCodeIndexService:
         if self._workspace_tasks.get(workspace_id) is done_task:
             self._workspace_tasks.pop(workspace_id, None)
 
+    async def _relink_pending_jobs(self) -> None:
+        db = await get_db()
+        running_rows = await db.query_raw(
+            """
+            SELECT id FROM workspace_code_index_jobs
+            WHERE status = 'indexing'
+            ORDER BY started_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            """
+        )
+        rows = await db.query_raw(
+            f"""
+            SELECT id FROM workspace_code_index_jobs
+            WHERE status = 'pending'
+            ORDER BY created_at ASC, id ASC
+            """
+        )
+        # Seed the chain with the most recently started running job so the
+        # head-of-queue pending job always names the job it is waiting for.
+        previous_id: str | None = str(running_rows[0].get("id") or "") or None if running_rows else None
+        for row in rows:
+            job_id = str(row.get("id") or "")
+            if not job_id:
+                continue
+            await db.execute_raw(
+                f"""
+                UPDATE workspace_code_index_jobs
+                SET waiting_for_job_id = {_sql(previous_id)}
+                WHERE id = {_sql(job_id)}
+                """
+            )
+            previous_id = job_id
+
+    async def _enqueue_workspace(self, workspace_id: str) -> str | None:
+        async with self._queue_lock:
+            index_name = await self.ensure_state(workspace_id)
+            db = await get_db()
+            existing = await db.query_raw(
+                f"""
+                SELECT id FROM workspace_code_index_jobs
+                WHERE workspace_id = {_sql(workspace_id)} AND status = 'pending'
+                LIMIT 1
+                """
+            )
+            if existing:
+                job_id = str(existing[0].get("id") or "")
+                if job_id:
+                    self._queue_event.set()
+                    return job_id
+
+            rows = await db.query_raw(
+                f"""
+                INSERT INTO workspace_code_index_jobs
+                    (id, workspace_id, index_name, status, phase, total_files, processed_files, total_chunks, processed_chunks, current_file, created_at, started_at, cancel_requested)
+                VALUES
+                    ({_sql(str(uuid.uuid4()))}, {_sql(workspace_id)}, {_sql(index_name)}, 'pending', {_sql(WorkspaceCodeIndexJobPhase.COLLECTING.value)}, 0, 0, 0, 0, NULL, NOW(), NULL, FALSE)
+                RETURNING id
+                """
+            )
+            job_id = str(rows[0].get("id") or "") if rows else ""
+            await self._relink_pending_jobs()
+            self._queue_event.set()
+            return job_id or None
+
+    async def _recover_orphaned_jobs(self) -> None:
+        db = await get_db()
+        await db.execute_raw(
+            f"""
+            UPDATE workspace_code_index_jobs
+            SET status = 'pending',
+                started_at = NULL,
+                completed_at = NULL,
+                current_file = NULL,
+                cancel_requested = FALSE
+            WHERE status = 'indexing'
+            """
+        )
+        await self._relink_pending_jobs()
+        self._queue_event.set()
+
+    def _check_cancelled(self, job_id: str) -> None:
+        if self._cancellation_flags.get(job_id):
+            raise WorkspaceCodeIndexCancelled()
+
+    async def _cancel_job(self, job_id: str, workspace_id: str) -> None:
+        db = await get_db()
+        await db.execute_raw(
+            f"""
+            UPDATE workspace_code_index_jobs
+            SET status = 'cancelled',
+                current_file = NULL,
+                completed_at = NOW(),
+                cancel_requested = FALSE
+            WHERE id = {_sql(job_id)}
+            """
+        )
+        await db.execute_raw(
+            f"""
+            UPDATE workspace_code_index_states
+            SET status = 'stale', updated_at = NOW()
+            WHERE workspace_id = {_sql(workspace_id)}
+            """
+        )
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a pending or indexing job; return whether it was cancellable."""
+        db = await get_db()
+        rows = await db.query_raw(
+            f"""
+            SELECT id, workspace_id, status FROM workspace_code_index_jobs
+            WHERE id = {_sql(job_id)}
+            LIMIT 1
+            """
+        )
+        if not rows:
+            return False
+        status = str(rows[0].get("status") or "")
+        if status in ("completed", "failed", "cancelled"):
+            return False
+        if status == "pending":
+            updated = await db.execute_raw(
+                f"""
+                UPDATE workspace_code_index_jobs
+                SET status = 'cancelled',
+                    current_file = NULL,
+                    completed_at = NOW(),
+                    cancel_requested = FALSE
+                WHERE id = {_sql(job_id)} AND status = 'pending'
+                """
+            )
+            if updated == 1:
+                await self._relink_pending_jobs()
+                self._queue_event.set()
+                return True
+            # Lost the race: the job was claimed between SELECT and UPDATE.
+            # Re-read the row and fall through to indexing handling if applicable.
+            rows = await db.query_raw(
+                f"""
+                SELECT id, workspace_id, status FROM workspace_code_index_jobs
+                WHERE id = {_sql(job_id)}
+                LIMIT 1
+                """
+            )
+            if not rows:
+                return False
+            status = str(rows[0].get("status") or "")
+            if status in ("completed", "failed", "cancelled"):
+                return False
+        if status == "indexing":
+            self._cancellation_flags[job_id] = True
+            await db.execute_raw(
+                f"""
+                UPDATE workspace_code_index_jobs
+                SET cancel_requested = TRUE
+                WHERE id = {_sql(job_id)}
+                """
+            )
+            return True
+        return False
+
+    async def _maybe_enqueue_follow_up(self, workspace_id: str) -> None:
+        db = await get_db()
+        max_attempts = await self._max_dirty_attempts()
+        remaining = await db.query_raw(
+            f"""
+            SELECT id FROM workspace_code_index_dirty_paths
+            WHERE workspace_id = {_sql(workspace_id)}
+              AND attempt_count < {max_attempts}
+            LIMIT 1
+            """
+        )
+        if remaining:
+            await self._enqueue_workspace(workspace_id)
+
+    async def _claim_next_pending_job(self, skip_workspace_ids: set[str] | None = None) -> tuple[str, str] | None:
+        skip_workspace_ids = skip_workspace_ids or set()
+        skip_clause = ""
+        if skip_workspace_ids:
+            quoted = ", ".join(_sql(ws) for ws in skip_workspace_ids)
+            skip_clause = f"AND workspace_id NOT IN ({quoted})"
+        db = await get_db()
+        rows = await db.query_raw(
+            f"""
+            WITH next_job AS (
+                SELECT id, workspace_id FROM workspace_code_index_jobs
+                WHERE status = 'pending' {skip_clause}
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE workspace_code_index_jobs
+            SET status = 'indexing',
+                started_at = NOW(),
+                waiting_for_job_id = NULL,
+                cancel_requested = FALSE
+            FROM next_job
+            WHERE workspace_code_index_jobs.id = next_job.id
+            RETURNING workspace_code_index_jobs.id, workspace_code_index_jobs.workspace_id
+            """
+        )
+        if not rows:
+            return None
+        return str(rows[0].get("id") or ""), str(rows[0].get("workspace_id") or "")
+
+    async def _run_claimed_job(self, workspace_id: str, job_id: str) -> None:
+        cancelled = False
+        try:
+            await self._process_dirty_workspace_for_job(workspace_id, job_id)
+        except asyncio.CancelledError:
+            raise
+        except WorkspaceCodeIndexCancelled:
+            cancelled = True
+            logger.info("Workspace code index job %s cancelled for %s", job_id, workspace_id)
+            try:
+                await self._cancel_job(job_id, workspace_id)
+            except Exception:
+                logger.exception("Failed to cancel job %s for %s", job_id, workspace_id)
+        except Exception as exc:
+            logger.exception("Workspace code index job %s failed for %s: %s", job_id, workspace_id, exc)
+        finally:
+            self._active_job_tasks.pop(job_id, None)
+            self._active_workspace_ids.discard(workspace_id)
+            self._cancellation_flags.pop(job_id, None)
+            if not cancelled:
+                try:
+                    await self._maybe_enqueue_follow_up(workspace_id)
+                except Exception:
+                    logger.exception("Failed to enqueue follow-up for %s", workspace_id)
+            try:
+                await self._relink_pending_jobs()
+            except Exception:
+                logger.exception("Failed to relink pending jobs after %s", job_id)
+            self._queue_event.set()
+
+    async def _queue_runner_loop(self) -> None:
+        while not self._shutdown:
+            try:
+                await self._queue_event.wait()
+                if self._shutdown:
+                    break
+                self._queue_event.clear()
+                max_concurrent = await self._max_concurrent_jobs()
+                while len(self._active_job_tasks) < max_concurrent and not self._shutdown:
+                    claimed = await self._claim_next_pending_job(self._active_workspace_ids)
+                    if claimed is None:
+                        break
+                    job_id, workspace_id = claimed
+                    self._active_workspace_ids.add(workspace_id)
+                    task = asyncio.create_task(self._run_claimed_job(workspace_id, job_id))
+                    self._active_job_tasks[job_id] = task
+                    task.add_done_callback(partial(self._prune_active_job_task, job_id))
+                    await self._relink_pending_jobs()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("Workspace code index queue runner error: %s", exc)
+                self._queue_event.set()
+
+    def _prune_active_job_task(self, job_id: str, done_task: asyncio.Task[None]) -> None:
+        if self._active_job_tasks.get(job_id) is done_task:
+            self._active_job_tasks.pop(job_id, None)
+
     async def start(self) -> None:
         if self._worker_task and not self._worker_task.done():
             return
         self._shutdown = False
+        self._queue_event.clear()
+        try:
+            await self._recover_orphaned_jobs()
+        except Exception as exc:
+            logger.warning("Failed to recover orphaned workspace code index jobs: %s", exc)
         self._worker_task = asyncio.create_task(self._worker_loop())
+        if self._queue_runner_task is None or self._queue_runner_task.done():
+            self._queue_runner_task = asyncio.create_task(self._queue_runner_loop())
 
     async def stop(self) -> None:
         self._shutdown = True
-        tasks = [task for task in self._workspace_tasks.values() if not task.done()]
+        self._queue_event.set()
+        tasks: list[asyncio.Task[Any]] = []
+        if self._queue_runner_task and not self._queue_runner_task.done():
+            self._queue_runner_task.cancel()
+            tasks.append(self._queue_runner_task)
+        for task in list(self._active_job_tasks.values()):
+            if not task.done():
+                task.cancel()
+                tasks.append(task)
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
             tasks.append(self._worker_task)
-        for task in tasks:
-            task.cancel()
+        for task in self._workspace_tasks.values():
+            if not task.done():
+                task.cancel()
+                tasks.append(task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._workspace_tasks.clear()
+        self._active_job_tasks.clear()
+        self._active_workspace_ids.clear()
+        self._cancellation_flags.clear()
         self._worker_task = None
+        self._queue_runner_task = None
 
     async def _debounced_process(self, workspace_id: str) -> None:
         try:
             await asyncio.sleep(await self._debounce_seconds())
-            while True:
-                await self.process_dirty_workspace(workspace_id)
-                max_attempts = await self._max_dirty_attempts()
-                db = await get_db()
-                remaining = await db.query_raw(
-                    f"""
-                    SELECT id FROM workspace_code_index_dirty_paths
-                    WHERE workspace_id = {_sql(workspace_id)}
-                      AND attempt_count < {max_attempts}
-                    LIMIT 1
-                    """
-                )
-                if not remaining:
-                    break
+            await self._enqueue_workspace(workspace_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("Workspace code index processing failed for %s: %s", workspace_id, exc)
+            logger.warning("Workspace code index enqueue failed for %s: %s", workspace_id, exc)
 
     async def _worker_loop(self) -> None:
         while not self._shutdown:
@@ -397,6 +687,9 @@ class WorkspaceCodeIndexService:
         return list(scheduled)
 
     async def process_dirty_workspace(self, workspace_id: str) -> None:
+        await self._enqueue_workspace(workspace_id)
+
+    async def _process_dirty_workspace_for_job(self, workspace_id: str, job_id: str) -> None:
         await self.ensure_state(workspace_id)
         db = await get_db()
         process_started_at = utc_now()
@@ -411,6 +704,8 @@ class WorkspaceCodeIndexService:
             """
         )
         if not dirty_rows:
+            await self._refresh_state_counts(workspace_id, status="ready")
+            await self._complete_job(job_id)
             return
 
         await db.execute_raw(
@@ -423,48 +718,58 @@ class WorkspaceCodeIndexService:
         try:
             if any(row.get("operation") == "reindex" for row in dirty_rows):
                 dirty_ids = [str(row.get("id") or "") for row in dirty_rows if row.get("id")]
-                await self.reindex_workspace(workspace_id, processed_dirty_ids=dirty_ids, process_started_at=process_started_at)
+                await self.reindex_workspace(
+                    workspace_id,
+                    job_id=job_id,
+                    processed_dirty_ids=dirty_ids,
+                    process_started_at=process_started_at,
+                )
                 return
             index_name = self.index_name_for_workspace(workspace_id)
-            job_id = await self._start_job(workspace_id, index_name, total_files=len(dirty_rows))
-            try:
-                embedding_dimension: int | None = None
-                processed_chunks = 0
-                for idx, row in enumerate(dirty_rows, start=1):
-                    path = _normalize_path(str(row.get("path") or ""))
-                    operation = str(row.get("operation") or "upsert")
-                    if operation == "delete":
-                        await self.delete_file_from_index(workspace_id, path)
-                    else:
-                        chunk_count, file_embedding_dimension = await self.index_file(
-                            workspace_id,
-                            path,
-                            job_id=job_id,
-                            processed_chunks_so_far=processed_chunks,
-                        )
-                        processed_chunks += chunk_count
-                        if file_embedding_dimension is not None:
-                            embedding_dimension = file_embedding_dimension
-                    await db.execute_raw(
-                        f"""
-                        DELETE FROM workspace_code_index_dirty_paths
-                        WHERE workspace_id = {_sql(workspace_id)} AND path = {_sql(path)}
-                        """
+            await self._update_job_progress(
+                job_id,
+                total_files=len(dirty_rows),
+                current_file=None,
+                phase=WorkspaceCodeIndexJobPhase.COLLECTING,
+            )
+            embedding_dimension: int | None = None
+            processed_chunks = 0
+            for idx, row in enumerate(dirty_rows, start=1):
+                self._check_cancelled(job_id)
+                path = _normalize_path(str(row.get("path") or ""))
+                operation = str(row.get("operation") or "upsert")
+                if operation == "delete":
+                    await self.delete_file_from_index(workspace_id, path)
+                else:
+                    chunk_count, file_embedding_dimension = await self.index_file(
+                        workspace_id,
+                        path,
+                        job_id=job_id,
+                        processed_chunks_so_far=processed_chunks,
                     )
-                    await self._update_job_progress(job_id, processed_files=idx, current_file=path)
-                repo_settings = await IndexerRepository().get_settings()
-                await self._refresh_state_counts(
-                    workspace_id,
-                    status="ready",
-                    embedding_dimension=embedding_dimension,
-                    embedding_config_hash=repo_settings.get_embedding_config_hash(),
+                    processed_chunks += chunk_count
+                    if file_embedding_dimension is not None:
+                        embedding_dimension = file_embedding_dimension
+                await db.execute_raw(
+                    f"""
+                    DELETE FROM workspace_code_index_dirty_paths
+                    WHERE workspace_id = {_sql(workspace_id)} AND path = {_sql(path)}
+                    """
                 )
-                await self._complete_job(job_id)
-            except Exception as exc:
-                if job_id:
-                    await self._fail_job(job_id, str(exc))
-                raise
+                await self._update_job_progress(job_id, processed_files=idx, current_file=path)
+            repo_settings = await IndexerRepository().get_settings()
+            await self._refresh_state_counts(
+                workspace_id,
+                status="ready",
+                embedding_dimension=embedding_dimension,
+                embedding_config_hash=repo_settings.get_embedding_config_hash(),
+            )
+            await self._complete_job(job_id)
+        except WorkspaceCodeIndexCancelled:
+            raise
         except Exception as exc:
+            if job_id:
+                await self._fail_job(job_id, str(exc))
             dirty_ids = [str(row.get("id") or "") for row in dirty_rows if row.get("id")]
             if dirty_ids:
                 quoted_ids = ", ".join(_sql(item) for item in dirty_ids)
@@ -484,15 +789,16 @@ class WorkspaceCodeIndexService:
                 WHERE workspace_id = {_sql(workspace_id)}
                 """
             )
-            raise
 
     async def reindex_workspace(
         self,
         workspace_id: str,
         *,
+        job_id: str | None = None,
         processed_dirty_ids: list[str] | None = None,
         process_started_at: datetime | None = None,
     ) -> None:
+        supplied_job_id = job_id
         index_name = await self.ensure_state(workspace_id)
         backend = get_pgvector_backend()
         await backend.delete_index(index_name)
@@ -502,12 +808,22 @@ class WorkspaceCodeIndexService:
 
         files = await self.collect_indexable_files(workspace_id)
         total_files = len(files)
-        job_id = await self._start_job(workspace_id, index_name, total_files=total_files, phase=WorkspaceCodeIndexJobPhase.LOADING_FILES)
+        if job_id:
+            await self._update_job_progress(
+                job_id,
+                total_files=total_files,
+                current_file=None,
+                phase=WorkspaceCodeIndexJobPhase.LOADING_FILES,
+            )
+        else:
+            job_id = await self._start_job(workspace_id, index_name, total_files=total_files, phase=WorkspaceCodeIndexJobPhase.LOADING_FILES)
         try:
             processed_files = 0
             embedding_dimension: int | None = None
             processed_chunks = 0
             for file_path in files:
+                if job_id:
+                    self._check_cancelled(job_id)
                 rel_path = file_path.relative_to(self.userspace_service._workspace_files_dir(workspace_id)).as_posix()
                 chunk_count, file_embedding_dimension = await self.index_file(
                     workspace_id,
@@ -546,8 +862,10 @@ class WorkspaceCodeIndexService:
             )
             if job_id:
                 await self._complete_job(job_id)
+        except WorkspaceCodeIndexCancelled:
+            raise
         except Exception as exc:
-            if job_id:
+            if not supplied_job_id and job_id:
                 await self._fail_job(job_id, str(exc))
             raise
 
@@ -654,9 +972,22 @@ class WorkspaceCodeIndexService:
         task = self._workspace_tasks.pop(workspace_id, None)
         if task and not task.done():
             task.cancel()
+        db = await get_db()
+        # Flag any in-flight indexing job for this workspace so the running
+        # task stops at the next cancellation checkpoint instead of
+        # resurrecting state for a deleted workspace.
+        active_rows = await db.query_raw(
+            f"""
+            SELECT id FROM workspace_code_index_jobs
+            WHERE workspace_id = {_sql(workspace_id)} AND status = 'indexing'
+            """
+        )
+        for row in active_rows:
+            active_job_id = str(row.get("id") or "")
+            if active_job_id:
+                self._cancellation_flags[active_job_id] = True
         index_name = self.index_name_for_workspace(workspace_id)
         await get_pgvector_backend().delete_index(index_name)
-        db = await get_db()
         await db.execute_raw(f"DELETE FROM filesystem_file_metadata WHERE index_name = {_sql(index_name)}")
         await db.execute_raw(f"DELETE FROM workspace_code_symbols WHERE workspace_id = {_sql(workspace_id)}")
         await db.execute_raw(f"DELETE FROM workspace_code_index_dirty_paths WHERE workspace_id = {_sql(workspace_id)}")
@@ -742,6 +1073,7 @@ class WorkspaceCodeIndexService:
         self,
         job_id: str,
         *,
+        total_files: int | None = None,
         processed_files: int | None = None,
         total_chunks: int | None = None,
         processed_chunks: int | None = None,
@@ -751,6 +1083,8 @@ class WorkspaceCodeIndexService:
         """Update progress columns on a job row."""
         db = await get_db()
         set_clauses = []
+        if total_files is not None:
+            set_clauses.append(f"total_files = {total_files}")
         if processed_files is not None:
             set_clauses.append(f"processed_files = {processed_files}")
         if total_chunks is not None:
@@ -780,7 +1114,7 @@ class WorkspaceCodeIndexService:
             f"""
             UPDATE workspace_code_index_jobs
             SET status = 'completed', current_file = NULL, completed_at = NOW()
-            WHERE id = {_sql(job_id)}
+            WHERE id = {_sql(job_id)} AND status = 'indexing'
             """
         )
 
@@ -790,7 +1124,7 @@ class WorkspaceCodeIndexService:
             f"""
             UPDATE workspace_code_index_jobs
             SET status = 'failed', error_message = {_sql(str(error_message)[:2000])}, current_file = NULL, completed_at = NOW()
-            WHERE id = {_sql(job_id)}
+            WHERE id = {_sql(job_id)} AND status = 'indexing'
             """
         )
 

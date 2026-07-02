@@ -300,6 +300,7 @@ model AppSettings {
   userspaceCodeIndexDebounceSeconds        Int      @default(2) @map("userspace_code_index_debounce_seconds")
   userspaceCodeIndexReconcileIntervalSeconds Int    @default(300) @map("userspace_code_index_reconcile_interval_seconds")
   userspaceCodeIndexMaxAttempts            Int      @default(3) @map("userspace_code_index_max_attempts")
+  userspaceCodeIndexMaxConcurrency         Int      @default(1) @map("userspace_code_index_max_concurrency")
 
   // Index Archive Extraction Limits
   archiveMaxTotalSizeBytes             BigInt   @default(5368709120) @map("archive_max_total_size_bytes") // 5 GB max extracted archive size
@@ -392,6 +393,7 @@ enum WorkspaceCodeIndexJobStatus {
   indexing
   completed
   failed
+  cancelled
 }
 
 enum WorkspaceCodeIndexJobPhase {
@@ -1356,6 +1358,8 @@ model WorkspaceCodeIndexJob {
   processedChunks Int                       @default(0) @map("processed_chunks")
   currentFile     String?                   @map("current_file")
   errorMessage    String?                   @map("error_message")
+  waitingForJobId String?                   @map("waiting_for_job_id")
+  cancelRequested Boolean                   @default(false) @map("cancel_requested")
   createdAt       DateTime                  @default(now()) @map("created_at")
   startedAt       DateTime?                 @map("started_at")
   completedAt     DateTime?                 @map("completed_at")
@@ -1364,6 +1368,7 @@ model WorkspaceCodeIndexJob {
 
   @@index([workspaceId])
   @@index([status])
+  @@index([waitingForJobId])
   @@map("workspace_code_index_jobs")
 }
 

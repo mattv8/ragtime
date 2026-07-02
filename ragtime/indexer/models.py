@@ -94,6 +94,10 @@ from ragtime.core.userspace_preview_sandbox import (
     normalize_userspace_preview_sandbox_flags,
 )
 
+DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
+MIN_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
+MAX_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 8
+
 
 class IndexStatus(str, Enum):
     """Status of an indexing job."""
@@ -1112,6 +1116,12 @@ class AppSettings(BaseModel):
         le=20,
         description="Maximum retry attempts for a failed User Space code index dirty path before it is ignored.",
     )
+    userspace_code_index_max_concurrency: int = Field(
+        default=DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
+        ge=MIN_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
+        le=MAX_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
+        description="Maximum number of User Space workspace code index jobs that may run concurrently.",
+    )
 
     # Index Archive Extraction Limits
     archive_max_total_size_bytes: int = Field(
@@ -1265,6 +1275,9 @@ class AppSettings(BaseModel):
             )
 
         return warnings
+
+
+SettingsResponse = AppSettings
 
 
 class EmbeddingStatus(BaseModel):
@@ -1605,6 +1618,12 @@ class UpdateSettingsRequest(BaseModel):
         ge=1,
         le=20,
         description="Maximum retry attempts for a failed User Space code index dirty path before it is ignored.",
+    )
+    userspace_code_index_max_concurrency: Optional[int] = Field(
+        default=None,
+        ge=MIN_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
+        le=MAX_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
+        description="Maximum number of User Space workspace code index jobs that may run concurrently.",
     )
 
     @field_validator("userspace_preview_sandbox_flags", mode="before")
@@ -2135,6 +2154,7 @@ class WorkspaceCodeIndexJobStatus(str, Enum):
     INDEXING = "indexing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class WorkspaceCodeIndexJobPhase(str, Enum):
@@ -2166,6 +2186,8 @@ class WorkspaceCodeIndexJobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    waiting_for_job_id: Optional[str] = None
+    cancel_requested: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -2173,7 +2195,11 @@ class WorkspaceCodeIndexJobResponse(BaseModel):
         """Phase-aware progress for User Space code indexing jobs."""
         if self.status == WorkspaceCodeIndexJobStatus.COMPLETED:
             return 100.0
-        if self.status in (WorkspaceCodeIndexJobStatus.PENDING, WorkspaceCodeIndexJobStatus.FAILED):
+        if self.status in (
+            WorkspaceCodeIndexJobStatus.PENDING,
+            WorkspaceCodeIndexJobStatus.FAILED,
+            WorkspaceCodeIndexJobStatus.CANCELLED,
+        ):
             return 0.0
         if self.phase == WorkspaceCodeIndexJobPhase.COLLECTING:
             return 0.0

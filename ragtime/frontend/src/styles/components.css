@@ -1940,8 +1940,8 @@ textarea:focus {
 
 .userspace-status-overlay {
   position: absolute;
-  top: calc(44px + var(--space-xs));
-  right: var(--space-md);
+  top: var(--space-sm);
+  right: var(--space-sm);
   z-index: 40;
   display: flex;
   flex-direction: column;
@@ -1951,6 +1951,11 @@ textarea:focus {
   max-width: min(520px, calc(100% - 2 * var(--space-md)));
   opacity: 1;
   transition: opacity 2s ease;
+}
+
+.userspace-status-overlay-root {
+  top: calc(44px + var(--space-xs));
+  right: var(--space-md);
 }
 
 .userspace-status-overlay-item:focus-visible {
@@ -1993,6 +1998,18 @@ textarea:focus {
   color: var(--color-error);
   border-color: color-mix(in srgb, var(--color-error-border) 75%, var(--color-border));
   background: color-mix(in srgb, var(--color-error-light) 58%, transparent);
+}
+
+.userspace-status-overlay-item.userspace-warning {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning-border) 75%, var(--color-border));
+  background: color-mix(in srgb, var(--color-warning-light) 58%, transparent);
+}
+
+.userspace-status-overlay-item.userspace-success {
+  color: var(--color-success);
+  border-color: color-mix(in srgb, var(--color-success-border) 75%, var(--color-border));
+  background: color-mix(in srgb, var(--color-success-light) 58%, transparent);
 }
 
 .userspace-inline-edit {
@@ -2601,12 +2618,17 @@ textarea:focus {
 }
 
 .userspace-preview-section {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   padding: 0;
+}
+
+.userspace-preview-section-console {
+  padding: 12px;
 }
 
 .userspace-runtime-terminal-wrap {
@@ -2668,37 +2690,6 @@ textarea:focus {
   flex-direction: column;
   padding: 0;
   overflow: hidden;
-}
-
-.userspace-preview-exec-error {
-  margin: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-error-border);
-  color: var(--color-error);
-  background: var(--color-error-light);
-}
-
-.userspace-preview-exec-notice {
-  margin: var(--space-sm);
-  padding: var(--space-sm) var(--space-md);
-  white-space: pre-wrap;
-  word-break: break-word;
-  border-radius: var(--radius-md);
-}
-
-.userspace-preview-exec-notice-success {
-  border: 1px solid var(--color-success-border);
-  color: var(--color-success);
-  background: var(--color-success-light);
-}
-
-.userspace-preview-exec-notice-error {
-  border: 1px solid var(--color-error-border);
-  color: var(--color-error);
-  background: var(--color-error-light);
 }
 
 .userspace-preview-frame {

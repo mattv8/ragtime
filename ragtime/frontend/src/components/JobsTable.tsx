@@ -24,6 +24,7 @@ interface JobsTableProps {
   onFilesystemJobsChanged?: () => void;
   onSchemaJobsChanged?: () => void;
   onPdmJobsChanged?: () => void;
+  onUserSpaceCodeJobsChanged?: () => void;
   onCancelFilesystemJob?: (toolId: string, jobId: string) => void;
   onCancelSchemaJob?: (toolId: string, jobId: string) => void;
   onCancelPdmJob?: (toolId: string, jobId: string) => void;
@@ -61,6 +62,7 @@ type UnifiedJob = {
   skippedDocuments?: number;
   // User Space code-specific fields
   currentFile?: string | null;
+  waitingForJobId?: string | null;
 };
 
 type ActionableJobType = 'document' | 'filesystem' | 'schema' | 'pdm';
@@ -393,13 +395,17 @@ function clampProgressPercent(value: number): number {
 }
 
 function toUnifiedUserSpaceCodeJob(job: UserSpaceCodeIndexJob): UnifiedJob {
-  const commonPhase = getCommonIndexingJobPhase(job.status);
+  const commonPhase = getCommonIndexingJobPhase(job.status, job.cancel_requested);
   let phase = commonPhase?.phase ?? '';
   let progress = commonPhase?.progress ?? clampProgressPercent(job.progress_percent);
 
   if (!commonPhase && job.status === 'indexing') {
     progress = clampProgressPercent(job.progress_percent);
     phase = getUserSpaceCodePhaseLabel(job.phase);
+  }
+
+  if (job.status === 'pending' && job.waiting_for_job_id) {
+    phase = `Waiting for ${job.waiting_for_job_id} to finish`;
   }
 
   return {
@@ -419,6 +425,8 @@ function toUnifiedUserSpaceCodeJob(job: UserSpaceCodeIndexJob): UnifiedJob {
     completedAt: job.completed_at,
     phase,
     currentFile: job.current_file,
+    waitingForJobId: job.waiting_for_job_id ?? null,
+    cancelRequested: job.cancel_requested,
   };
 }
 
@@ -453,6 +461,7 @@ export function JobsTable({
   onFilesystemJobsChanged,
   onSchemaJobsChanged,
   onPdmJobsChanged,
+  onUserSpaceCodeJobsChanged,
   onCancelFilesystemJob,
   onCancelSchemaJob,
   onCancelPdmJob,
@@ -498,7 +507,7 @@ export function JobsTable({
 
   const confirmCancel = async (
     jobId: string,
-    jobType: 'document' | 'filesystem' | 'schema' | 'pdm',
+    jobType: 'document' | 'filesystem' | 'schema' | 'pdm' | 'userspace_code',
     toolConfigId?: string,
   ) => {
     setCancelConfirmId(null);
@@ -513,6 +522,9 @@ export function JobsTable({
       } else if (jobType === 'pdm' && toolConfigId) {
         await onCancelPdmJob?.(toolConfigId, jobId);
         onPdmJobsChanged?.();
+      } else if (jobType === 'userspace_code') {
+        await api.cancelUserSpaceCodeIndexJob(jobId);
+        onUserSpaceCodeJobsChanged?.();
       } else {
         await api.cancelJob(jobId);
         onJobsChanged?.();
@@ -764,6 +776,10 @@ export function JobsTable({
                     job.status === 'processing' ||
                     job.status === 'indexing';
                   const actionableJobType = isActionableJobType(job.type) ? job.type : null;
+                  const cancellableJobType =
+                    isActionableJobType(job.type) || job.type === 'userspace_code'
+                      ? job.type
+                      : null;
 
                   return (
                     <tr key={`${job.type}-${job.id}`}>
@@ -929,7 +945,11 @@ export function JobsTable({
                             )}
                           </span>
                         ) : job.status === 'pending' ? (
-                          <span className="progress-pending">Waiting...</span>
+                          <span className="progress-pending">
+                            {job.type === 'userspace_code' && job.waitingForJobId
+                              ? `Waiting for ${job.waitingForJobId} to finish`
+                              : 'Waiting...'}
+                          </span>
                         ) : job.status === 'cancelled' ? (
                           <span className="progress-cancelled">Cancelled</span>
                         ) : (
@@ -946,13 +966,13 @@ export function JobsTable({
                           ) : (
                             <>
                               {isActive &&
-                                actionableJobType &&
+                                cancellableJobType &&
                                 (cancelConfirmId === job.id ? (
                                   <div style={{ display: 'flex', gap: '4px' }}>
                                     <button
                                       className="action-btn action-btn-confirm"
                                       onClick={() =>
-                                        confirmCancel(job.id, actionableJobType, job.toolConfigId)
+                                        confirmCancel(job.id, cancellableJobType, job.toolConfigId)
                                       }
                                       title="Confirm cancel"
                                     >

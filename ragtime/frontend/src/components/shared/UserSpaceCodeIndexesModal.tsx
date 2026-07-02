@@ -212,7 +212,7 @@ export function UserSpaceCodeIndexesModal({ isOpen, onClose }: UserSpaceCodeInde
     }
   };
 
-  const reconcileLabel = sortedItems.length === 0 ? 'Index all workspaces' : 'Reconcile now';
+  const reconcileLabel = sortedItems.length === 0 ? 'Index all workspaces' : 'Reconcile all workspaces now';
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -278,7 +278,7 @@ export function UserSpaceCodeIndexesModal({ isOpen, onClose }: UserSpaceCodeInde
             <p className="userspace-muted">No workspace code indexes have been created yet.</p>
           ) : (
             <div className="jobs-table-wrapper">
-              <table className="jobs-table">
+              <table className="jobs-table" style={{ whiteSpace: 'nowrap' }}>
                 <thead>
                   <tr>
                     <th>Workspace</th>
@@ -325,7 +325,11 @@ export function UserSpaceCodeIndexesModal({ isOpen, onClose }: UserSpaceCodeInde
                         <td>{formatCount(item.dirty_path_count)}</td>
                         <td className="progress-cell">
                           {activeStatus === 'pending' ? (
-                            <span className="progress-pending">Waiting...</span>
+                            <span className="progress-pending">
+                              {latestJob?.status === 'pending' && latestJob.waiting_for_job_id
+                                ? `Waiting for ${latestJob.waiting_for_job_id} to finish`
+                                : 'Waiting...'}
+                            </span>
                           ) : activeStatus === 'indexing' && activeProgressPercent !== null ? (
                             <div className="progress-container">
                               <div

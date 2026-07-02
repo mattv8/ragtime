@@ -4,7 +4,7 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-04-13 (codebase-scanned; concise agent-focused)
+Last updated: 2026-07-02 (codebase-scanned; concise agent-focused)
 
 ## Scope
 
@@ -21,6 +21,14 @@ Last updated: 2026-04-13 (codebase-scanned; concise agent-focused)
 - Preview is runtime-only and now uses dedicated per-workspace preview origins dispatched by `PreviewHostDispatchMiddleware` in `ragtime/userspace/preview_host.py`.
 - Preview launch is an explicit API step: control-plane routes mint short-lived bootstrap grants and the preview host mints a preview session cookie on first load.
 - Browser-auth cookie surfaces are only for `collab` and `runtime_pty`; preview no longer uses capability cookies.
+
+## Workspace Code Index Queue
+
+- Hidden User Space code indexes run through `WorkspaceCodeIndexService` (`ragtime/userspace/workspace_code_index_service.py`), not the generic filesystem indexer.
+- Dirty paths, manual reindex, missing-baseline reconcile, and `process_dirty_workspace()` all converge on durable `workspace_code_index_jobs` rows. Do not reintroduce direct `asyncio.create_task()` indexing paths.
+- Queue state is DB-owned: `pending` rows carry `waiting_for_job_id`; the runner atomically claims rows with `FOR UPDATE SKIP LOCKED`, clears the wait pointer, then runs them as `indexing`.
+- `userspace_code_index_max_concurrency` controls active jobs (default `1`, admin range `1..8`), but one workspace must not have two active code-index jobs at once.
+- Pending jobs cancel immediately; running jobs set `cancel_requested` and trip the in-memory cancellation flag checked during processing. Keep `cancelled` distinct from `failed`.
 
 ## Share Routing Split (Critical)
 

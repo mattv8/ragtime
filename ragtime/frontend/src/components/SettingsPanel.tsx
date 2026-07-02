@@ -298,6 +298,43 @@ function sanitizeOllamaDefaults(settings: AppSettings): AppSettings {
   return sanitized;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, value));
+}
+
+function logSliderToValue(sliderValue: number, minValue: number, maxValue: number): number {
+  const slider = clampNumber(sliderValue, 0, 100);
+  const scale = Math.log(maxValue / minValue);
+  return Math.round(minValue * Math.exp((slider / 100) * scale));
+}
+
+function valueToLogSlider(value: number, minValue: number, maxValue: number): number {
+  const clampedValue = clampNumber(value, minValue, maxValue);
+  const scale = Math.log(maxValue / minValue);
+  return Math.round((Math.log(clampedValue / minValue) / scale) * 100);
+}
+
+function zeroableLogSliderToValue(sliderValue: number, minValue: number, maxValue: number): number {
+  const slider = clampNumber(sliderValue, 0, 100);
+  if (slider <= 0) {
+    return 0;
+  }
+  const scale = Math.log(maxValue / minValue);
+  return Math.round(minValue * Math.exp(((slider - 1) / 99) * scale));
+}
+
+function valueToZeroableLogSlider(value: number, minValue: number, maxValue: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  const clampedValue = clampNumber(value, minValue, maxValue);
+  const scale = Math.log(maxValue / minValue);
+  return Math.max(1, Math.round((Math.log(clampedValue / minValue) / scale) * 99 + 1));
+}
+
 function parseLdapServerUrl(serverUrl: string | null | undefined): {
   protocol: 'ldap' | 'ldaps';
   host: string;
@@ -2026,6 +2063,7 @@ export function SettingsPanel({
         userspace_code_index_reconcile_interval_seconds:
           data.userspace_code_index_reconcile_interval_seconds,
         userspace_code_index_max_attempts: data.userspace_code_index_max_attempts,
+        userspace_code_index_max_concurrency: data.userspace_code_index_max_concurrency,
         archive_max_total_size_bytes: data.archive_max_total_size_bytes,
         archive_max_file_count: data.archive_max_file_count,
 
@@ -3102,6 +3140,7 @@ export function SettingsPanel({
         userspace_code_index_reconcile_interval_seconds:
           formData.userspace_code_index_reconcile_interval_seconds,
         userspace_code_index_max_attempts: formData.userspace_code_index_max_attempts,
+        userspace_code_index_max_concurrency: formData.userspace_code_index_max_concurrency,
         http_proxy_safe_timeout_seconds: formData.http_proxy_safe_timeout_seconds,
       });
       setSettings(updated);
@@ -3123,6 +3162,7 @@ export function SettingsPanel({
         userspace_code_index_reconcile_interval_seconds:
           updated.userspace_code_index_reconcile_interval_seconds,
         userspace_code_index_max_attempts: updated.userspace_code_index_max_attempts,
+        userspace_code_index_max_concurrency: updated.userspace_code_index_max_concurrency,
         http_proxy_safe_timeout_seconds: updated.http_proxy_safe_timeout_seconds,
       }));
       await onSettingsSaved?.();
@@ -3148,6 +3188,7 @@ export function SettingsPanel({
     formData.userspace_code_index_debounce_seconds,
     formData.userspace_code_index_reconcile_interval_seconds,
     formData.userspace_code_index_max_attempts,
+    formData.userspace_code_index_max_concurrency,
     formData.http_proxy_safe_timeout_seconds,
     onSettingsSaved,
   ]);
@@ -8541,24 +8582,59 @@ export function SettingsPanel({
                 <p className="field-help" style={{ marginTop: 0 }}>
                   Delay after workspace file writes before scheduling a hidden code-index update.
                 </p>
-                <input
-                  type="number"
-                  min="0"
-                  max="3600"
-                  step="1"
-                  value={
+                {(() => {
+                  const currentVal =
                     formData.userspace_code_index_debounce_seconds ??
                     settings?.userspace_code_index_debounce_seconds ??
-                    2
-                  }
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      userspace_code_index_debounce_seconds: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <p className="field-help">Range: 0 to 3600 seconds. Default: 2 seconds.</p>
+                    2;
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={valueToZeroableLogSlider(currentVal, 1, 3600)}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              userspace_code_index_debounce_seconds: zeroableLogSliderToValue(
+                                parseInt(e.target.value, 10),
+                                1,
+                                3600,
+                              ),
+                            })
+                          }
+                        />
+                        <input
+                          type="number"
+                          min="0"
+                          max="3600"
+                          step="1"
+                          aria-label="User Space Code Index Debounce seconds"
+                          value={currentVal}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value, 10);
+                            if (Number.isFinite(value)) {
+                              setFormData({
+                                ...formData,
+                                userspace_code_index_debounce_seconds: value,
+                              });
+                            }
+                          }}
+                          style={{
+                            width: '96px',
+                            textAlign: 'right',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        />
+                      </div>
+                      <p className="field-help">Range: 0 to 3600 seconds. Default: 2 seconds.</p>
+                    </>
+                  );
+                })()}
               </div>
 
               <div className="form-group" style={{ flex: 1 }}>
@@ -8566,49 +8642,175 @@ export function SettingsPanel({
                 <p className="field-help" style={{ marginTop: 0 }}>
                   Background interval for recovering persisted dirty workspace code-index rows.
                 </p>
-                <input
-                  type="number"
-                  min="10"
-                  max="86400"
-                  step="1"
-                  value={
+                {(() => {
+                  const currentVal =
                     formData.userspace_code_index_reconcile_interval_seconds ??
                     settings?.userspace_code_index_reconcile_interval_seconds ??
-                    300
-                  }
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      userspace_code_index_reconcile_interval_seconds: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <p className="field-help">Range: 10 to 86400 seconds. Default: 300 seconds.</p>
+                    300;
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={valueToLogSlider(currentVal, 10, 86400)}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              userspace_code_index_reconcile_interval_seconds: logSliderToValue(
+                                parseInt(e.target.value, 10),
+                                10,
+                                86400,
+                              ),
+                            })
+                          }
+                        />
+                        <input
+                          type="number"
+                          min="10"
+                          max="86400"
+                          step="1"
+                          aria-label="User Space Code Index Reconcile Interval seconds"
+                          value={currentVal}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value, 10);
+                            if (Number.isFinite(value)) {
+                              setFormData({
+                                ...formData,
+                                userspace_code_index_reconcile_interval_seconds: value,
+                              });
+                            }
+                          }}
+                          style={{
+                            width: '96px',
+                            textAlign: 'right',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        />
+                      </div>
+                      <p className="field-help">
+                        Range: 10 to 86400 seconds. Default: 300 seconds.
+                      </p>
+                    </>
+                  );
+                })()}
               </div>
+            </div>
 
+            <div className="form-row">
               <div className="form-group" style={{ flex: 1 }}>
                 <label>User Space Code Index Max Attempts</label>
                 <p className="field-help" style={{ marginTop: 0 }}>
                   Retry cap for a dirty path before leaving its last error visible to admins.
                 </p>
-                <input
-                  type="number"
-                  min="1"
-                  max="20"
-                  step="1"
-                  value={
+                {(() => {
+                  const currentVal =
                     formData.userspace_code_index_max_attempts ??
                     settings?.userspace_code_index_max_attempts ??
-                    3
-                  }
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      userspace_code_index_max_attempts: parseInt(e.target.value, 10),
-                    })
-                  }
-                />
-                <p className="field-help">Range: 1 to 20 attempts. Default: 3 attempts.</p>
+                    3;
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="1"
+                          max="20"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              userspace_code_index_max_attempts: parseInt(e.target.value, 10),
+                            })
+                          }
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          max="20"
+                          step="1"
+                          aria-label="User Space Code Index Max Attempts"
+                          value={currentVal}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value, 10);
+                            if (Number.isFinite(value)) {
+                              setFormData({
+                                ...formData,
+                                userspace_code_index_max_attempts: value,
+                              });
+                            }
+                          }}
+                          style={{
+                            width: '72px',
+                            textAlign: 'right',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        />
+                      </div>
+                      <p className="field-help">Range: 1 to 20 attempts. Default: 3 attempts.</p>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>User Space Code Index Max Concurrency</label>
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Maximum number of User Space code index jobs that may run at the same time.
+                </p>
+                {(() => {
+                  const currentVal =
+                    formData.userspace_code_index_max_concurrency ??
+                    settings?.userspace_code_index_max_concurrency ??
+                    1;
+                  return (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <input
+                          type="range"
+                          min="1"
+                          max="8"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={currentVal}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              userspace_code_index_max_concurrency: parseInt(e.target.value, 10),
+                            })
+                          }
+                        />
+                        <input
+                          type="number"
+                          min="1"
+                          max="8"
+                          step="1"
+                          aria-label="User Space Code Index Max Concurrency"
+                          value={currentVal}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value, 10);
+                            if (Number.isFinite(value)) {
+                              setFormData({
+                                ...formData,
+                                userspace_code_index_max_concurrency: value,
+                              });
+                            }
+                          }}
+                          style={{
+                            width: '72px',
+                            textAlign: 'right',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        />
+                      </div>
+                      <p className="field-help">Range: 1 to 8. Default: 1.</p>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           </details>
