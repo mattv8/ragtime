@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Mapping, Optional, Sequence
 
 from ragtime.core.entrypoint_status import EntrypointStatus
+from ragtime.core.type_coercion import coerce_nonnegative_int_metadata
 from ragtime.core.user_identity import normalize_user_identity
 
 # =============================================================================
@@ -268,16 +269,74 @@ def _normalize_optional_turn_line(line: str) -> str:
     return normalized + "\n"
 
 
+def _format_diagnostic_duration(ms: object) -> str:
+    value = coerce_nonnegative_int_metadata(ms)
+    if value >= 1000:
+        seconds = value / 1000
+        return f"{seconds:.1f}s"
+    return f"{value}ms"
+
+
+def _diagnostic_value(item: object, key: str, default: object = None) -> object:
+    if isinstance(item, Mapping):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _format_diagnostic_item(item: object) -> str:
+    label = str(_diagnostic_value(item, "target_label", "") or "").strip()[:160]
+    count = coerce_nonnegative_int_metadata(_diagnostic_value(item, "count", 0))
+    parts = [f"{label} count={count}"]
+    parts.append(f"avg={_format_diagnostic_duration(_diagnostic_value(item, 'avg_ms', 0))}")
+    parts.append(f"max={_format_diagnostic_duration(_diagnostic_value(item, 'max_ms', 0))}")
+    parts.append(f"last={_format_diagnostic_duration(_diagnostic_value(item, 'last_ms', 0))}")
+    last_row_count = _diagnostic_value(item, "last_row_count")
+    if last_row_count is not None:
+        parts.append(f"rows={last_row_count}")
+    last_status_code = _diagnostic_value(item, "last_status_code")
+    if last_status_code is not None:
+        parts.append(f"status={last_status_code}")
+    last_error = str(_diagnostic_value(item, "last_error", "") or "").strip()
+    if last_error:
+        safe_error = last_error.replace('"', "'")[:120]
+        parts.append(f'last_error="{safe_error}"')
+    return " ".join(parts)
+
+
+def build_userspace_diagnostics_turn_reminder_line(diagnostics: Sequence[object] | None) -> str:
+    """Build a minimal advisory reminder from recent aggregate preview diagnostics."""
+
+    items = list(diagnostics or [])
+    if not items:
+        return ""
+
+    longest = max(items, key=lambda item: coerce_nonnegative_int_metadata(_diagnostic_value(item, "max_ms", 0)))
+    if not _diagnostic_value(longest, "target_label"):
+        return ""
+    error_count = sum(1 for item in items if _diagnostic_value(item, "last_error"))
+    error_text = ""
+    if error_count:
+        plural = "target" if error_count == 1 else "targets"
+        error_text = f"; {error_count} {plural} with recent errors"
+    return (
+        "- Preview diagnostics are advisory aggregates from recent preview runs; confirm with tools/code before changing logic. Longest target: "
+        + _format_diagnostic_item(longest)
+        + error_text
+        + ". Use the userspace_diagnostics tool for full execution times and errors.\n"
+    )
+
+
 def build_userspace_turn_reminder(
     *,
     include_sqlite_persistence: bool,
     runtime_status_reminder_line: str = "",
+    diagnostics_reminder_line: str = "",
 ) -> str:
     """Build the per-turn userspace checklist with optional SQLite lane reminder."""
     return _USERSPACE_TURN_REMINDER_BASE.format(
         sqlite_reminder_line=(_SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""),
         env_var_reminder_line="",
-        runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line),
+        runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line) + _normalize_optional_turn_line(diagnostics_reminder_line),
     )
 
 
@@ -286,13 +345,14 @@ def build_userspace_turn_reminder_with_env_vars(
     include_sqlite_persistence: bool,
     env_var_reminder_line: str,
     runtime_status_reminder_line: str = "",
+    diagnostics_reminder_line: str = "",
 ) -> str:
     """Build turn reminder with optional workspace env-var inventory hint."""
 
     return _USERSPACE_TURN_REMINDER_BASE.format(
         sqlite_reminder_line=(_SQLITE_TURN_REMINDER_LINE if include_sqlite_persistence else ""),
         env_var_reminder_line=env_var_reminder_line,
-        runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line),
+        runtime_status_reminder_line=_normalize_optional_turn_line(runtime_status_reminder_line) + _normalize_optional_turn_line(diagnostics_reminder_line),
     )
 
 

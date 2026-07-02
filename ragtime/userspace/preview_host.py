@@ -28,6 +28,8 @@ from ragtime.userspace.models import (
     UserSpaceBrowserAuthRequest,
     UserSpaceBrowserAuthResponse,
     UserSpaceBrowserSurface,
+    UserSpacePreviewDiagnosticsRequest,
+    UserSpacePreviewDiagnosticsResponse,
 )
 from ragtime.userspace.preview_probe import PREVIEW_HOST_PROBE_HEADER, PREVIEW_HOST_PROBE_PATH, PREVIEW_HOST_PROBE_VALUE
 from ragtime.userspace.runtime_routes import (
@@ -1006,6 +1008,27 @@ async def preview_execute_component(
         workspace_id,
         payload,
     )
+
+
+@preview_host_app.post(
+    "/__ragtime/diagnostics",
+    response_model=UserSpacePreviewDiagnosticsResponse,
+)
+async def preview_diagnostics(
+    request: Request,
+    payload: UserSpacePreviewDiagnosticsRequest,
+):
+    claims = await _verify_preview_session_cookie(request)
+    workspace_id = str(claims.get("workspace_id") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=401, detail="Preview session missing workspace")
+    if _preview_mode(claims) != "workspace":
+        raise HTTPException(status_code=403, detail="Diagnostics are only available for workspace previews")
+    recorded = await _userspace_service().record_workspace_preview_diagnostic_events(
+        workspace_id,
+        payload.events,
+    )
+    return UserSpacePreviewDiagnosticsResponse(success=True, recorded=recorded)
 
 
 @preview_host_app.get("/__ragtime/capabilities")

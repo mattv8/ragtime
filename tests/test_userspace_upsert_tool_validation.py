@@ -1,7 +1,9 @@
 import json
+import math
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 fake_copilot_auth = types.ModuleType("ragtime.core.copilot_auth")
@@ -34,6 +36,60 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
     async def _upsert_tool(self):
         return await self._tool("upsert_userspace_file")
 
+    async def test_userspace_diagnostics_tool_returns_comprehensive_bounded_list(self) -> None:
+        tool = await self._tool("userspace_diagnostics")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        now = datetime.now(timezone.utc)
+        diagnostics = [
+            types.SimpleNamespace(
+                kind="component_execute",
+                diagnostic_key="component_execute:sales",
+                target_label="component sales",
+                count="4.7",
+                error_count=-2,
+                last_ms=math.inf,
+                avg_ms=2200,
+                max_ms=9100,
+                last_error=None,
+                last_status_code=None,
+                last_row_count=50,
+                updated_at=now,
+            ),
+            types.SimpleNamespace(
+                kind="preview_fetch",
+                diagnostic_key="preview_fetch:GET:/api/orders/:id",
+                target_label="GET /api/orders/:id",
+                count=2,
+                error_count=1,
+                last_ms=90,
+                avg_ms=100,
+                max_ms=120,
+                last_error="HTTP 500",
+                last_status_code=500,
+                last_row_count=None,
+                updated_at=now,
+            ),
+        ]
+
+        with mock.patch(
+            "ragtime.rag.components.userspace_service.list_workspace_preview_diagnostic_summary",
+            new_callable=mock.AsyncMock,
+            return_value=diagnostics,
+        ) as list_summary:
+            result = await coroutine(reason="debug slow preview")
+
+        list_summary.assert_awaited_once_with("workspace-1", limit=50)
+        self.assertIn("User Space diagnostics", result)
+        self.assertIn("component sales", result)
+        self.assertIn("count=4", result)
+        self.assertIn("errors=0", result)
+        self.assertIn("last=0ms", result)
+        self.assertIn("GET /api/orders/:id", result)
+        self.assertIn("HTTP 500", result)
+        self.assertIn("Rows: 50", result)
+
     async def test_assay_userspace_code_defaults_are_compact_but_preserve_diagnostics(self) -> None:
         tool = await self._tool("assay_userspace_code")
         coroutine = tool.coroutine
@@ -41,6 +97,7 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
 
         schema = tool.args_schema
         assert schema is not None
+        assert not isinstance(schema, dict)
         self.assertEqual(schema.model_fields["max_files"].default, 6)
         self.assertEqual(schema.model_fields["max_chars_per_file"].default, 800)
         self.assertIn("structure", tool.description)

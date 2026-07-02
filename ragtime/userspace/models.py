@@ -77,6 +77,7 @@ UserSpacePreviewWarningCode = Literal[
     "preview_host_unreachable",
     "preview_dev_domain_outside_debug",
 ]
+UserSpacePreviewDiagnosticKind = Literal["component_execute", "preview_fetch", "preview_xhr"]
 WorkspaceDeleteTaskPhase = Literal[
     "queued",
     "stopping_runtime",
@@ -870,6 +871,41 @@ class ExecuteComponentResponse(BaseModel):
     error_kind: Literal["timeout"] | None = None
     timeout_seconds: int | None = Field(default=None, ge=0)
     admin_action: str | None = None
+
+
+class UserSpacePreviewDiagnosticEvent(BaseModel):
+    kind: UserSpacePreviewDiagnosticKind
+    elapsed_ms: int | float = Field(ge=0)
+    method: Literal["GET", "POST"] | None = None
+    target: str | None = Field(default=None, max_length=2048)
+    component_id: str | None = Field(default=None, max_length=256)
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    error: str | None = Field(default=None, max_length=2000)
+    row_count: int | None = Field(default=None, ge=0)
+
+
+class UserSpacePreviewDiagnosticsRequest(BaseModel):
+    events: list[UserSpacePreviewDiagnosticEvent] = Field(default_factory=list, max_length=50)
+
+
+class UserSpacePreviewDiagnosticsResponse(BaseModel):
+    success: bool = True
+    recorded: int = 0
+
+
+class UserSpacePreviewDiagnosticSummaryItem(BaseModel):
+    kind: UserSpacePreviewDiagnosticKind
+    diagnostic_key: str
+    target_label: str
+    count: int
+    error_count: int = 0
+    last_ms: int
+    avg_ms: int
+    max_ms: int
+    last_error: str | None = None
+    last_status_code: int | None = None
+    last_row_count: int | None = None
+    updated_at: datetime
 
 
 class UserSpaceWorkspaceShareLink(BaseModel):

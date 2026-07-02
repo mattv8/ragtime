@@ -253,6 +253,7 @@ class AgentStreamInactivityTimeoutTests(unittest.IsolatedAsyncioTestCase):
             "include_sqlite_persistence": False,
             "userspace_env_var_turn_hint": "",
             "userspace_runtime_status_turn_hint": "",
+            "userspace_diagnostics_turn_hint": "",
             "export_context": None,
             "workspace_id": None,
         }

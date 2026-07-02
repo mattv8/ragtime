@@ -68,3 +68,14 @@ def coerce_positive_int_metadata(value: Any) -> int | None:
             parsed = int(text)
             return parsed if parsed > 0 else None
     return None
+
+
+def coerce_nonnegative_int_metadata(value: Any, default: int = 0) -> int:
+    """Coerce metadata to a non-negative int.
+
+    Reuses ``coerce_int_metadata`` for parsing robustness, then clamps the
+    result to ``>= 0``. The default itself is also clamped to non-negative.
+    """
+    safe_default = max(0, default)
+    parsed = coerce_int_metadata(value, default=safe_default)
+    return max(0, parsed)

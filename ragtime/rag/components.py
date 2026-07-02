@@ -156,7 +156,7 @@ from ragtime.core.ssh import (
 )
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
-from ragtime.core.type_coercion import coerce_int_metadata
+from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
 from ragtime.indexer.chat_attachments import extract_chat_image_context_from_part, preprocess_chat_attachment_content_parts
 from ragtime.indexer.export_service import (
     chart_to_table,
@@ -188,6 +188,7 @@ from ragtime.rag.prompts import (
     build_index_system_prompt,
     build_subagent_model_guidance_prompt,
     build_tool_system_prompt,
+    build_userspace_diagnostics_turn_reminder_line,
     build_userspace_entrypoint_nudge,
     build_userspace_mode_prompt_addition,
     build_userspace_mounts_prompt_fragment,
@@ -6334,6 +6335,7 @@ class RAGComponents:
         include_sqlite_persistence: bool = False,
         userspace_env_var_turn_hint: str = "",
         userspace_runtime_status_turn_hint: str = "",
+        userspace_diagnostics_turn_hint: str = "",
     ) -> str:
         """Build per-turn reminder text prepended to user input."""
         reminder_text = TOOL_USAGE_REMINDER
@@ -6343,11 +6345,13 @@ class RAGComponents:
                     include_sqlite_persistence=include_sqlite_persistence,
                     env_var_reminder_line=userspace_env_var_turn_hint,
                     runtime_status_reminder_line=userspace_runtime_status_turn_hint,
+                    diagnostics_reminder_line=userspace_diagnostics_turn_hint,
                 )
             else:
                 reminder_text += build_userspace_turn_reminder(
                     include_sqlite_persistence=include_sqlite_persistence,
                     runtime_status_reminder_line=userspace_runtime_status_turn_hint,
+                    diagnostics_reminder_line=userspace_diagnostics_turn_hint,
                 )
         return reminder_text
 
@@ -8433,6 +8437,12 @@ class RAGComponents:
                 description="Brief description of why env vars are being listed",
             )
 
+        class UserSpaceDiagnosticsInput(BaseModel):
+            reason: str = Field(
+                default="",
+                description="Brief description of why recent preview/live-data diagnostics are needed",
+            )
+
         class DiscoverUserSpacePrimitivesInput(BaseModel):
             workspace_id: Optional[str] = Field(
                 default=None,
@@ -8469,7 +8479,9 @@ class RAGComponents:
                 default=6,
                 ge=1,
                 le=50,
-                description=("Maximum number of workspace files to preview during the structure/contract assay. Use search_userspace_code for broader code discovery."),
+                description=(
+                    "Maximum number of workspace files to preview during the structure/contract assay. Use search_userspace_code for broader code discovery."
+                ),
             )
             max_chars_per_file: int = Field(
                 default=800,
@@ -9512,6 +9524,84 @@ class RAGComponents:
                 next_best_tool="upsert_userspace_env_var",
                 env_vars=env_var_items,
                 count=len(env_var_items),
+            )
+
+        def _diagnostic_duration(ms: Any) -> str:
+            value = coerce_nonnegative_int_metadata(ms)
+            if value >= 1000:
+                return f"{value / 1000:.1f}s"
+            return f"{value}ms"
+
+        def _format_diagnostic_markdown(item: Any, index: int) -> str:
+            label = str(getattr(item, "target_label", "") or "unknown")
+            parts = [
+                f"{index}. {label}",
+                f"kind={getattr(item, 'kind', '')}",
+                f"count={coerce_nonnegative_int_metadata(getattr(item, 'count', 0))}",
+                f"errors={coerce_nonnegative_int_metadata(getattr(item, 'error_count', 0))}",
+                f"avg={_diagnostic_duration(getattr(item, 'avg_ms', 0))}",
+                f"max={_diagnostic_duration(getattr(item, 'max_ms', 0))}",
+                f"last={_diagnostic_duration(getattr(item, 'last_ms', 0))}",
+            ]
+            last_status = getattr(item, "last_status_code", None)
+            if last_status is not None:
+                parts.append(f"status={last_status}")
+            last_rows = getattr(item, "last_row_count", None)
+            if last_rows is not None:
+                parts.append(f"Rows: {last_rows}")
+            last_error = str(getattr(item, "last_error", "") or "").strip()
+            if last_error:
+                parts.append(f"last_error={last_error[:240]}")
+            return " | ".join(parts)
+
+        def _diagnostic_item_payload(item: Any) -> dict[str, Any]:
+            if hasattr(item, "model_dump"):
+                return cast(Any, item).model_dump(mode="json")
+            if isinstance(item, dict):
+                return dict(item)
+            keys = [
+                "kind",
+                "diagnostic_key",
+                "target_label",
+                "count",
+                "error_count",
+                "last_ms",
+                "avg_ms",
+                "max_ms",
+                "last_error",
+                "last_status_code",
+                "last_row_count",
+                "updated_at",
+            ]
+            payload = {key: getattr(item, key, None) for key in keys}
+            updated_at = payload.get("updated_at")
+            if isinstance(updated_at, datetime):
+                payload["updated_at"] = updated_at.isoformat()
+            return payload
+
+        async def userspace_diagnostics(reason: str = "", **_: Any) -> str:
+            del reason
+            diagnostics = await userspace_service.list_workspace_preview_diagnostic_summary(workspace_id, limit=50)
+            diagnostic_items = [_diagnostic_item_payload(item) for item in diagnostics]
+            if not diagnostics:
+                markdown = "User Space diagnostics: no recent preview or live component diagnostics recorded for this workspace."
+            else:
+                lines = [
+                    "User Space diagnostics (recent aggregate preview/live-data timings; payloads and query strings are not stored):",
+                    *[_format_diagnostic_markdown(item, idx) for idx, item in enumerate(diagnostics, 1)],
+                ]
+                markdown = "\n".join(lines)
+            return _render_userspace_tool_payload(
+                tool_name="userspace_diagnostics",
+                status="listed",
+                message=f"Listed {len(diagnostic_items)} recent diagnostic targets.",
+                persisted=False,
+                retryable=True,
+                failure_class="none",
+                next_best_tool="assay_userspace_code",
+                diagnostics=diagnostic_items,
+                markdown=markdown,
+                count=len(diagnostic_items),
             )
 
         async def search_userspace_code(
@@ -12040,6 +12130,15 @@ class RAGComponents:
                 args_schema=SearchUserSpaceCodeInput,
             ),
             _create_userspace_tool(
+                coroutine=userspace_diagnostics,
+                name="userspace_diagnostics",
+                description=(
+                    "Hidden diagnostic tool. List recent aggregate User Space preview fetch/XHR and live component execution timings, "
+                    "row counts, HTTP status, and bounded last-error summaries. Use when the turn reminder mentions slow/error diagnostics."
+                ),
+                args_schema=UserSpaceDiagnosticsInput,
+            ),
+            _create_userspace_tool(
                 coroutine=list_userspace_env_vars,
                 name="list_userspace_env_vars",
                 description=(
@@ -13344,6 +13443,7 @@ class RAGComponents:
         include_sqlite_persistence = False
         userspace_env_var_turn_hint = ""
         userspace_runtime_status_turn_hint = ""
+        userspace_diagnostics_turn_hint = ""
         request_tool_state: dict[str, Any] = {
             "tool_calls": [],
             "signature_counts": {},
@@ -13482,6 +13582,16 @@ class RAGComponents:
                 ),
             )
             userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(env_var_summaries)
+
+            try:
+                diagnostic_summary = await userspace_service.list_workspace_preview_diagnostic_summary(workspace_id)
+                userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(diagnostic_summary)
+            except Exception as exc:
+                logger.debug(
+                    "Skipping userspace preview diagnostics prompt hint for workspace %s: %s",
+                    workspace_id,
+                    _format_exception_message(exc),
+                )
 
             try:
                 runtime_status = await asyncio.wait_for(
@@ -13685,6 +13795,7 @@ class RAGComponents:
             "include_sqlite_persistence": include_sqlite_persistence,
             "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
             "userspace_runtime_status_turn_hint": userspace_runtime_status_turn_hint,
+            "userspace_diagnostics_turn_hint": userspace_diagnostics_turn_hint,
             "user_identity_turn_line": user_identity_turn_line,
             "current_time_turn_line": current_time_turn_line,
             "request_tool_state": request_tool_state,
@@ -15117,6 +15228,7 @@ class RAGComponents:
                 include_sqlite_persistence=request_context["include_sqlite_persistence"],
                 userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
                 userspace_runtime_status_turn_hint=request_context["userspace_runtime_status_turn_hint"],
+                userspace_diagnostics_turn_hint=request_context.get("userspace_diagnostics_turn_hint", ""),
             )
             turn_system_content += await self._build_context_headroom_prompt(
                 chat_history=chat_history,
@@ -15427,6 +15539,7 @@ class RAGComponents:
             include_sqlite_persistence=request_context["include_sqlite_persistence"],
             userspace_env_var_turn_hint=request_context["userspace_env_var_turn_hint"],
             userspace_runtime_status_turn_hint=request_context["userspace_runtime_status_turn_hint"],
+            userspace_diagnostics_turn_hint=request_context.get("userspace_diagnostics_turn_hint", ""),
         )
         turn_system_content += await self._build_context_headroom_prompt(
             chat_history=chat_history,

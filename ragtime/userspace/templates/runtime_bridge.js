@@ -23,6 +23,8 @@
     (window.__ragtime_preconnected_origins = Object.create(null));
   var reportedSandboxBlocks = Object.create(null);
   var pendingNetworkRequests = 0;
+  var pendingNetworkDiagnostics = [];
+  var networkDiagnosticsTimer = null;
 
   function getBridgeConfig() {
     var config = window.__ragtime_preview_bridge;
@@ -240,6 +242,80 @@
     }
     pendingNetworkRequests = next;
     reportNetworkActivity();
+  }
+
+  function normalizeDiagnosticTarget(input) {
+    var raw = '';
+    try {
+      if (typeof input === 'string') {
+        raw = input;
+      } else if (input && typeof input.url === 'string') {
+        raw = input.url;
+      } else if (input && typeof input.href === 'string') {
+        raw = input.href;
+      }
+      if (!raw) return '';
+      var parsed = new URL(raw, window.location.href);
+      return parsed.origin === window.location.origin
+        ? parsed.pathname
+        : parsed.origin + parsed.pathname;
+    } catch (_e) {
+      return String(raw || '').split('?')[0].split('#')[0];
+    }
+  }
+
+  function shouldRecordNetworkDiagnostic(method, target) {
+    method = String(method || 'GET').toUpperCase();
+    if (!(method === 'GET' || method === 'POST')) return false;
+    if (!target) return false;
+    if (target.indexOf('/__ragtime/diagnostics') >= 0) return false;
+    if (target.indexOf('/__ragtime/execute-component') >= 0) return false;
+    if (target.indexOf('/__ragtime/bridge.js') >= 0) return false;
+    if (target.indexOf('/__ragtime/preview-host-probe') >= 0) return false;
+    return true;
+  }
+
+  function flushNetworkDiagnostics() {
+    if (networkDiagnosticsTimer) {
+      clearTimeout(networkDiagnosticsTimer);
+      networkDiagnosticsTimer = null;
+    }
+    if (!pendingNetworkDiagnostics.length || typeof fetch !== 'function') return;
+    var batch = pendingNetworkDiagnostics.splice(0, 50);
+    try {
+      fetch('/__ragtime/diagnostics', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: batch }),
+        keepalive: true,
+      }).catch(function () {
+        /* diagnostics are best-effort */
+      });
+    } catch (_e) {
+      /* diagnostics are best-effort */
+    }
+  }
+
+  function queueNetworkDiagnostic(kind, method, target, elapsedMs, statusCode, error) {
+    method = String(method || 'GET').toUpperCase();
+    target = normalizeDiagnosticTarget(target);
+    if (!shouldRecordNetworkDiagnostic(method, target)) return;
+    pendingNetworkDiagnostics.push({
+      kind: kind,
+      method: method,
+      target: target,
+      elapsed_ms: Math.max(0, Math.round(elapsedMs || 0)),
+      status_code: typeof statusCode === 'number' && statusCode > 0 ? statusCode : null,
+      error: error ? String(error).slice(0, 500) : null,
+    });
+    if (pendingNetworkDiagnostics.length >= 10) {
+      flushNetworkDiagnostics();
+      return;
+    }
+    if (!networkDiagnosticsTimer) {
+      networkDiagnosticsTimer = setTimeout(flushNetworkDiagnostics, 750);
+    }
   }
 
   function isLiveDataTimeoutPayload(payload) {
@@ -460,20 +536,28 @@
     overrideMethod(window, 'fetch', function (original) {
       return function () {
         updatePendingNetworkRequests(1);
+        var input = arguments[0];
+        var options = arguments[1] || {};
+        var method =
+          (options && options.method) || (input && typeof input.method === 'string' && input.method) || 'GET';
+        var startedAt = Date.now();
         var result;
         try {
           result = original.apply(this, arguments);
         } catch (error) {
           updatePendingNetworkRequests(-1);
+          queueNetworkDiagnostic('preview_fetch', method, input, Date.now() - startedAt, null, error && error.message ? error.message : String(error));
           throw error;
         }
         return Promise.resolve(result).then(
           function (value) {
             updatePendingNetworkRequests(-1);
+            queueNetworkDiagnostic('preview_fetch', method, input, Date.now() - startedAt, value && typeof value.status === 'number' ? value.status : null, null);
             return value;
           },
           function (error) {
             updatePendingNetworkRequests(-1);
+            queueNetworkDiagnostic('preview_fetch', method, input, Date.now() - startedAt, null, error && error.message ? error.message : String(error));
             throw error;
           },
         );
@@ -481,10 +565,24 @@
     });
 
     if (window.XMLHttpRequest && window.XMLHttpRequest.prototype) {
+      overrideMethod(window.XMLHttpRequest.prototype, 'open', function (original) {
+        return function (method, url) {
+          try {
+            this.__ragtimeDiagnosticMethod = method;
+            this.__ragtimeDiagnosticUrl = url;
+          } catch (_e) {
+            /* ignore */
+          }
+          return original.apply(this, arguments);
+        };
+      });
+
       overrideMethod(window.XMLHttpRequest.prototype, 'send', function (original) {
         return function () {
           var xhr = this;
           var completed = false;
+          var startedAt = Date.now();
+          var diagnosticError = null;
           var finish = function () {
             if (completed) {
               return;
@@ -494,6 +592,14 @@
               xhr.removeEventListener('loadend', finish);
             }
             updatePendingNetworkRequests(-1);
+            queueNetworkDiagnostic(
+              'preview_xhr',
+              xhr && xhr.__ragtimeDiagnosticMethod,
+              xhr && xhr.__ragtimeDiagnosticUrl,
+              Date.now() - startedAt,
+              xhr && typeof xhr.status === 'number' ? xhr.status : null,
+              diagnosticError,
+            );
           };
 
           updatePendingNetworkRequests(1);
@@ -503,6 +609,7 @@
           try {
             return original.apply(xhr, arguments);
           } catch (error) {
+            diagnosticError = error && error.message ? error.message : String(error);
             finish();
             throw error;
           }

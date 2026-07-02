@@ -1287,11 +1287,39 @@ model Workspace {
   incomingAgentGrants         WorkspaceAgentGrant[]                 @relation("AgentGrantTarget")
   messageSnapshotLinks        ConversationMessageSnapshotLink[]
   shares                      WorkspaceShare[]
+  previewDiagnostics          WorkspacePreviewDiagnostic[]
 
   @@unique([ownerUserId, nameNormalized])
   @@index([ownerUserId])
   @@index([updatedAt])
   @@map("workspaces")
+}
+
+model WorkspacePreviewDiagnostic {
+  id             String   @id @default(uuid())
+  workspaceId    String   @map("workspace_id")
+  kind           String
+  diagnosticKey  String   @map("diagnostic_key")
+  targetLabel    String   @map("target_label")
+  method         String?
+  componentId    String?  @map("component_id")
+  count          Int      @default(0)
+  errorCount     Int      @default(0) @map("error_count")
+  lastMs         Int      @default(0) @map("last_ms")
+  avgMs          Int      @default(0) @map("avg_ms")
+  maxMs          Int      @default(0) @map("max_ms")
+  lastError      String?  @map("last_error")
+  lastStatusCode Int?     @map("last_status_code")
+  lastRowCount   Int?     @map("last_row_count")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, diagnosticKey])
+  @@index([workspaceId, updatedAt])
+  @@index([workspaceId, maxMs])
+  @@map("workspace_preview_diagnostics")
 }
 
 model WorkspaceCodeIndexState {

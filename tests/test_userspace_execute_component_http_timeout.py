@@ -20,6 +20,7 @@ from ragtime.userspace import service as userspace_service_module
 from ragtime.userspace.models import (
     ExecuteComponentRequest,
     ExecuteComponentResponse,
+    UserSpacePreviewDiagnosticEvent,
     UserSpaceWorkspace,
 )
 from ragtime.userspace.service import UserSpaceService
@@ -46,6 +47,7 @@ class _HangingExecuteService(UserSpaceService):
         super().__init__()
         self.warnings_recorded: list[tuple[str, str, str]] = []
         self.proofs_recorded: list[tuple[str, str, int, str]] = []
+        self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
         self.dispatch_started = asyncio.Event()
 
     async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -59,6 +61,10 @@ class _HangingExecuteService(UserSpaceService):
     def record_execution_proof(self, *args, **kwargs) -> None:  # type: ignore[override]
         self.proofs_recorded.append(args)
 
+    async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
+        self.diagnostic_events.append((workspace_id, events))
+        return len(events)
+
 
 class _ImmediateExecuteService(UserSpaceService):
     def __init__(self, response: ExecuteComponentResponse) -> None:
@@ -66,9 +72,13 @@ class _ImmediateExecuteService(UserSpaceService):
         self._response = response
         self.warnings_recorded: list[tuple[str, str, str]] = []
         self.proofs_recorded: list[tuple[str, str, int, str]] = []
+        self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
 
     async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
         return (self._response.model_copy(update={"component_id": str(kwargs.get("component_id") or "tool-1")}), "select 1")
+
+    async def _load_workspace_for_component_execution(self, workspace_id: str, user_id: str | None = None) -> UserSpaceWorkspace:  # type: ignore[override]
+        return _make_workspace()
 
     def record_live_data_execution_warning(self, workspace_id: str, component_id: str, error: str) -> None:  # type: ignore[override]
         self.warnings_recorded.append((workspace_id, component_id, error))
@@ -78,6 +88,10 @@ class _ImmediateExecuteService(UserSpaceService):
 
     def clear_live_data_execution_warning(self, workspace_id: str) -> None:  # type: ignore[override]
         pass
+
+    async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
+        self.diagnostic_events.append((workspace_id, events))
+        return len(events)
 
 
 class _HangingSubprocess:
@@ -126,6 +140,13 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         self.assertEqual(service.warnings_recorded[0][0], "workspace-1")
         self.assertEqual(service.warnings_recorded[0][1], "tool-1")
         self.assertEqual(service.proofs_recorded, [])
+        self.assertEqual(len(service.diagnostic_events), 1)
+        self.assertEqual(service.diagnostic_events[0][0], "workspace-1")
+        timeout_event = service.diagnostic_events[0][1][0]
+        self.assertEqual(timeout_event.kind, "component_execute")
+        self.assertEqual(timeout_event.component_id, "tool-1")
+        self.assertEqual(timeout_event.row_count, 0)
+        self.assertIn("request timeout", timeout_event.error or "")
 
     async def test_execute_component_passes_successful_response_through(self) -> None:
         ok_response = ExecuteComponentResponse(
@@ -150,6 +171,14 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         self.assertEqual(len(service.proofs_recorded), 1)
         self.assertEqual(service.proofs_recorded[0][0], "workspace-1")
         self.assertEqual(service.proofs_recorded[0][1], "tool-1")
+        self.assertEqual(len(service.diagnostic_events), 1)
+        self.assertEqual(service.diagnostic_events[0][0], "workspace-1")
+        success_event = service.diagnostic_events[0][1][0]
+        self.assertEqual(success_event.kind, "component_execute")
+        self.assertEqual(success_event.component_id, "tool-1")
+        self.assertEqual(success_event.row_count, 1)
+        self.assertIsNone(success_event.error)
+        self.assertGreaterEqual(success_event.elapsed_ms, 0)
 
     async def test_postgres_subprocess_is_killed_when_outer_request_is_cancelled(self) -> None:
         service = UserSpaceService()
@@ -181,6 +210,23 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
 
         self.assertTrue(process.killed)
         self.assertEqual(process.returncode, -9)
+
+    async def test_shared_component_execution_does_not_record_owner_prompt_diagnostics(self) -> None:
+        ok_response = ExecuteComponentResponse(
+            component_id="tool-1",
+            rows=[{"id": 1}],
+            columns=["id"],
+            row_count=1,
+        )
+        service = _ImmediateExecuteService(ok_response)
+
+        response = await service.execute_component_from_authorized_shared_preview(
+            "workspace-1",
+            ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"}),
+        )
+
+        self.assertEqual(response.row_count, 1)
+        self.assertEqual(service.diagnostic_events, [])
 
 
 if __name__ == "__main__":

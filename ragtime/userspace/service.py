@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal, Optional, TypedDict, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -176,6 +176,8 @@ from ragtime.userspace.models import (
     UserSpaceObjectStorageConfig,
     UserSpaceObjectStorageEntry,
     UserSpaceObjectStorageListResponse,
+    UserSpacePreviewDiagnosticEvent,
+    UserSpacePreviewDiagnosticSummaryItem,
     UserSpaceRuntimeRestartBatchTask,
     UserSpaceRuntimeRestartWorkspaceTask,
     UserSpaceSharedPreviewResponse,
@@ -260,6 +262,14 @@ _SQLITE_IMPORT_RESTORING_PROGRESS = 0.15
 _SQLITE_IMPORT_TRANSPILING_PROGRESS = 0.3
 _SQLITE_IMPORT_FINALIZING_PROGRESS = 0.97
 _LIVE_DATA_WARNING_MAX_AGE_SECONDS = 60 * 30
+_PREVIEW_DIAGNOSTIC_RECENT_HOURS = 24
+_PREVIEW_DIAGNOSTIC_MAX_ROWS_PER_WORKSPACE = 200
+_PREVIEW_DIAGNOSTIC_ERROR_MAX_CHARS = 240
+_PREVIEW_DIAGNOSTIC_TARGET_MAX_CHARS = 180
+_PREVIEW_DIAGNOSTIC_ID_SEGMENT_RE = re.compile(
+    r"^(?:\d+|[0-9a-f]{8,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
 
 
 class _ExecutionProofRecord:
@@ -927,7 +937,7 @@ _MODULE_SOURCE_EXTENSIONS = (
 )
 _RUNTIME_BOOTSTRAP_CONFIG_PATH = ".ragtime/runtime-bootstrap.json"
 _RUNTIME_BOOTSTRAP_TEMPLATE_VERSION = 8
-_RUNTIME_BRIDGE_VERSION = 17
+_RUNTIME_BRIDGE_VERSION = 18
 _RUNTIME_BRIDGE_VERSION_TAG = f"@ragtime/bridge v{_RUNTIME_BRIDGE_VERSION}"
 _RUNTIME_BRIDGE_DEFAULT_TIMEOUT_MS = 310_000  # 300s + 10s buffer
 _USERSPACE_TEMPLATES_DIR = Path(__file__).with_name("templates")
@@ -6114,6 +6124,228 @@ class UserSpaceService:
             self._live_data_execution_warnings.pop(workspace_id, None)
             return None
         return record.message
+
+    @staticmethod
+    def _clean_preview_diagnostic_error(error_text: str | None) -> str | None:
+        if not error_text:
+            return None
+        compact = re.sub(r"\s+", " ", error_text.replace("\x00", " ")).strip()
+        compact = "".join(char for char in compact if char.isprintable())
+        if not compact:
+            return None
+        return compact[:_PREVIEW_DIAGNOSTIC_ERROR_MAX_CHARS]
+
+    @staticmethod
+    def _normalize_preview_diagnostic_path(path: str) -> str:
+        raw_segments = [segment for segment in path.split("/") if segment]
+        normalized_segments: list[str] = []
+        for segment in raw_segments[:12]:
+            if _PREVIEW_DIAGNOSTIC_ID_SEGMENT_RE.match(segment):
+                normalized_segments.append(":id")
+            else:
+                normalized_segments.append(segment[:48])
+        normalized = "/" + "/".join(normalized_segments)
+        return normalized if normalized != "/" else "/"
+
+    @classmethod
+    def _normalize_preview_diagnostic_target(
+        cls,
+        event: UserSpacePreviewDiagnosticEvent,
+    ) -> tuple[str, str, str | None, str | None]:
+        kind = event.kind
+        component_id = (event.component_id or "").strip() if event.component_id else ""
+        if kind == "component_execute":
+            safe_component_id = component_id[:128] or "unknown"
+            key = f"component_execute:{safe_component_id}"
+            return key, f"component {safe_component_id}", None, safe_component_id
+
+        method = (event.method or "GET").upper()
+        if method not in {"GET", "POST"}:
+            method = "GET"
+        target = (event.target or "").strip()
+        host = ""
+        path = "/"
+        if target:
+            try:
+                parsed = urlsplit(target)
+                hostname = (parsed.hostname or "").strip().lower()
+                port = f":{parsed.port}" if parsed.port is not None else ""
+                host = f"{hostname}{port}" if hostname else ""
+                path = cls._normalize_preview_diagnostic_path(parsed.path or "/")
+            except Exception:
+                path = cls._normalize_preview_diagnostic_path(target.split("?", 1)[0].split("#", 1)[0] or "/")
+        target_without_query = f"{host}{path}" if host else path
+        target_without_query = target_without_query[:_PREVIEW_DIAGNOSTIC_TARGET_MAX_CHARS]
+        label = f"{method} {target_without_query}"
+        key = f"{kind}:{method}:{target_without_query}"
+        return key, label, method, None
+
+    @staticmethod
+    def _coerce_preview_diagnostic_ms(value: int | float | None) -> int:
+        try:
+            return max(0, int(round(float(value or 0))))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    async def record_workspace_preview_diagnostic_events(
+        self,
+        workspace_id: str,
+        events: list[UserSpacePreviewDiagnosticEvent],
+    ) -> int:
+        """Persist aggregate preview diagnostics. Best-effort and payload-free."""
+
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id or not events:
+            return 0
+
+        try:
+            db = await get_db()
+            model = getattr(db, "workspacepreviewdiagnostic", None)
+            if model is None:
+                logger.debug("Workspace preview diagnostic model is unavailable")
+                return 0
+
+            recorded = 0
+            keep_ids: list[str] = []
+            for event in events[:50]:
+                diagnostic_key, target_label, method, component_id = self._normalize_preview_diagnostic_target(event)
+                elapsed_ms = self._coerce_preview_diagnostic_ms(event.elapsed_ms)
+                last_error = self._clean_preview_diagnostic_error(event.error)
+                if last_error is None and event.status_code is not None and event.status_code >= 400:
+                    last_error = f"HTTP {event.status_code}"
+                now = utc_now()
+                where = {
+                    "workspaceId_diagnosticKey": {
+                        "workspaceId": workspace_id,
+                        "diagnosticKey": diagnostic_key,
+                    }
+                }
+                existing = await model.find_unique(where=where)
+                if existing is None:
+                    data: dict[str, Any] = {
+                        "workspaceId": workspace_id,
+                        "kind": event.kind,
+                        "diagnosticKey": diagnostic_key,
+                        "targetLabel": target_label,
+                        "method": method,
+                        "componentId": component_id,
+                        "count": 1,
+                        "errorCount": 1 if last_error else 0,
+                        "lastMs": elapsed_ms,
+                        "avgMs": elapsed_ms,
+                        "maxMs": elapsed_ms,
+                        "lastError": last_error,
+                        "lastStatusCode": event.status_code,
+                        "lastRowCount": event.row_count,
+                        "updatedAt": now,
+                    }
+                    row = await model.create(data=data)
+                else:
+                    count = int(getattr(existing, "count", 0) or 0) + 1
+                    previous_avg = int(getattr(existing, "avgMs", 0) or 0)
+                    previous_count = max(0, count - 1)
+                    avg_ms = int(round(((previous_avg * previous_count) + elapsed_ms) / count))
+                    data = {
+                        "kind": event.kind,
+                        "targetLabel": target_label,
+                        "method": method,
+                        "componentId": component_id,
+                        "count": count,
+                        "errorCount": int(getattr(existing, "errorCount", 0) or 0) + (1 if last_error else 0),
+                        "lastMs": elapsed_ms,
+                        "avgMs": avg_ms,
+                        "maxMs": max(int(getattr(existing, "maxMs", 0) or 0), elapsed_ms),
+                        "lastError": last_error,
+                        "lastStatusCode": event.status_code,
+                        "lastRowCount": event.row_count,
+                        "updatedAt": now,
+                    }
+                    row = await model.update(where=where, data=data)
+                row_id = str(getattr(row, "id", "") or "")
+                if row_id:
+                    keep_ids.append(row_id)
+                recorded += 1
+
+            await self._trim_workspace_preview_diagnostics(model, workspace_id, keep_ids)
+            return recorded
+        except Exception as exc:
+            logger.debug(
+                "Failed to persist workspace preview diagnostics for %s: %s",
+                workspace_id,
+                str(exc),
+            )
+            return 0
+
+    async def _trim_workspace_preview_diagnostics(
+        self,
+        model: Any,
+        workspace_id: str,
+        recent_keep_ids: list[str],
+    ) -> None:
+        try:
+            rows = await model.find_many(
+                where={"workspaceId": workspace_id},
+                order={"updatedAt": "desc"},
+                take=_PREVIEW_DIAGNOSTIC_MAX_ROWS_PER_WORKSPACE,
+            )
+            keep_ids = {str(getattr(row, "id", "") or "") for row in rows}
+            keep_ids.update(recent_keep_ids)
+            keep_ids.discard("")
+            if keep_ids:
+                await model.delete_many(where={"workspaceId": workspace_id, "id": {"notIn": list(keep_ids)}})
+        except Exception as exc:
+            logger.debug(
+                "Failed to trim workspace preview diagnostics for %s: %s",
+                workspace_id,
+                str(exc),
+            )
+
+    async def list_workspace_preview_diagnostic_summary(
+        self,
+        workspace_id: str,
+        *,
+        hours: int = _PREVIEW_DIAGNOSTIC_RECENT_HOURS,
+        limit: int = 40,
+    ) -> list[UserSpacePreviewDiagnosticSummaryItem]:
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            return []
+        try:
+            db = await get_db()
+            model = getattr(db, "workspacepreviewdiagnostic", None)
+            if model is None:
+                return []
+            since = utc_now() - timedelta(hours=max(1, hours))
+            rows = await model.find_many(
+                where={"workspaceId": workspace_id, "updatedAt": {"gte": since}},
+                order={"updatedAt": "desc"},
+                take=max(1, min(limit, 100)),
+            )
+            items = [
+                UserSpacePreviewDiagnosticSummaryItem(
+                    kind=getattr(row, "kind"),
+                    diagnostic_key=str(getattr(row, "diagnosticKey", "") or ""),
+                    target_label=str(getattr(row, "targetLabel", "") or ""),
+                    count=int(getattr(row, "count", 0) or 0),
+                    error_count=int(getattr(row, "errorCount", 0) or 0),
+                    last_ms=int(getattr(row, "lastMs", 0) or 0),
+                    avg_ms=int(getattr(row, "avgMs", 0) or 0),
+                    max_ms=int(getattr(row, "maxMs", 0) or 0),
+                    last_error=getattr(row, "lastError", None),
+                    last_status_code=getattr(row, "lastStatusCode", None),
+                    last_row_count=getattr(row, "lastRowCount", None),
+                    updated_at=getattr(row, "updatedAt"),
+                )
+                for row in rows
+            ]
+            return sorted(items, key=lambda item: item.max_ms, reverse=True)
+        except Exception as exc:
+            logger.debug(
+                "Failed to list workspace preview diagnostics for %s: %s",
+                workspace_id,
+                str(exc),
+            )
+            return []
 
     @property
     def root_path(self) -> Path:
@@ -20371,6 +20603,7 @@ class UserSpaceService:
             workspace,
             request,
             error_log_prefix="Shared component execution failed",
+            record_diagnostics=False,
         )
 
     async def _execute_shared_component_for_workspace_id(
@@ -20394,6 +20627,7 @@ class UserSpaceService:
             workspace,
             request,
             error_log_prefix="Shared component execution failed",
+            record_diagnostics=False,
         )
 
     async def _execute_component_for_workspace(
@@ -20402,8 +20636,10 @@ class UserSpaceService:
         request: ExecuteComponentRequest,
         *,
         error_log_prefix: str,
+        record_diagnostics: bool = True,
     ) -> ExecuteComponentResponse:
         http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
+        started_at = _time.monotonic()
         try:
             response, query = await asyncio.wait_for(
                 self._execute_component_for_selected_tool_ids(
@@ -20437,7 +20673,7 @@ class UserSpaceService:
                 request.component_id,
                 error_message,
             )
-            return ExecuteComponentResponse(
+            response = ExecuteComponentResponse(
                 component_id=request.component_id,
                 rows=[],
                 columns=[],
@@ -20447,6 +20683,20 @@ class UserSpaceService:
                 timeout_seconds=timeout_seconds,
                 admin_action=admin_action,
             )
+            if record_diagnostics:
+                await self.record_workspace_preview_diagnostic_events(
+                    workspace.id,
+                    [
+                        UserSpacePreviewDiagnosticEvent(
+                            kind="component_execute",
+                            component_id=request.component_id,
+                            elapsed_ms=self._coerce_preview_diagnostic_ms((_time.monotonic() - started_at) * 1000),
+                            error=error_message,
+                            row_count=0,
+                        )
+                    ],
+                )
+            return response
 
         # Mint server-side execution proof for live-data contract verification.
         if not response.error:
@@ -20462,6 +20712,20 @@ class UserSpaceService:
                 workspace.id,
                 request.component_id,
                 response.error,
+            )
+
+        if record_diagnostics:
+            await self.record_workspace_preview_diagnostic_events(
+                workspace.id,
+                [
+                    UserSpacePreviewDiagnosticEvent(
+                        kind="component_execute",
+                        component_id=request.component_id,
+                        elapsed_ms=self._coerce_preview_diagnostic_ms((_time.monotonic() - started_at) * 1000),
+                        error=response.error,
+                        row_count=response.row_count,
+                    )
+                ],
             )
 
         return response

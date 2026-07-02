@@ -337,11 +337,13 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("phase = 'embedding'", fake_db.executed[0])
         self.assertIn("processed_files = 3", fake_db.executed[0])
 
-    def test_search_userspace_code_tool_is_hidden_from_ui_presentation(self) -> None:
-        self.assertEqual(
-            normalize_tool_presentation("search_userspace_code"),
-            {"visibility": HIDDEN_TOOL_VISIBILITY},
-        )
+    def test_userspace_code_context_tools_are_hidden_from_ui_presentation(self) -> None:
+        for tool_name in ("search_userspace_code", "assay_userspace_code"):
+            with self.subTest(tool_name=tool_name):
+                self.assertEqual(
+                    normalize_tool_presentation(tool_name),
+                    {"visibility": HIDDEN_TOOL_VISIBILITY},
+                )
 
 
 class WorkspaceCodeIndexSettingsTests(unittest.IsolatedAsyncioTestCase):
