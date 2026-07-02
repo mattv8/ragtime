@@ -8466,16 +8466,16 @@ class RAGComponents:
 
         class AssayUserSpaceCodeInput(BaseModel):
             max_files: int = Field(
-                default=12,
+                default=6,
                 ge=1,
                 le=50,
-                description=("Maximum number of workspace files to inspect in the assay pass. Prefer dashboard entry + recently updated files."),
+                description=("Maximum number of workspace files to preview during the structure/contract assay. Use search_userspace_code for broader code discovery."),
             )
             max_chars_per_file: int = Field(
-                default=1600,
+                default=800,
                 ge=200,
                 le=12000,
-                description=("Maximum number of UTF-8 characters to include per inspected file preview."),
+                description=("Maximum number of UTF-8 characters to include per compact inspected-file preview."),
             )
             reason: str = Field(
                 default="",
@@ -9705,8 +9705,8 @@ class RAGComponents:
             }
 
         async def assay_userspace_code(
-            max_files: int = 12,
-            max_chars_per_file: int = 1600,
+            max_files: int = 6,
+            max_chars_per_file: int = 800,
             reason: str = "",
             **_: Any,
         ) -> str:
@@ -12019,8 +12019,8 @@ class RAGComponents:
                 coroutine=assay_userspace_code,
                 name="assay_userspace_code",
                 description=(
-                    "Perform a focused assay of existing workspace code and structure before editing. "
-                    "Use this first in each implementation loop to understand current state and identify target files."
+                    "Perform a focused assay of workspace structure, entrypoint state, and live-data contract context before editing. "
+                    "Use search_userspace_code to locate relevant source code; fall back to list_userspace_files and targeted reads when the index is unavailable."
                 ),
                 args_schema=AssayUserSpaceCodeInput,
             ),

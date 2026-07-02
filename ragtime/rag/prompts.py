@@ -222,7 +222,7 @@ This is a turn-level reminder to follow real tool-calling behavior.
 """
 
 _USERSPACE_TURN_REMINDER_BASE = """[USER SPACE TURN CHECKLIST
-- Preferred implementation loop: assay -> read/inspect -> write -> validate -> fix -> validate -> snapshot.
+- Preferred implementation loop: assay (structure/contract) -> search/read -> write -> validate -> fix -> validate -> snapshot.
 - If the user asked to continue/apply/fix/build, treat that as a write-oriented turn, not a request for more diagnosis.
 - If multiple searches or reads are returning overlapping results, proceed to implementation instead of gathering more context.
 - Live data bridge contract: use only the passed `context` argument or `window.__ragtime_context`/`window.context` inside preview code. Never scan `window.parent`, `window.top`, `window.opener`, or legacy globals to discover components.
@@ -481,7 +481,9 @@ def build_workspace_scm_setup_prompt(
     parts: list[str] = [
         "Inspect the imported workspace and get it running locally without "
         "destructive changes. Start by using assay_userspace_code to assess "
-        "the current structure."
+        "the current structure, then use search_userspace_code for code discovery "
+        "when available; when the code index is unavailable, use list_userspace_files "
+        "plus targeted reads."
     ]
 
     if inferred_entrypoint:
@@ -822,7 +824,8 @@ You are operating in User Space mode for a persistent workspace artifact workflo
 {data_wiring_block}
 ### File tool workflow
 
-- Use `assay_userspace_code` first when available; otherwise use `list_userspace_files` plus targeted reads.
+- Use `assay_userspace_code` for structure and contract context before editing.
+- Use `search_userspace_code` for relevant-code discovery when available; if it returns disabled, pending, empty, or errors, use `list_userspace_files` plus targeted reads.
 - Once the target files and concrete edits are clear, mutate instead of repeating inspection.
 - Read files before overwriting them and prefer focused `patch_userspace_file` edits over regenerating full files.
 - Prefer extending existing files; create new files only when clearly needed.

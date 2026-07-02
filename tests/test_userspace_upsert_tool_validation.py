@@ -20,6 +20,7 @@ from ragtime.rag.components import (
     should_truncate_stream_display_output,
     wrap_tool_with_truncation,
 )
+from ragtime.rag.prompts import _USERSPACE_MODE_PROMPT_TEMPLATE, _USERSPACE_TURN_REMINDER_BASE, build_workspace_scm_setup_prompt
 
 
 class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -32,6 +33,88 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
 
     async def _upsert_tool(self):
         return await self._tool("upsert_userspace_file")
+
+    async def test_assay_userspace_code_defaults_are_compact_but_preserve_diagnostics(self) -> None:
+        tool = await self._tool("assay_userspace_code")
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        schema = tool.args_schema
+        assert schema is not None
+        self.assertEqual(schema.model_fields["max_files"].default, 6)
+        self.assertEqual(schema.model_fields["max_chars_per_file"].default, 800)
+        self.assertIn("structure", tool.description)
+        self.assertIn("contract", tool.description)
+        self.assertIn("search_userspace_code", tool.description)
+
+        files = [
+            types.SimpleNamespace(path="dashboard/main.ts"),
+            *[types.SimpleNamespace(path=f"dashboard/file{i}.ts") for i in range(1, 8)],
+            types.SimpleNamespace(path="index.html"),
+        ]
+
+        async def get_workspace_file(_workspace_id: str, path: str, _user_id: str, **_kwargs):
+            return types.SimpleNamespace(
+                path=path,
+                artifact_type="module_ts" if path.endswith(".ts") else "html",
+                content=(f"// {path}\n" + "x" * 1200),
+                live_data_connections=[],
+                live_data_checks=[],
+            )
+
+        with (
+            mock.patch(
+                "ragtime.rag.components.userspace_service.enforce_workspace_role",
+                new_callable=mock.AsyncMock,
+            ) as enforce_workspace_role,
+            mock.patch(
+                "ragtime.rag.components.userspace_service.list_workspace_files",
+                new_callable=mock.AsyncMock,
+                return_value=files,
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.get_workspace_file",
+                new_callable=mock.AsyncMock,
+                side_effect=get_workspace_file,
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.get_workspace",
+                new_callable=mock.AsyncMock,
+                return_value=types.SimpleNamespace(selected_tool_ids=["tool-1"]),
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.get_workspace_entrypoint_status",
+                return_value=types.SimpleNamespace(state="valid", framework="node", error=None),
+            ),
+            mock.patch(
+                "ragtime.rag.components.userspace_service.is_default_static_entrypoint",
+                return_value=False,
+            ),
+        ):
+            raw = await coroutine()
+
+        payload = json.loads(raw)
+        workspace = payload["workspace"]
+        self.assertEqual(payload["tool"], "assay_userspace_code")
+        self.assertEqual(workspace["summary"]["inspected_file_count"], 6)
+        self.assertEqual(len(workspace["inspected_files"]), 6)
+        self.assertLessEqual(len(workspace["inspected_files"][0]["preview"]), 800)
+        self.assertTrue(workspace["structure"]["has_dashboard_entry"])
+        self.assertTrue(workspace["structure"]["has_index_html"])
+        self.assertEqual(workspace["structure"]["authoritative_entrypoint"], ".ragtime/runtime-entrypoint.json")
+        self.assertTrue(workspace["live_data_contract"]["workspace_has_selected_tools"])
+        self.assertEqual(workspace["live_data_contract"]["selected_tool_ids"], ["tool-1"])
+        enforce_workspace_role.assert_awaited_once_with("workspace-1", "user-1", "editor")
+
+    def test_userspace_prompt_guidance_splits_assay_from_indexed_search_with_fallback(self) -> None:
+        scm_prompt = build_workspace_scm_setup_prompt(git_url="https://example.test/repo.git", git_branch="main")
+
+        self.assertIn("assay_userspace_code to assess the current structure", scm_prompt)
+        self.assertIn("search_userspace_code", scm_prompt)
+        self.assertIn("when the code index is unavailable", scm_prompt)
+        self.assertIn("list_userspace_files plus targeted reads", scm_prompt)
+        self.assertIn("assay (structure/contract) -> search/read", _USERSPACE_TURN_REMINDER_BASE)
+        self.assertIn("Use `assay_userspace_code` for structure and contract context", _USERSPACE_MODE_PROMPT_TEMPLATE)
 
     async def test_single_file_upsert_rejects_missing_content_without_writing(self) -> None:
         tool = await self._upsert_tool()
