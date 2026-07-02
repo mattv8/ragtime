@@ -77,6 +77,11 @@ from ragtime.core.ssh import (
 )
 from ragtime.core.type_coercion import coerce_bool_metadata, coerce_int_metadata
 from ragtime.core.user_identity import add_workspace_user_fingerprint, build_user_fingerprint_subject, normalize_user_identity
+from ragtime.core.userspace_limits import (
+    clamp_archive_max_file_count,
+    clamp_archive_max_total_size_bytes,
+    format_userspace_sqlite_import_limit,
+)
 from ragtime.core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
     WORKSPACE_DEFAULT_GITIGNORE_PATTERNS,
@@ -3482,27 +3487,72 @@ class UserSpaceService:
         self,
         archive_path: Path,
         extract_dir: Path,
+        *,
+        max_entries: int,
+        max_bytes: int,
     ) -> None:
+        extracted_bytes = 0
+        entry_count = 0
+
+        def _copy_member(source_handle: Any, target_path: Path, member_size: int) -> None:
+            nonlocal extracted_bytes
+            if member_size > max_bytes:
+                raise HTTPException(status_code=413, detail=self._workspace_archive_member_bytes_limit_detail(max_bytes))
+            with target_path.open("wb") as target_handle:
+                while True:
+                    chunk = source_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    extracted_bytes += len(chunk)
+                    if extracted_bytes > max_bytes:
+                        raise HTTPException(status_code=413, detail=self._workspace_archive_extracted_bytes_limit_detail(max_bytes))
+                    target_handle.write(chunk)
+
         with zipfile.ZipFile(archive_path, mode="r") as zip_archive:
             for member in zip_archive.infolist():
                 member_path = self._workspace_archive_member_path(member.filename)
+                entry_count += 1
+                if entry_count > max_entries:
+                    raise HTTPException(status_code=413, detail=self._workspace_archive_entry_limit_detail(max_entries))
                 target_path = extract_dir / member_path.as_posix()
                 if member.is_dir():
                     target_path.mkdir(parents=True, exist_ok=True)
                     continue
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with zip_archive.open(member, "r") as source_handle:
-                    with target_path.open("wb") as target_handle:
-                        shutil.copyfileobj(source_handle, target_handle)
+                    _copy_member(source_handle, target_path, member.file_size)
 
     def _extract_workspace_archive_tar_sync(
         self,
         archive_path: Path,
         extract_dir: Path,
+        *,
+        max_entries: int,
+        max_bytes: int,
     ) -> None:
+        extracted_bytes = 0
+        entry_count = 0
+
+        def _copy_member(source_handle: Any, target_path: Path, member_size: int) -> None:
+            nonlocal extracted_bytes
+            if member_size > max_bytes:
+                raise HTTPException(status_code=413, detail=self._workspace_archive_member_bytes_limit_detail(max_bytes))
+            with target_path.open("wb") as target_handle:
+                while True:
+                    chunk = source_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    extracted_bytes += len(chunk)
+                    if extracted_bytes > max_bytes:
+                        raise HTTPException(status_code=413, detail=self._workspace_archive_extracted_bytes_limit_detail(max_bytes))
+                    target_handle.write(chunk)
+
         with tarfile.open(archive_path, mode="r:gz") as tar_archive:
             for tar_member in tar_archive.getmembers():
                 member_path = self._workspace_archive_member_path(tar_member.name)
+                entry_count += 1
+                if entry_count > max_entries:
+                    raise HTTPException(status_code=413, detail=self._workspace_archive_entry_limit_detail(max_entries))
                 target_path = extract_dir / member_path.as_posix()
                 if tar_member.isdir():
                     target_path.mkdir(parents=True, exist_ok=True)
@@ -3514,20 +3564,44 @@ class UserSpaceService:
                     continue
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 with tar_source_handle:
-                    with target_path.open("wb") as target_handle:
-                        shutil.copyfileobj(tar_source_handle, target_handle)
+                    _copy_member(tar_source_handle, target_path, tar_member.size)
+
+    @staticmethod
+    def _workspace_archive_entry_limit_detail(max_entries: int) -> str:
+        return f"Workspace archive exceeds the configured {max_entries} entry limit."
+
+    @staticmethod
+    def _workspace_archive_member_bytes_limit_detail(max_bytes: int) -> str:
+        return f"Workspace archive contains a file larger than the configured {format_userspace_sqlite_import_limit(max_bytes)} size limit."
+
+    @staticmethod
+    def _workspace_archive_extracted_bytes_limit_detail(max_bytes: int) -> str:
+        return f"Workspace archive exceeds the configured {format_userspace_sqlite_import_limit(max_bytes)} extracted size limit."
+
+    async def _workspace_archive_import_limits(self) -> tuple[int, int]:
+        try:
+            cached_settings = await SettingsCache.get_instance().get_settings()
+        except Exception:
+            cached_settings = {}
+        return (
+            clamp_archive_max_total_size_bytes(cached_settings.get("archive_max_total_size_bytes")),
+            clamp_archive_max_file_count(cached_settings.get("archive_max_file_count")),
+        )
 
     def _extract_workspace_archive_sync(
         self,
         archive_path: Path,
         extract_dir: Path,
+        *,
+        max_entries: int,
+        max_bytes: int,
     ) -> dict[str, Any]:
         archive_format = self._detect_workspace_archive_format(archive_path.name)
         extract_dir.mkdir(parents=True, exist_ok=True)
         if archive_format == "zip":
-            self._extract_workspace_archive_zip_sync(archive_path, extract_dir)
+            self._extract_workspace_archive_zip_sync(archive_path, extract_dir, max_entries=max_entries, max_bytes=max_bytes)
         else:
-            self._extract_workspace_archive_tar_sync(archive_path, extract_dir)
+            self._extract_workspace_archive_tar_sync(archive_path, extract_dir, max_entries=max_entries, max_bytes=max_bytes)
 
         manifest_path = extract_dir / "manifest.json"
         if not manifest_path.is_file():
@@ -4021,10 +4095,13 @@ class UserSpaceService:
                 "extracting_archive",
                 archive_format=archive_format,
             )
+            max_archive_bytes, max_archive_entries = await self._workspace_archive_import_limits()
             manifest = await asyncio.to_thread(
                 self._extract_workspace_archive_sync,
                 uploaded_archive_path,
                 extract_dir,
+                max_entries=max_archive_entries,
+                max_bytes=max_archive_bytes,
             )
             workspace_mounts = await self.list_workspace_mounts(
                 workspace_id,

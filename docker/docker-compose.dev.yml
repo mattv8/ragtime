@@ -70,6 +70,7 @@ services:
       - INDEX_DATA_PATH=/data
       - API_PORT=${API_PORT:-8001}
       - RUNTIME_MANAGER_URL=${RUNTIME_MANAGER_URL:-http://runtime:8090}
+      # Development-only defaults. Override these when testing adversarial/networked deployments.
       - RUNTIME_MANAGER_AUTH_TOKEN=${RUNTIME_MANAGER_AUTH_TOKEN:-dev-runtime-manager-token}
       - RUNTIME_WORKER_AUTH_TOKEN=${RUNTIME_WORKER_AUTH_TOKEN:-dev-runtime-worker-token}
       # Authentication settings (from .env file via env_file)
@@ -88,14 +89,15 @@ services:
       - ../prisma:/ragtime/prisma:ro
       # Mount data directory (indexes, SSL certs, etc.)
       - ../.data:/data
-      # Mount Docker socket for container exec.
+      # Development-only Docker socket mount for container exec.
       # Linux/WSL default: /var/run/docker.sock
       # Colima/macOS: set DOCKER_SOCKET_PATH=$HOME/.colima/default/docker.sock
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
-      # Mount SSH keys for remote connections
+      # Development-only SSH key mount for remote connections.
       - ~/.ssh:/root/.ssh:ro
       # Mount scripts for backup/restore
       - ./scripts:/docker-scripts:ro
+    # Development-only: permissive container for local mount/tool testing.
     privileged: true
     cap_add:
       - SYS_ADMIN
@@ -122,6 +124,7 @@ services:
     environment:
       - DEBUG_MODE=true
       - RUNTIME_SERVICE_MODE=manager
+      # Development-only defaults. Override these when testing adversarial/networked deployments.
       - RUNTIME_MANAGER_AUTH_TOKEN=${RUNTIME_MANAGER_AUTH_TOKEN:-dev-runtime-manager-token}
       - RUNTIME_WORKER_AUTH_TOKEN=${RUNTIME_WORKER_AUTH_TOKEN:-dev-runtime-worker-token}
       - RUNTIME_WORKER_BASE_URL=${RUNTIME_WORKER_BASE_URL:-http://runtime:8090}

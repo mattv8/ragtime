@@ -55,6 +55,16 @@ function isSystemMount(containerPath: string): boolean {
   );
 }
 
+function ReadOnlySecurityNotice() {
+  return (
+    <p className="field-help warning" style={{ color: 'var(--color-warning)' }}>
+      Read-only mode is a guardrail, not complete protection. Use least-privileged credentials,
+      read-only database roles and transactions, OS/container sandboxing, restricted SSH users,
+      timeouts, audit logs, and network boundaries for tools used by agents.
+    </p>
+  );
+}
+
 // =============================================================================
 // Filesystem Browser Component
 // =============================================================================
@@ -6263,6 +6273,7 @@ export function ToolWizard({
               destructive commands.
             </p>
           )}
+          <ReadOnlySecurityNotice />
         </fieldset>
 
         <div className="form-group" style={{ marginTop: '1rem' }}>
@@ -6401,6 +6412,7 @@ export function ToolWizard({
               Warning: Write operations are enabled. The AI will be able to modify data.
             </p>
           )}
+          <ReadOnlySecurityNotice />
         </fieldset>
       </div>
     );

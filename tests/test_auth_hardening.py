@@ -8,10 +8,15 @@ Tests for scoped auth hardening:
 
 import base64
 import json
+import time
 import unittest
 from typing import Optional
 from unittest import mock
 
+from starlette.requests import Request
+from starlette.responses import Response
+
+from ragtime.api import auth as api_auth
 from ragtime.mcp import oauth
 
 # ---------------------------------------------------------------------------
@@ -67,6 +72,10 @@ async def _capture_response(call) -> tuple[int, dict[str, str], dict]:
     headers = {key.decode("latin1"): value.decode("latin1") for key, value in messages[0].get("headers", [])}
     body = json.loads(messages[-1].get("body", b"{}"))
     return status, headers, body
+
+
+def _json_response_body(response: Response) -> dict[str, object]:
+    return json.loads(bytes(response.body))
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +326,151 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await oauth.validate_client_credentials_basic(scope, "cid", "encrypted-secret")
         self.assertFalse(result)
+
+
+class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self) -> None:
+        api_auth._auth_codes.clear()
+
+    def _request(self) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/auth/oauth2/token",
+                "headers": [(b"host", b"ragtime.example")],
+                "scheme": "https",
+            }
+        )
+
+    def _store_code(self, code: str = "code-1") -> None:
+        api_auth._auth_codes[code] = {
+            "user_id": "user-1",
+            "username": "alice",
+            "role": "user",
+            "client_id": "client-a",
+            "redirect_uri": "https://client.example/callback",
+            "code_challenge": "challenge",
+            "expires": time.time() + api_auth.AUTH_CODE_EXPIRY,
+        }
+
+    async def test_authorization_code_requires_client_id(self) -> None:
+        self._store_code()
+
+        with (
+            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
+            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
+        ):
+            response = await api_auth.oauth2_token(
+                self._request(),
+                Response(),
+                grant_type="authorization_code",
+                code="code-1",
+                code_verifier="verifier",
+                redirect_uri="https://client.example/callback",
+                client_id=None,
+                scope=None,
+            )
+
+        self.assertIsInstance(response, Response)
+        assert isinstance(response, Response)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("client_id", str(_json_response_body(response).get("error_description", "")))
+
+    async def test_authorization_code_allows_missing_redirect_uri(self) -> None:
+        self._store_code()
+
+        with (
+            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
+            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
+        ):
+            response = await api_auth.oauth2_token(
+                self._request(),
+                Response(),
+                grant_type="authorization_code",
+                code="code-1",
+                code_verifier="verifier",
+                redirect_uri=None,
+                client_id="client-a",
+                scope=None,
+            )
+
+        self.assertIsInstance(response, api_auth.OAuth2TokenResponse)
+        assert isinstance(response, api_auth.OAuth2TokenResponse)
+        self.assertEqual(response.access_token, "session-token")
+        self.assertNotIn("code-1", api_auth._auth_codes)
+
+    async def test_authorization_code_missing_client_id_does_not_consume_code(self) -> None:
+        self._store_code()
+
+        with (
+            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
+            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
+        ):
+            response = await api_auth.oauth2_token(
+                self._request(),
+                Response(),
+                grant_type="authorization_code",
+                code="code-1",
+                code_verifier="verifier",
+                redirect_uri="https://client.example/callback",
+                client_id=None,
+                scope=None,
+            )
+
+        self.assertIsInstance(response, Response)
+        assert isinstance(response, Response)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("client_id", str(_json_response_body(response).get("error_description", "")))
+        self.assertIn("code-1", api_auth._auth_codes)
+
+    async def test_authorization_code_rejects_client_id_mismatch_and_consumes_code(self) -> None:
+        self._store_code()
+
+        with (
+            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
+            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
+        ):
+            response = await api_auth.oauth2_token(
+                self._request(),
+                Response(),
+                grant_type="authorization_code",
+                code="code-1",
+                code_verifier="verifier",
+                redirect_uri="https://client.example/callback",
+                client_id="client-b",
+                scope=None,
+            )
+
+        self.assertIsInstance(response, Response)
+        assert isinstance(response, Response)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("client_id mismatch", str(_json_response_body(response).get("error_description", "")))
+        self.assertNotIn("code-1", api_auth._auth_codes)
+
+    async def test_authorization_code_rejects_redirect_uri_mismatch_and_consumes_code(self) -> None:
+        self._store_code()
+
+        with (
+            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
+            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
+        ):
+            response = await api_auth.oauth2_token(
+                self._request(),
+                Response(),
+                grant_type="authorization_code",
+                code="code-1",
+                code_verifier="verifier",
+                redirect_uri="https://evil.example/callback",
+                client_id="client-a",
+                scope=None,
+            )
+
+        self.assertIsInstance(response, Response)
+        assert isinstance(response, Response)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("redirect_uri mismatch", str(_json_response_body(response).get("error_description", "")))
+        self.assertNotIn("code-1", api_auth._auth_codes)
 
 
 # ---------------------------------------------------------------------------

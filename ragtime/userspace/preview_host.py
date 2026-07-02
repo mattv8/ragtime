@@ -14,6 +14,8 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket
 from fastapi.responses import RedirectResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 
@@ -22,6 +24,7 @@ from ragtime.core.auth import authenticate, issue_authenticated_session, validat
 from ragtime.core.auth_methods import AuthMethodStatusPayload, build_auth_method_statuses
 from ragtime.core.database import get_db
 from ragtime.core.mfa import MFA_TRUST_COOKIE_NAME, mfa_needed_for_user, trusted_device_satisfies_mfa
+from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.userspace.html_templates import render_browser_auth_start_page_html
 from ragtime.userspace.models import (
     ExecuteComponentRequest,
@@ -97,6 +100,8 @@ async def _preview_user_from_id(user_id: str | None) -> Any | None:
 
 
 preview_host_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+preview_host_app.state.limiter = limiter
+preview_host_app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_handler))
 
 
 @preview_host_app.exception_handler(HTTPException)
@@ -1090,6 +1095,7 @@ async def preview_auth_me(request: Request):
 
 
 @preview_host_app.post("/auth/login")
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def preview_auth_login(request: Request, response: Response, payload: dict[str, Any]):
     workspace_id = str(_workspace_id_from_preview_host(request.headers.get("host")) or "")
     if not workspace_id:
@@ -1142,6 +1148,7 @@ async def preview_browser_auth_start(request: Request):
 
 
 @preview_host_app.post("/__ragtime/browser-auth/start")
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def preview_browser_auth_start_submit(request: Request):
     form = await request.form()
     raw_surfaces: list[str] = []
@@ -1175,11 +1182,20 @@ async def preview_browser_auth_start_submit(request: Request):
     "/__ragtime/browser-auth",
     response_model=UserSpaceBrowserAuthResponse,
 )
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def preview_browser_auth(
     request: Request,
     response: Response,
     payload: UserSpaceBrowserAuthRequest,
 ):
+    return await _preview_browser_auth_impl(request, response, payload)
+
+
+async def _preview_browser_auth_impl(
+    request: Request,
+    response: Response,
+    payload: UserSpaceBrowserAuthRequest,
+) -> UserSpaceBrowserAuthResponse:
     claims = await _verify_preview_session_cookie(request)
     try:
         workspace_id, user = await _workspace_user_for_preview_auth(request, response, claims, payload)
@@ -1211,6 +1227,7 @@ async def preview_browser_auth(
     "/indexes/userspace/runtime/workspaces/{workspace_id}/browser-auth",
     response_model=UserSpaceBrowserAuthResponse,
 )
+@limiter.limit(LOGIN_RATE_LIMIT)
 async def preview_workspace_browser_auth_alias(
     workspace_id: str,
     request: Request,
@@ -1220,7 +1237,7 @@ async def preview_workspace_browser_auth_alias(
     host_workspace_id = str(_workspace_id_from_preview_host(request.headers.get("host")) or "").strip()
     if host_workspace_id and host_workspace_id != str(workspace_id or "").strip():
         raise HTTPException(status_code=404, detail="Preview host mismatch")
-    return await preview_browser_auth(request, response, payload)
+    return await _preview_browser_auth_impl(request, response, payload)
 
 
 async def _clear_preview_browser_auth(request: Request, response: Response) -> None:

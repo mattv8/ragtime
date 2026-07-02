@@ -201,11 +201,13 @@ flowchart LR
    # Set to blank/non-http to force local placeholder runtime mode.
    # RUNTIME_MANAGER_URL=http://runtime:8090
 
-   # Optional bearer token for runtime-manager calls
-   # RUNTIME_MANAGER_AUTH_TOKEN=
+   # Required bearer token for runtime-manager calls in production Docker Compose.
+   # Generate with: openssl rand -base64 32
+   RUNTIME_MANAGER_AUTH_TOKEN=
 
-   # Optional bearer token for preview proxy calls to the runtime worker
-   # RUNTIME_WORKER_AUTH_TOKEN=
+   # Required bearer token for preview proxy calls to the runtime worker.
+   # Generate with: openssl rand -base64 32
+   RUNTIME_WORKER_AUTH_TOKEN=
 
    # Maximum concurrent runtime sessions in running/starting state (default: 12)
    # RUNTIME_MAX_SESSIONS=12
@@ -314,13 +316,16 @@ flowchart LR
          # Recommended defaults
          DEBUG_MODE: "false"
          RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
-         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
-         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:-runtime-worker-token}
+         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:?Set RUNTIME_MANAGER_AUTH_TOKEN to a strong random value}
+         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:?Set RUNTIME_WORKER_AUTH_TOKEN to a strong random value}
        volumes:
          # Data persistence (indexes, SSL certs, etc.)
          - ./data:/data
-         # Docker socket for container exec (optional, for tool execution)
-         - /var/run/docker.sock:/var/run/docker.sock:ro
+         # Optional: mount docker.sock only if you need Docker tool execution.
+         # The Docker API can control the host even when the socket is mounted read-only.
+         # - /var/run/docker.sock:/var/run/docker.sock:ro
+       security_opt:
+         - no-new-privileges:true
        # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
        # privileged: true
        # cap_add:
@@ -348,8 +353,8 @@ flowchart LR
        environment:
          PORT: "8090"
          RUNTIME_SERVICE_MODE: manager
-         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
-         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:-runtime-worker-token}
+         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:?Set RUNTIME_MANAGER_AUTH_TOKEN to a strong random value}
+         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:?Set RUNTIME_WORKER_AUTH_TOKEN to a strong random value}
          RUNTIME_WORKER_BASE_URL: ${RUNTIME_WORKER_BASE_URL:-http://runtime:8090}
          RUNTIME_WORKSPACE_ROOT: ${RUNTIME_WORKSPACE_ROOT:-/data/_userspace}
          RUNTIME_MAX_SESSIONS: ${RUNTIME_MAX_SESSIONS:-12}
@@ -358,6 +363,8 @@ flowchart LR
          RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
        volumes:
          - ./data:/data
+       security_opt:
+         - no-new-privileges:true
        # Uncomment below to enable full runtime sandbox isolation when the host
        # permits mount and PID namespaces (otherwise runtime falls back to chroot).
        # privileged: true
@@ -585,6 +592,7 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 - **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. MCP is disabled by default; when MCP is enabled, the default route is open unless you turn on route authentication.
 - MCP authentication supports password-based headers (including `MCP-Password` and bearer form) and OAuth2/client_credentials route modes.
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
+- **Review trusted external redirects carefully.** OAuth callbacks and other external redirect allowlists should only include destinations you control. Redirecting users to third-party domains can expose authorization codes, tokens, or sensitive workflow context if those destinations are compromised or misconfigured.
 
 #### Authentication Security
 - **Encryption key is auto-generated** on first startup; you do not need to set `ENCRYPTION_KEY` for normal setup. Ragtime persists the effective key in its data volume so it survives restarts. Because API keys and connection passwords are encrypted in the database using this key, use `backup --include-secret` for restorable backups. Set `ENCRYPTION_KEY` only when you intentionally need to supply or restore a known key.
@@ -595,6 +603,9 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 
 #### SSH Connections
 The SSH tool uses Paramiko with `AutoAddPolicy`, which accepts any host key without verification. This makes SSH connections vulnerable to man-in-the-middle attacks on first connect. Only use the SSH tool on trusted networks or with hosts you have verified out-of-band.
+
+#### Tool Read-Only Mode
+Tool read-only mode is a guardrail, not complete isolation. Validators reduce common write paths, but they cannot make broad database, SSH, shell, or Odoo credentials safe against every bypass or misconfiguration. Use least-privileged credentials, read-only database roles and transactions, OS/container sandboxing, restricted SSH users, timeouts, audit logs, and network/firewall boundaries for any tool reachable by agents.
 
 #### Docker & Mounts
 - The default compose files include mounts for `docker.sock` and optional privileged flags to support advanced tool features (container exec, SSH tunnels, NFS/SMB mounts).

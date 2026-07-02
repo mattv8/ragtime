@@ -7556,7 +7556,7 @@ export function SettingsPanel({
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Archive Max Size</label>
                 <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum total uncompressed size of an uploaded index archive.
+                  Maximum total uncompressed size of an uploaded index or workspace archive.
                 </p>
                 {(() => {
                   const currentVal =
@@ -7593,7 +7593,7 @@ export function SettingsPanel({
                       </div>
                       <p className="field-help">
                         Range: 100 MB to 500 GB. Applies to both upload and git-sourced index
-                        archives.
+                        archives, plus User Space workspace archive imports.
                       </p>
                     </>
                   );
@@ -7603,7 +7603,8 @@ export function SettingsPanel({
               <div className="form-group" style={{ flex: 1 }}>
                 <label>Archive Max File Count</label>
                 <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum number of files allowed in a single extracted index archive.
+                  Maximum number of entries allowed in a single extracted index or workspace
+                  archive.
                 </p>
                 {(() => {
                   const currentVal =

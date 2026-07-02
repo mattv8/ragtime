@@ -92,6 +92,11 @@ def test_workspace_archive_manifest_accepts_floatlike_version(tmp_path) -> None:
     with tarfile.open(archive_path, "w:gz") as archive:
         archive.add(source_dir / "manifest.json", arcname="manifest.json")
 
-    manifest = UserSpaceService()._extract_workspace_archive_sync(archive_path, tmp_path / "extract")
+    manifest = UserSpaceService()._extract_workspace_archive_sync(
+        archive_path,
+        tmp_path / "extract",
+        max_entries=10,
+        max_bytes=1024,
+    )
 
     assert manifest == {"version": "1.0"}

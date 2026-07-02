@@ -72,13 +72,16 @@ services:
       # Recommended defaults
       DEBUG_MODE: "false"
       RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
-      RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
-      RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:-runtime-worker-token}
+      RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:?Set RUNTIME_MANAGER_AUTH_TOKEN to a strong random value}
+      RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:?Set RUNTIME_WORKER_AUTH_TOKEN to a strong random value}
     volumes:
       # Data persistence (indexes, SSL certs, etc.)
       - ./data:/data
-      # Docker socket for container exec (optional, for tool execution)
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Optional: mount docker.sock only if you need Docker tool execution.
+      # The Docker API can control the host even when the socket is mounted read-only.
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt:
+      - no-new-privileges:true
     # Uncomment below if using SMB/NFS mounting inside container (consider mounting via docker volume instead)
     # privileged: true
     # cap_add:
@@ -106,8 +109,8 @@ services:
     environment:
       PORT: "8090"
       RUNTIME_SERVICE_MODE: manager
-      RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:-runtime-manager-token}
-      RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:-runtime-worker-token}
+      RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:?Set RUNTIME_MANAGER_AUTH_TOKEN to a strong random value}
+      RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:?Set RUNTIME_WORKER_AUTH_TOKEN to a strong random value}
       RUNTIME_WORKER_BASE_URL: ${RUNTIME_WORKER_BASE_URL:-http://runtime:8090}
       RUNTIME_WORKSPACE_ROOT: ${RUNTIME_WORKSPACE_ROOT:-/data/_userspace}
       RUNTIME_MAX_SESSIONS: ${RUNTIME_MAX_SESSIONS:-12}
@@ -116,6 +119,8 @@ services:
       RUNTIME_RECONCILE_INTERVAL_SECONDS: ${RUNTIME_RECONCILE_INTERVAL_SECONDS:-15}
     volumes:
       - ./data:/data
+    security_opt:
+      - no-new-privileges:true
     # Uncomment below to enable full runtime sandbox isolation when the host
     # permits mount and PID namespaces (otherwise runtime falls back to chroot).
     # privileged: true

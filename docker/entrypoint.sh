@@ -116,6 +116,24 @@ if [ "$DEBUG_MODE" != "true" ] && [ -z "$API_KEY" ]; then
     exit 1
 fi
 
+runtime_manager_url="${RUNTIME_MANAGER_URL:-http://runtime:8090}"
+if [ "$DEBUG_MODE" != "true" ] && { [ "${runtime_manager_url#http://}" != "$runtime_manager_url" ] || [ "${runtime_manager_url#https://}" != "$runtime_manager_url" ]; }; then
+    case "${RUNTIME_MANAGER_AUTH_TOKEN:-}" in
+        ""|"runtime-manager-token"|"dev-runtime-manager-token")
+            log "ERROR" "RUNTIME_MANAGER_AUTH_TOKEN must be set to a strong random value."
+            echo "Generate a secure token with: openssl rand -base64 32"
+            exit 1
+            ;;
+    esac
+    case "${RUNTIME_WORKER_AUTH_TOKEN:-}" in
+        ""|"runtime-worker-token"|"dev-runtime-worker-token")
+            log "ERROR" "RUNTIME_WORKER_AUTH_TOKEN must be set to a strong random value."
+            echo "Generate a secure token with: openssl rand -base64 32"
+            exit 1
+            ;;
+    esac
+fi
+
 # HTTPS setup: Generate self-signed certificate if needed
 SSL_CERT_FILE=${SSL_CERT_FILE:-$INDEX_DATA_PATH/ssl/server.crt}
 SSL_KEY_FILE=${SSL_KEY_FILE:-$INDEX_DATA_PATH/ssl/server.key}

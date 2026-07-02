@@ -1328,13 +1328,15 @@ async def oauth2_token(
             del _auth_codes[code]
             return _oauth_error("invalid_grant", "PKCE verification failed")
 
-        # Verify client_id matches (if provided) - prevents code theft
-        if client_id and client_id != auth_data["client_id"]:
+        # Verify client binding. OAuth auth codes are issued for one client and
+        # redirect URI; a supplied mismatched value must not bypass that binding.
+        if not client_id:
+            return _oauth_error("invalid_request", "client_id is required for authorization_code grant")
+        if client_id != auth_data["client_id"]:
             del _auth_codes[code]
             logger.warning(f"OAuth2 client_id mismatch: expected '{auth_data['client_id']}', got '{client_id}'")
             return _oauth_error("invalid_grant", "client_id mismatch")
 
-        # Verify redirect_uri matches (if provided)
         if redirect_uri and redirect_uri != auth_data["redirect_uri"]:
             del _auth_codes[code]
             return _oauth_error("invalid_grant", "redirect_uri mismatch")

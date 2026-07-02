@@ -35,7 +35,9 @@ jobs:
       - name: Validate docker compose manifests
         run: |
           cp -n .env.example .env
-          docker compose -f docker-compose.yml config >/dev/null
+          RUNTIME_MANAGER_AUTH_TOKEN=test-runtime-manager-token \
+            RUNTIME_WORKER_AUTH_TOKEN=test-runtime-worker-token \
+            docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null
 
       - name: Summarize docker compose manifests
@@ -51,7 +53,9 @@ jobs:
           ```bash
           bash tests/check_readme_sync.sh --check
           cp -n .env.example .env
-          docker compose -f docker-compose.yml config >/dev/null
+          RUNTIME_MANAGER_AUTH_TOKEN=test-runtime-manager-token \
+            RUNTIME_WORKER_AUTH_TOKEN=test-runtime-worker-token \
+            docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null
           ```
 

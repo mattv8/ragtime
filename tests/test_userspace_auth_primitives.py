@@ -9,6 +9,7 @@ from typing import Any, cast
 from unittest import mock
 
 from fastapi import HTTPException
+from slowapi.errors import RateLimitExceeded
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -119,6 +120,14 @@ async def _fake_issue_authenticated_session(response: Response, **_: Any) -> str
 
 
 class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
+    def test_preview_host_app_wires_rate_limiter(self) -> None:
+        self.assertIs(
+            getattr(_PREVIEW_HOST.preview_host_app.state, "limiter", None),
+            _PREVIEW_HOST.limiter,
+        )
+        self.assertIn(RateLimitExceeded, _PREVIEW_HOST.preview_host_app.exception_handlers)
+        self.assertFalse(any(getattr(middleware.cls, "__name__", "") == "SlowAPIMiddleware" for middleware in _PREVIEW_HOST.preview_host_app.user_middleware))
+
     def test_workspace_user_fingerprint_is_stable_and_workspace_scoped(self) -> None:
         first = build_workspace_user_fingerprint(user_id="user-1", workspace_id="workspace-a", workspace_fingerprint_namespace="portable-a")
         second = build_workspace_user_fingerprint(user_id="user-1", workspace_id="workspace-a", workspace_fingerprint_namespace="portable-a")

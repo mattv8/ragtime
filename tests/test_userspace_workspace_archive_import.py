@@ -1,11 +1,16 @@
 import sys
+import tarfile
 import types
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
 
 from ragtime.userspace.models import UserSpaceWorkspaceArchiveExportRequest
 from ragtime.userspace.service import UserSpaceService
@@ -55,6 +60,148 @@ class _CaptureTable:
 
 
 class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
+    def _write_zip_archive(self, path: Path, files: dict[str, bytes]) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("manifest.json", b'{"version":1,"workspace":{}}')
+            for name, content in files.items():
+                archive.writestr(name, content)
+
+    def _write_zip_archive_with_dirs(self, path: Path, dirs: list[str]) -> None:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("manifest.json", b'{"version":1,"workspace":{}}')
+            for name in dirs:
+                archive.writestr(name.rstrip("/") + "/", b"")
+
+    def _write_tar_archive(self, path: Path, files: dict[str, bytes]) -> None:
+        with tarfile.open(path, "w:gz") as archive:
+            manifest = b'{"version":1,"workspace":{}}'
+            manifest_info = tarfile.TarInfo("manifest.json")
+            manifest_info.size = len(manifest)
+            archive.addfile(manifest_info, BytesIO(manifest))
+            for name, content in files.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(content)
+                archive.addfile(info, BytesIO(content))
+
+    def _write_tar_archive_with_dirs(self, path: Path, dirs: list[str]) -> None:
+        with tarfile.open(path, "w:gz") as archive:
+            manifest = b'{"version":1,"workspace":{}}'
+            manifest_info = tarfile.TarInfo("manifest.json")
+            manifest_info.size = len(manifest)
+            archive.addfile(manifest_info, BytesIO(manifest))
+            for name in dirs:
+                info = tarfile.TarInfo(name.rstrip("/"))
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+
+    def test_zip_workspace_archive_import_rejects_too_many_entries(self) -> None:
+        service = UserSpaceService()
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive_path = tmp / "workspace.zip"
+            self._write_zip_archive(archive_path, {"files/a.txt": b"a", "files/b.txt": b"b"})
+
+            with self.assertRaises(HTTPException) as ctx:
+                service._extract_workspace_archive_sync(
+                    archive_path,
+                    tmp / "extract",
+                    max_entries=1,
+                    max_bytes=1024,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("entry", str(ctx.exception.detail).lower())
+
+    def test_tar_workspace_archive_import_rejects_too_many_entries(self) -> None:
+        service = UserSpaceService()
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive_path = tmp / "workspace.tar.gz"
+            self._write_tar_archive(archive_path, {"files/a.txt": b"a", "files/b.txt": b"b"})
+
+            with self.assertRaises(HTTPException) as ctx:
+                service._extract_workspace_archive_sync(
+                    archive_path,
+                    tmp / "extract",
+                    max_entries=1,
+                    max_bytes=1024,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("entry", str(ctx.exception.detail).lower())
+
+    def test_zip_workspace_archive_import_counts_directory_entries(self) -> None:
+        service = UserSpaceService()
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive_path = tmp / "workspace.zip"
+            self._write_zip_archive_with_dirs(archive_path, ["files/a", "files/b"])
+
+            with self.assertRaises(HTTPException) as ctx:
+                service._extract_workspace_archive_sync(
+                    archive_path,
+                    tmp / "extract",
+                    max_entries=1,
+                    max_bytes=1024,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("entry", str(ctx.exception.detail).lower())
+
+    def test_tar_workspace_archive_import_counts_directory_entries(self) -> None:
+        service = UserSpaceService()
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive_path = tmp / "workspace.tar.gz"
+            self._write_tar_archive_with_dirs(archive_path, ["files/a", "files/b"])
+
+            with self.assertRaises(HTTPException) as ctx:
+                service._extract_workspace_archive_sync(
+                    archive_path,
+                    tmp / "extract",
+                    max_entries=1,
+                    max_bytes=1024,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("entry", str(ctx.exception.detail).lower())
+
+    def test_zip_workspace_archive_import_rejects_extracted_size_limit(self) -> None:
+        service = UserSpaceService()
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive_path = tmp / "workspace.zip"
+            self._write_zip_archive(archive_path, {"files/large.txt": b"x" * 128})
+
+            with self.assertRaises(HTTPException) as ctx:
+                service._extract_workspace_archive_sync(
+                    archive_path,
+                    tmp / "extract",
+                    max_entries=10,
+                    max_bytes=64,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("size", str(ctx.exception.detail).lower())
+
+    def test_tar_workspace_archive_import_rejects_extracted_size_limit(self) -> None:
+        service = UserSpaceService()
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            archive_path = tmp / "workspace.tar.gz"
+            self._write_tar_archive(archive_path, {"files/large.txt": b"x" * 128})
+
+            with self.assertRaises(HTTPException) as ctx:
+                service._extract_workspace_archive_sync(
+                    archive_path,
+                    tmp / "extract",
+                    max_entries=10,
+                    max_bytes=64,
+                )
+
+        self.assertEqual(ctx.exception.status_code, 413)
+        self.assertIn("size", str(ctx.exception.detail).lower())
+
     async def test_run_guarded_workspace_archive_task_respects_admin_access(self) -> None:
         service = UserSpaceService()
         captured: list[bool] = []

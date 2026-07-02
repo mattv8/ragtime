@@ -183,6 +183,7 @@ export function UserSpaceArtifactPreview({
 
       const sendResult = (result: unknown) => {
         try {
+          const targetOrigin = event.origin === 'null' ? '*' : event.origin;
           frameWindow.postMessage(
             {
               bridge: USERSPACE_EXEC_BRIDGE,
@@ -190,7 +191,7 @@ export function UserSpaceArtifactPreview({
               callId,
               result,
             },
-            '*',
+            targetOrigin,
           );
         } catch (postErr) {
           // Iframe may have unmounted or navigated mid-execute. Swallow so we

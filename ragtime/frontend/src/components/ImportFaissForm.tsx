@@ -23,6 +23,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
   const [overwrite, setOverwrite] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showRiskConfirm, setShowRiskConfirm] = useState(false);
   const [status, setStatus] = useState<{
     type: 'info' | 'success' | 'error';
     message: string;
@@ -35,6 +36,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
     setDescription('');
     setOverwrite(false);
     setIsDragOver(false);
+    setShowRiskConfirm(false);
     setStatus(null);
     setResult(null);
   }, []);
@@ -219,7 +221,7 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
               <button
                 type="button"
                 className="btn"
-                onClick={handleImport}
+                onClick={() => setShowRiskConfirm(true)}
                 disabled={isLoading || !file || !name.trim()}
               >
                 {isLoading ? 'Importing...' : 'Import FAISS Index'}
@@ -255,6 +257,43 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
       )}
 
       {status && <div className={`status-message ${status.type}`}>{status.message}</div>}
+
+      {showRiskConfirm && (
+        <div className="modal-overlay" onClick={() => setShowRiskConfirm(false)}>
+          <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Confirm FAISS Import</h3>
+              <button className="modal-close" onClick={() => setShowRiskConfirm(false)}>
+                x
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                FAISS imports restore server-side index files, including serialized index metadata.
+                Only import archives that were exported from a Ragtime instance you trust.
+              </p>
+              <p>
+                This action requires an authenticated admin session and can overwrite an existing
+                index if that option is selected.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowRiskConfirm(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => {
+                  setShowRiskConfirm(false);
+                  void handleImport();
+                }}
+              >
+                I Understand, Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

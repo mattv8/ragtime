@@ -81,7 +81,9 @@ jobs:
         if: steps.quality_coverage.outputs.run_backend_quality == 'true'
         run: |
           cp -n .env.example .env
-          docker compose -f docker-compose.yml config >/dev/null
+          RUNTIME_MANAGER_AUTH_TOKEN=test-runtime-manager-token \
+            RUNTIME_WORKER_AUTH_TOKEN=test-runtime-worker-token \
+            docker compose -f docker-compose.yml config >/dev/null
           docker compose -f docker/docker-compose.dev.yml config >/dev/null
 
       - name: Set up Docker Buildx

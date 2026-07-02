@@ -1283,6 +1283,19 @@ interface ChartConfig {
 // Global URL regex for efficient linkification
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s])/g;
 
+function safeHttpHref(value: string | null | undefined): string | undefined {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return undefined;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+      ? parsed.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const MODEL_REMOVED_FROM_CHAT_MODELS_MESSAGE =
   'Selected model has been removed from Chat Models. Select another model to continue.';
 
@@ -1349,10 +1362,12 @@ export const LinkifiedText = memo(function LinkifiedText({ text }: { text: strin
     <>
       {parts.map((part, i) => {
         if (part.match(URL_PATTERN)) {
+          const href = safeHttpHref(part);
+          if (!href) return part;
           return (
             <a
               key={i}
-              href={part}
+              href={href}
               target="_blank"
               rel="noopener noreferrer"
               className="chat-link"
@@ -6999,66 +7014,69 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             )}
             {search.results.length > 0 ? (
               <ol className="tool-call-web-results">
-                {search.results.map((result, idx) => (
-                  <li className="tool-call-web-result" key={`${result.url}-${idx}`}>
-                    <div className="tool-call-web-result-head">
-                      {result.favicon ? (
-                        <img
-                          src={result.favicon}
-                          alt=""
-                          className="tool-call-web-result-favicon"
-                          loading="lazy"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      ) : (
-                        <Globe
-                          size={12}
-                          className="tool-call-web-result-favicon-fallback"
-                          aria-hidden="true"
-                        />
-                      )}
+                {search.results.map((result, idx) => {
+                  const resultHref = safeHttpHref(result.url);
+                  return (
+                    <li className="tool-call-web-result" key={`${result.url}-${idx}`}>
+                      <div className="tool-call-web-result-head">
+                        {result.favicon ? (
+                          <img
+                            src={result.favicon}
+                            alt=""
+                            className="tool-call-web-result-favicon"
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <Globe
+                            size={12}
+                            className="tool-call-web-result-favicon-fallback"
+                            aria-hidden="true"
+                          />
+                        )}
+                        <a
+                          className="tool-call-web-result-title"
+                          href={resultHref}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={result.url}
+                        >
+                          {result.title}
+                        </a>
+                        <button
+                          className="tool-call-copy-btn"
+                          onClick={() =>
+                            copyToClipboard(result.url, 'result', `web-search-result-url-${idx}`)
+                          }
+                          title="Copy result URL"
+                        >
+                          {isCopiedButton('result', `web-search-result-url-${idx}`) ? (
+                            <Check size={12} />
+                          ) : (
+                            <Copy size={12} />
+                          )}
+                        </button>
+                      </div>
                       <a
-                        className="tool-call-web-result-title"
-                        href={result.url}
+                        className="tool-call-web-result-url"
+                        href={resultHref}
                         target="_blank"
                         rel="noopener noreferrer"
                         title={result.url}
                       >
-                        {result.title}
+                        {result.url}
                       </a>
-                      <button
-                        className="tool-call-copy-btn"
-                        onClick={() =>
-                          copyToClipboard(result.url, 'result', `web-search-result-url-${idx}`)
-                        }
-                        title="Copy result URL"
-                      >
-                        {isCopiedButton('result', `web-search-result-url-${idx}`) ? (
-                          <Check size={12} />
-                        ) : (
-                          <Copy size={12} />
-                        )}
-                      </button>
-                    </div>
-                    <a
-                      className="tool-call-web-result-url"
-                      href={result.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={result.url}
-                    >
-                      {result.url}
-                    </a>
-                    {result.snippet && (
-                      <p className="tool-call-web-result-snippet">{result.snippet}</p>
-                    )}
-                    {result.engine && (
-                      <div className="tool-call-web-result-engine">{result.engine}</div>
-                    )}
-                  </li>
-                ))}
+                      {result.snippet && (
+                        <p className="tool-call-web-result-snippet">{result.snippet}</p>
+                      )}
+                      {result.engine && (
+                        <div className="tool-call-web-result-engine">{result.engine}</div>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             ) : !isErrorState ? (
               <div className="tool-call-web-empty">No results returned.</div>
@@ -7096,6 +7114,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         const isErrorState = !browse.ok || Boolean(browse.error);
         const finalUrl = browse.url || browse.requestedUrl;
         const requestedUrl = browse.requestedUrl || (toolCall.input?.url as string) || '';
+        const finalHref = safeHttpHref(finalUrl);
+        const requestedHref = safeHttpHref(requestedUrl);
         const showResolvedUrl = Boolean(finalUrl && finalUrl !== requestedUrl);
         const metaParts: string[] = [];
         if (browse.statusCode != null) metaParts.push(`HTTP ${browse.statusCode}`);
@@ -7111,10 +7131,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span>Web page</span>
               </span>
               <div className="tool-call-terminal-header-actions">
-                {finalUrl && (
+                {finalHref && (
                   <a
                     className="tool-call-copy-btn tool-call-web-open-btn"
-                    href={finalUrl}
+                    href={finalHref}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="Open in new tab"
@@ -7139,16 +7159,23 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             </div>
             {requestedUrl && (
               <div className="tool-call-web-query" title={requestedUrl}>
-                <a
-                  className="tool-call-web-query-link"
-                  href={requestedUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={requestedUrl}
-                >
-                  <Globe size={12} aria-hidden="true" />
-                  <span>{requestedUrl}</span>
-                </a>
+                {requestedHref ? (
+                  <a
+                    className="tool-call-web-query-link"
+                    href={requestedHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={requestedUrl}
+                  >
+                    <Globe size={12} aria-hidden="true" />
+                    <span>{requestedUrl}</span>
+                  </a>
+                ) : (
+                  <span className="tool-call-web-query-link" title={requestedUrl}>
+                    <Globe size={12} aria-hidden="true" />
+                    <span>{requestedUrl}</span>
+                  </span>
+                )}
                 <button
                   className="tool-call-copy-btn"
                   onClick={() => copyToClipboard(requestedUrl, 'query', 'web-browse-requested-url')}
@@ -7168,10 +7195,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   {browse.title}
                 </div>
               )}
-              {showResolvedUrl && finalUrl && (
+              {showResolvedUrl && finalHref && (
                 <a
                   className="tool-call-web-page-url"
-                  href={finalUrl}
+                  href={finalHref}
                   target="_blank"
                   rel="noopener noreferrer"
                   title={finalUrl}
@@ -7200,29 +7227,41 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   {browse.links.length} link{browse.links.length === 1 ? '' : 's'}
                 </summary>
                 <ul className="tool-call-web-links-list">
-                  {browse.links.map((link, idx) => (
-                    <li
-                      key={`${link.url}-${idx}`}
-                      className="tool-call-web-link-item tool-call-web-link-row"
-                    >
-                      <a href={link.url} target="_blank" rel="noopener noreferrer" title={link.url}>
-                        {link.text || link.url}
-                      </a>
-                      <button
-                        className="tool-call-copy-btn"
-                        onClick={() =>
-                          copyToClipboard(link.url, 'result', `web-browse-link-${idx}`)
-                        }
-                        title="Copy link URL"
+                  {browse.links.map((link, idx) => {
+                    const linkHref = safeHttpHref(link.url);
+                    return (
+                      <li
+                        key={`${link.url}-${idx}`}
+                        className="tool-call-web-link-item tool-call-web-link-row"
                       >
-                        {isCopiedButton('result', `web-browse-link-${idx}`) ? (
-                          <Check size={12} />
+                        {linkHref ? (
+                          <a
+                            href={linkHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={link.url}
+                          >
+                            {link.text || link.url}
+                          </a>
                         ) : (
-                          <Copy size={12} />
+                          <span title={link.url}>{link.text || link.url}</span>
                         )}
-                      </button>
-                    </li>
-                  ))}
+                        <button
+                          className="tool-call-copy-btn"
+                          onClick={() =>
+                            copyToClipboard(link.url, 'result', `web-browse-link-${idx}`)
+                          }
+                          title="Copy link URL"
+                        >
+                          {isCopiedButton('result', `web-browse-link-${idx}`) ? (
+                            <Check size={12} />
+                          ) : (
+                            <Copy size={12} />
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </details>
             )}
@@ -7276,6 +7315,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
         const isErrorState = !pdf.ok || Boolean(pdf.error);
         const finalUrl = pdf.url || pdf.requestedUrl;
         const requestedUrl = pdf.requestedUrl || (toolCall.input?.url as string) || finalUrl;
+        const finalHref = safeHttpHref(finalUrl);
+        const requestedHref = safeHttpHref(requestedUrl);
         const showResolvedUrl = Boolean(finalUrl && finalUrl !== requestedUrl);
         const metaParts: string[] = [];
         if (pdf.textLength > 0) {
@@ -7301,10 +7342,10 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 <span>Web page</span>
               </span>
               <div className="tool-call-terminal-header-actions">
-                {finalUrl && (
+                {finalHref && (
                   <a
                     className="tool-call-copy-btn tool-call-web-open-btn"
-                    href={finalUrl}
+                    href={finalHref}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="Open in new tab"
@@ -7329,16 +7370,23 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
             </div>
             {requestedUrl && (
               <div className="tool-call-web-query" title={requestedUrl}>
-                <a
-                  className="tool-call-web-query-link"
-                  href={requestedUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={requestedUrl}
-                >
-                  <FileText size={12} aria-hidden="true" />
-                  <span>{requestedUrl}</span>
-                </a>
+                {requestedHref ? (
+                  <a
+                    className="tool-call-web-query-link"
+                    href={requestedHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={requestedUrl}
+                  >
+                    <FileText size={12} aria-hidden="true" />
+                    <span>{requestedUrl}</span>
+                  </a>
+                ) : (
+                  <span className="tool-call-web-query-link" title={requestedUrl}>
+                    <FileText size={12} aria-hidden="true" />
+                    <span>{requestedUrl}</span>
+                  </span>
+                )}
                 <button
                   className="tool-call-copy-btn"
                   onClick={() =>
@@ -7362,11 +7410,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 </div>
               </div>
             )}
-            {showResolvedUrl && finalUrl && (
+            {showResolvedUrl && finalHref && (
               <div className="tool-call-web-page-head">
                 <a
                   className="tool-call-web-page-url"
-                  href={finalUrl}
+                  href={finalHref}
                   target="_blank"
                   rel="noopener noreferrer"
                   title={finalUrl}

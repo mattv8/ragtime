@@ -38,6 +38,7 @@ from ragtime.core.security import (
     require_admin,
 )
 from ragtime.core.userspace_limits import (
+    clamp_archive_max_total_size_bytes,
     clamp_userspace_primitive_upload_max_bytes,
     format_userspace_sqlite_import_limit,
 )
@@ -232,6 +233,8 @@ async def _stage_upload_file_with_limit(
     file: UploadFile,
     max_bytes: int,
     suffix: str,
+    *,
+    label: str = "SQL dump",
 ) -> Path:
     temp_handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     temp_path = Path(temp_handle.name)
@@ -248,7 +251,9 @@ async def _stage_upload_file_with_limit(
                     limit = format_userspace_sqlite_import_limit(max_bytes)
                     raise HTTPException(
                         status_code=413,
-                        detail=(f"SQL dump exceeds the configured {limit} size limit. An administrator can raise this under Settings > User Space."),
+                        detail=(
+                            f"{label} exceeds the configured {limit} archive extraction size limit. An administrator can raise this under Settings > Indexing."
+                        ),
                     )
                 await asyncio.to_thread(output_handle.write, chunk)
         return temp_path
@@ -548,17 +553,14 @@ async def queue_workspace_archive_import_task(
     lowered_file_name = normalized_file_name.lower()
     if lowered_file_name.endswith(".tar.gz") or lowered_file_name.endswith(".tgz"):
         suffix = ".tar.gz"
-    temp_handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    temp_path = Path(temp_handle.name)
-    temp_handle.close()
+    max_archive_bytes = clamp_archive_max_total_size_bytes((await get_app_settings()).get("archive_max_total_size_bytes"))
     try:
-
-        def _copy_upload_sync() -> None:
-            archive_file.file.seek(0)
-            with temp_path.open("wb") as output_handle:
-                shutil.copyfileobj(archive_file.file, output_handle, 1024 * 1024)
-
-        await asyncio.to_thread(_copy_upload_sync)
+        temp_path = await _stage_upload_file_with_limit(
+            archive_file,
+            max_archive_bytes,
+            suffix,
+            label="Workspace archive",
+        )
     finally:
         await archive_file.close()
 
