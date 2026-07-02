@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
+import { api } from '@/api';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
+import { AuthMfaPanel } from './AuthMfaPanel';
 
 export interface OAuthParams {
   client_id: string;
@@ -21,12 +23,42 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
+  const [mfaMode, setMfaMode] = useState<'none' | 'verify' | 'enroll' | 'recovery'>('none');
+  const [mfaCode, setMfaCode] = useState('');
+  const [rememberDevice, setRememberDevice] = useState(true);
+  const [totpSecret, setTotpSecret] = useState('');
+  const [otpauthUri, setOtpauthUri] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   // Extract display name from client_id (often contains URL info)
   const getClientDisplay = () => {
     const clientId = params.client_id;
     const display = clientId.includes(' ') ? clientId.split(' ')[0] : clientId;
     return display.length > 50 ? display.substring(0, 47) + '...' : display;
+  };
+
+  const completeOAuthFromSession = async () => {
+    const formData = new URLSearchParams();
+    formData.append('client_id', params.client_id);
+    formData.append('redirect_uri', params.redirect_uri);
+    formData.append('response_type', params.response_type);
+    formData.append('code_challenge', params.code_challenge);
+    formData.append('code_challenge_method', params.code_challenge_method);
+    formData.append('state', params.state);
+
+    const response = await fetch('/authorize/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData.toString(),
+      credentials: 'include',
+    });
+    const data = await response.json();
+    if (response.ok && data.redirect_url) {
+      window.location.href = data.redirect_url;
+      return;
+    }
+    throw new Error(data.error || 'OAuth authorization failed');
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -72,6 +104,21 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
       }
 
       if (response.ok) {
+        if (data && data.mfa_required && data.mfa_challenge_token) {
+          setMfaChallengeToken(data.mfa_challenge_token);
+          setMfaMode('verify');
+          setPassword('');
+          return;
+        }
+        if (data && data.mfa_enrollment_required && data.mfa_challenge_token) {
+          const setup = await api.startMfaEnrollment(data.mfa_challenge_token);
+          setMfaChallengeToken(data.mfa_challenge_token);
+          setTotpSecret(setup.secret);
+          setOtpauthUri(setup.otpauth_uri);
+          setMfaMode('enroll');
+          setPassword('');
+          return;
+        }
         if (data && data.redirect_url) {
           // Navigate to the redirect URL
           window.location.href = data.redirect_url;
@@ -98,6 +145,45 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     }
   };
 
+  const handleMfaVerify = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!mfaChallengeToken) return;
+    setError(null);
+    setIsLoading(true);
+    try {
+      await api.verifyMfaChallenge({
+        mfa_challenge_token: mfaChallengeToken,
+        code: mfaCode,
+        remember_device: rememberDevice,
+      });
+      await completeOAuthFromSession();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'MFA verification failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleMfaEnrollComplete = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!mfaChallengeToken) return;
+    setError(null);
+    setIsLoading(true);
+    try {
+      const response = await api.completeMfaEnrollment({
+        mfa_challenge_token: mfaChallengeToken,
+        code: mfaCode,
+        remember_device: rememberDevice,
+      });
+      setRecoveryCodes(response.recovery_codes);
+      setMfaMode('recovery');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'MFA enrollment failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="login-container">
       <div className="login-card">
@@ -112,15 +198,36 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
           Authorizing: <strong>{getClientDisplay()}</strong>
         </div>
 
-        <AuthCredentialsForm
-          username={username}
-          password={password}
-          error={error}
-          isLoading={isLoading}
-          onUsernameChange={setUsername}
-          onPasswordChange={setPassword}
-          onSubmit={handleSubmit}
-        />
+        {mfaMode === 'none' && (
+          <AuthCredentialsForm
+            username={username}
+            password={password}
+            error={error}
+            isLoading={isLoading}
+            onUsernameChange={setUsername}
+            onPasswordChange={setPassword}
+            onSubmit={handleSubmit}
+          />
+        )}
+
+        {mfaMode !== 'none' && (
+          <AuthMfaPanel
+            mode={mfaMode}
+            error={error}
+            isLoading={isLoading}
+            code={mfaCode}
+            rememberDevice={rememberDevice}
+            totpSecret={totpSecret}
+            otpauthUri={otpauthUri}
+            recoveryCodes={recoveryCodes}
+            recoveryContinueLabel="Continue authorization"
+            onCodeChange={setMfaCode}
+            onRememberDeviceChange={setRememberDevice}
+            onVerify={handleMfaVerify}
+            onEnrollComplete={handleMfaEnrollComplete}
+            onRecoveryContinue={() => void completeOAuthFromSession()}
+          />
+        )}
 
         <div className="login-footer">
           <p className="login-info">Sign in with your LDAP credentials</p>

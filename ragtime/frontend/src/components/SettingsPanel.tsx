@@ -6811,6 +6811,81 @@ export function SettingsPanel({
             )}
           </div>
 
+          {authProviderConfig && (
+            <div className="form-group" id="setting-authentication_totp_policy">
+              <h4>Authenticator MFA</h4>
+              <p className="fieldset-help auth-provider-help-tight">
+                TOTP uses authenticator apps and encrypted server-side secrets. Required users are
+                forced to enroll after password or LDAP verification before app access is granted.
+              </p>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>TOTP Policy</label>
+                  <select
+                    value={authProviderConfig.totp_policy}
+                    onChange={(e) =>
+                      setAuthProviderConfig({
+                        ...authProviderConfig,
+                        totp_policy: e.target.value as AuthProviderConfig['totp_policy'],
+                      })
+                    }
+                  >
+                    <option value="optional">Optional self-service</option>
+                    <option value="required_all">Required for all users</option>
+                    <option value="required_admins_groups">Required for admins and groups</option>
+                  </select>
+                  <p className="field-help">
+                    Optional mode still requires MFA for users who have enrolled voluntarily.
+                  </p>
+                </div>
+                <div className="form-group">
+                  <label>Remember Device Duration</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    value={authProviderConfig.totp_remember_device_days}
+                    onChange={(e) =>
+                      setAuthProviderConfig({
+                        ...authProviderConfig,
+                        totp_remember_device_days: parseInt(e.target.value, 10) || 30,
+                      })
+                    }
+                  />
+                  <p className="field-help">
+                    Trusted browser devices can skip MFA for this many days.
+                  </p>
+                </div>
+              </div>
+              {authProviderConfig.totp_policy === 'required_admins_groups' && (
+                <div className="form-group">
+                  <label>Required MFA Groups</label>
+                  <CheckboxDropdown
+                    options={authGroups.map((group) => ({
+                      id: group.id,
+                      label: group.display_name,
+                      description:
+                        group.provider === 'ldap' ? group.source_dn || group.key : group.key,
+                    }))}
+                    selectedIds={authProviderConfig.totp_required_group_ids}
+                    onChange={(ids) =>
+                      setAuthProviderConfig({
+                        ...authProviderConfig,
+                        totp_required_group_ids: ids,
+                      })
+                    }
+                    placeholder="Admins only"
+                    searchPlaceholder="Search auth groups..."
+                  />
+                  <p className="field-help">
+                    Admin users always require MFA in this mode. Selected group members require it
+                    too.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeAuthProvider.value === 'local_managed' && (
             <>
               <div className="form-group">

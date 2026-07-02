@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import Request
+from fastapi import Request, Response
 from jose import JWTError, jwt  # type: ignore[import-untyped]
 from ldap3 import (
     ALL,
@@ -37,7 +37,7 @@ from ldap3.core.exceptions import (  # type: ignore[import-untyped]
 )
 from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
 from prisma import Json, types
-from prisma.enums import AuthProvider, UserRole
+from prisma.enums import AuthProvider, TotpPolicy, UserRole
 from pydantic import BaseModel
 
 from ragtime.config.settings import settings
@@ -61,6 +61,8 @@ class TokenData(BaseModel):
     username: str
     role: str
     exp: datetime
+    mfa_verified: bool = False
+    auth_methods: list[str] = []
 
 
 class AuthResult(BaseModel):
@@ -92,6 +94,9 @@ class AuthProviderConfigData(BaseModel):
     ldap_lazy_sync_enabled: bool = True
     manual_role_override_wins: bool = True
     cache_ttl_minutes: int = 240
+    totp_policy: str = "optional"
+    totp_required_group_ids: list[str] = []
+    totp_remember_device_days: int = 30
 
 
 class AuthUserProfile(BaseModel):
@@ -250,7 +255,14 @@ def get_browser_matched_origin(
     return urlunsplit((scheme, netloc, "", "", "")).rstrip("/")
 
 
-def create_access_token(user_id: str, username: str, role: str) -> str:
+def create_access_token(
+    user_id: str,
+    username: str,
+    role: str,
+    *,
+    mfa_verified: bool = False,
+    auth_methods: list[str] | None = None,
+) -> str:
     """Create a JWT access token."""
     expire = datetime.now(timezone.utc) + timedelta(hours=settings.jwt_expire_hours)
     payload = {
@@ -258,6 +270,8 @@ def create_access_token(user_id: str, username: str, role: str) -> str:
         "username": username,
         "role": role,
         "exp": expire,
+        "mfa": bool(mfa_verified),
+        "amr": auth_methods or ["password"],
     }
     return encode_jwt_payload(payload)
 
@@ -292,6 +306,8 @@ def decode_access_token(token: str) -> Optional[TokenData]:
         username=payload["username"],
         role=payload["role"],
         exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
+        mfa_verified=bool(payload.get("mfa", False)),
+        auth_methods=[str(method) for method in payload.get("amr", []) if str(method)],
     )
 
 
@@ -348,6 +364,9 @@ async def get_auth_provider_config() -> AuthProviderConfigData:
         ldap_lazy_sync_enabled=bool(config.ldapLazySyncEnabled),
         manual_role_override_wins=bool(config.manualRoleOverrideWins),
         cache_ttl_minutes=max(int(config.cacheTtlMinutes or 240), 1),
+        totp_policy=str(getattr(config, "totpPolicy", "optional") or "optional"),
+        totp_required_group_ids=list(getattr(config, "totpRequiredGroupIds", []) or []),
+        totp_remember_device_days=max(int(getattr(config, "totpRememberDeviceDays", 30) or 30), 1),
     )
 
 
@@ -357,9 +376,13 @@ async def update_auth_provider_config(
     ldap_lazy_sync_enabled: bool | None = None,
     manual_role_override_wins: bool | None = None,
     cache_ttl_minutes: int | None = None,
+    totp_policy: str | None = None,
+    totp_required_group_ids: list[str] | None = None,
+    totp_remember_device_days: int | None = None,
 ) -> AuthProviderConfigData:
     """Update provider-neutral authentication policy flags."""
     data: types.AuthProviderConfigUpdateInput = {}
+    totp_policy_value = TotpPolicy(totp_policy) if totp_policy is not None else None
     if local_users_enabled is not None:
         data["localUsersEnabled"] = local_users_enabled
     if ldap_lazy_sync_enabled is not None:
@@ -368,6 +391,12 @@ async def update_auth_provider_config(
         data["manualRoleOverrideWins"] = manual_role_override_wins
     if cache_ttl_minutes is not None:
         data["cacheTtlMinutes"] = max(int(cache_ttl_minutes), 1)
+    if totp_policy_value is not None:
+        data["totpPolicy"] = totp_policy_value
+    if totp_required_group_ids is not None:
+        data["totpRequiredGroupIds"] = totp_required_group_ids
+    if totp_remember_device_days is not None:
+        data["totpRememberDeviceDays"] = max(int(totp_remember_device_days), 1)
 
     db = await get_db()
     create_data: types.AuthProviderConfigCreateInput = {"id": "default"}
@@ -379,6 +408,12 @@ async def update_auth_provider_config(
         create_data["manualRoleOverrideWins"] = manual_role_override_wins
     if cache_ttl_minutes is not None:
         create_data["cacheTtlMinutes"] = max(int(cache_ttl_minutes), 1)
+    if totp_policy_value is not None:
+        create_data["totpPolicy"] = totp_policy_value
+    if totp_required_group_ids is not None:
+        create_data["totpRequiredGroupIds"] = totp_required_group_ids
+    if totp_remember_device_days is not None:
+        create_data["totpRememberDeviceDays"] = max(int(totp_remember_device_days), 1)
     await db.authproviderconfig.upsert(
         where={"id": "default"},
         data={"create": create_data, "update": data},
@@ -1903,6 +1938,11 @@ async def validate_session_and_fetch_user(
 
     db = await get_db()
     user = await db.user.find_unique(where={"id": token_data.user_id})
+    if user:
+        from ragtime.core.mfa import mfa_needed_for_user
+
+        if await mfa_needed_for_user(user) and not token_data.mfa_verified:
+            return None, None
     return token_data, user
 
 
@@ -1961,6 +2001,9 @@ async def create_session(
     token: str,
     user_agent: Optional[str] = None,
     ip_address: Optional[str] = None,
+    *,
+    mfa_verified_at: datetime | None = None,
+    auth_methods: list[str] | None = None,
 ):
     """Create a session record in the database."""
     db = await get_db()
@@ -1971,10 +2014,58 @@ async def create_session(
             "userId": user_id,
             "tokenHash": hash_token(token),
             "expiresAt": expires_at,
+            "mfaVerifiedAt": mfa_verified_at,
+            "authMethods": Json(auth_methods or ["password"]),
             "userAgent": user_agent,
             "ipAddress": ip_address,
         }
     )
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    """Set the app session cookie using the central auth cookie policy."""
+    response.set_cookie(
+        key=settings.session_cookie_name,
+        value=token,
+        httponly=settings.session_cookie_httponly,
+        secure=settings.session_cookie_secure,
+        samesite=settings.session_cookie_samesite,
+        max_age=settings.jwt_expire_hours * 3600,
+        path="/",
+    )
+
+
+async def issue_authenticated_session(
+    response: Response,
+    *,
+    user_id: str,
+    username: str,
+    role: str,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+    mfa_verified: bool = False,
+    auth_methods: list[str] | None = None,
+) -> str:
+    """Create a JWT, persist its session row, and set the app session cookie."""
+    resolved_methods = auth_methods or ["password"]
+    mfa_verified_at = datetime.now(timezone.utc) if mfa_verified else None
+    token = create_access_token(
+        user_id,
+        username,
+        role,
+        mfa_verified=mfa_verified,
+        auth_methods=resolved_methods,
+    )
+    await create_session(
+        user_id=user_id,
+        token=token,
+        user_agent=user_agent,
+        ip_address=ip_address,
+        mfa_verified_at=mfa_verified_at,
+        auth_methods=resolved_methods,
+    )
+    set_session_cookie(response, token)
+    return token
 
 
 async def validate_session(token: str) -> Optional[TokenData]:

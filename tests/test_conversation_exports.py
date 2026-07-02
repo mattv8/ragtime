@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Coroutine, cast
@@ -42,6 +43,28 @@ class ConversationExportServiceTests(unittest.TestCase):
         self.assertIn("Revenue_Report.xlsx", spec["download_url"])
         self.assertIn("workspace_id=workspace-1", spec["download_url"])
         export_service.verify_token(spec["token"], "conversation-1", spec["id"], spec["filename"])
+
+    def test_export_links_do_not_expire(self) -> None:
+        expired_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        spec = export_service.create_export_spec(
+            conversation_id="conversation-1",
+            filename="old.csv",
+            export_format="csv",
+            source=export_service.table_source(["A"], [[1]]),
+            expires_in_seconds=60,
+        )
+        path = export_service.EXPORT_BASE_DIR / "conversation-1" / f"{spec['id']}.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["expires_at"] = expired_at.isoformat()
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        token = export_service.create_token("conversation-1", spec["id"], spec["filename"], expired_at)
+
+        export_service.verify_token(token, "conversation-1", spec["id"], spec["filename"])
+        loaded_spec = export_service.load_export_spec("conversation-1", spec["id"])
+
+        self.assertEqual(loaded_spec["id"], spec["id"])
+        self.assertEqual(export_service.cleanup_expired_exports(), 0)
+        self.assertTrue(path.exists())
 
     def test_render_table_formats_escape_formula_cells(self) -> None:
         spec = export_service.create_export_spec(
@@ -260,7 +283,7 @@ class ConversationExportServiceTests(unittest.TestCase):
         self.assertEqual(context["columns"], ["name", "total"])
         self.assertEqual(context["rows"], [["Acme", 42]])
 
-    def test_expired_specs_are_cleaned_up(self) -> None:
+    def test_cleanup_preserves_export_specs(self) -> None:
         spec = export_service.create_export_spec(
             conversation_id="conversation-1",
             filename="old.csv",
@@ -272,8 +295,8 @@ class ConversationExportServiceTests(unittest.TestCase):
         payload["expires_at"] = "2000-01-01T00:00:00+00:00"
         path.write_text(json.dumps(payload), encoding="utf-8")
 
-        self.assertEqual(export_service.cleanup_expired_exports(), 1)
-        self.assertFalse(path.exists())
+        self.assertEqual(export_service.cleanup_expired_exports(), 0)
+        self.assertTrue(path.exists())
 
 
 if __name__ == "__main__":

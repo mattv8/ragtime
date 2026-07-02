@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette } from 'lucide-react';
+import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette, Shield } from 'lucide-react';
 import type { User as UserType } from '@/types';
 import { api } from '@/api';
 import {
@@ -48,6 +48,13 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
   const [themePack, setThemePackState] = useState<ThemePackId | null>(() =>
     isThemePackId(user.theme_pack) ? user.theme_pack : null,
   );
+  const [mfaModalOpen, setMfaModalOpen] = useState(false);
+  const [mfaSecret, setMfaSecret] = useState('');
+  const [mfaUri, setMfaUri] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
+  const [mfaError, setMfaError] = useState<string | null>(null);
+  const [mfaLoading, setMfaLoading] = useState(false);
   useEffect(() => {
     setThemePackState(isThemePackId(user.theme_pack) ? user.theme_pack : null);
   }, [user.theme_pack]);
@@ -130,6 +137,36 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
     return getThemePack(themePack).label;
   };
 
+  const openMfaSetup = async () => {
+    setMfaModalOpen(true);
+    setMfaError(null);
+    setMfaRecoveryCodes([]);
+    setMfaCode('');
+    setMfaLoading(true);
+    try {
+      const setup = await api.startMfaEnrollment();
+      setMfaSecret(setup.secret);
+      setMfaUri(setup.otpauth_uri);
+    } catch (err) {
+      setMfaError(err instanceof Error ? err.message : 'Failed to start MFA setup');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const completeMfaSetup = async () => {
+    setMfaError(null);
+    setMfaLoading(true);
+    try {
+      const result = await api.completeMfaEnrollment({ code: mfaCode, remember_device: true });
+      setMfaRecoveryCodes(result.recovery_codes);
+    } catch (err) {
+      setMfaError(err instanceof Error ? err.message : 'Failed to complete MFA setup');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
   return (
     <div className="user-menu" ref={menuRef}>
       <button
@@ -176,12 +213,74 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
               <span>Mode: {getModeLabel()}</span>
             </button>
 
+            {!user.mfa_enabled && (
+              <button className="user-menu-item" onClick={() => void openMfaSetup()}>
+                <Shield size={16} />
+                <span>Set up authenticator MFA</span>
+              </button>
+            )}
+
             <div className="user-menu-divider" />
 
             <button className="user-menu-item user-menu-logout" onClick={onLogout}>
               <LogOut size={16} />
               <span>Logout</span>
             </button>
+          </div>,
+          document.body,
+        )}
+      {mfaModalOpen &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => setMfaModalOpen(false)}>
+            <div className="modal-content" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <h3>Set Up Authenticator MFA</h3>
+                <button className="modal-close" onClick={() => setMfaModalOpen(false)}>
+                  x
+                </button>
+              </div>
+              {mfaError && <div className="login-error">{mfaError}</div>}
+              {mfaRecoveryCodes.length > 0 ? (
+                <div className="form-group">
+                  <p className="field-help">
+                    Save these recovery codes now. They will not be shown again.
+                  </p>
+                  <code className="cloud-oauth-callback-code">
+                    {mfaRecoveryCodes.map((code) => (
+                      <div key={code}>{code}</div>
+                    ))}
+                  </code>
+                  <button className="btn btn-primary" onClick={() => setMfaModalOpen(false)}>
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <div className="form-group">
+                  <p className="field-help">
+                    Add this account to your authenticator app, then enter a code.
+                  </p>
+                  {mfaLoading && !mfaSecret ? (
+                    <p className="field-help">Preparing setup...</p>
+                  ) : null}
+                  {mfaSecret && <code className="cloud-oauth-callback-code">{mfaSecret}</code>}
+                  {mfaUri && <code className="cloud-oauth-callback-code">{mfaUri}</code>}
+                  <input
+                    className="form-input"
+                    value={mfaCode}
+                    onChange={(event) => setMfaCode(event.target.value)}
+                    placeholder="Verification code"
+                    autoComplete="one-time-code"
+                  />
+                  <button
+                    className="btn btn-primary"
+                    disabled={mfaLoading || !mfaCode}
+                    onClick={() => void completeMfaSetup()}
+                  >
+                    {mfaLoading ? 'Verifying...' : 'Finish setup'}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>,
           document.body,
         )}

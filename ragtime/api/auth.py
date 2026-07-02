@@ -43,14 +43,14 @@ from ragtime.core.app_setting_defaults import (
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
     authenticate,
-    create_access_token,
     create_or_update_local_managed_user,
-    create_session,
     discover_ldap_structure,
     get_auth_provider_config,
     get_ldap_config,
     import_ldap_user_profile,
+    invalidate_all_sessions,
     invalidate_session,
+    issue_authenticated_session,
     lookup_bind_dn,
     recompute_auth_group_member_roles,
     recompute_user_effective_role,
@@ -67,6 +67,19 @@ from ragtime.core.mcp_accounting import (
     get_mcp_daily_trend,
     get_mcp_usage_by_route,
     get_mcp_usage_by_user,
+)
+from ragtime.core.mfa import (
+    MFA_TRUST_COOKIE_NAME,
+    begin_totp_enrollment,
+    confirm_totp_enrollment,
+    create_pending_mfa_token,
+    create_trusted_device,
+    decode_pending_mfa_token,
+    mfa_needed_for_user,
+    reset_user_mfa,
+    trusted_device_satisfies_mfa,
+    user_has_enabled_totp,
+    verify_user_mfa_code,
 )
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, limiter
 from ragtime.core.security import (
@@ -286,12 +299,15 @@ def validate_redirect_uri(redirect_uri: str) -> RedirectUriValidationResult:
 class LoginRequest(BaseModel):
     """Login request body."""
 
-    username: str = Field(
-        ...,
+    username: Optional[str] = Field(
+        None,
         min_length=1,
         description="Username (uid, email/UPN, sAMAccountName, or local admin)",
     )
-    password: str = Field(..., min_length=1, description="Password")
+    password: Optional[str] = Field(None, min_length=1, description="Password")
+    mfa_challenge_token: Optional[str] = Field(None, description="Scoped pending-MFA token returned after primary auth")
+    totp_code: Optional[str] = Field(None, min_length=1, max_length=64, description="TOTP or recovery code")
+    remember_device: bool = Field(False, description="Remember this browser for MFA for the configured duration")
 
 
 class LoginResponse(BaseModel):
@@ -304,6 +320,9 @@ class LoginResponse(BaseModel):
     email: Optional[str] = None
     role: str = "user"
     error: Optional[str] = None
+    mfa_required: bool = False
+    mfa_enrollment_required: bool = False
+    mfa_challenge_token: Optional[str] = None
 
 
 class UserResponse(BaseModel):
@@ -327,6 +346,9 @@ class UserResponse(BaseModel):
         default_factory=list,
         description="Deprecated alias for manual_group_ids.",
     )
+    mfa_enabled: bool = False
+    mfa_required: bool = False
+    recovery_codes_remaining: int = 0
 
 
 class UserListResponse(BaseModel):
@@ -376,6 +398,9 @@ class AuthProviderConfigResponse(BaseModel):
     ldap_lazy_sync_enabled: bool
     manual_role_override_wins: bool
     cache_ttl_minutes: int
+    totp_policy: Literal["optional", "required_all", "required_admins_groups"] = "optional"
+    totp_required_group_ids: list[str] = Field(default_factory=list)
+    totp_remember_device_days: int = 30
 
 
 class UpdateAuthProviderConfigRequest(BaseModel):
@@ -385,6 +410,42 @@ class UpdateAuthProviderConfigRequest(BaseModel):
     ldap_lazy_sync_enabled: Optional[bool] = None
     manual_role_override_wins: Optional[bool] = None
     cache_ttl_minutes: Optional[int] = Field(None, ge=1, le=10080)
+    totp_policy: Optional[Literal["optional", "required_all", "required_admins_groups"]] = None
+    totp_required_group_ids: Optional[list[str]] = None
+    totp_remember_device_days: Optional[int] = Field(None, ge=1, le=365)
+
+
+class MfaEnrollStartRequest(BaseModel):
+    mfa_challenge_token: Optional[str] = Field(None, description="Pending MFA enrollment token from login")
+
+
+class MfaEnrollStartResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class MfaEnrollCompleteRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
+    mfa_challenge_token: Optional[str] = None
+    remember_device: bool = False
+
+
+class MfaEnrollCompleteResponse(BaseModel):
+    success: bool
+    recovery_codes: list[str] = Field(default_factory=list)
+    user: Optional[UserResponse] = None
+
+
+class MfaVerifyRequest(BaseModel):
+    mfa_challenge_token: str
+    code: str = Field(..., min_length=1, max_length=64)
+    remember_device: bool = False
+
+
+class MfaStatusResponse(BaseModel):
+    enabled: bool
+    required: bool
+    recovery_codes_remaining: int
 
 
 class LocalUserCreateRequest(BaseModel):
@@ -616,6 +677,9 @@ async def _user_response(user: User) -> UserResponse:
             manual_group_ids.append(membership.groupId)
         elif membership_provider == "ldap":
             ldap_group_ids.append(membership.groupId)
+    mfa_enabled = await user_has_enabled_totp(user.id)
+    mfa_required = await mfa_needed_for_user(user)
+    recovery_codes_remaining = await db.usermfarecoverycode.count(where={"userId": user.id, "usedAt": None})
 
     return UserResponse(
         id=user.id,
@@ -633,6 +697,9 @@ async def _user_response(user: User) -> UserResponse:
         manual_group_ids=manual_group_ids,
         ldap_group_ids=ldap_group_ids,
         local_group_ids=manual_group_ids,
+        mfa_enabled=mfa_enabled,
+        mfa_required=mfa_required,
+        recovery_codes_remaining=recovery_codes_remaining,
     )
 
 
@@ -642,6 +709,9 @@ def _auth_provider_config_response(config) -> AuthProviderConfigResponse:
         ldap_lazy_sync_enabled=config.ldap_lazy_sync_enabled,
         manual_role_override_wins=config.manual_role_override_wins,
         cache_ttl_minutes=config.cache_ttl_minutes,
+        totp_policy=config.totp_policy,
+        totp_required_group_ids=config.totp_required_group_ids,
+        totp_remember_device_days=config.totp_remember_device_days,
     )
 
 
@@ -807,6 +877,143 @@ def _detect_cookie_mismatch(request: Request) -> Optional[str]:
     return None
 
 
+def _request_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
+async def _user_from_pending_mfa_token(token: str, *, purpose: Literal["challenge", "enroll"]) -> User:
+    claims = decode_pending_mfa_token(token, expected_purpose=purpose)
+    if claims is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired MFA challenge")
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": claims.user_id})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    return user
+
+
+async def _set_trusted_device_if_requested(
+    response: Response,
+    request: Request,
+    *,
+    user_id: str,
+    remember_device: bool,
+) -> None:
+    if not remember_device:
+        return
+    auth_config = await get_auth_provider_config()
+    token, _expires_at = await create_trusted_device(
+        user_id=user_id,
+        user_agent=request.headers.get("User-Agent"),
+        ip_address=_request_ip(request),
+        days=auth_config.totp_remember_device_days,
+    )
+    response.set_cookie(
+        key=MFA_TRUST_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite=settings.session_cookie_samesite,
+        max_age=auth_config.totp_remember_device_days * 86400,
+        path="/",
+    )
+
+
+async def _issue_login_session(
+    response: Response,
+    request: Request,
+    *,
+    user_id: str,
+    username: str,
+    role: str,
+    mfa_verified: bool,
+    auth_methods: list[str],
+) -> str:
+    return await issue_authenticated_session(
+        response,
+        user_id=user_id,
+        username=username,
+        role=role,
+        user_agent=request.headers.get("User-Agent"),
+        ip_address=_request_ip(request),
+        mfa_verified=mfa_verified,
+        auth_methods=auth_methods,
+    )
+
+
+async def _login_response_for_authenticated_primary(
+    *,
+    request: Request,
+    response: Response,
+    result: Any,
+    trusted_device_token: str | None,
+) -> LoginResponse:
+    if not result.user_id or not result.username:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication succeeded but user data is missing",
+        )
+
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": result.user_id})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    if await mfa_needed_for_user(user):
+        if await trusted_device_satisfies_mfa(user.id, trusted_device_token):
+            await _issue_login_session(
+                response,
+                request,
+                user_id=result.user_id,
+                username=result.username,
+                role=result.role,
+                mfa_verified=True,
+                auth_methods=["password", "mfa_trust"],
+            )
+        elif await user_has_enabled_totp(user.id):
+            return LoginResponse(
+                success=False,
+                mfa_required=True,
+                mfa_challenge_token=create_pending_mfa_token(
+                    user_id=result.user_id,
+                    username=result.username,
+                    role=result.role,
+                    purpose="challenge",
+                ),
+            )
+        else:
+            return LoginResponse(
+                success=False,
+                mfa_enrollment_required=True,
+                mfa_challenge_token=create_pending_mfa_token(
+                    user_id=result.user_id,
+                    username=result.username,
+                    role=result.role,
+                    purpose="enroll",
+                ),
+            )
+    else:
+        await _issue_login_session(
+            response,
+            request,
+            user_id=result.user_id,
+            username=result.username,
+            role=result.role,
+            mfa_verified=False,
+            auth_methods=["password"],
+        )
+
+    logger.info(f"User '{result.username}' logged in successfully (role: {result.role})")
+    return LoginResponse(
+        success=True,
+        user_id=result.user_id,
+        username=result.username,
+        display_name=result.display_name,
+        email=result.email,
+        role=result.role,
+    )
+
+
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status(
     request: Request,
@@ -911,6 +1118,40 @@ async def login(
 
     Rate limited to 5 attempts per minute per IP to prevent brute-force attacks.
     """
+    if body.mfa_challenge_token:
+        if not body.totp_code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP or recovery code is required")
+        user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="challenge")
+        verified, method = await verify_user_mfa_code(user, body.totp_code)
+        if not verified:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
+        await _set_trusted_device_if_requested(
+            response,
+            request,
+            user_id=user.id,
+            remember_device=body.remember_device,
+        )
+        await _issue_login_session(
+            response,
+            request,
+            user_id=user.id,
+            username=user.username,
+            role=str(user.role),
+            mfa_verified=True,
+            auth_methods=["password", method or "totp"],
+        )
+        return LoginResponse(
+            success=True,
+            user_id=user.id,
+            username=user.username,
+            display_name=user.displayName,
+            email=user.email,
+            role=str(user.role),
+        )
+
+    if not body.username or not body.password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username and password are required")
+
     result = await authenticate(body.username, body.password)
 
     if not result.success:
@@ -920,43 +1161,11 @@ async def login(
             detail=result.error or "Authentication failed",
         )
 
-    # These are guaranteed to be set on success
-    if not result.user_id or not result.username:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication succeeded but user data is missing",
-        )
-
-    # Create JWT token
-    token = create_access_token(result.user_id, result.username, result.role)
-
-    # Create session in database
-    await create_session(
-        user_id=result.user_id,
-        token=token,
-        user_agent=request.headers.get("User-Agent"),
-        ip_address=request.client.host if request.client else None,
-    )
-
-    # Set httpOnly cookie
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=token,
-        httponly=settings.session_cookie_httponly,
-        secure=settings.session_cookie_secure,
-        samesite=settings.session_cookie_samesite,
-        max_age=settings.jwt_expire_hours * 3600,
-    )
-
-    logger.info(f"User '{result.username}' logged in successfully (role: {result.role})")
-
-    return LoginResponse(
-        success=True,
-        user_id=result.user_id,
-        username=result.username,
-        display_name=result.display_name,
-        email=result.email,
-        role=result.role,
+    return await _login_response_for_authenticated_primary(
+        request=request,
+        response=response,
+        result=result,
+        trusted_device_token=request.cookies.get(MFA_TRUST_COOKIE_NAME),
     )
 
 
@@ -1053,9 +1262,12 @@ class OAuth2ErrorResponse(BaseModel):
 @limiter.limit(LOGIN_RATE_LIMIT)
 async def oauth2_token(
     request: Request,
+    response: Response,
     grant_type: str = Form(..., description="Grant type ('password' or 'authorization_code')"),
     username: Optional[str] = Form(default=None, description="Username (for password grant)"),
     password: Optional[str] = Form(default=None, description="Password (for password grant)"),
+    totp_code: Optional[str] = Form(default=None, description="TOTP or recovery code (required when MFA applies)"),
+    remember_device: bool = Form(default=False, description="Remember this client browser for MFA"),
     code: Optional[str] = Form(default=None, description="Authorization code (for authorization_code grant)"),
     code_verifier: Optional[str] = Form(default=None, description="PKCE code verifier (for authorization_code grant)"),
     redirect_uri: Optional[str] = Form(default=None, description="Redirect URI (for authorization_code grant)"),
@@ -1130,19 +1342,14 @@ async def oauth2_token(
         # Code is valid - consume it (one-time use)
         del _auth_codes[code]
 
-        # Create access token
-        token = create_access_token(
-            auth_data["user_id"],
-            auth_data["username"],
-            auth_data["role"],
-        )
-
-        # Create session in database
-        await create_session(
+        token = await _issue_login_session(
+            response,
+            request,
             user_id=auth_data["user_id"],
-            token=token,
-            user_agent=request.headers.get("User-Agent"),
-            ip_address=request.client.host if request.client else None,
+            username=auth_data["username"],
+            role=auth_data["role"],
+            mfa_verified=bool(auth_data.get("mfa_verified", False)),
+            auth_methods=list(auth_data.get("auth_methods") or ["password"]),
         )
 
         logger.info(f"OAuth2 token issued for '{auth_data['username']}' via authorization_code grant")
@@ -1182,15 +1389,50 @@ async def oauth2_token(
                 status_code=500,
             )
 
-        # Create access token
-        token = create_access_token(result.user_id, result.username, result.role)
+        db = await get_db()
+        user = await db.user.find_unique(where={"id": result.user_id})
+        if not user:
+            return _oauth_error("invalid_grant", "User not found", status_code=401)
 
-        # Create session in database
-        await create_session(
+        auth_methods = ["password"]
+        mfa_verified = False
+        if await mfa_needed_for_user(user):
+            if await trusted_device_satisfies_mfa(user.id, request.cookies.get(MFA_TRUST_COOKIE_NAME)):
+                auth_methods.append("mfa_trust")
+                mfa_verified = True
+            elif not await user_has_enabled_totp(user.id):
+                return _oauth_error(
+                    "mfa_enrollment_required",
+                    "TOTP enrollment is required before this user can obtain a token",
+                    status_code=401,
+                )
+            elif not totp_code:
+                return _oauth_error(
+                    "mfa_required",
+                    "totp_code is required for this user",
+                    status_code=401,
+                )
+            else:
+                verified, method = await verify_user_mfa_code(user, totp_code)
+                if not verified:
+                    return _oauth_error("invalid_grant", "Invalid MFA code", status_code=401)
+                auth_methods.append(method or "totp")
+                mfa_verified = True
+                await _set_trusted_device_if_requested(
+                    response,
+                    request,
+                    user_id=user.id,
+                    remember_device=remember_device,
+                )
+
+        token = await _issue_login_session(
+            response,
+            request,
             user_id=result.user_id,
-            token=token,
-            user_agent=request.headers.get("User-Agent"),
-            ip_address=request.client.host if request.client else None,
+            username=result.username,
+            role=result.role,
+            mfa_verified=mfa_verified,
+            auth_methods=auth_methods,
         )
 
         logger.info(f"OAuth2 token issued for '{result.username}' via password grant")
@@ -1256,6 +1498,116 @@ async def update_current_user_preferences(
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return await _user_response(updated)
+
+
+@router.get("/mfa/status", response_model=MfaStatusResponse)
+async def get_mfa_status(user: User = Depends(get_current_user)):
+    """Get the current user's MFA status."""
+    db = await get_db()
+    return MfaStatusResponse(
+        enabled=await user_has_enabled_totp(user.id),
+        required=await mfa_needed_for_user(user),
+        recovery_codes_remaining=await db.usermfarecoverycode.count(where={"userId": user.id, "usedAt": None}),
+    )
+
+
+@router.post("/mfa/enroll/start", response_model=MfaEnrollStartResponse)
+async def start_mfa_enrollment(
+    body: MfaEnrollStartRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Start TOTP enrollment for a logged-in user or a pending forced-enrollment login."""
+    user = current_user
+    if body.mfa_challenge_token:
+        user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="enroll")
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    try:
+        setup = await begin_totp_enrollment(user)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return MfaEnrollStartResponse(**setup)
+
+
+@router.post("/mfa/enroll/complete", response_model=MfaEnrollCompleteResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def complete_mfa_enrollment(
+    request: Request,
+    response: Response,
+    body: MfaEnrollCompleteRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Confirm TOTP enrollment, return one-time recovery codes, and issue an MFA-complete session."""
+    user = current_user
+    if body.mfa_challenge_token:
+        user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="enroll")
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    success, recovery_codes = await confirm_totp_enrollment(user, body.code)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
+
+    await invalidate_all_sessions(user.id)
+    await _set_trusted_device_if_requested(
+        response,
+        request,
+        user_id=user.id,
+        remember_device=body.remember_device,
+    )
+    await _issue_login_session(
+        response,
+        request,
+        user_id=user.id,
+        username=user.username,
+        role=str(user.role),
+        mfa_verified=True,
+        auth_methods=["password", "totp"],
+    )
+    db = await get_db()
+    refreshed = await db.user.find_unique(where={"id": user.id})
+    return MfaEnrollCompleteResponse(
+        success=True,
+        recovery_codes=recovery_codes,
+        user=await _user_response(refreshed or user),
+    )
+
+
+@router.post("/mfa/verify", response_model=LoginResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def verify_mfa_challenge(
+    request: Request,
+    response: Response,
+    body: MfaVerifyRequest,
+):
+    """Verify a pending MFA challenge and issue an authenticated app session."""
+    user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="challenge")
+    verified, method = await verify_user_mfa_code(user, body.code)
+    if not verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
+    await _set_trusted_device_if_requested(
+        response,
+        request,
+        user_id=user.id,
+        remember_device=body.remember_device,
+    )
+    await _issue_login_session(
+        response,
+        request,
+        user_id=user.id,
+        username=user.username,
+        role=str(user.role),
+        mfa_verified=True,
+        auth_methods=["password", method or "totp"],
+    )
+    return LoginResponse(
+        success=True,
+        user_id=user.id,
+        username=user.username,
+        display_name=user.displayName,
+        email=user.email,
+        role=str(user.role),
+    )
 
 
 # =============================================================================
@@ -1570,6 +1922,9 @@ async def update_provider_config(
         ldap_lazy_sync_enabled=body.ldap_lazy_sync_enabled,
         manual_role_override_wins=body.manual_role_override_wins,
         cache_ttl_minutes=body.cache_ttl_minutes,
+        totp_policy=body.totp_policy,
+        totp_required_group_ids=body.totp_required_group_ids,
+        totp_remember_device_days=body.totp_remember_device_days,
     )
     return _auth_provider_config_response(updated)
 
@@ -1859,6 +2214,22 @@ async def delete_user(
     await db.user.delete(where={"id": user_id})
     logger.info(f"User '{user.username}' deleted by admin '{current_user.username}'")
 
+    return {"success": True}
+
+
+@router.delete("/users/{user_id}/mfa")
+async def reset_user_mfa_by_admin(
+    user_id: str,
+    current_user: User = Depends(require_admin),
+):
+    """Reset a user's MFA enrollment and remembered devices (admin only)."""
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": user_id})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    await reset_user_mfa(user_id)
+    await invalidate_all_sessions(user_id)
+    logger.info(f"User '{user.username}' MFA reset by admin '{current_user.username}'")
     return {"success": True}
 
 

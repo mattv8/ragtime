@@ -212,7 +212,8 @@ export function UserSpaceCodeIndexesModal({ isOpen, onClose }: UserSpaceCodeInde
     }
   };
 
-  const reconcileLabel = sortedItems.length === 0 ? 'Index all workspaces' : 'Reconcile all workspaces now';
+  const reconcileLabel =
+    sortedItems.length === 0 ? 'Index all workspaces' : 'Reconcile all workspaces now';
 
   return (
     <div className="modal-overlay" onClick={onClose}>

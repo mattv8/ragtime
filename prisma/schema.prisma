@@ -811,6 +811,13 @@ enum UserRole {
   admin
 }
 
+/// Instance policy for TOTP MFA enforcement.
+enum TotpPolicy {
+  optional
+  required_all
+  required_admins_groups
+}
+
 /// User Space workspace role
 enum WorkspaceRole {
   owner
@@ -893,6 +900,9 @@ model User {
   authSyncEvents                       AuthSyncEvent[]
   cloudOauthAccounts                   UserCloudOAuthAccount[]
   userspaceMountSources                UserUserspaceMountSource[]
+  mfaFactors                           UserMfaFactor[]
+  mfaRecoveryCodes                     UserMfaRecoveryCode[]
+  mfaTrustedDevices                    UserMfaTrustedDevice[]
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
@@ -907,9 +917,65 @@ model AuthProviderConfig {
   ldapLazySyncEnabled    Boolean  @default(true) @map("ldap_lazy_sync_enabled")
   manualRoleOverrideWins Boolean  @default(true) @map("manual_role_override_wins")
   cacheTtlMinutes        Int      @default(240) @map("cache_ttl_minutes")
+  totpPolicy             TotpPolicy @default(optional) @map("totp_policy")
+  totpRequiredGroupIds   String[] @default([]) @map("totp_required_group_ids")
+  totpRememberDeviceDays Int      @default(30) @map("totp_remember_device_days")
   updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("auth_provider_config")
+}
+
+/// First-class MFA factor storage. TOTP secrets are encrypted with Ragtime's secret encryption key.
+model UserMfaFactor {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  factorType      String    @default("totp") @map("factor_type")
+  label           String    @default("Authenticator app")
+  secretEncrypted String?   @map("secret_encrypted")
+  enabled         Boolean   @default(false)
+  confirmedAt     DateTime? @map("confirmed_at")
+  lastUsedStep    BigInt?   @map("last_used_step")
+  lastUsedAt      DateTime? @map("last_used_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, factorType])
+  @@index([enabled])
+  @@map("user_mfa_factors")
+}
+
+/// One-time recovery codes. Values are hashed and cannot be displayed after creation.
+model UserMfaRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@map("user_mfa_recovery_codes")
+}
+
+/// Remembered browser devices that may satisfy MFA for a limited time.
+model UserMfaTrustedDevice {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash")
+  userAgent  String?   @map("user_agent")
+  ipAddress  String?   @map("ip_address")
+  expiresAt  DateTime  @map("expires_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+  @@map("user_mfa_trusted_devices")
 }
 
 /// Provider-neutral auth group. Local groups can contain internal and LDAP-synced users.
@@ -977,6 +1043,8 @@ model Session {
   userId    String   @map("user_id")
   tokenHash String   @map("token_hash") // Hash of JWT for validation
   expiresAt DateTime @map("expires_at")
+  mfaVerifiedAt DateTime? @map("mfa_verified_at")
+  authMethods Json @default("[]") @map("auth_methods")
   userAgent String?  @map("user_agent")
   ipAddress String?  @map("ip_address")
 

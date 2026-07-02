@@ -802,6 +802,30 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
     }
   };
 
+  const handleResetMfa = async (userId: string) => {
+    if (
+      !window.confirm(
+        'Reset MFA for this user? They will need to enroll again if policy requires it.',
+      )
+    ) {
+      return;
+    }
+    setActionLoading(userId);
+    try {
+      await api.resetUserMfa(userId);
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === userId ? { ...u, mfa_enabled: false, recovery_codes_remaining: 0 } : u,
+        ),
+      );
+      toast.success('MFA reset');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to reset MFA');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleDeleteWorkspace = async (workspaceId: string) => {
     try {
       const task = await api.queueUserSpaceWorkspaceDelete(workspaceId);
@@ -2527,6 +2551,14 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                     {user.ldap_group_ids!.length !== 1 ? 's' : ''}
                                   </div>
                                 )}
+                                {user.mfa_enabled && (
+                                  <div className="users-subnum">
+                                    MFA enabled ({user.recovery_codes_remaining ?? 0} recovery)
+                                  </div>
+                                )}
+                                {!user.mfa_enabled && user.mfa_required && (
+                                  <div className="users-subnum">MFA required on next login</div>
+                                )}
                               </td>
                               <td className="num">
                                 {isRowSelf ? (
@@ -2541,6 +2573,17 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
                                     >
                                       <Pencil size={13} />
                                     </button>
+                                    {user.mfa_enabled && (
+                                      <button
+                                        type="button"
+                                        className="btn btn-sm btn-secondary users-btn-inline"
+                                        title="Reset MFA"
+                                        disabled={actionLoading === user.id}
+                                        onClick={() => void handleResetMfa(user.id)}
+                                      >
+                                        MFA
+                                      </button>
+                                    )}
                                     <DeleteConfirmButton
                                       onDelete={() => handleDelete(user.id)}
                                       disabled={actionLoading === user.id}

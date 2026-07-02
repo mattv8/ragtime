@@ -12,9 +12,8 @@ import json
 import mimetypes
 import os
 import re
-import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 from urllib.parse import quote
@@ -36,6 +35,7 @@ EXPORT_MAX_ROWS = 100_000
 EXPORT_MAX_CELL_CHARS = 32_000
 EXPORT_MAX_CONTENT_BYTES = 25 * 1024 * 1024
 EXPORT_BASE_DIR = Path(settings.index_data_path) / "_exports" / "conversation_downloads"
+EXPORT_NEVER_EXPIRES_AT = datetime.max.replace(tzinfo=timezone.utc)
 
 SUPPORTED_GENERATED_FORMATS = {
     "csv",
@@ -76,13 +76,6 @@ LiveTableResolver = Callable[[dict[str, Any]], Awaitable[tuple[list[str], list[l
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _parse_utc(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _secret() -> bytes:
@@ -225,7 +218,8 @@ def datatable_to_table(payload: dict[str, Any]) -> tuple[list[str], list[list[An
 
 
 def create_token(conversation_id: str, export_id: str, filename: str, expires_at: datetime) -> str:
-    payload = {"conversation_id": conversation_id, "export_id": export_id, "filename": filename, "exp": int(expires_at.timestamp())}
+    del expires_at
+    payload = {"conversation_id": conversation_id, "export_id": export_id, "filename": filename}
     payload_b64 = _base64_url_encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     signature = hmac.new(_secret(), payload_b64.encode("ascii"), hashlib.sha256).digest()
     return f"{payload_b64}.{_base64_url_encode(signature)}"
@@ -243,8 +237,6 @@ def verify_token(token: str, conversation_id: str, export_id: str, filename: str
 
     if payload.get("conversation_id") != conversation_id or payload.get("export_id") != export_id or payload.get("filename") != filename:
         raise HTTPException(status_code=403, detail="Invalid export link")
-    if int(payload.get("exp") or 0) < int(time.time()):
-        raise HTTPException(status_code=410, detail="Export link expired")
     return payload
 
 
@@ -266,12 +258,12 @@ def create_export_spec(
     mime_type: str | None = None,
     expires_in_seconds: int = EXPORT_DEFAULT_TTL_SECONDS,
 ) -> dict[str, Any]:
+    del expires_in_seconds
     export_format = normalize_export_format(export_format)
     if export_format not in SUPPORTED_GENERATED_FORMATS and source.get("kind") != "binary_snapshot":
         raise HTTPException(status_code=400, detail=f"Unsupported generated export format: {export_format}")
-    ttl = max(60, min(EXPORT_MAX_TTL_SECONDS, int(expires_in_seconds or EXPORT_DEFAULT_TTL_SECONDS)))
     created_at = utc_now()
-    expires_at = created_at + timedelta(seconds=ttl)
+    expires_at = EXPORT_NEVER_EXPIRES_AT
     export_id = uuid.uuid4().hex
     safe_filename = sanitize_export_filename(filename or title or "export", export_format)
     spec = {
@@ -303,39 +295,12 @@ def load_export_spec(conversation_id: str, export_id: str) -> dict[str, Any]:
         spec = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Export spec is unreadable") from exc
-    try:
-        expires_at = _parse_utc(str(spec.get("expires_at") or ""))
-    except Exception as exc:
-        raise HTTPException(status_code=410, detail="Export link expired") from exc
-    if expires_at < utc_now():
-        raise HTTPException(status_code=410, detail="Export link expired")
     return spec
 
 
 def cleanup_expired_exports(now: datetime | None = None) -> int:
-    if not EXPORT_BASE_DIR.exists():
-        return 0
-    cutoff = now or utc_now()
-    removed = 0
-    for path in EXPORT_BASE_DIR.glob("*/*.json"):
-        try:
-            spec = json.loads(path.read_text(encoding="utf-8"))
-            if _parse_utc(str(spec.get("expires_at") or "")) >= cutoff:
-                continue
-        except Exception:
-            pass
-        try:
-            path.unlink()
-            removed += 1
-        except OSError:
-            pass
-    for directory in EXPORT_BASE_DIR.glob("*"):
-        try:
-            if directory.is_dir() and not any(directory.iterdir()):
-                directory.rmdir()
-        except OSError:
-            pass
-    return removed
+    del now
+    return 0
 
 
 def table_source(columns: Any, rows: Any) -> dict[str, Any]:

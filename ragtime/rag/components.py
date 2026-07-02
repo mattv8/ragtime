@@ -12749,7 +12749,7 @@ class RAGComponents:
                     "When provided, the file is queried just in time when the user clicks the link."
                 ),
             )
-            expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="How long the download link remains valid.")
+            expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="Deprecated and ignored. Download links do not expire.")
 
         async def _create_download_link(
             filename: str,
@@ -12812,7 +12812,7 @@ class RAGComponents:
             coroutine=_create_download_link,
             name=CREATE_DOWNLOAD_LINK_TOOL_ID,
             description=(
-                "Create a short-lived authenticated download link for a file the user asked to export. "
+                "Create an authenticated download link for a file the user asked to export. "
                 "Use this when the user asks for Excel/XLSX, CSV, PDF, DOC/DOCX, or another downloadable file. "
                 "If the user asks to export the immediately previous live chart/table/query, you may omit rows/text/content and this tool will reuse the latest exportable live source. "
                 "Pass data_connection explicitly when the user refers to a different result or when you need to override that default so the file is queried just in time on click; "

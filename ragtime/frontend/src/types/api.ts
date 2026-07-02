@@ -28,7 +28,12 @@ export interface User {
   ldap_group_ids?: string[];
   /** Deprecated alias for manual_group_ids. */
   local_group_ids?: string[];
+  mfa_enabled?: boolean;
+  mfa_required?: boolean;
+  recovery_codes_remaining?: number;
 }
+
+export type TotpPolicy = 'optional' | 'required_all' | 'required_admins_groups';
 
 /** Minimal user info available to all authenticated users for member-picker purposes. */
 export interface UserDirectoryEntry {
@@ -42,6 +47,9 @@ export interface AuthProviderConfig {
   ldap_lazy_sync_enabled: boolean;
   manual_role_override_wins: boolean;
   cache_ttl_minutes: number;
+  totp_policy: TotpPolicy;
+  totp_required_group_ids: string[];
+  totp_remember_device_days: number;
 }
 
 export interface UpdateAuthProviderConfigRequest {
@@ -49,6 +57,9 @@ export interface UpdateAuthProviderConfigRequest {
   ldap_lazy_sync_enabled?: boolean;
   manual_role_override_wins?: boolean;
   cache_ttl_minutes?: number;
+  totp_policy?: TotpPolicy;
+  totp_required_group_ids?: string[];
+  totp_remember_device_days?: number;
 }
 
 export interface LocalUserCreateRequest {
@@ -130,8 +141,11 @@ export interface LdapUserTypeaheadResponse {
 }
 
 export interface LoginRequest {
-  username: string;
-  password: string;
+  username?: string;
+  password?: string;
+  mfa_challenge_token?: string;
+  totp_code?: string;
+  remember_device?: boolean;
 }
 
 export interface LoginResponse {
@@ -142,6 +156,26 @@ export interface LoginResponse {
   email?: string;
   role: UserRole;
   error?: string;
+  mfa_required?: boolean;
+  mfa_enrollment_required?: boolean;
+  mfa_challenge_token?: string | null;
+}
+
+export interface MfaEnrollStartResponse {
+  secret: string;
+  otpauth_uri: string;
+}
+
+export interface MfaEnrollCompleteResponse {
+  success: boolean;
+  recovery_codes: string[];
+  user?: User | null;
+}
+
+export interface MfaStatusResponse {
+  enabled: boolean;
+  required: boolean;
+  recovery_codes_remaining: number;
 }
 
 export type AuthMethodAvailability = 'available' | 'unavailable' | 'not_configured';

@@ -18,9 +18,10 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import HTMLResponse, JSONResponse
 
 from ragtime.config import settings
-from ragtime.core.auth import authenticate, create_access_token, create_session, validate_session_and_fetch_user
+from ragtime.core.auth import authenticate, issue_authenticated_session, validate_session_and_fetch_user
 from ragtime.core.auth_methods import AuthMethodStatusPayload, build_auth_method_statuses
 from ragtime.core.database import get_db
+from ragtime.core.mfa import MFA_TRUST_COOKIE_NAME, mfa_needed_for_user, trusted_device_satisfies_mfa
 from ragtime.userspace.html_templates import render_browser_auth_start_page_html
 from ragtime.userspace.models import (
     ExecuteComponentRequest,
@@ -642,21 +643,23 @@ async def _authenticate_preview_workspace_user(
         raise HTTPException(status_code=401, detail="User not found")
     await _userspace_service().enforce_workspace_role(workspace_id, user.id, "viewer")
 
-    session_token = create_access_token(result.user_id, result.username, result.role)
-    await create_session(
+    auth_methods = ["password"]
+    mfa_verified = False
+    if await mfa_needed_for_user(user):
+        if not await trusted_device_satisfies_mfa(user.id, request.cookies.get(MFA_TRUST_COOKIE_NAME)):
+            raise HTTPException(status_code=401, detail="MFA required. Sign in to Ragtime first, then reopen this preview.")
+        auth_methods.append("mfa_trust")
+        mfa_verified = True
+
+    await issue_authenticated_session(
+        response,
         user_id=result.user_id,
-        token=session_token,
+        username=result.username,
+        role=result.role,
         user_agent=request.headers.get("User-Agent"),
         ip_address=request.client.host if request.client else None,
-    )
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=session_token,
-        httponly=settings.session_cookie_httponly,
-        secure=settings.session_cookie_secure,
-        samesite=settings.session_cookie_samesite,
-        max_age=settings.jwt_expire_hours * 3600,
-        path="/",
+        mfa_verified=mfa_verified,
+        auth_methods=auth_methods,
     )
     return user
 

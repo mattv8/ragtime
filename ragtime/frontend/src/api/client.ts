@@ -216,6 +216,9 @@ import type {
   LdapUserImportResponse,
   LdapUserTypeaheadRequest,
   LdapUserTypeaheadResponse,
+  MfaEnrollCompleteResponse,
+  MfaEnrollStartResponse,
+  MfaStatusResponse,
   UserDirectoryEntry,
 } from '@/types';
 import type {
@@ -484,6 +487,57 @@ export const api = {
       body: JSON.stringify({ theme_pack: themePack }),
     });
     return handleResponse<User>(response);
+  },
+
+  async getMfaStatus(): Promise<MfaStatusResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/status`, {});
+    return handleResponse<MfaStatusResponse>(response);
+  },
+
+  async startMfaEnrollment(mfaChallengeToken?: string): Promise<MfaEnrollStartResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/enroll/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken ?? null }),
+    });
+    return handleResponse<MfaEnrollStartResponse>(response);
+  },
+
+  async completeMfaEnrollment(request: {
+    code: string;
+    mfa_challenge_token?: string | null;
+    remember_device?: boolean;
+  }): Promise<MfaEnrollCompleteResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/enroll/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const result = await handleResponse<MfaEnrollCompleteResponse>(response);
+    resetAuthExpiredNotification();
+    return result;
+  },
+
+  async verifyMfaChallenge(request: {
+    mfa_challenge_token: string;
+    code: string;
+    remember_device?: boolean;
+  }): Promise<LoginResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const result = await handleResponse<LoginResponse>(response);
+    resetAuthExpiredNotification();
+    return result;
+  },
+
+  async resetUserMfa(userId: string): Promise<void> {
+    const response = await apiFetch(`${AUTH_BASE}/users/${encodeURIComponent(userId)}/mfa`, {
+      method: 'DELETE',
+    });
+    await handleResponse<{ success: boolean }>(response);
   },
 
   /**

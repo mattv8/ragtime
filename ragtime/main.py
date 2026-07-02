@@ -52,14 +52,20 @@ from ragtime.api.auth import router as auth_router
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
-    create_access_token,
-    create_session,
     get_browser_matched_origin,
     get_external_origin,
+    issue_authenticated_session,
     validate_session_and_fetch_user,
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import setup_logging
+from ragtime.core.mfa import (
+    MFA_TRUST_COOKIE_NAME,
+    create_pending_mfa_token,
+    mfa_needed_for_user,
+    trusted_device_satisfies_mfa,
+    user_has_enabled_totp,
+)
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.ssl import setup_ssl
 from ragtime.indexer.background_tasks import background_task_service
@@ -647,6 +653,42 @@ async def authorize_post(
         # Return JSON error for frontend to display
         return JSONResponse(status_code=401, content={"error": result.error or "Authentication failed"})
 
+    db = await get_db()
+    user = await db.user.find_unique(where={"id": result.user_id})
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "User not found"})
+
+    auth_methods = ["password"]
+    mfa_verified = False
+    if await mfa_needed_for_user(user):
+        if await trusted_device_satisfies_mfa(user.id, request.cookies.get(MFA_TRUST_COOKIE_NAME)):
+            auth_methods.append("mfa_trust")
+            mfa_verified = True
+        elif await user_has_enabled_totp(user.id):
+            return JSONResponse(
+                content={
+                    "mfa_required": True,
+                    "mfa_challenge_token": create_pending_mfa_token(
+                        user_id=result.user_id,
+                        username=result.username or result.user_id,
+                        role=result.role,
+                        purpose="challenge",
+                    ),
+                }
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "mfa_enrollment_required": True,
+                    "mfa_challenge_token": create_pending_mfa_token(
+                        user_id=result.user_id,
+                        username=result.username or result.user_id,
+                        role=result.role,
+                        purpose="enroll",
+                    ),
+                }
+            )
+
     # Cleanup expired codes
     _cleanup_expired_auth_codes()
 
@@ -661,21 +703,13 @@ async def authorize_post(
         "user_id": result.user_id,
         "username": result.username,
         "role": result.role,
+        "mfa_verified": mfa_verified,
+        "auth_methods": auth_methods,
         "expires": time.time() + AUTH_CODE_EXPIRY,
     }
 
     username = result.username or result.user_id
     logger.info(f"OAuth2 authorization code issued for '{username}'")
-
-    # Create session for the user (so they stay logged in to Ragtime)
-    token = create_access_token(result.user_id, username, result.role)
-
-    await create_session(
-        user_id=result.user_id,
-        token=token,
-        user_agent=request.headers.get("User-Agent"),
-        ip_address=request.client.host if request.client else None,
-    )
 
     # Build redirect URL with authorization code
     params = {"code": code}
@@ -689,14 +723,16 @@ async def authorize_post(
     # and the OAuth callback server doesn't have CORS headers
     response = JSONResponse(content={"redirect_url": redirect_url})
 
-    # Set session cookie so user stays logged in
-    response.set_cookie(
-        key=settings.session_cookie_name,
-        value=token,
-        httponly=settings.session_cookie_httponly,
-        secure=settings.session_cookie_secure,
-        samesite=settings.session_cookie_samesite,
-        max_age=settings.jwt_expire_hours * 3600,
+    # Create session for the user (so they stay logged in to Ragtime)
+    await issue_authenticated_session(
+        response,
+        user_id=result.user_id,
+        username=username,
+        role=result.role,
+        user_agent=request.headers.get("User-Agent"),
+        ip_address=request.client.host if request.client else None,
+        mfa_verified=mfa_verified,
+        auth_methods=auth_methods,
     )
 
     return response
@@ -756,6 +792,8 @@ async def authorize_with_session(
         "user_id": user.id,
         "username": user.username,
         "role": user.role,
+        "mfa_verified": token_data.mfa_verified,
+        "auth_methods": token_data.auth_methods,
         "expires": time.time() + AUTH_CODE_EXPIRY,
     }
 
@@ -803,9 +841,12 @@ async def token_endpoint_get(request: Request):
 @app.post("/token", include_in_schema=False)
 async def token_endpoint(
     request: Request,
+    response: Response,
     grant_type: str = Form(...),
     username: Optional[str] = Form(default=None),
     password: Optional[str] = Form(default=None),
+    totp_code: Optional[str] = Form(default=None),
+    remember_device: bool = Form(default=False),
     code: Optional[str] = Form(default=None),
     code_verifier: Optional[str] = Form(default=None),
     redirect_uri: Optional[str] = Form(default=None),
@@ -828,9 +869,12 @@ async def token_endpoint(
 
     return await _oauth2_token_handler(
         request=request,
+        response=response,
         grant_type=grant_type,
         username=username,
         password=password,
+        totp_code=totp_code,
+        remember_device=remember_device,
         code=code,
         code_verifier=code_verifier,
         redirect_uri=redirect_uri,

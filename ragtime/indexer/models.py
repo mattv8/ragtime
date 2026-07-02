@@ -3045,7 +3045,7 @@ class ConversationExportTableData(BaseModel):
 
 
 class CreateConversationExportRequest(BaseModel):
-    """Request to create a short-lived downloadable export link."""
+    """Request to create a downloadable export link."""
 
     filename: str = Field(default="export", description="Desired filename. The server sanitizes the name and applies the requested extension.")
     format: str = Field(default="csv", description="Requested file extension/format, such as csv, xlsx, pdf, doc, docx, txt, html, json, or xml.")
@@ -3060,18 +3060,18 @@ class CreateConversationExportRequest(BaseModel):
     text: Optional[str] = Field(default=None, description="Text content for document-like exports")
     content_base64: Optional[str] = Field(default=None, description="Optional raw binary content encoded as base64 for arbitrary file types")
     mime_type: Optional[str] = Field(default=None, description="Optional MIME type for binary or text content")
-    expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="How long the link remains valid")
+    expires_in_seconds: int = Field(default=3600, ge=60, le=86400, description="Deprecated and ignored. Export links do not expire.")
 
 
 class CreateConversationExportResponse(BaseModel):
-    """Response containing a short-lived downloadable conversation export link."""
+    """Response containing a downloadable conversation export link."""
 
     export_id: str = Field(description="Opaque export identifier")
     filename: str = Field(description="Sanitized filename including extension")
     format: str = Field(description="Resolved export format")
     download_url: str = Field(description="Relative authenticated download URL")
     markdown_link: str = Field(description="Markdown link using the filename as link text")
-    expires_at: datetime = Field(description="When the export link expires")
+    expires_at: datetime = Field(description="Compatibility field. Export links do not expire.")
     source_kind: str = Field(description="Resolved export source kind")
 
 

@@ -113,6 +113,11 @@ class _FakeProxyClient:
         self.closed = True
 
 
+async def _fake_issue_authenticated_session(response: Response, **_: Any) -> str:
+    response.set_cookie(key="ragtime_session", value="root-session-token", path="/")
+    return "root-session-token"
+
+
 class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
     def test_workspace_user_fingerprint_is_stable_and_workspace_scoped(self) -> None:
         first = build_workspace_user_fingerprint(user_id="user-1", workspace_id="workspace-a", workspace_fingerprint_namespace="portable-a")
@@ -561,8 +566,12 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                 "authenticate",
                 new=mock.AsyncMock(return_value=SimpleNamespace(success=True, user_id="user-1", username="jane@example.com", role="user")),
             ),
-            mock.patch.object(_PREVIEW_HOST, "create_access_token", return_value="root-session-token"),
-            mock.patch.object(_PREVIEW_HOST, "create_session", new=mock.AsyncMock()),
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "issue_authenticated_session",
+                new=mock.AsyncMock(side_effect=_fake_issue_authenticated_session),
+            ),
+            mock.patch.object(_PREVIEW_HOST, "mfa_needed_for_user", new=mock.AsyncMock(return_value=False)),
             mock.patch.object(_PREVIEW_HOST, "_preview_user_from_id", new=mock.AsyncMock(return_value=user)),
             mock.patch.object(_PREVIEW_HOST, "_register_preview_session", new=mock.AsyncMock()),
             mock.patch.object(
@@ -704,8 +713,12 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
                 "authenticate",
                 new=mock.AsyncMock(return_value=SimpleNamespace(success=True, user_id="user-1", username="local:admin", role="admin")),
             ),
-            mock.patch.object(_PREVIEW_HOST, "create_access_token", return_value="root-session-token"),
-            mock.patch.object(_PREVIEW_HOST, "create_session", new=mock.AsyncMock()),
+            mock.patch.object(
+                _PREVIEW_HOST,
+                "issue_authenticated_session",
+                new=mock.AsyncMock(side_effect=_fake_issue_authenticated_session),
+            ),
+            mock.patch.object(_PREVIEW_HOST, "mfa_needed_for_user", new=mock.AsyncMock(return_value=False)),
             mock.patch.object(_PREVIEW_HOST, "_preview_user_from_id", new=mock.AsyncMock(return_value=user)),
             mock.patch.object(_PREVIEW_HOST, "_register_preview_session", new=mock.AsyncMock()),
             mock.patch.object(

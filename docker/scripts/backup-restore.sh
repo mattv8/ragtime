@@ -8,10 +8,12 @@ set -euo pipefail
 #
 # IMPORTANT: Secrets Encryption
 # -----------------------------
-# Ragtime encrypts sensitive data (API keys, passwords) using Fernet symmetric
-# encryption. If ENCRYPTION_KEY is set, it is the effective key and is mirrored
-# to data/.encryption_key on app startup. If ENCRYPTION_KEY is unset, Ragtime
-# loads data/.encryption_key or auto-generates one and stores it there.
+# Ragtime encrypts sensitive data (API keys, passwords, TOTP MFA secrets) using
+# Fernet symmetric encryption. If ENCRYPTION_KEY is set, it is the effective key
+# and is mirrored to data/.encryption_key on app startup. If ENCRYPTION_KEY is
+# unset, Ragtime loads data/.encryption_key or auto-generates one and stores it
+# there. Recovery codes are stored as one-way hashes in the database and are
+# included in database backups, but they cannot replace a lost TOTP secret.
 #
 # To ensure backups can be restored with working secrets:
 #   1. Use --include-secret to include the effective encryption key in backups
@@ -896,7 +898,7 @@ EOF
         log "DEBUG" "Use 'restore --include-secret' to restore the key file"
     elif [ -f "$DATA_DIR/.encryption_key" ]; then
         log "WARNING" "Backup does not include encryption key"
-        log "WARNING" "Use 'backup --include-secret' when encrypted secret portability matters"
+        log "WARNING" "Use 'backup --include-secret' when encrypted secret portability matters, including TOTP MFA secrets"
         log "DEBUG" "Or manually backup: $DATA_DIR/.encryption_key"
     else
         log "WARNING" "No encryption key file found; encrypted secrets may not be recoverable"
@@ -1148,7 +1150,7 @@ do_restore() {
 
     if [ ! -f "$DATA_DIR/.encryption_key" ]; then
         log "WARNING" "IMPORTANT: Encrypted secrets require the same encryption key used when the backup was created"
-        log "WARNING" "If the key is missing or different, re-enter API keys and passwords in the Settings UI"
+        log "WARNING" "If the key is missing or different, re-enter API keys/passwords and reset affected users' TOTP MFA"
     fi
 }
 
