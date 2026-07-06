@@ -201,13 +201,10 @@ flowchart LR
    # Set to blank/non-http to force local placeholder runtime mode.
    # RUNTIME_MANAGER_URL=http://runtime:8090
 
-   # Required bearer token for runtime-manager calls in production Docker Compose.
-   # Generate with: openssl rand -base64 32
-   RUNTIME_MANAGER_AUTH_TOKEN=
-
-   # Required bearer token for preview proxy calls to the runtime worker.
-   # Generate with: openssl rand -base64 32
-   RUNTIME_WORKER_AUTH_TOKEN=
+   # Shared bearer token for Ragtime <-> runtime service calls. If unset, User
+   # Space runtime features stay disabled and admins see a security warning in
+   # the UI. Generate with: openssl rand -base64 32
+   RUNTIME_AUTH_TOKEN=
 
    # Maximum concurrent runtime sessions in running/starting state (default: 12)
    # RUNTIME_MAX_SESSIONS=12
@@ -316,8 +313,9 @@ flowchart LR
          # Recommended defaults
          DEBUG_MODE: "false"
          RUNTIME_MANAGER_URL: ${RUNTIME_MANAGER_URL:-http://runtime:8090}
-         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:?Set RUNTIME_MANAGER_AUTH_TOKEN to a strong random value}
-         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:?Set RUNTIME_WORKER_AUTH_TOKEN to a strong random value}
+         # Shared Ragtime <-> runtime token. If unset, User Space runtime features
+         # stay disabled and admins see a security warning in the UI.
+         RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
        volumes:
          # Data persistence (indexes, SSL certs, etc.)
          - ./data:/data
@@ -353,8 +351,9 @@ flowchart LR
        environment:
          PORT: "8090"
          RUNTIME_SERVICE_MODE: manager
-         RUNTIME_MANAGER_AUTH_TOKEN: ${RUNTIME_MANAGER_AUTH_TOKEN:?Set RUNTIME_MANAGER_AUTH_TOKEN to a strong random value}
-         RUNTIME_WORKER_AUTH_TOKEN: ${RUNTIME_WORKER_AUTH_TOKEN:?Set RUNTIME_WORKER_AUTH_TOKEN to a strong random value}
+         # Shared Ragtime <-> runtime token. If unset, User Space runtime features
+         # stay disabled and admins see a security warning in the UI.
+         RUNTIME_AUTH_TOKEN: ${RUNTIME_AUTH_TOKEN:-}
          RUNTIME_WORKER_BASE_URL: ${RUNTIME_WORKER_BASE_URL:-http://runtime:8090}
          RUNTIME_WORKSPACE_ROOT: ${RUNTIME_WORKSPACE_ROOT:-/data/_userspace}
          RUNTIME_MAX_SESSIONS: ${RUNTIME_MAX_SESSIONS:-12}

@@ -635,6 +635,9 @@ class AuthStatusResponse(BaseModel):
     api_key_configured: bool = False
     session_cookie_secure: bool = False
     allowed_origins_open: bool = False  # True if ALLOWED_ORIGINS=*
+    # True when RUNTIME_AUTH_TOKEN is missing, a known generic default, or
+    # resolved via the deprecated legacy variable bridge (migration needed).
+    runtime_auth_token_warning: bool = False
     auth_methods: list[AuthMethodStatus] = Field(default_factory=list)
     server_name: str = Field(
         default=DEFAULT_SERVER_NAME,
@@ -1094,6 +1097,7 @@ async def get_auth_status(
         api_key_configured=bool(settings.api_key) if is_authenticated else False,
         session_cookie_secure=(settings.session_cookie_secure if is_authenticated else False),
         allowed_origins_open=((settings.allowed_origins == "*") if is_authenticated else False),
+        runtime_auth_token_warning=(settings.runtime_auth_token_warning() if is_authenticated else False),
         auth_methods=auth_methods,
         server_name=server_name,
         default_theme_pack=default_theme_pack,

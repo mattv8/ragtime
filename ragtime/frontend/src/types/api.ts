@@ -201,6 +201,8 @@ export interface AuthStatus {
   api_key_configured: boolean;
   session_cookie_secure: boolean;
   allowed_origins_open: boolean; // True if ALLOWED_ORIGINS=*
+  // True when RUNTIME_AUTH_TOKEN is missing, a generic default, or legacy vars are in use
+  runtime_auth_token_warning?: boolean;
   auth_methods?: AuthMethodStatus[];
   server_name?: string;
   default_theme_pack?: string;

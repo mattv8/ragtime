@@ -141,6 +141,12 @@ docker compose -f docker/docker-compose.dev.yml down -v
 docker compose -f docker/docker-compose.dev.yml up --build
 ```
 
+## Runtime Auth Token
+
+Ragtime and the runtime service authenticate to each other with one shared bearer token: `RUNTIME_AUTH_TOKEN`. Split-service deployments use the same shared token on every container - there are no per-route tokens.
+
+Legacy migration: older compose templates set `RUNTIME_MANAGER_AUTH_TOKEN` / `RUNTIME_WORKER_AUTH_TOKEN` instead. When `RUNTIME_AUTH_TOKEN` is unset, both sides fall back to `RUNTIME_MANAGER_AUTH_TOKEN` (the worker variable is ignored) so old deployments keep working after upgrade, and admins see a security banner directing them to migrate. The bridge lives in `ragtime/config/settings.py` and `runtime/auth.py`; remove it once legacy deployments have migrated.
+
 ## Troubleshooting
 
 ### Database Connection

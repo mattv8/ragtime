@@ -1607,12 +1607,12 @@ async def _proxy_websocket_request(
 
     requested_subprotocols = [str(protocol).strip() for protocol in (websocket.scope.get("subprotocols") or []) if str(protocol).strip()]
 
-    # Mirror the worker auth token that _proxy_http_request sends so the
+    # Mirror the runtime auth token that _proxy_http_request sends so the
     # upstream runtime worker accepts the WebSocket connection.
     extra_headers: dict[str, str] = {}
-    worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
-    if worker_token:
-        extra_headers["authorization"] = f"Bearer {worker_token}"
+    runtime_token = getattr(settings, "userspace_runtime_auth_token", "") or ""
+    if runtime_token:
+        extra_headers["authorization"] = f"Bearer {runtime_token}"
     if additional_headers:
         for header_name, header_value in additional_headers.items():
             if header_value:
@@ -1722,10 +1722,10 @@ async def _proxy_http_request(
     body = await request.body()
     headers = _proxy_request_headers(request, allow_user_cookies=effective_allow_user_cookies)
 
-    # Inject runtime worker auth token for upstream worker requests
-    worker_token = getattr(settings, "userspace_runtime_worker_auth_token", "") or ""
-    if worker_token:
-        headers["authorization"] = f"Bearer {worker_token}"
+    # Inject the shared runtime auth token for upstream worker requests
+    runtime_token = getattr(settings, "userspace_runtime_auth_token", "") or ""
+    if runtime_token:
+        headers["authorization"] = f"Bearer {runtime_token}"
 
     # Derive proxy read/write timeout from the maximum tool timeout across
     # all configured tools so the proxy never cuts off a legitimate query.

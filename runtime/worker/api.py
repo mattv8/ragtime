@@ -27,7 +27,7 @@ from fastapi import (
 from fastapi.responses import Response, StreamingResponse
 from websockets.typing import Subprotocol
 
-from runtime.auth import OptionalWorkerAuth, WorkerAuth
+from runtime.auth import OptionalWorkerAuth, WorkerAuth, get_runtime_auth_token
 from runtime.manager.models import (
     RuntimeContentProbeRequest,
     RuntimeContentProbeResponse,
@@ -504,7 +504,7 @@ async def preview(
 
 def _verify_worker_auth_from_websocket(websocket: WebSocket) -> None:
     """Validate worker Bearer token from the WebSocket handshake headers."""
-    cached_token = os.getenv("RUNTIME_WORKER_AUTH_TOKEN", "").strip()
+    cached_token = get_runtime_auth_token()
     if not cached_token:
         raise HTTPException(status_code=503, detail="Runtime auth not configured")
     auth_header = ""

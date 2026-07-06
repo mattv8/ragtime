@@ -27,7 +27,7 @@ def get_runtime_manager_request_config() -> RuntimeManagerRequestConfig:
             "http://runtime:8090",
         )
     ).strip()
-    manager_auth_token = str(getattr(settings, "userspace_runtime_manager_auth_token", "")).strip()
+    manager_auth_token = str(getattr(settings, "userspace_runtime_auth_token", "")).strip()
     headers: dict[str, str] = {}
     if manager_auth_token:
         headers["Authorization"] = f"Bearer {manager_auth_token}"

@@ -12,6 +12,18 @@ export function renderApiKeySecurityWarning(): ReactNode {
   );
 }
 
+export function renderRuntimeAuthSecurityWarning(): ReactNode {
+  return (
+    <>
+      Runtime auth is missing or using a legacy/default token. Set{' '}
+      <code>RUNTIME_AUTH_TOKEN</code> to a strong random value (
+      <code>openssl rand -base64 32</code>) in your <code>.env</code>, update your compose file to
+      the latest template, and remove the deprecated <code>RUNTIME_MANAGER_AUTH_TOKEN</code> /{' '}
+      <code>RUNTIME_WORKER_AUTH_TOKEN</code> variables.
+    </>
+  );
+}
+
 export function renderHttpSecurityWarning(includeAdditionallyPrefix = false): ReactNode {
   return (
     <>

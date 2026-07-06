@@ -11495,15 +11495,9 @@ class RAGComponents:
                     runtime_probe["upstream_url"] = upstream_url
 
                     probe_headers: dict[str, str] = {}
-                    worker_token = str(getattr(settings, "userspace_runtime_worker_auth_token", "")).strip()
-                    manager_token = str(getattr(settings, "userspace_runtime_manager_auth_token", "")).strip()
-
-                    if "/worker/" in upstream_url and worker_token:
-                        probe_headers["Authorization"] = f"Bearer {worker_token}"
-                    elif manager_token:
-                        probe_headers["Authorization"] = f"Bearer {manager_token}"
-                    elif worker_token:
-                        probe_headers["Authorization"] = f"Bearer {worker_token}"
+                    runtime_token = str(getattr(settings, "userspace_runtime_auth_token", "")).strip()
+                    if runtime_token:
+                        probe_headers["Authorization"] = f"Bearer {runtime_token}"
 
                     probe_timeout = httpx.Timeout(connect=2.0, read=12.0, write=8.0, pool=4.0)
                     async with httpx.AsyncClient(timeout=probe_timeout, follow_redirects=False) as client:

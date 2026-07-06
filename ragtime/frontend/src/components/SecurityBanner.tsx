@@ -5,6 +5,7 @@ import {
   API_KEY_INFO_HIGHLIGHT,
   renderApiKeySecurityWarning,
   renderHttpSecurityWarning,
+  renderRuntimeAuthSecurityWarning,
 } from './shared/securityWarnings';
 
 const DISMISS_KEY = 'ragtime_security_banner_dismissed';
@@ -14,6 +15,7 @@ const BRANDING_NOTICE_KEY = 'ragtime_branding_restart_notice';
 const NOTICE_API_KEY = 'api-key';
 const NOTICE_CORS = 'cors';
 const NOTICE_HTTP = 'http';
+const NOTICE_RUNTIME_AUTH = 'runtime-auth';
 const NOTICE_BRANDING = 'branding-restart';
 
 interface SecurityBannerProps {
@@ -136,6 +138,7 @@ export function SecurityBanner({
   // Check security issues
   const showApiKeyWarning = !authStatus.api_key_configured;
   const showCorsWarning = authStatus.allowed_origins_open;
+  const showRuntimeAuthWarning = Boolean(authStatus.runtime_auth_token_warning);
   const isHttp = window.location.protocol === 'http:';
 
   const securityNoticeDefinitions: NoticeDefinition[] = [
@@ -164,6 +167,13 @@ export function SecurityBanner({
       message: renderHttpSecurityWarning(),
       highlightSetting: API_KEY_INFO_HIGHLIGHT,
       visible: isHttp && !dismissedNoticeIds.includes(NOTICE_HTTP),
+    },
+    {
+      id: NOTICE_RUNTIME_AUTH,
+      title: 'Security',
+      message: renderRuntimeAuthSecurityWarning(),
+      highlightSetting: API_KEY_INFO_HIGHLIGHT,
+      visible: showRuntimeAuthWarning && !dismissedNoticeIds.includes(NOTICE_RUNTIME_AUTH),
     },
   ];
 

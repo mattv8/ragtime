@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 from ragtime.oauth_redirects import (
@@ -25,6 +25,19 @@ from ragtime.oauth_redirects import (
 ENCRYPTION_KEY_FILE = Path(os.environ.get("INDEX_DATA_PATH", "/data")) / ".encryption_key"
 
 SameSiteType = Literal["lax", "strict", "none"]
+
+# Generic token values shipped by old compose templates and docs. Any of these
+# (or an empty token) triggers the admin security banner so operators migrate
+# to a strong RUNTIME_AUTH_TOKEN. They are NOT filtered from resolution: legacy
+# deployments keep working, they just get warned.
+_RUNTIME_AUTH_TOKEN_GENERIC_DEFAULTS = {
+    "runtime-auth-token",
+    "runtime-manager-token",
+    "runtime-worker-token",
+    "dev-runtime-auth-token",
+    "dev-runtime-manager-token",
+    "dev-runtime-worker-token",
+}
 
 
 class Settings(BaseSettings):
@@ -120,16 +133,25 @@ class Settings(BaseSettings):
         alias="RUNTIME_MANAGER_RETRY_DELAY_SECONDS",
         description="Base retry delay in seconds for runtime manager HTTP requests",
     )
+    userspace_runtime_auth_token: str = Field(
+        default="",
+        alias="RUNTIME_AUTH_TOKEN",
+        description="Bearer token shared by Ragtime and the runtime service",
+    )
+    # DEPRECATED legacy bridge: older compose files set RUNTIME_MANAGER_AUTH_TOKEN /
+    # RUNTIME_WORKER_AUTH_TOKEN instead of RUNTIME_AUTH_TOKEN. When the shared
+    # token is unset we fall back to the legacy manager value so those
+    # deployments keep working after upgrade; the admin UI shows a migration
+    # warning (see runtime_auth_token_warning). The worker variable is ignored.
+    # Remove this bridge once legacy deployments have migrated.
     userspace_runtime_manager_auth_token: str = Field(
         default="",
         alias="RUNTIME_MANAGER_AUTH_TOKEN",
-        description="Optional bearer token used when calling runtime manager",
+        description="DEPRECATED: legacy fallback for RUNTIME_AUTH_TOKEN",
     )
-    userspace_runtime_worker_auth_token: str = Field(
-        default="",
-        alias="RUNTIME_WORKER_AUTH_TOKEN",
-        description="Bearer token for authenticating preview proxy requests to the runtime worker",
-    )
+    # Tracks whether the effective token came from the legacy bridge, so the
+    # security banner can nudge migration even when the legacy value is strong.
+    runtime_auth_token_from_legacy: bool = Field(default=False, exclude=True)
     tavily_api_key: str = Field(
         default="",
         alias="TAVILY_API_KEY",
@@ -166,6 +188,31 @@ class Settings(BaseSettings):
     )
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     jwt_expire_hours: int = Field(default=24, alias="JWT_EXPIRE_HOURS")
+
+    @model_validator(mode="after")
+    def apply_legacy_runtime_auth_token_bridge(self) -> "Settings":
+        # Always derived, never accepted from the environment.
+        self.runtime_auth_token_from_legacy = False
+        shared_token = (self.userspace_runtime_auth_token or "").strip()
+        legacy_token = (self.userspace_runtime_manager_auth_token or "").strip()
+        if not shared_token and legacy_token:
+            shared_token = legacy_token
+            self.runtime_auth_token_from_legacy = True
+        self.userspace_runtime_auth_token = shared_token
+        return self
+
+    def runtime_auth_token_warning(self) -> bool:
+        """True when admins should be nudged to configure RUNTIME_AUTH_TOKEN.
+
+        Warns when the effective token is empty, is a well-known generic
+        default from old compose templates/docs, or was resolved through the
+        deprecated legacy variable bridge. Suppressed in debug mode where the
+        dev compose default is expected.
+        """
+        if self.debug_mode:
+            return False
+        token = self.userspace_runtime_auth_token
+        return not token or token in _RUNTIME_AUTH_TOKEN_GENERIC_DEFAULTS or self.runtime_auth_token_from_legacy
 
     @field_validator("encryption_key", mode="after")
     @classmethod
