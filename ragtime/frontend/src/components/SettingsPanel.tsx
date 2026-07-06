@@ -423,6 +423,25 @@ function availableModelSettingsLabel(model: AvailableModel): string {
   return label;
 }
 
+type SharedLlmEmbeddingProvider =
+  | 'openai'
+  | 'openrouter'
+  | 'openai_codex'
+  | 'ollama'
+  | 'llama_cpp'
+  | 'lmstudio'
+  | 'omlx';
+
+function getDefaultEmbeddingModelForProvider(provider: SharedLlmEmbeddingProvider): string {
+  if (provider === 'ollama') {
+    return 'nomic-embed-text';
+  }
+  if (provider === 'openai') {
+    return 'text-embedding-3-small';
+  }
+  return '';
+}
+
 function formatModelIdentifierForDisplay(
   identifier: string | null | undefined,
   models: AvailableModel[],
@@ -3498,6 +3517,117 @@ export function SettingsPanel({
   const embeddingOmlxConfigured = Boolean(
     formData.omlx_protocol && formData.omlx_host?.trim() && formData.omlx_port,
   );
+  const llmProviderForEmbeddingCopy = (() => {
+    const provider = normalizeLlmProvider(formData.llm_provider || 'openai');
+    if (provider !== (formData.embedding_provider || 'ollama')) {
+      return null;
+    }
+    switch (provider) {
+      case 'openai':
+        return openAiConfigured ? provider : null;
+      case 'openrouter':
+        return openRouterConfigured ? provider : null;
+      case 'openai_codex':
+        return openAiCodexConfigured ? provider : null;
+      case 'ollama':
+        return ollamaConfigured ? provider : null;
+      case 'llama_cpp':
+        return llamaCppConfigured ? provider : null;
+      case 'lmstudio':
+        return lmstudioConfigured ? provider : null;
+      case 'omlx':
+        return omlxConfigured ? provider : null;
+      default:
+        return null;
+    }
+  })();
+  const embeddingProviderForLlmCopy = (() => {
+    const provider = formData.embedding_provider || 'ollama';
+    if (provider !== normalizeLlmProvider(formData.llm_provider || 'openai')) {
+      return null;
+    }
+    switch (provider) {
+      case 'openai':
+        return embeddingOpenAiConfigured ? provider : null;
+      case 'openrouter':
+        return embeddingOpenRouterConfigured ? provider : null;
+      case 'openai_codex':
+        return embeddingOpenAiCodexConfigured ? provider : null;
+      case 'ollama':
+        return embeddingOllamaConfigured ? provider : null;
+      case 'llama_cpp':
+        return embeddingLlamaCppConfigured ? provider : null;
+      case 'lmstudio':
+        return embeddingLmstudioConfigured ? provider : null;
+      case 'omlx':
+        return embeddingOmlxConfigured ? provider : null;
+      default:
+        return null;
+    }
+  })();
+  const copyLlmProviderToEmbeddings = (provider: SharedLlmEmbeddingProvider) => {
+    const nextFormData: UpdateSettingsRequest = {
+      ...formData,
+      embedding_provider: provider,
+      embedding_model:
+        formData.embedding_provider === provider
+          ? formData.embedding_model
+          : getDefaultEmbeddingModelForProvider(provider),
+    };
+
+    if (provider === 'ollama') {
+      nextFormData.ollama_protocol = formData.llm_ollama_protocol || DEFAULT_OLLAMA_PROTOCOL;
+      nextFormData.ollama_host = formData.llm_ollama_host || '';
+      nextFormData.ollama_port = formData.llm_ollama_port || DEFAULT_OLLAMA_PORT;
+      resetEmbeddingOllamaState();
+    } else if (provider === 'llama_cpp') {
+      nextFormData.llama_cpp_protocol =
+        formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL;
+      nextFormData.llama_cpp_host = formData.llm_llama_cpp_host || '';
+      nextFormData.llama_cpp_port = formData.llm_llama_cpp_port || DEFAULT_LLAMA_CPP_CHAT_PORT;
+    } else if (provider === 'lmstudio') {
+      nextFormData.lmstudio_protocol = formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL;
+      nextFormData.lmstudio_host = formData.llm_lmstudio_host || '';
+      nextFormData.lmstudio_port = formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT;
+    } else if (provider === 'omlx') {
+      nextFormData.omlx_protocol = formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL;
+      nextFormData.omlx_host = formData.llm_omlx_host || '';
+      nextFormData.omlx_port = formData.llm_omlx_port || DEFAULT_OMLX_PORT;
+    }
+
+    setFormData(nextFormData);
+    resetEmbeddingModelsState();
+  };
+  const copyEmbeddingProviderToLlm = (provider: SharedLlmEmbeddingProvider) => {
+    const nextFormData: UpdateSettingsRequest = {
+      ...formData,
+      llm_provider: provider,
+      llm_model: formData.llm_provider === provider ? formData.llm_model : '',
+    };
+
+    if (provider === 'ollama') {
+      nextFormData.llm_ollama_protocol = formData.ollama_protocol || DEFAULT_OLLAMA_PROTOCOL;
+      nextFormData.llm_ollama_host = formData.ollama_host || '';
+      nextFormData.llm_ollama_port = formData.ollama_port || DEFAULT_OLLAMA_PORT;
+      resetLlmOllamaState();
+    } else if (provider === 'llama_cpp') {
+      nextFormData.llm_llama_cpp_protocol =
+        formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL;
+      nextFormData.llm_llama_cpp_host = formData.llama_cpp_host || '';
+      nextFormData.llm_llama_cpp_port = formData.llama_cpp_port || DEFAULT_LLAMA_CPP_EMBEDDING_PORT;
+    } else if (provider === 'lmstudio') {
+      nextFormData.llm_lmstudio_protocol = formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL;
+      nextFormData.llm_lmstudio_host = formData.lmstudio_host || '';
+      nextFormData.llm_lmstudio_port = formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT;
+    } else if (provider === 'omlx') {
+      nextFormData.llm_omlx_protocol = formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL;
+      nextFormData.llm_omlx_host = formData.omlx_host || '';
+      nextFormData.llm_omlx_port = formData.omlx_port || DEFAULT_OMLX_PORT;
+    }
+
+    setFormData(nextFormData);
+    resetLlmModelsState();
+  };
   const activeAuthProvider =
     AUTH_PROVIDER_OPTIONS.find((provider) => provider.value === activeAuthProviderValue) ||
     AUTH_PROVIDER_OPTIONS[0];
@@ -4154,65 +4284,15 @@ export function SettingsPanel({
                 <option value="openai_codex">OpenAI Codex</option>
                 <option value="claude_code">Claude Code (Pro/Max)</option>
               </select>
-              {/* Quick-fill from embedding Ollama when it has a real host */}
-              {formData.llm_provider === 'ollama' &&
-                formData.embedding_provider === 'ollama' &&
-                formData.ollama_host?.trim() && (
-                  <button
-                    type="button"
-                    className="btn btn-test"
-                    onClick={() => {
-                      setFormData({
-                        ...formData,
-                        llm_ollama_protocol: formData.ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
-                        llm_ollama_host: formData.ollama_host || '',
-                        llm_ollama_port: formData.ollama_port || DEFAULT_OLLAMA_PORT,
-                      });
-                      resetLlmOllamaState();
-                    }}
-                  >
-                    Use Embedding Server
-                  </button>
-                )}
-              {formData.llm_provider === 'lmstudio' &&
-                formData.embedding_provider === 'lmstudio' &&
-                formData.lmstudio_host?.trim() && (
-                  <button
-                    type="button"
-                    className="btn btn-test"
-                    onClick={() => {
-                      setFormData({
-                        ...formData,
-                        llm_lmstudio_protocol:
-                          formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-                        llm_lmstudio_host: formData.lmstudio_host || '',
-                        llm_lmstudio_port: formData.lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-                      });
-                      resetLlmModelsState();
-                    }}
-                  >
-                    Use Embedding Server
-                  </button>
-                )}
-              {formData.llm_provider === 'omlx' &&
-                formData.embedding_provider === 'omlx' &&
-                formData.omlx_host?.trim() && (
-                  <button
-                    type="button"
-                    className="btn btn-test"
-                    onClick={() => {
-                      setFormData({
-                        ...formData,
-                        llm_omlx_protocol: formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL,
-                        llm_omlx_host: formData.omlx_host || '',
-                        llm_omlx_port: formData.omlx_port || DEFAULT_OMLX_PORT,
-                      });
-                      resetLlmModelsState();
-                    }}
-                  >
-                    Use Embedding Server
-                  </button>
-                )}
+              {embeddingProviderForLlmCopy && (
+                <button
+                  type="button"
+                  className="btn btn-test"
+                  onClick={() => copyEmbeddingProviderToLlm(embeddingProviderForLlmCopy)}
+                >
+                  Use Embedding Provider
+                </button>
+              )}
             </div>
           </div>
 
@@ -5872,65 +5952,15 @@ export function SettingsPanel({
                   <option value="openai_codex">OpenAI Codex</option>
                   <option value="openrouter">OpenRouter</option>
                 </select>
-                {/* Quick-fill from LLM Ollama when it has a real host */}
-                {formData.embedding_provider === 'ollama' &&
-                  formData.llm_provider === 'ollama' &&
-                  formData.llm_ollama_host?.trim() && (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => {
-                        setFormData({
-                          ...formData,
-                          ollama_protocol: formData.llm_ollama_protocol || DEFAULT_OLLAMA_PROTOCOL,
-                          ollama_host: formData.llm_ollama_host || '',
-                          ollama_port: formData.llm_ollama_port || DEFAULT_OLLAMA_PORT,
-                        });
-                        resetEmbeddingOllamaState();
-                      }}
-                    >
-                      Use LLM Server
-                    </button>
-                  )}
-                {formData.embedding_provider === 'lmstudio' &&
-                  formData.llm_provider === 'lmstudio' &&
-                  formData.llm_lmstudio_host?.trim() && (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => {
-                        setFormData({
-                          ...formData,
-                          lmstudio_protocol:
-                            formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL,
-                          lmstudio_host: formData.llm_lmstudio_host || '',
-                          lmstudio_port: formData.llm_lmstudio_port || DEFAULT_LMSTUDIO_PORT,
-                        });
-                        resetEmbeddingModelsState();
-                      }}
-                    >
-                      Use LLM Server
-                    </button>
-                  )}
-                {formData.embedding_provider === 'omlx' &&
-                  formData.llm_provider === 'omlx' &&
-                  formData.llm_omlx_host?.trim() && (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => {
-                        setFormData({
-                          ...formData,
-                          omlx_protocol: formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL,
-                          omlx_host: formData.llm_omlx_host || '',
-                          omlx_port: formData.llm_omlx_port || DEFAULT_OMLX_PORT,
-                        });
-                        resetEmbeddingModelsState();
-                      }}
-                    >
-                      Use LLM Server
-                    </button>
-                  )}
+                {llmProviderForEmbeddingCopy && (
+                  <button
+                    type="button"
+                    className="btn btn-test"
+                    onClick={() => copyLlmProviderToEmbeddings(llmProviderForEmbeddingCopy)}
+                  >
+                    Use LLM Provider
+                  </button>
+                )}
               </div>
               <p className="field-help">
                 Model capability filtering comes from the shared model metadata. Providers with no
