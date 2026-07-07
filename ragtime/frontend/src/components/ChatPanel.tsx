@@ -16049,11 +16049,21 @@ export function ChatPanel({
       {/* Skeleton messages */}
       <div className="chat-messages chat-messages-skeleton">{renderMessageBubbleSkeletons()}</div>
       {/* Skeleton input area */}
-      <div className="chat-input-area manual-resize chat-input-area-skeleton" aria-hidden="true">
-        <div className="chat-input-wrapper">
-          <div className="chat-skeleton-line chat-input-skeleton-line"></div>
+      {!isInputAreaCollapsed && (
+        <div
+          className={`chat-input-area ${isManualResize ? 'manual-resize' : ''} chat-input-area-skeleton`
+            .trim()
+            .replace(/\s+/g, ' ')}
+          style={
+            isMessagesCollapsed
+              ? { flex: 1, minHeight: 'auto' }
+              : { height: `${inputAreaHeight}px`, minHeight: `${inputAreaHeight}px` }
+          }
+          aria-hidden="true"
+        >
+          <div className="chat-input-wrapper"></div>
         </div>
-      </div>
+      )}
     </>
   );
 

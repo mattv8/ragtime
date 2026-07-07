@@ -331,6 +331,7 @@ legend {
   font-weight: 700;
   color: var(--color-primary);
   letter-spacing: -0.02em;
+  flex-shrink: 0;
 }
 
 .brand-name {
@@ -396,6 +397,7 @@ legend {
   gap: var(--space-md);
   position: relative;
   z-index: 1;
+  flex-shrink: 0;
 }
 
 /* =============================================================================
