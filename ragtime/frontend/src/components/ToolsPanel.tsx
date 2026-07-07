@@ -18,6 +18,8 @@ import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { AnimatedCreateButton } from './AnimatedCreateButton';
 import { IndexingPill } from './IndexingPill';
 import { useToast, ToastContainer } from './shared/Toast';
+import { ContextMenu } from './shared/ContextMenu';
+import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import {
   SearchFilterBar,
   searchFilterTextMatchesQuery,
@@ -25,6 +27,7 @@ import {
 } from './shared/SearchFilterBar';
 import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
+import { useIsTruncated } from '@/utils/useIsTruncated';
 import { Popover } from './Popover';
 
 // Inline field being edited
@@ -122,6 +125,21 @@ function getUniqueGroupName(baseName: string, groups: ToolGroup[]): string {
   }
 }
 
+function getDuplicateToolName(originalName: string, tools: ToolConfig[]): string {
+  const existingNames = new Set(tools.map((tool) => tool.name.trim()));
+  const candidate = `${originalName} Copy`;
+  if (!existingNames.has(candidate)) {
+    return candidate;
+  }
+
+  for (let suffix = 2; ; suffix += 1) {
+    const numberedCandidate = `${originalName} Copy ${suffix}`;
+    if (!existingNames.has(numberedCandidate)) {
+      return numberedCandidate;
+    }
+  }
+}
+
 function getToolSearchText(tool: ToolConfig): string {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   return [
@@ -190,9 +208,9 @@ function getToolConnectionSummary(tool: ToolConfig): string {
 interface ToolCardProps {
   tool: ToolConfig;
   heartbeat: HeartbeatStatus | null;
+  showFooterActions: boolean;
   onEdit: (tool: ToolConfig) => void;
   onDelete: (toolId: string) => void;
-  onToggle: (toolId: string, enabled: boolean) => void;
   onTest: (toolId: string) => void;
   testing: boolean;
   onPdmReindex?: (toolId: string, fullReindex: boolean) => void;
@@ -205,15 +223,14 @@ interface ToolCardProps {
     toolId: string,
     updates: { name?: string; description?: string },
   ) => Promise<void>;
-  onToggleWrite?: (toolId: string, allowWrite: boolean) => void;
 }
 
 function ToolCard({
   tool,
   heartbeat,
+  showFooterActions,
   onEdit,
   onDelete,
-  onToggle,
   onTest,
   testing,
   onPdmReindex,
@@ -223,7 +240,6 @@ function ToolCard({
   activeSchemaJob,
   schemaStats,
   onInlineUpdate,
-  onToggleWrite,
 }: ToolCardProps) {
   const typeInfo = TOOL_TYPE_INFO[tool.tool_type];
   const hasSchemaIndexing = hasSchemaIndexingEnabled(tool);
@@ -231,8 +247,7 @@ function ToolCard({
   const hasActiveIndexingJob = Boolean(
     activeSchemaJob && ['pending', 'processing', 'indexing'].includes(activeSchemaJob.status),
   );
-  const showConstraintsRow =
-    Boolean(onToggleWrite) || hasActiveIndexingJob || Boolean(workingDirectory);
+  const toolSupportsWorkingDir = tool.tool_type === 'ssh_shell' || tool.tool_type === 'odoo_shell';
 
   // Inline editing state
   const [editingField, setEditingField] = useState<EditingField>(null);
@@ -241,6 +256,9 @@ function ToolCard({
   const [saving, setSaving] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const descTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Only show the title popover when the name is actually clipped by the
+  // responsive tool card (otherwise it would just repeat visible text).
+  const [titleRef, isTitleTruncated] = useIsTruncated<HTMLHeadingElement>(tool.name);
 
   // Format memory size for display
   const formatMemory = (mb: number): string => {
@@ -251,24 +269,31 @@ function ToolCard({
 
   // Determine heartbeat display status
   const getHeartbeatDisplay = () => {
+    if (testing) {
+      return {
+        status: 'checking',
+        label: 'Testing...',
+        node: <MiniLoadingSpinner variant="css" />,
+      };
+    }
     if (!tool.enabled) {
-      return { status: 'disabled', label: 'Disabled', icon: <Icon name="circle" size={16} /> };
+      return { status: 'disabled', label: 'Disabled', node: <span className="status-dot" /> };
     }
     if (!heartbeat) {
-      return { status: 'checking', label: 'Checking...', icon: <Icon name="loader" size={16} /> };
+      return { status: 'checking', label: 'Checking...', node: <span className="status-dot" /> };
     }
     if (heartbeat.alive) {
       const latency = heartbeat.latency_ms ? `${Math.round(heartbeat.latency_ms)}ms` : '';
       return {
         status: 'alive',
         label: latency || 'Connected',
-        icon: <Icon name="check" size={16} />,
+        node: <span className="status-dot" />,
       };
     }
     return {
       status: 'dead',
       label: heartbeat.error || 'Disconnected',
-      icon: <Icon name="close" size={16} />,
+      node: <span className="status-dot" />,
     };
   };
 
@@ -388,8 +413,9 @@ function ToolCard({
                     content={tool.name}
                     position="top"
                     trigger="hover"
+                    disabled={!isTitleTruncated}
                   >
-                    <h3>{tool.name}</h3>
+                    <h3 ref={titleRef}>{tool.name}</h3>
                   </Popover>
                   <button
                     type="button"
@@ -406,23 +432,49 @@ function ToolCard({
               )}
             </div>
             <div className="tool-card-header-actions">
-              <div className="tool-card-heartbeat">
-                <span
-                  className={`heartbeat-indicator ${heartbeatDisplay.status}`}
-                  title={heartbeatDisplay.label}
-                >
-                  {heartbeatDisplay.icon}
-                </span>
+              <div className="tool-card-badges">
+                {hasActiveIndexingJob && (
+                  <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
+                )}
+                {toolSupportsWorkingDir && (
+                  <Popover
+                    content={
+                      workingDirectory
+                        ? `Constrained to ${workingDirectory}`
+                        : 'Working directory not set'
+                    }
+                    position="top"
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <span className="tool-badge">
+                      <Icon name="folder" size={12} />
+                      <span className="path-text">{workingDirectory || '/'}</span>
+                    </span>
+                  </Popover>
+                )}
+                {tool.allow_write && (
+                  <Popover
+                    content="Write access enabled"
+                    position="top"
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <span className="tool-badge badge-warning">
+                      <Icon name="alert-triangle" size={12} />
+                      <span className="path-text">Write</span>
+                    </span>
+                  </Popover>
+                )}
               </div>
-              <div className="tool-card-status">
-                <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={tool.enabled}
-                    onChange={(e) => onToggle(tool.id, e.target.checked)}
-                  />
-                  <span className="toggle-slider"></span>
-                </label>
+              <div className="tool-card-heartbeat">
+                <Popover
+                  content={heartbeatDisplay.label}
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span className={`heartbeat-indicator ${heartbeatDisplay.status}`}>
+                    {heartbeatDisplay.node}
+                  </span>
+                </Popover>
               </div>
             </div>
           </div>
@@ -472,8 +524,11 @@ function ToolCard({
       )}
 
       {/* Show heartbeat error if connection failed */}
-      {heartbeat && !heartbeat.alive && tool.enabled && (
-        <div className="tool-card-heartbeat-error">
+      {heartbeat && !heartbeat.alive && (
+        <div
+          className="tool-card-heartbeat-error"
+          style={{ visibility: tool.enabled && !testing ? 'visible' : 'hidden' }}
+        >
           <span className="error-icon">
             <Icon name="alert-circle" size={16} />
           </span>
@@ -496,93 +551,61 @@ function ToolCard({
         </div>
       )}
 
-      <div className="tool-card-footer">
-        {showConstraintsRow && (
-          <div className="tool-card-constraints">
-            {onToggleWrite && (
-              <label
-                className={`write-mode-toggle ${tool.allow_write ? 'active' : ''}`}
-                title={
-                  tool.allow_write
-                    ? 'Write access enabled. Click to make read only.'
-                    : 'Read only. Click to allow write access.'
-                }
-              >
-                <span className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={tool.allow_write}
-                    onChange={(e) => onToggleWrite(tool.id, e.target.checked)}
-                  />
-                  <span className="toggle-slider"></span>
-                </span>
-                <span className="write-mode-label">
-                  {tool.allow_write ? 'Write Enabled' : 'Read Only'}
-                </span>
-              </label>
-            )}
-            <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
-            {workingDirectory && (
-              <span className="constrained-path" title={`Constrained to ${workingDirectory}`}>
-                <Icon name="folder" size={14} />
-                <span className="path-text">{workingDirectory}</span>
-              </span>
-            )}
-          </div>
-        )}
-
-        <div className="tool-card-actions">
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => onTest(tool.id)}
-            disabled={testing}
-          >
-            {testing ? 'Testing...' : 'Test'}
-          </button>
-          {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
-            <>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => onPdmReindex(tool.id, false)}
-                disabled={pdmIndexing}
-                title="Index new and changed documents"
-              >
-                {pdmIndexing ? 'Indexing...' : 'Index'}
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => onPdmReindex(tool.id, true)}
-                disabled={pdmIndexing}
-                title="Re-index all documents from scratch"
-              >
-                Full Re-index
-              </button>
-            </>
-          )}
-          {hasSchemaIndexing && onSchemaReindex && (
+      {showFooterActions && (
+        <div className="tool-card-footer">
+          <div className="tool-card-actions">
             <button
               type="button"
               className="btn btn-sm"
-              onClick={() => onSchemaReindex(tool.id, true)}
-              disabled={schemaIndexing}
-              title="Re-index database schema"
+              onClick={() => onTest(tool.id)}
+              disabled={testing}
             >
-              {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+              {testing ? 'Testing...' : 'Test'}
             </button>
-          )}
-          <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
-            Edit
-          </button>
-          <DeleteConfirmButton
-            onDelete={() => onDelete(tool.id)}
-            className="btn btn-sm btn-danger"
-            title="Delete tool"
-          />
+            {tool.tool_type === 'solidworks_pdm' && onPdmReindex && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onPdmReindex(tool.id, false)}
+                  disabled={pdmIndexing}
+                  title="Index new and changed documents"
+                >
+                  {pdmIndexing ? 'Indexing...' : 'Index'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onPdmReindex(tool.id, true)}
+                  disabled={pdmIndexing}
+                  title="Re-index all documents from scratch"
+                >
+                  Full Re-index
+                </button>
+              </>
+            )}
+            {hasSchemaIndexing && onSchemaReindex && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onSchemaReindex(tool.id, true)}
+                disabled={schemaIndexing}
+                title="Re-index database schema"
+              >
+                {schemaIndexing ? 'Indexing...' : 'Re-index Schema'}
+              </button>
+            )}
+            <button type="button" className="btn btn-sm" onClick={() => onEdit(tool)}>
+              Edit
+            </button>
+            <DeleteConfirmButton
+              onDelete={() => onDelete(tool.id)}
+              className="btn btn-sm btn-danger"
+              title="Delete tool"
+            />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -611,6 +634,7 @@ export function ToolsPanel({
   const [schemaIndexingToolId, setSchemaIndexingToolId] = useState<string | null>(null);
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
   const [schemaStats, setSchemaStats] = useState<Record<string, SchemaIndexStats>>({});
+  const [showFooterActions, setShowFooterActions] = useState(false);
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editingGroupName, setEditingGroupName] = useState('');
@@ -633,13 +657,22 @@ export function ToolsPanel({
     loading: boolean;
   } | null>(null);
   const [writeConfirmTool, setWriteConfirmTool] = useState<ToolConfig | null>(null);
+  const [deleteConfirmTool, setDeleteConfirmTool] = useState<ToolConfig | null>(null);
+  const [toolContextMenu, setToolContextMenu] = useState<{
+    toolId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const toolContextMenuRef = useRef<HTMLDivElement>(null);
 
   // Selected group tab (null = show ungrouped / all)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const groupContentRef = useRef<HTMLDivElement>(null);
   const toolFilter = useUrlSearchFilterState();
   const toolFilterInputRef = useRef<HTMLInputElement | null>(null);
-  const hasBlockingModalOpen = Boolean(disableConfirmation || writeConfirmTool);
+  const hasBlockingModalOpen = Boolean(
+    disableConfirmation || writeConfirmTool || deleteConfirmTool,
+  );
 
   // Group the tools for display — include ALL groups (even empty) as drop targets
   const { allGroups, ungroupedTools } = useMemo(() => {
@@ -775,16 +808,18 @@ export function ToolsPanel({
   const loadTools = useCallback(async () => {
     try {
       setLoading(true);
-      const [data, groupData, sources] = await Promise.all([
+      const [data, groupData, sources, settingsResponse] = await Promise.all([
         api.listToolConfigs(),
         api.listToolGroups(),
         api.listUserspaceMountSources(),
+        api.getSettings().catch(() => null),
       ]);
       // Filter out filesystem_indexer tools - they're shown in the Indexer tab
       const connectionTools = data.filter((t) => t.tool_type !== 'filesystem_indexer');
       setTools(connectionTools);
       setGroups(groupData);
       setMountSources(sources);
+      setShowFooterActions(Boolean(settingsResponse?.settings?.show_tool_card_footer_actions));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load tools');
     } finally {
@@ -973,6 +1008,7 @@ export function ToolsPanel({
     if (allowWrite) {
       const tool = tools.find((t) => t.id === toolId);
       if (tool) {
+        setToolContextMenu(null);
         setWriteConfirmTool(tool);
       }
       return;
@@ -1000,6 +1036,51 @@ export function ToolsPanel({
       toast.error(err instanceof Error ? err.message : 'Failed to enable write access');
     }
   }, [writeConfirmTool, replaceToolInState, toast]);
+
+  const handleDuplicateTool = useCallback(
+    async (toolId: string) => {
+      setToolContextMenu(null);
+      const tool = tools.find((candidate) => candidate.id === toolId);
+      if (!tool) return;
+
+      try {
+        const newName = getDuplicateToolName(tool.name, tools);
+        let newTool = await api.createToolConfig({
+          name: newName,
+          tool_type: tool.tool_type,
+          description: tool.description || undefined,
+          connection_config: tool.connection_config,
+          max_results: tool.max_results,
+          timeout_max_seconds: tool.timeout_max_seconds,
+          allow_write: tool.allow_write,
+          group_id: tool.group_id,
+        });
+
+        if (newTool.enabled !== tool.enabled) {
+          newTool = await api.updateToolConfig(newTool.id, { enabled: tool.enabled });
+        }
+
+        const toolIdx = tools.findIndex((candidate) => candidate.id === toolId);
+        if (toolIdx >= 0) {
+          const nextTools = [...tools];
+          nextTools.splice(toolIdx + 1, 0, newTool);
+          setTools(nextTools);
+          await api.reorderTools({ tool_ids: nextTools.map((candidate) => candidate.id) });
+        } else {
+          setTools((current) => [...current, newTool]);
+          await api.reorderTools({
+            tool_ids: [...tools.map((candidate) => candidate.id), newTool.id],
+          });
+        }
+
+        toast.success('Tool duplicated');
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to duplicate tool');
+        await loadTools();
+      }
+    },
+    [tools, toast, loadTools],
+  );
 
   const handleTestTool = async (toolId: string) => {
     try {
@@ -1159,7 +1240,11 @@ export function ToolsPanel({
   useEffect(() => {
     if (!selectedGroupId || hasBlockingModalOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (groupContentRef.current && !groupContentRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (toolContextMenuRef.current?.contains(target)) {
+        return;
+      }
+      if (groupContentRef.current && !groupContentRef.current.contains(target)) {
         setSelectedGroupId(null);
       }
     };
@@ -1196,6 +1281,33 @@ export function ToolsPanel({
       setSelectedGroupId(null);
     }
   }, [selectedGroupId]);
+
+  // Close the tool-card context menu when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!toolContextMenu) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        toolContextMenuRef.current &&
+        !toolContextMenuRef.current.contains(event.target as Node)
+      ) {
+        setToolContextMenu(null);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setToolContextMenu(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [toolContextMenu]);
 
   // ---------------------------------------------------------------------------
   // Mount source handlers
@@ -1859,22 +1971,33 @@ export function ToolsPanel({
     const isBeingDragged = dragToolId === tool.id;
     const isGroupTarget = dragGroupTargetId === tool.id;
     return (
-      <div
+      <Popover
         key={tool.id}
+        content="Right-click for tool actions."
+        position="bottom"
+        trigger="hover"
+        openDelayMs={500}
+        followCursor={true}
+        disabled={showFooterActions}
+        ignoreSelector=".tool-badge, .tool-card-heartbeat, .editable-field-wrapper, .inline-edit-btn, button, input, textarea, a"
+        className={`tool-card-drag-wrap${isBeingDragged ? ' dragging' : ''}${isGroupTarget ? ' group-target' : ''}`}
         draggable
         onDragStart={(e) => handleDragStart(e, tool.id)}
         onDragEnd={handleDragEnd}
         onDragOver={(e) => handleToolCardDragOver(e, tool.id)}
         onDragLeave={handleToolCardDragLeave}
         onDrop={(e) => handleToolCardDrop(e, tool.id)}
-        className={`tool-card-drag-wrap${isBeingDragged ? ' dragging' : ''}${isGroupTarget ? ' group-target' : ''}`}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setToolContextMenu({ toolId: tool.id, x: e.clientX, y: e.clientY });
+        }}
       >
         <ToolCard
           tool={tool}
           heartbeat={heartbeats[tool.id] || null}
+          showFooterActions={showFooterActions}
           onEdit={handleEditTool}
           onDelete={handleDeleteTool}
-          onToggle={handleToggleTool}
           onTest={handleTestTool}
           testing={testingToolId === tool.id}
           onPdmReindex={handlePdmReindex}
@@ -1884,9 +2007,8 @@ export function ToolsPanel({
           activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
           schemaStats={schemaStats[tool.id] || null}
           onInlineUpdate={handleInlineUpdate}
-          onToggleWrite={handleToggleWrite}
         />
-      </div>
+      </Popover>
     );
   };
 
@@ -1947,6 +2069,95 @@ export function ToolsPanel({
         ) : (
           <>
             <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
+
+            {toolContextMenu &&
+              (() => {
+                const contextTool = tools.find((t) => t.id === toolContextMenu.toolId);
+                if (!contextTool) return null;
+                const contextHasSchemaIndexing = hasSchemaIndexingEnabled(contextTool);
+                const closeAnd = (fn: () => void) => {
+                  setToolContextMenu(null);
+                  fn();
+                };
+                return (
+                  <ContextMenu
+                    ref={toolContextMenuRef}
+                    items={[
+                      {
+                        label: contextTool.enabled ? 'Enabled' : 'Disabled',
+                        type: 'toggle',
+                        checked: contextTool.enabled,
+                        onSelect: () => {
+                          handleToggleTool(contextTool.id, !contextTool.enabled);
+                        },
+                      },
+                      {
+                        label: contextTool.allow_write ? 'Write Access' : 'Read Only',
+                        type: 'toggle',
+                        checked: contextTool.allow_write,
+                        onSelect: () => {
+                          handleToggleWrite(contextTool.id, !contextTool.allow_write);
+                        },
+                      },
+                      {
+                        label: 'Test',
+                        icon: 'play',
+                        onSelect: () => closeAnd(() => handleTestTool(contextTool.id)),
+                        disabled: testingToolId === contextTool.id,
+                      },
+                      {
+                        label: 'Edit',
+                        icon: 'pencil',
+                        onSelect: () => closeAnd(() => handleEditTool(contextTool)),
+                      },
+                      ...(contextTool.tool_type === 'solidworks_pdm'
+                        ? [
+                            {
+                              label: 'Index',
+                              icon: 'folder-search' as const,
+                              onSelect: () =>
+                                closeAnd(() => handlePdmReindex(contextTool.id, false)),
+                              disabled: pdmIndexingToolId === contextTool.id,
+                            },
+                            {
+                              label: 'Full Re-index',
+                              icon: 'rotate-ccw' as const,
+                              onSelect: () =>
+                                closeAnd(() => handlePdmReindex(contextTool.id, true)),
+                              disabled: pdmIndexingToolId === contextTool.id,
+                            },
+                          ]
+                        : []),
+                      ...(contextHasSchemaIndexing
+                        ? [
+                            {
+                              label: 'Re-index Schema',
+                              icon: 'refresh' as const,
+                              onSelect: () =>
+                                closeAnd(() => handleSchemaReindex(contextTool.id, true)),
+                              disabled: schemaIndexingToolId === contextTool.id,
+                            },
+                          ]
+                        : []),
+                      {
+                        label: 'Duplicate',
+                        icon: 'copy',
+                        onSelect: () => handleDuplicateTool(contextTool.id),
+                      },
+                      {
+                        label: 'Delete',
+                        icon: 'trash',
+                        onSelect: () => {
+                          setToolContextMenu(null);
+                          setDeleteConfirmTool(contextTool);
+                        },
+                      },
+                    ]}
+                    x={toolContextMenu.x}
+                    y={toolContextMenu.y}
+                  />
+                );
+              })()}
 
             <p className="fieldset-help">
               Configure connections to databases, shells, and other tools that the AI can use during
@@ -2503,6 +2714,43 @@ export function ToolsPanel({
               </button>
               <button className="btn btn-danger" onClick={() => void handleConfirmWriteEnable()}>
                 Enable Write Access
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Tool Confirmation Modal */}
+      {deleteConfirmTool && (
+        <div className="modal-overlay" onClick={() => setDeleteConfirmTool(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Delete Tool</h3>
+              <button className="modal-close" onClick={() => setDeleteConfirmTool(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                Are you sure you want to delete <strong>{deleteConfirmTool.name}</strong>?
+              </p>
+              <p className="field-help" style={{ marginTop: 8 }}>
+                This will permanently remove the tool configuration. This action cannot be undone.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setDeleteConfirmTool(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => {
+                  const toolId = deleteConfirmTool.id;
+                  setDeleteConfirmTool(null);
+                  void handleDeleteTool(toolId);
+                }}
+              >
+                Delete Tool
               </button>
             </div>
           </div>

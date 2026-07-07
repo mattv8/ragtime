@@ -18,6 +18,13 @@ import {
   AlertTriangle,
   Circle,
   RefreshCw,
+  Play,
+  Copy,
+  ShieldCheck,
+  ShieldOff,
+  FolderSearch,
+  RotateCcw,
+  Activity,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -40,7 +47,14 @@ export type IconType =
   | 'alert-circle'
   | 'alert-triangle'
   | 'circle'
-  | 'refresh';
+  | 'refresh'
+  | 'play'
+  | 'copy'
+  | 'shield-check'
+  | 'shield-off'
+  | 'folder-search'
+  | 'rotate-ccw'
+  | 'activity';
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
@@ -62,6 +76,13 @@ const iconMap: Record<IconType, LucideIcon> = {
   'alert-triangle': AlertTriangle,
   circle: Circle,
   refresh: RefreshCw,
+  play: Play,
+  copy: Copy,
+  'shield-check': ShieldCheck,
+  'shield-off': ShieldOff,
+  'folder-search': FolderSearch,
+  'rotate-ccw': RotateCcw,
+  activity: Activity,
 };
 
 interface IconProps {

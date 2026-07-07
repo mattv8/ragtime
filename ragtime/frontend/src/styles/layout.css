@@ -1018,6 +1018,7 @@ legend {
   border-radius: var(--radius-lg);
   padding: var(--space-md);
   transition: all var(--transition-fast);
+  height: 100%;
 }
 
 .tool-card:hover {
@@ -1068,6 +1069,33 @@ legend {
   align-items: center;
   gap: var(--space-sm);
   flex-shrink: 0;
+  margin-left: auto;
+}
+
+.tool-card-badges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.tool-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.tool-badge.badge-warning {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+  border-color: var(--color-warning-border);
 }
 
 .tool-card-title {
@@ -1136,37 +1164,47 @@ legend {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   cursor: default;
+}
+
+.heartbeat-indicator .status-dot {
+  display: block;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
   transition: all var(--transition-slow);
 }
 
-.heartbeat-indicator.alive {
-  color: var(--color-success);
-  animation: heartbeat-pulse 2s ease-in-out infinite;
+.heartbeat-indicator.alive .status-dot {
+  background-color: var(--color-success);
+  --pulse-color: var(--color-success-border);
+  animation: dot-pulse 2s infinite cubic-bezier(0.66, 0, 0, 1);
 }
 
-.heartbeat-indicator.dead {
-  color: var(--color-error);
-}
-.heartbeat-indicator.checking {
-  color: var(--color-text-muted);
-  animation: spin 1s linear infinite;
-}
-.heartbeat-indicator.disabled {
-  color: var(--color-text-muted);
+.heartbeat-indicator.dead .status-dot {
+  background-color: var(--color-error);
+  --pulse-color: var(--color-error-border);
+  animation: dot-pulse 2s infinite cubic-bezier(0.66, 0, 0, 1);
 }
 
-@keyframes heartbeat-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
+.heartbeat-indicator.checking .status-dot {
+  background-color: var(--color-warning);
+  --pulse-color: var(--color-warning-border);
+  animation: dot-pulse 2s infinite cubic-bezier(0.66, 0, 0, 1);
+}
+
+.heartbeat-indicator.disabled .status-dot {
+  background-color: var(--color-text-muted);
+}
+
+@keyframes dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--pulse-color);
   }
-  50% {
-    opacity: 0.6;
-    transform: scale(1.1);
+  100% {
+    box-shadow: 0 0 0 9px transparent;
   }
 }
 
@@ -1341,6 +1379,7 @@ legend {
 }
 
 .description-wrapper {
+  align-items: flex-start;
   margin-bottom: var(--space-sm);
   margin-top: -7px;
   margin-left: -11px;
@@ -1348,6 +1387,10 @@ legend {
   padding: 6px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+}
+
+.description-wrapper .inline-edit-btn {
+  margin-top: 2px;
 }
 
 .description-wrapper .tool-card-description {

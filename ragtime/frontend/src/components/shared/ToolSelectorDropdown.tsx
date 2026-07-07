@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Settings, ChevronRight, X, Globe2 } from 'lucide-react';
+import { ContextMenu } from './ContextMenu';
 import {
   getEffectiveUserSpaceToolIdSet,
   getSelectableUserSpaceToolIds,
@@ -167,22 +168,6 @@ export function ToolSelectorDropdown({
     const group = groups.find((candidate) => candidate.id === contextMenu.id);
     return group && getToolGroupMenuItems ? getToolGroupMenuItems(group) : [];
   }, [availableTools, contextMenu, getToolGroupMenuItems, getToolMenuItems, groups]);
-
-  const contextMenuPosition = useMemo(() => {
-    if (!contextMenu) return null;
-    const PADDING = 8;
-    const width = 240;
-    const height = contextMenuItems.length * 52 + 8;
-    let x = contextMenu.x + PADDING;
-    let y = contextMenu.y + PADDING;
-    if (x + width > window.innerWidth - PADDING) {
-      x = Math.max(PADDING, contextMenu.x - width - PADDING);
-    }
-    if (y + height > window.innerHeight - PADDING) {
-      y = Math.max(PADDING, window.innerHeight - height - PADDING);
-    }
-    return { x, y, width };
-  }, [contextMenu, contextMenuItems.length]);
 
   // Compute fixed position so the dropdown draws over iframes without layout shift
   const computeDropdownPosition = useCallback(() => {
@@ -649,63 +634,20 @@ export function ToolSelectorDropdown({
           </div>,
           document.body,
         )}
-      {contextMenu &&
-        contextMenuPosition &&
-        contextMenuItems.length > 0 &&
-        createPortal(
-          <div
-            ref={contextMenuRef}
-            className="userspace-tool-context-menu"
-            style={{
-              position: 'fixed',
-              top: contextMenuPosition.y,
-              left: contextMenuPosition.x,
-              width: contextMenuPosition.width,
-              zIndex: 9001,
-            }}
-          >
-            {contextMenuItems.map((item, index) => (
-              <div
-                key={index}
-                className={`userspace-tool-context-menu-item ${item.disabled ? 'disabled' : ''}`}
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (!item.disabled) item.onChange();
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault();
-                    if (!item.disabled) item.onChange();
-                  }
-                }}
-                role="button"
-                tabIndex={item.disabled ? -1 : 0}
-                aria-checked={item.checked}
-              >
-                <input
-                  type="checkbox"
-                  checked={item.checked}
-                  disabled={item.disabled}
-                  onChange={(event) => {
-                    event.stopPropagation();
-                    if (!item.disabled) item.onChange();
-                  }}
-                  onClick={(event) => event.stopPropagation()}
-                />
-                <div className="userspace-tool-context-menu-text">
-                  <span className="userspace-tool-context-menu-label">{item.label}</span>
-                  {item.description && (
-                    <span className="userspace-tool-context-menu-description">
-                      {item.description}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>,
-          document.body,
-        )}
+      {contextMenu && contextMenuItems.length > 0 && (
+        <ContextMenu
+          ref={contextMenuRef}
+          items={contextMenuItems.map((item) => ({
+            label: item.label,
+            checked: item.checked,
+            disabled: item.disabled,
+            description: item.description,
+            onSelect: item.onChange,
+          }))}
+          x={contextMenu.x}
+          y={contextMenu.y}
+        />
+      )}
     </div>
   );
 }

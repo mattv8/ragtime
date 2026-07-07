@@ -2004,6 +2004,7 @@ export function SettingsPanel({
         server_name: data.server_name,
         authenticated_webgl_background_enabled: data.authenticated_webgl_background_enabled ?? true,
         openapi_model_prefix_enabled: data.openapi_model_prefix_enabled ?? true,
+        show_tool_card_footer_actions: data.show_tool_card_footer_actions ?? false,
         // Embedding settings
         ...getEmbeddingSettingsFormData(data),
         // LLM settings
@@ -2546,6 +2547,10 @@ export function SettingsPanel({
           true,
         openapi_model_prefix_enabled:
           formData.openapi_model_prefix_enabled ?? settings?.openapi_model_prefix_enabled ?? true,
+        show_tool_card_footer_actions:
+          formData.show_tool_card_footer_actions ??
+          settings?.show_tool_card_footer_actions ??
+          false,
       };
       const updated = await api.updateSettings(dataToSave);
       setSettings(updated);
@@ -2556,6 +2561,7 @@ export function SettingsPanel({
         authenticated_webgl_background_enabled:
           updated.authenticated_webgl_background_enabled ?? true,
         openapi_model_prefix_enabled: updated.openapi_model_prefix_enabled ?? true,
+        show_tool_card_footer_actions: updated.show_tool_card_footer_actions ?? false,
       }));
       // Show restart guidance in the dismissable security banner.
       sessionStorage.setItem('ragtime_branding_restart_notice', 'true');
@@ -4061,6 +4067,36 @@ export function SettingsPanel({
                   </label>
                   <p className="field-help">
                     Add the server name before models listed by the OpenAI-compatible API.
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label
+                    className="chat-toggle-control"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
+                  >
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={
+                          formData.show_tool_card_footer_actions ??
+                          settings?.show_tool_card_footer_actions ??
+                          false
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            show_tool_card_footer_actions: e.target.checked,
+                          })
+                        }
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                    <span>Show Tool Card Action Buttons</span>
+                  </label>
+                  <p className="field-help">
+                    Display action buttons directly on tool cards. When disabled, actions stay in
+                    the right-click menu.
                   </p>
                 </div>
               </div>

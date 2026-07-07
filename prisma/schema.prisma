@@ -140,6 +140,7 @@ model AppSettings {
   defaultThemePack                    String  @default("default") @map("default_theme_pack") // Instance-wide default app theme pack for users without a personal choice
   authenticatedWebglBackgroundEnabled Boolean @default(true) @map("authenticated_webgl_background_enabled")
   openapiModelPrefixEnabled           Boolean @default(true) @map("openapi_model_prefix_enabled")
+  showToolCardFooterActions           Boolean @default(false) @map("show_tool_card_footer_actions")
 
   // Embedding Configuration (for FAISS indexing)
   embeddingProvider   String  @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"

@@ -55,6 +55,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SEARCH_USE_MMR,
     DEFAULT_SEQUENTIAL_INDEX_LOADING,
     DEFAULT_SERVER_NAME,
+    DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
     DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
@@ -581,6 +582,10 @@ class AppSettings(BaseModel):
     openapi_model_prefix_enabled: bool = Field(
         default=DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
         description="If True, prefix OpenAI-compatible API model names with the server name.",
+    )
+    show_tool_card_footer_actions: bool = Field(
+        default=DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
+        description="If True, show action buttons on tool cards instead of only in the right-click menu.",
     )
 
     # Embedding Configuration (for FAISS indexing)
@@ -1310,6 +1315,7 @@ class UpdateSettingsRequest(BaseModel):
     default_theme_pack: Optional[str] = None
     authenticated_webgl_background_enabled: Optional[bool] = None
     openapi_model_prefix_enabled: Optional[bool] = None
+    show_tool_card_footer_actions: Optional[bool] = None
     # Embedding settings
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None

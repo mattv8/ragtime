@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,9 +9,13 @@ const apiMock = vi.hoisted(() => ({
   listToolConfigs: vi.fn(),
   listToolGroups: vi.fn(),
   listUserspaceMountSources: vi.fn(),
+  getSettings: vi.fn(),
   getToolHeartbeats: vi.fn(),
   subscribeToolHealthEvents: vi.fn(),
   updateToolConfig: vi.fn(),
+  deleteToolConfig: vi.fn(),
+  createToolConfig: vi.fn(),
+  reorderTools: vi.fn(),
 }));
 
 const toastMock = {
@@ -31,7 +34,20 @@ const toolFilterState = {
 vi.mock('@/api', () => ({ api: apiMock }));
 vi.mock('./ToolWizard', () => ({ ToolWizard: () => null }));
 vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
-vi.mock('./Popover', () => ({ Popover: ({ children }: { children: ReactNode }) => children }));
+vi.mock('./Popover', () => ({
+  Popover: ({
+    children,
+    content,
+    position,
+    trigger,
+    openDelayMs,
+    followCursor,
+    show,
+    disabled,
+    ignoreSelector,
+    ...rest
+  }: any) => <div {...rest}>{children}</div>,
+}));
 vi.mock('./AnimatedCreateButton', () => ({
   AnimatedCreateButton: ({ onClick, label }: { onClick: () => void; label: string }) => (
     <button type="button" onClick={onClick}>
@@ -125,6 +141,9 @@ describe('ToolsPanel', () => {
     apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool]);
     apiMock.listToolGroups.mockResolvedValue([toolGroup]);
     apiMock.listUserspaceMountSources.mockResolvedValue([]);
+    apiMock.getSettings.mockResolvedValue({
+      settings: { show_tool_card_footer_actions: false },
+    });
     apiMock.getToolHeartbeats.mockResolvedValue({ statuses: {} });
     apiMock.subscribeToolHealthEvents.mockReturnValue({
       addEventListener: vi.fn(),
@@ -132,6 +151,14 @@ describe('ToolsPanel', () => {
       onmessage: null,
     });
     apiMock.updateToolConfig.mockResolvedValue({ ...groupedTool, allow_write: true });
+    apiMock.deleteToolConfig.mockResolvedValue(undefined);
+    apiMock.createToolConfig.mockResolvedValue({
+      ...ungroupedTool,
+      id: 'tool-ungrouped-copy',
+      name: 'Ungrouped Tool Copy',
+      sort_order: 300,
+    });
+    apiMock.reorderTools.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -154,9 +181,11 @@ describe('ToolsPanel', () => {
       expect(screen.queryByText('Ungrouped Tool')).toBeNull();
     });
 
-    await user.click(screen.getByLabelText('Read Only'));
+    fireEvent.contextMenu(screen.getByText('Grouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /Read Only/ }));
 
     await screen.findByRole('heading', { name: 'Enable Write Access' });
+    expect(screen.queryByRole('button', { name: /Read Only/ })).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
@@ -185,6 +214,203 @@ describe('ToolsPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('Ungrouped Tool')).toBeTruthy();
       expect(screen.queryByText('Grouped Tool')).toBeNull();
+    });
+  });
+
+  it('duplicates a tool from the right-click card menu and keeps the copy after the original', async () => {
+    const user = userEvent.setup();
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+    await waitFor(() => {
+      expect(apiMock.createToolConfig).toHaveBeenCalledWith({
+        name: 'Ungrouped Tool Copy',
+        tool_type: 'ssh_shell',
+        description: 'Ungrouped tool',
+        connection_config: { host: 'example.org', user: 'deploy', port: 22 },
+        max_results: 10,
+        timeout_max_seconds: 30,
+        allow_write: false,
+        group_id: null,
+      });
+    });
+
+    expect(apiMock.reorderTools).toHaveBeenCalledWith({
+      tool_ids: ['tool-grouped', 'tool-ungrouped', 'tool-ungrouped-copy'],
+    });
+    expect(await screen.findByText('Ungrouped Tool Copy')).toBeTruthy();
+    expect(toastMock.success).toHaveBeenCalledWith('Tool duplicated');
+  });
+
+  it('hides card footer actions by default and exposes them in the right-click menu', async () => {
+    const user = userEvent.setup();
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).toBeNull();
+    expect(screen.queryAllByRole('button', { name: /^Delete$/ })).toHaveLength(1);
+
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+
+    expect(await screen.findByRole('button', { name: /^Test$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Duplicate$/ })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^Delete$/ })).toHaveLength(2);
+
+    await user.click(screen.getByRole('button', { name: /^Edit$/ }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /^Test$/ })).toBeNull();
+    });
+  });
+
+  it('shows card footer actions when the global legacy setting is enabled', async () => {
+    apiMock.getSettings.mockResolvedValue({
+      settings: { show_tool_card_footer_actions: true },
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    expect(screen.getByRole('button', { name: /^Test$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^Delete$/ })).toHaveLength(2);
+  });
+
+  it('shows delete confirmation modal before deleting a tool', async () => {
+    const user = userEvent.setup();
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await screen.findByRole('button', { name: /Duplicate/ });
+    const deleteButtons = screen.getAllByRole('button', { name: /Delete/ });
+    await user.click(deleteButtons[deleteButtons.length - 1]);
+
+    await screen.findByRole('heading', { name: 'Delete Tool' });
+    expect(apiMock.deleteToolConfig).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Delete Tool' }));
+
+    await waitFor(() => {
+      expect(apiMock.deleteToolConfig).toHaveBeenCalledWith('tool-ungrouped');
+    });
+  });
+
+  it('shows write badge on the card when write access is enabled', async () => {
+    const writeTool: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-write',
+      name: 'Write Tool',
+      allow_write: true,
+      connection_config: { host: 'example.org', user: 'deploy', port: 22 },
+    };
+    apiMock.listToolConfigs.mockResolvedValue([writeTool]);
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Write Tool');
+    expect(screen.getByText('Write')).toBeTruthy();
+  });
+
+  it('shows / in the working directory badge when unset', async () => {
+    const noWdTool: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-nowd',
+      name: 'No Work Dir Tool',
+      connection_config: { host: 'example.org', user: 'deploy', port: 22 },
+    };
+    apiMock.listToolConfigs.mockResolvedValue([noWdTool]);
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('No Work Dir Tool');
+    expect(screen.getByText('/')).toBeTruthy();
+  });
+
+  it('uses the next copy suffix when duplicating a tool with an existing copy', async () => {
+    const user = userEvent.setup();
+    const existingCopy: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-existing-copy',
+      name: 'Ungrouped Tool Copy',
+      sort_order: 300,
+    };
+    apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool, existingCopy]);
+    apiMock.createToolConfig.mockResolvedValue({
+      ...ungroupedTool,
+      id: 'tool-ungrouped-copy-2',
+      name: 'Ungrouped Tool Copy 2',
+      sort_order: 400,
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+    await waitFor(() => {
+      expect(apiMock.createToolConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Ungrouped Tool Copy 2' }),
+      );
+    });
+    expect(apiMock.reorderTools).toHaveBeenCalledWith({
+      tool_ids: ['tool-grouped', 'tool-ungrouped', 'tool-ungrouped-copy-2', 'tool-existing-copy'],
+    });
+  });
+
+  it('preserves disabled state after duplicating a disabled tool', async () => {
+    const user = userEvent.setup();
+    const disabledTool: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-disabled',
+      name: 'Disabled Tool',
+      enabled: false,
+      sort_order: 300,
+    };
+    apiMock.listToolConfigs.mockResolvedValue([groupedTool, disabledTool]);
+    apiMock.createToolConfig.mockResolvedValue({
+      ...disabledTool,
+      id: 'tool-disabled-copy',
+      name: 'Disabled Tool Copy',
+      enabled: true,
+      sort_order: 400,
+    });
+    apiMock.updateToolConfig.mockResolvedValue({
+      ...disabledTool,
+      id: 'tool-disabled-copy',
+      name: 'Disabled Tool Copy',
+      enabled: false,
+      sort_order: 400,
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Disabled Tool');
+
+    fireEvent.contextMenu(screen.getByText('Disabled Tool'));
+    await user.click(await screen.findByRole('button', { name: /Duplicate/ }));
+
+    await waitFor(() => {
+      expect(apiMock.updateToolConfig).toHaveBeenCalledWith('tool-disabled-copy', {
+        enabled: false,
+      });
+    });
+    expect(apiMock.reorderTools).toHaveBeenCalledWith({
+      tool_ids: ['tool-grouped', 'tool-disabled', 'tool-disabled-copy'],
     });
   });
 });

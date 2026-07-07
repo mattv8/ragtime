@@ -65,6 +65,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SEARCH_USE_MMR,
     DEFAULT_SEQUENTIAL_INDEX_LOADING,
     DEFAULT_SERVER_NAME,
+    DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
     DEFAULT_TOOL_OUTPUT_MODE,
@@ -1122,6 +1123,11 @@ class IndexerRepository:
                 "openapiModelPrefixEnabled",
                 DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
             ),
+            show_tool_card_footer_actions=getattr(
+                settings,
+                "showToolCardFooterActions",
+                DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
+            ),
             # Embedding settings
             embedding_provider=getattr(settings, "embeddingProvider", DEFAULT_EMBEDDING_PROVIDER),
             embedding_model=getattr(settings, "embeddingModel", DEFAULT_EMBEDDING_MODEL),
@@ -1454,6 +1460,7 @@ class IndexerRepository:
             "default_theme_pack": "defaultThemePack",
             "authenticated_webgl_background_enabled": "authenticatedWebglBackgroundEnabled",
             "openapi_model_prefix_enabled": "openapiModelPrefixEnabled",
+            "show_tool_card_footer_actions": "showToolCardFooterActions",
             # Embedding settings
             "embedding_provider": "embeddingProvider",
             "embedding_model": "embeddingModel",

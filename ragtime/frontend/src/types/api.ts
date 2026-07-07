@@ -683,6 +683,7 @@ export interface AppSettings {
   default_theme_pack: string;
   authenticated_webgl_background_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
+  show_tool_card_footer_actions: boolean;
   // Embedding Configuration (for FAISS indexing)
   embedding_provider:
     | 'ollama'
@@ -839,6 +840,7 @@ export interface UpdateSettingsRequest {
   default_theme_pack?: string;
   authenticated_webgl_background_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
+  show_tool_card_footer_actions?: boolean;
   // Embedding settings
   embedding_provider?:
     | 'ollama'
