@@ -639,6 +639,7 @@ export function ToolsPanel({
   const groupContentRef = useRef<HTMLDivElement>(null);
   const toolFilter = useUrlSearchFilterState();
   const toolFilterInputRef = useRef<HTMLInputElement | null>(null);
+  const hasBlockingModalOpen = Boolean(disableConfirmation || writeConfirmTool);
 
   // Group the tools for display — include ALL groups (even empty) as drop targets
   const { allGroups, ungroupedTools } = useMemo(() => {
@@ -1156,7 +1157,7 @@ export function ToolsPanel({
 
   // Click outside the group content area clears the selected group
   useEffect(() => {
-    if (!selectedGroupId) return;
+    if (!selectedGroupId || hasBlockingModalOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (groupContentRef.current && !groupContentRef.current.contains(e.target as Node)) {
         setSelectedGroupId(null);
@@ -1164,7 +1165,7 @@ export function ToolsPanel({
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [selectedGroupId]);
+  }, [selectedGroupId, hasBlockingModalOpen]);
 
   const handleGroupTabsClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import fs from 'fs';
@@ -25,6 +25,9 @@ export default defineConfig({
   base: '/',
   appType: 'spa',
   cacheDir: resolve(__dirname, '.vite'),
+  test: {
+    environment: 'jsdom',
+  },
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
