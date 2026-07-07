@@ -7,8 +7,11 @@ from ragtime.config.settings import Settings
 
 
 def _settings(env: dict[str, str]) -> Settings:
-    with mock.patch.dict(os.environ, {"ENCRYPTION_KEY": "test-encryption-key", **env}, clear=True):
-        return Settings(_env_file=None)
+    with (
+        mock.patch.dict(os.environ, {"ENCRYPTION_KEY": "test-encryption-key", **env}, clear=True),
+        mock.patch.dict(Settings.model_config, {"env_file": None}),
+    ):
+        return Settings()
 
 
 class RuntimeAuthTokenSettingsTests(unittest.TestCase):
@@ -62,16 +65,17 @@ class RuntimeAuthTokenWarningTests(unittest.TestCase):
 
 
 class RuntimeAuthResolverTests(unittest.TestCase):
-    def _reload_runtime_auth(self, env: dict[str, str]):
+    def _reload_runtime_auth(self, env: dict[str, str]) -> str:
         try:
             import runtime.auth as runtime_auth
         except ModuleNotFoundError as exc:
             self.skipTest(f"runtime package is not available in this test environment: {exc}")
         with mock.patch.dict(os.environ, env, clear=True):
-            return importlib.reload(runtime_auth)
+            runtime_auth = importlib.reload(runtime_auth)
+            return runtime_auth.get_runtime_auth_token()
 
     def test_shared_runtime_auth_token_is_used_directly(self) -> None:
-        runtime_auth = self._reload_runtime_auth(
+        token = self._reload_runtime_auth(
             {
                 "RUNTIME_AUTH_TOKEN": "shared-token",
                 "RUNTIME_MANAGER_AUTH_TOKEN": "runtime-manager-token",
@@ -79,14 +83,14 @@ class RuntimeAuthResolverTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(runtime_auth.get_runtime_auth_token(), "shared-token")
+        self.assertEqual(token, "shared-token")
 
     def test_legacy_manager_token_bridges_when_shared_token_unset(self) -> None:
-        runtime_auth = self._reload_runtime_auth({"RUNTIME_MANAGER_AUTH_TOKEN": "legacy-manager-token"})
+        token = self._reload_runtime_auth({"RUNTIME_MANAGER_AUTH_TOKEN": "legacy-manager-token"})
 
-        self.assertEqual(runtime_auth.get_runtime_auth_token(), "legacy-manager-token")
+        self.assertEqual(token, "legacy-manager-token")
 
     def test_token_is_empty_when_nothing_is_configured(self) -> None:
-        runtime_auth = self._reload_runtime_auth({})
+        token = self._reload_runtime_auth({})
 
-        self.assertEqual(runtime_auth.get_runtime_auth_token(), "")
+        self.assertEqual(token, "")

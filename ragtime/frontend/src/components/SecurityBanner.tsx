@@ -36,6 +36,58 @@ interface NoticeDefinition extends NoticeItem {
   visible: boolean;
 }
 
+function readDismissedNoticeIds(): string[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const storedDismissedNotices = window.sessionStorage.getItem(DISMISSED_NOTICES_KEY);
+    if (storedDismissedNotices) {
+      const parsed = JSON.parse(storedDismissedNotices);
+      return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string') : [];
+    }
+
+    // Return the migrated set synchronously to avoid a first-render flicker,
+    // but do not write to storage here; writes happen in a mount effect.
+    if (window.sessionStorage.getItem(DISMISS_KEY) === 'true') {
+      return [NOTICE_API_KEY, NOTICE_CORS, NOTICE_HTTP];
+    }
+  } catch {
+    // Treat unavailable or invalid session storage as no dismissed notices.
+  }
+
+  return [];
+}
+
+function readBrandingNoticePending(): boolean {
+  if (typeof window === 'undefined') return false;
+
+  try {
+    return window.sessionStorage.getItem(BRANDING_NOTICE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeDismissedNoticeIds(noticeIds: string[]): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.sessionStorage.setItem(DISMISSED_NOTICES_KEY, JSON.stringify(noticeIds));
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
+function clearBrandingNoticePending(): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.sessionStorage.removeItem(BRANDING_NOTICE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+
 interface NoticeBannerProps {
   notice: NoticeItem;
   onDismiss: (noticeId: string) => void;
@@ -78,43 +130,42 @@ export function SecurityBanner({
   hidden,
   onNavigateToSettings,
 }: SecurityBannerProps) {
-  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>([]);
-  const [showBrandingNotice, setShowBrandingNotice] = useState(false);
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useState<string[]>(readDismissedNoticeIds);
+  const [showBrandingNotice, setShowBrandingNotice] = useState(readBrandingNoticePending);
 
-  // Check sessionStorage on mount
+  // Persist legacy migration to storage on mount so it happens outside render.
   useEffect(() => {
-    const storedDismissedNotices = sessionStorage.getItem(DISMISSED_NOTICES_KEY);
-    if (storedDismissedNotices) {
-      try {
-        const parsed = JSON.parse(storedDismissedNotices);
-        if (Array.isArray(parsed)) {
-          setDismissedNoticeIds(parsed.filter((n): n is string => typeof n === 'string'));
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.sessionStorage.getItem(DISMISS_KEY) === 'true') {
+        if (window.sessionStorage.getItem(DISMISSED_NOTICES_KEY) === null) {
+          window.sessionStorage.setItem(
+            DISMISSED_NOTICES_KEY,
+            JSON.stringify([NOTICE_API_KEY, NOTICE_CORS, NOTICE_HTTP]),
+          );
         }
-      } catch {
-        // Ignore invalid session storage payload.
+        window.sessionStorage.removeItem(DISMISS_KEY);
       }
-    } else if (sessionStorage.getItem(DISMISS_KEY) === 'true') {
-      // Migrate legacy one-shot dismissal key without suppressing branding notice.
-      const migrated = [NOTICE_API_KEY, NOTICE_CORS, NOTICE_HTTP];
-      setDismissedNoticeIds(migrated);
-      sessionStorage.setItem(DISMISSED_NOTICES_KEY, JSON.stringify(migrated));
-      sessionStorage.removeItem(DISMISS_KEY);
+    } catch {
+      // Ignore unavailable storage.
     }
+  }, []);
 
-    const brandingNoticePending = sessionStorage.getItem(BRANDING_NOTICE_KEY) === 'true';
-    setShowBrandingNotice(brandingNoticePending);
-
+  // Keep branding notice state in sync after Settings changes it at runtime.
+  useEffect(() => {
     const handleBrandingNoticeUpdate = () => {
-      const brandingNoticePendingNow = sessionStorage.getItem(BRANDING_NOTICE_KEY) === 'true';
+      const brandingNoticePendingNow = readBrandingNoticePending();
       setShowBrandingNotice(brandingNoticePendingNow);
       if (brandingNoticePendingNow) {
+        const storedDismissed = readDismissedNoticeIds();
+        if (storedDismissed.includes(NOTICE_BRANDING)) {
+          writeDismissedNoticeIds(storedDismissed.filter((id) => id !== NOTICE_BRANDING));
+        }
         setDismissedNoticeIds((prev) => {
           if (!prev.includes(NOTICE_BRANDING)) {
             return prev;
           }
-          const next = prev.filter((id) => id !== NOTICE_BRANDING);
-          sessionStorage.setItem(DISMISSED_NOTICES_KEY, JSON.stringify(next));
-          return next;
+          return prev.filter((id) => id !== NOTICE_BRANDING);
         });
       }
     };
@@ -205,10 +256,10 @@ export function SecurityBanner({
 
     const nextDismissed = [...dismissedNoticeIds, noticeId];
     setDismissedNoticeIds(nextDismissed);
-    sessionStorage.setItem(DISMISSED_NOTICES_KEY, JSON.stringify(nextDismissed));
+    writeDismissedNoticeIds(nextDismissed);
 
     if (noticeId === NOTICE_BRANDING) {
-      sessionStorage.removeItem(BRANDING_NOTICE_KEY);
+      clearBrandingNoticePending();
       setShowBrandingNotice(false);
     }
   };

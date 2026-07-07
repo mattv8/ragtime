@@ -14939,7 +14939,8 @@ async def get_conversation_tools(
         option_rows = await db.conversationtooloption.find_many(where={"conversationId": conversation_id})
         tool_options: dict[str, dict[str, bool]] = {}
         for row in option_rows:
-            options = _load_conversation_tool_options(row.options)
+            raw_options = row.options.data if isinstance(row.options, Json) else row.options
+            options = _load_conversation_tool_options(cast(dict[str, Any] | None, raw_options))
             if options:
                 tool_options[row.toolConfigId] = options
 

@@ -48,6 +48,7 @@ from langchain_openai.chat_models.base import (
     _get_last_messages,
 )
 from PIL import Image, ImageOps, UnidentifiedImageError
+from prisma import Json
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model, field_validator
 
 from ragtime.chat_runtime import chat_runtime_service
@@ -13440,7 +13441,8 @@ class RAGComponents:
 
         options_by_id: dict[str, dict[str, bool]] = {}
         for row in option_rows:
-            opts = load_conversation_tool_options(row.options)
+            raw_options = row.options.data if isinstance(row.options, Json) else row.options
+            opts = load_conversation_tool_options(cast(dict[str, Any] | None, raw_options))
             if opts:
                 options_by_id[row.toolConfigId] = opts
 

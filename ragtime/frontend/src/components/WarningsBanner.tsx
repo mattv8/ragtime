@@ -15,6 +15,17 @@ interface WarningsBannerProps {
   compact?: boolean;
 }
 
+function readDismissed(dismissKey: string | undefined, persistDismiss: boolean): boolean {
+  if (!dismissKey || typeof window === 'undefined') return false;
+
+  try {
+    const storage = persistDismiss ? window.localStorage : window.sessionStorage;
+    return storage.getItem(dismissKey) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Reusable banner for displaying analysis warnings.
  * Used by GitIndexWizard, UploadForm, and ToolWizard during analysis review.
@@ -27,16 +38,13 @@ export function WarningsBanner({
   persistDismiss = false,
   compact = false,
 }: WarningsBannerProps) {
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState<boolean>(() =>
+    readDismissed(dismissKey, persistDismiss),
+  );
 
   useEffect(() => {
-    if (!dismissKey) {
-      setDismissed(false);
-      return;
-    }
-    const storage = persistDismiss ? window.localStorage : window.sessionStorage;
-    setDismissed(storage.getItem(dismissKey) === 'true');
-  }, [dismissKey, persistDismiss, warnings]);
+    setDismissed(readDismissed(dismissKey, persistDismiss));
+  }, [dismissKey, persistDismiss]);
 
   if (warnings.length === 0) return null;
   if (hidden || dismissed) return null;
@@ -45,9 +53,13 @@ export function WarningsBanner({
   const bannerClassName = compact ? 'warnings-banner warnings-banner-compact' : 'warnings-banner';
 
   const handleDismiss = () => {
-    if (dismissKey) {
-      const storage = persistDismiss ? window.localStorage : window.sessionStorage;
-      storage.setItem(dismissKey, 'true');
+    if (dismissKey && typeof window !== 'undefined') {
+      try {
+        const storage = persistDismiss ? window.localStorage : window.sessionStorage;
+        storage.setItem(dismissKey, 'true');
+      } catch {
+        // Ignore unavailable storage.
+      }
     }
     setDismissed(true);
   };

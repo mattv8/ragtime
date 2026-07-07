@@ -62,13 +62,10 @@ class ConversationToolRuntimeOverrideTests(unittest.IsolatedAsyncioTestCase):
         ]
         rag._app_settings = {"max_tool_output_chars": 0}
 
-        async def build_tools_from_runtime_config(_config: dict) -> list[SimpleNamespace]:
-            return [
-                SimpleNamespace(name="query_demo"),
-                SimpleNamespace(name="search_demo_schema"),
-            ]
-
-        rag.build_tools_from_runtime_config = build_tools_from_runtime_config
+        rebuilt_tools = [
+            SimpleNamespace(name="query_demo"),
+            SimpleNamespace(name="search_demo_schema"),
+        ]
         option_rows = [SimpleNamespace(toolConfigId="tool-1", options={"write_access_enabled": True})]
         fake_db = SimpleNamespace(
             conversationtooloption=SimpleNamespace(
@@ -76,7 +73,14 @@ class ConversationToolRuntimeOverrideTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        with mock.patch.object(rag_components, "get_db", mock.AsyncMock(return_value=fake_db)):
+        with (
+            mock.patch.object(
+                rag,
+                "build_tools_from_runtime_config",
+                new=mock.AsyncMock(return_value=rebuilt_tools),
+            ),
+            mock.patch.object(rag_components, "get_db", mock.AsyncMock(return_value=fake_db)),
+        ):
             runtime_tools = await rag._apply_conversation_tool_overrides(
                 "conversation-1",
                 [SimpleNamespace(name="query_demo")],
