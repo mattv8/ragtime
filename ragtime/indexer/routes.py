@@ -188,6 +188,12 @@ from ragtime.indexer.background_tasks import (
 )
 from ragtime.indexer.chat_attachments import store_chat_attachment_upload
 from ragtime.indexer.chat_events import append_reasoning_event, finalize_reasoning_block
+from ragtime.indexer.conversation_tool_options import (
+    load_conversation_tool_options as _load_conversation_tool_options,
+)
+from ragtime.indexer.conversation_tool_options import (
+    normalize_conversation_tool_options,
+)
 from ragtime.indexer.export_service import (
     content_disposition,
     content_source,
@@ -14929,6 +14935,14 @@ async def get_conversation_tools(
         # Get tool group selections
         group_selections = await db.conversationtoolgroupselection.find_many(where={"conversationId": conversation_id})
 
+        # Get per-tool options
+        option_rows = await db.conversationtooloption.find_many(where={"conversationId": conversation_id})
+        tool_options: dict[str, dict[str, bool]] = {}
+        for row in option_rows:
+            options = _load_conversation_tool_options(row.options)
+            if options:
+                tool_options[row.toolConfigId] = options
+
         tool_config_ids = [s.toolConfigId for s in selections]
         tool_group_ids = [s.toolGroupId for s in group_selections]
         tool_selection_mode = str(getattr(conversation, "toolSelectionMode", "") or "").strip()
@@ -14945,6 +14959,7 @@ async def get_conversation_tools(
             "tool_selection_mode": tool_selection_mode,
             "disabled_builtin_tool_ids": _normalize_disabled_builtin_tool_ids(getattr(conversation, "disabledBuiltinToolIds", [])),
             "subagents_enabled": bool(getattr(conversation, "subagentsEnabled", True)),
+            "tool_options": tool_options,
         }
     finally:
         await db.disconnect()
@@ -14984,6 +14999,8 @@ async def update_conversation_tools(
         disabled_builtin_tool_ids = _normalize_disabled_builtin_tool_ids(request.get("disabled_builtin_tool_ids", []))
         has_subagents_enabled_update = "subagents_enabled" in request
         subagents_enabled = bool(request.get("subagents_enabled", True))
+        has_tool_options_update = "tool_options" in request
+        normalized_tool_options = normalize_conversation_tool_options(request.get("tool_options"))
 
         # Delete existing selections
         await db.conversationtoolselection.delete_many(where={"conversationId": conversation_id})
@@ -14996,6 +15013,17 @@ async def update_conversation_tools(
         await db.conversationtoolgroupselection.delete_many(where={"conversationId": conversation_id})
         for group_id in tool_group_ids:
             await db.conversationtoolgroupselection.create(data={"conversationId": conversation_id, "toolGroupId": group_id})
+
+        if has_tool_options_update:
+            await db.conversationtooloption.delete_many(where={"conversationId": conversation_id})
+            for tool_id, options in normalized_tool_options.items():
+                await db.conversationtooloption.create(
+                    data={
+                        "conversationId": conversation_id,
+                        "toolConfigId": tool_id,
+                        "options": Json(options),
+                    }
+                )
 
         conversation_update_data: dict[str, Any] = {"toolSelectionMode": tool_selection_mode}
         if has_subagents_enabled_update:

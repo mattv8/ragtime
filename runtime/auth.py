@@ -35,10 +35,7 @@ def _create_runtime_auth_dependency() -> Any:
     cached_token = get_runtime_auth_token()
 
     if not cached_token:
-        logger.warning(
-            "RUNTIME_AUTH_TOKEN is empty or unset – all requests to guarded "
-            "runtime routes will be rejected. Set it to a secure random value."
-        )
+        logger.warning("RUNTIME_AUTH_TOKEN is empty or unset – all requests to guarded runtime routes will be rejected. Set it to a secure random value.")
 
     async def _verify_runtime_auth(
         authorization: str | None = Header(default=None, alias="Authorization"),

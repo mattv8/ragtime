@@ -158,6 +158,10 @@ from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
 from ragtime.indexer.chat_attachments import extract_chat_image_context_from_part, preprocess_chat_attachment_content_parts
+from ragtime.indexer.conversation_tool_options import (
+    load_conversation_tool_options,
+    resolve_effective_allow_write,
+)
 from ragtime.indexer.export_service import (
     chart_to_table,
     content_source,
@@ -13408,6 +13412,112 @@ class RAGComponents:
             handle_tool_error=True,
         )
 
+    async def _apply_conversation_tool_overrides(
+        self,
+        conversation_id: Optional[str],
+        runtime_tools: list[Any],
+    ) -> list[Any]:
+        """Rebuild configured runtime tools whose per-conversation write policy differs from global config.
+
+        This only touches tools generated from ``ToolConfig`` rows; built-in,
+        userspace, and MCP tools are left unchanged. Rebuilt tools are wrapped
+        with the same output truncation as the agent-wide tools.
+        """
+        if not conversation_id or not self._tool_configs:
+            return runtime_tools
+
+        # Load persisted conversation-scoped tool options.
+        try:
+            db = await get_db()
+            option_rows = await db.conversationtooloption.find_many(where={"conversationId": conversation_id})
+        except Exception as exc:
+            logger.warning(
+                "Failed to load conversation tool options for %s: %s",
+                conversation_id,
+                _format_exception_message(exc),
+            )
+            return runtime_tools
+
+        options_by_id: dict[str, dict[str, bool]] = {}
+        for row in option_rows:
+            opts = load_conversation_tool_options(row.options)
+            if opts:
+                options_by_id[row.toolConfigId] = opts
+
+        if not options_by_id:
+            return runtime_tools
+
+        runtime_tool_names = {getattr(tool, "name", "") for tool in runtime_tools if getattr(tool, "name", "")}
+        if not runtime_tool_names:
+            return runtime_tools
+
+        # Determine which configs need an override and rebuild only those.
+        override_configs: list[dict[str, Any]] = []
+        for config in self._tool_configs:
+            config_id = config.get("id")
+            if not config_id or config_id not in options_by_id:
+                continue
+            if not self._derive_config_tool_names(config).intersection(runtime_tool_names):
+                continue
+            global_allow_write = bool(config.get("allow_write", False))
+            effective = resolve_effective_allow_write(global_allow_write, options_by_id[config_id])
+            if effective != global_allow_write:
+                overridden = dict(config)
+                overridden["allow_write"] = effective
+                override_configs.append(overridden)
+
+        if not override_configs:
+            return runtime_tools
+
+        # Rebuild only the overridden configs in parallel.
+        try:
+            rebuild_results = await asyncio.gather(
+                *[self.build_tools_from_runtime_config(cfg) for cfg in override_configs],
+                return_exceptions=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to rebuild overridden conversation tools for %s: %s",
+                conversation_id,
+                _format_exception_message(exc),
+            )
+            return runtime_tools
+
+        max_tool_output_chars = int((self._app_settings or {}).get("max_tool_output_chars", DEFAULT_MAX_TOOL_OUTPUT_CHARS))
+
+        names_to_replace: set[str] = set()
+        rebuilt_tools: list[Any] = []
+        for result in rebuild_results:
+            if isinstance(result, BaseException):
+                logger.warning("Overridden conversation tool build failed: %s", result)
+                continue
+            for tool in result or []:
+                tool_name = getattr(tool, "name", "")
+                if not tool_name:
+                    continue
+                if tool_name not in runtime_tool_names:
+                    continue
+                names_to_replace.add(tool_name)
+                rebuilt_tools.append(tool)
+
+        if not names_to_replace:
+            return runtime_tools
+
+        # Apply output truncation so replaced tools match agent-wide wrapping.
+        if max_tool_output_chars > 0:
+            rebuilt_tools = [
+                wrap_tool_with_truncation(
+                    t,
+                    max_tool_output_chars,
+                    preserve_output_tool_names=FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
+                )
+                for t in rebuilt_tools
+            ]
+
+        filtered = [tool for tool in runtime_tools if getattr(tool, "name", "") not in names_to_replace]
+        filtered.extend(rebuilt_tools)
+        return filtered
+
     async def _build_request_runtime_context(
         self,
         *,
@@ -13429,6 +13539,12 @@ class RAGComponents:
         runtime_tools = list(getattr(executor, "tools", []) if executor else [])
         if blocked_tool_names:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
+
+        # Apply per-conversation write-policy overrides for configured tools.
+        runtime_tools = await self._apply_conversation_tool_overrides(
+            conversation_id,
+            runtime_tools,
+        )
 
         mode = "chat"
         prompt_is_ui = is_ui

@@ -462,8 +462,9 @@ model ToolConfig {
   // Relation to MCP default route filter tool selections
   mcpDefaultRouteFilterTools McpDefaultRouteFilterToolSelection[]
 
-  // Relation to conversation tool selections
+  // Relation to conversation tool selections and options
   conversationSelections ConversationToolSelection[]
+  conversationToolOptions  ConversationToolOption[]
 
   // Relation to userspace mount sources backed by this tool
   mountSources UserspaceMountSource[]
@@ -1175,10 +1176,11 @@ model Conversation {
   tasks                      ChatTask[]
   providerPromptDebugRecords ProviderPromptDebugRecord[]
 
-  // Relation to conversation members and tool selections
+  // Relation to conversation members, tool selections, and per-tool options
   members             ConversationMember[]
   toolSelections      ConversationToolSelection[]
   toolGroupSelections ConversationToolGroupSelection[]
+  toolOptions         ConversationToolOption[]
   shares              ConversationShare[]
 
   // Chat branches
@@ -1935,6 +1937,25 @@ model ConversationToolGroupSelection {
   @@index([conversationId])
   @@index([toolGroupId])
   @@map("conversation_tool_group_selections")
+}
+
+/// Per-conversation tool options (e.g. write access overrides)
+model ConversationToolOption {
+  id             String @id @default(uuid())
+  conversationId String @map("conversation_id")
+  toolConfigId   String @map("tool_config_id")
+  options        Json   @default("{}")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  toolConfig   ToolConfig   @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([conversationId, toolConfigId])
+  @@index([conversationId])
+  @@index([toolConfigId])
+  @@map("conversation_tool_options")
 }
 
 /// Runtime session metadata for User Space execution environments

@@ -2433,12 +2433,27 @@ export interface UpdateConversationMembersRequest {
   members: ConversationMember[];
 }
 
+export interface ConversationToolOptionState {
+  write_access_enabled?: boolean;
+  read_only_enabled?: boolean;
+}
+
 export interface UpdateConversationToolsRequest {
   tool_config_ids: string[];
   tool_group_ids?: string[];
   tool_selection_mode?: ToolSelectionMode;
   disabled_builtin_tool_ids?: string[];
   subagents_enabled?: boolean;
+  tool_options?: Record<string, ConversationToolOptionState>;
+}
+
+export interface ConversationToolsResponse {
+  tool_config_ids: string[];
+  tool_group_ids: string[];
+  tool_selection_mode: 'default_all' | 'custom';
+  disabled_builtin_tool_ids: string[];
+  subagents_enabled: boolean;
+  tool_options?: Record<string, ConversationToolOptionState>;
 }
 
 // =============================================================================
@@ -2810,6 +2825,7 @@ export interface UserSpaceAvailableTool {
   group_name?: string | null;
   available?: boolean;
   disabled_reason?: string | null;
+  allow_write?: boolean;
 }
 
 export type ToolSelectionMode = 'default_all' | 'custom';

@@ -356,6 +356,7 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
                 name=tool.name,
                 tool_type=tool.tool_type.value,
                 description=tool.description,
+                allow_write=tool.allow_write,
                 group_id=tool.group_id,
                 group_name=tool.group_name,
                 available=available,

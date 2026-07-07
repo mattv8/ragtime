@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Settings, ChevronRight, X } from 'lucide-react';
+import { Settings, ChevronRight, X, Globe2 } from 'lucide-react';
 import {
   getEffectiveUserSpaceToolIdSet,
   getSelectableUserSpaceToolIds,
@@ -14,7 +14,7 @@ import {
 } from '@/utils/userSpaceTools';
 import type { ToolSelectionMode } from '@/types';
 
-interface ToolSelectorTool {
+export interface ToolSelectorTool {
   id: string;
   name: string;
   tool_type: string;
@@ -23,11 +23,33 @@ interface ToolSelectorTool {
   group_name?: string | null;
   available?: boolean;
   disabled_reason?: string | null;
+  allow_write?: boolean;
 }
 
 export interface ToolGroupInfo {
   id: string;
   name: string;
+}
+
+export interface ToolSelectorToolGroup {
+  id: string;
+  name: string;
+  tools: ToolSelectorTool[];
+}
+
+export interface ToolSelectorMenuItem {
+  label: string;
+  checked: boolean;
+  disabled?: boolean;
+  description?: string;
+  onChange: () => void;
+}
+
+export interface ToolSelectorStatusBadge {
+  label: string;
+  tone: 'read' | 'write';
+  scope?: 'global' | 'conversation';
+  title?: string;
 }
 
 interface ToolSelectorDropdownProps {
@@ -52,6 +74,12 @@ interface ToolSelectorDropdownProps {
   /** When provided, renders a "Show tool calls" toggle at the bottom of the dropdown. */
   showToolCalls?: boolean;
   onToggleToolCalls?: (value: boolean) => void;
+  /** Generic right-click menu generator for configured tools. */
+  getToolMenuItems?: (tool: ToolSelectorTool) => ToolSelectorMenuItem[];
+  /** Generic right-click menu generator for configured tool groups. */
+  getToolGroupMenuItems?: (group: ToolSelectorToolGroup) => ToolSelectorMenuItem[];
+  /** Optional status badge for configured tool rows. Defaults to global read/write when available. */
+  getToolStatusBadge?: (tool: ToolSelectorTool) => ToolSelectorStatusBadge | null;
 }
 
 export function ToolSelectorDropdown({
@@ -73,6 +101,9 @@ export function ToolSelectorDropdown({
   workspaceBuiltInSectionLabel = 'Workspace Tools',
   showToolCalls,
   onToggleToolCalls,
+  getToolMenuItems,
+  getToolGroupMenuItems,
+  getToolStatusBadge,
 }: ToolSelectorDropdownProps) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
@@ -86,63 +117,13 @@ export function ToolSelectorDropdown({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // Compute fixed position so the dropdown draws over iframes without layout shift
-  const computeDropdownPosition = useCallback(() => {
-    if (!dropdownRef.current) return;
-    const rect = dropdownRef.current.getBoundingClientRect();
-    const MARGIN = 8;
-    if (openDirection === 'up') {
-      const maxHeight = Math.max(80, rect.top - MARGIN);
-      setDropdownPosition({ top: rect.top, left: rect.right, minWidth: rect.width, maxHeight });
-    } else {
-      const maxHeight = Math.max(80, window.innerHeight - rect.bottom - MARGIN);
-      setDropdownPosition({ top: rect.bottom, left: rect.right, minWidth: rect.width, maxHeight });
-    }
-  }, [openDirection]);
-
-  useEffect(() => {
-    if (!showDropdown) return;
-    computeDropdownPosition();
-    window.addEventListener('scroll', computeDropdownPosition, true);
-    window.addEventListener('resize', computeDropdownPosition);
-    return () => {
-      window.removeEventListener('scroll', computeDropdownPosition, true);
-      window.removeEventListener('resize', computeDropdownPosition);
-    };
-  }, [showDropdown, computeDropdownPosition]);
-
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node;
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target) &&
-        !menuRef.current?.contains(target)
-      ) {
-        setShowDropdown(false);
-        setExpandedGroupId(null);
-        setSearchQuery('');
-      }
-    }
-
-    if (showDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-      };
-    }
-  }, [showDropdown]);
-
-  useEffect(() => {
-    if (!showDropdown) {
-      setSearchQuery('');
-      return;
-    }
-    const handle = setTimeout(() => searchInputRef.current?.focus(), 0);
-    return () => clearTimeout(handle);
-  }, [showDropdown]);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    kind: 'tool' | 'group';
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // Build grouped structure
   const { groups, ungroupedTools } = useMemo(() => {
@@ -176,6 +157,118 @@ export function ToolSelectorDropdown({
 
     return { groups: groupList, ungroupedTools: ungrouped };
   }, [availableTools, toolGroups]);
+
+  const contextMenuItems = useMemo(() => {
+    if (!contextMenu) return [];
+    if (contextMenu.kind === 'tool') {
+      const tool = availableTools.find((candidate) => candidate.id === contextMenu.id);
+      return tool && getToolMenuItems ? getToolMenuItems(tool) : [];
+    }
+    const group = groups.find((candidate) => candidate.id === contextMenu.id);
+    return group && getToolGroupMenuItems ? getToolGroupMenuItems(group) : [];
+  }, [availableTools, contextMenu, getToolGroupMenuItems, getToolMenuItems, groups]);
+
+  const contextMenuPosition = useMemo(() => {
+    if (!contextMenu) return null;
+    const PADDING = 8;
+    const width = 240;
+    const height = contextMenuItems.length * 52 + 8;
+    let x = contextMenu.x + PADDING;
+    let y = contextMenu.y + PADDING;
+    if (x + width > window.innerWidth - PADDING) {
+      x = Math.max(PADDING, contextMenu.x - width - PADDING);
+    }
+    if (y + height > window.innerHeight - PADDING) {
+      y = Math.max(PADDING, window.innerHeight - height - PADDING);
+    }
+    return { x, y, width };
+  }, [contextMenu, contextMenuItems.length]);
+
+  // Compute fixed position so the dropdown draws over iframes without layout shift
+  const computeDropdownPosition = useCallback(() => {
+    if (!dropdownRef.current) return;
+    const rect = dropdownRef.current.getBoundingClientRect();
+    const MARGIN = 8;
+    if (openDirection === 'up') {
+      const maxHeight = Math.max(80, rect.top - MARGIN);
+      setDropdownPosition({ top: rect.top, left: rect.right, minWidth: rect.width, maxHeight });
+    } else {
+      const maxHeight = Math.max(80, window.innerHeight - rect.bottom - MARGIN);
+      setDropdownPosition({ top: rect.bottom, left: rect.right, minWidth: rect.width, maxHeight });
+    }
+  }, [openDirection]);
+
+  useEffect(() => {
+    if (!showDropdown) return;
+    computeDropdownPosition();
+    window.addEventListener('scroll', computeDropdownPosition, true);
+    window.addEventListener('resize', computeDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', computeDropdownPosition, true);
+      window.removeEventListener('resize', computeDropdownPosition);
+    };
+  }, [showDropdown, computeDropdownPosition]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target) &&
+        !menuRef.current?.contains(target) &&
+        !contextMenuRef.current?.contains(target)
+      ) {
+        setShowDropdown(false);
+        setExpandedGroupId(null);
+        setSearchQuery('');
+      }
+    }
+
+    if (showDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showDropdown]);
+
+  useEffect(() => {
+    if (!showDropdown) {
+      setSearchQuery('');
+      return;
+    }
+    const handle = setTimeout(() => searchInputRef.current?.focus(), 0);
+    return () => clearTimeout(handle);
+  }, [showDropdown]);
+
+  useEffect(() => {
+    if (!showDropdown) {
+      setContextMenu(null);
+    }
+  }, [showDropdown]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (contextMenuRef.current && !contextMenuRef.current.contains(target)) {
+        setContextMenu(null);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setContextMenu(null);
+      }
+    }
+    if (contextMenu) {
+      document.addEventListener('mousedown', handlePointerDown);
+      document.addEventListener('keydown', handleKeyDown);
+      return () => {
+        document.removeEventListener('mousedown', handlePointerDown);
+        document.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+  }, [contextMenu]);
 
   const hasGroups = groups.length > 0;
   const builtInSelectedIds = selectedBuiltInToolIds ?? new Set<string>();
@@ -300,11 +393,29 @@ export function ToolSelectorDropdown({
     const toolAvailable = isUserSpaceToolAvailable(tool);
     const checked = toolAvailable && effectiveToolIds.has(tool.id);
     const reason = tool.disabled_reason || 'No recent heartbeat';
+    const statusBadge = getToolStatusBadge
+      ? getToolStatusBadge(tool)
+      : tool.allow_write === true
+        ? {
+            label: 'Write',
+            tone: 'write' as const,
+            scope: 'global' as const,
+            title: 'Write access enabled globally',
+          }
+        : null;
+    const handleContextMenu = (event: React.MouseEvent) => {
+      if (!getToolMenuItems) return;
+      const items = getToolMenuItems(tool);
+      if (items.length === 0) return;
+      event.preventDefault();
+      setContextMenu({ kind: 'tool', id: tool.id, x: event.clientX, y: event.clientY });
+    };
     return (
       <label
         key={tool.id}
         className={`checkbox-label userspace-tool-item ${toolAvailable ? '' : 'userspace-tool-item-disabled'}`}
         title={toolAvailable ? undefined : reason}
+        onContextMenu={handleContextMenu}
       >
         <input
           type="checkbox"
@@ -315,12 +426,21 @@ export function ToolSelectorDropdown({
           }}
           disabled={readOnly || disabled || !toolAvailable}
         />
-        <span>
+        <span className="userspace-tool-item-body">
           <strong>{tool.name}</strong>
           <small className="userspace-muted">
             {toolAvailable ? tool.tool_type : `${tool.tool_type} - Offline`}
           </small>
         </span>
+        {statusBadge && (
+          <span
+            className={`userspace-tool-status-badge userspace-tool-status-badge-${statusBadge.tone} ${statusBadge.scope ? `userspace-tool-status-badge-${statusBadge.scope}` : ''}`}
+            title={statusBadge.title}
+          >
+            {statusBadge.scope === 'global' && <Globe2 size={10} strokeWidth={2.4} />}
+            {statusBadge.label}
+          </span>
+        )}
       </label>
     );
   };
@@ -448,11 +568,24 @@ export function ToolSelectorDropdown({
                 filteredGroups.map((group) => {
                   const checkState = getGroupCheckState(group.id, group.tools);
                   const isExpanded = expandedGroupId === group.id;
+                  const handleGroupContextMenu = (event: React.MouseEvent) => {
+                    if (!getToolGroupMenuItems) return;
+                    const items = getToolGroupMenuItems(group);
+                    if (items.length === 0) return;
+                    event.preventDefault();
+                    setContextMenu({
+                      kind: 'group',
+                      id: group.id,
+                      x: event.clientX,
+                      y: event.clientY,
+                    });
+                  };
                   return (
                     <div key={group.id} className="tool-group-section">
                       <div
                         className={`tool-group-header ${isExpanded ? 'expanded' : ''}`}
                         onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
+                        onContextMenu={handleGroupContextMenu}
                         role="button"
                         tabIndex={0}
                         onKeyDown={(e) => {
@@ -513,6 +646,63 @@ export function ToolSelectorDropdown({
                 </label>
               </div>
             )}
+          </div>,
+          document.body,
+        )}
+      {contextMenu &&
+        contextMenuPosition &&
+        contextMenuItems.length > 0 &&
+        createPortal(
+          <div
+            ref={contextMenuRef}
+            className="userspace-tool-context-menu"
+            style={{
+              position: 'fixed',
+              top: contextMenuPosition.y,
+              left: contextMenuPosition.x,
+              width: contextMenuPosition.width,
+              zIndex: 9001,
+            }}
+          >
+            {contextMenuItems.map((item, index) => (
+              <div
+                key={index}
+                className={`userspace-tool-context-menu-item ${item.disabled ? 'disabled' : ''}`}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (!item.disabled) item.onChange();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    if (!item.disabled) item.onChange();
+                  }
+                }}
+                role="button"
+                tabIndex={item.disabled ? -1 : 0}
+                aria-checked={item.checked}
+              >
+                <input
+                  type="checkbox"
+                  checked={item.checked}
+                  disabled={item.disabled}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    if (!item.disabled) item.onChange();
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                />
+                <div className="userspace-tool-context-menu-text">
+                  <span className="userspace-tool-context-menu-label">{item.label}</span>
+                  {item.description && (
+                    <span className="userspace-tool-context-menu-description">
+                      {item.description}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>,
           document.body,
         )}

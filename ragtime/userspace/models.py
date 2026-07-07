@@ -216,6 +216,7 @@ class UserSpaceAvailableTool(BaseModel):
     name: str
     tool_type: str
     description: str | None = None
+    allow_write: bool = False
     group_id: str | None = None
     group_name: str | None = None
     available: bool = True

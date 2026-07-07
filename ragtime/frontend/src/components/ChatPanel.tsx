@@ -65,6 +65,7 @@ import { api, type ChatTaskStreamEvent } from '@/api';
 import { getThemeFontFamily } from '@/theme';
 import type {
   Conversation,
+  ConversationToolOptionState,
   ChatContextReference,
   ChatMessage,
   ChatTask,
@@ -131,7 +132,13 @@ import type { FileDiffOverlayEntry } from './shared/FileDiffOverlay';
 import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
-import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
+import {
+  ToolSelectorDropdown,
+  type ToolGroupInfo,
+  type ToolSelectorMenuItem,
+  type ToolSelectorStatusBadge,
+  type ToolSelectorToolGroup,
+} from './shared/ToolSelectorDropdown';
 import { UserSpaceFileDiffView, formatDiffStatus } from './shared/UserSpaceFileDiffView';
 import { useToast, ToastContainer } from './shared/Toast';
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
@@ -10381,6 +10388,10 @@ export function ChatPanel({
     useState<UserSpaceToolSelection['mode']>('default_all');
   const [conversationToolIds, setConversationToolIds] = useState<string[]>([]);
   const [conversationToolGroupIds, setConversationToolGroupIds] = useState<string[]>([]);
+  const [conversationToolOptions, setConversationToolOptions] = useState<
+    Record<string, ConversationToolOptionState>
+  >({});
+  const conversationToolOptionsRef = useRef<Record<string, ConversationToolOptionState>>({});
   const [pendingConversationToolSelection, setPendingConversationToolSelection] = useState<{
     conversationId: string;
     selection: UserSpaceToolSelection;
@@ -10572,6 +10583,7 @@ export function ChatPanel({
     () => new Set(effectiveToolGroupIds),
     [effectiveToolGroupIds],
   );
+
   useUserSpaceToolHealthEvents({
     availableTools,
     selectedToolIds: resolvedConversationToolIdSet,
@@ -10596,6 +10608,188 @@ export function ChatPanel({
   const isConversationOwner =
     myConversationRole === 'owner' || activeConversation?.user_id === currentUser?.id;
   const isConversationViewer = myConversationRole === 'viewer';
+
+  const saveConversationToolOptions = useCallback(
+    async (
+      nextOptions: Record<string, ConversationToolOptionState>,
+      previousOptions: Record<string, ConversationToolOptionState>,
+    ) => {
+      if (!activeConversation) return;
+      conversationToolOptionsRef.current = nextOptions;
+      setConversationToolOptions(nextOptions);
+      setSavingTools(true);
+      try {
+        await api.updateConversationTools(activeConversation.id, {
+          tool_selection_mode: effectiveConversationToolSelection.mode,
+          tool_config_ids: effectiveConversationToolSelection.toolIds,
+          tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
+          disabled_builtin_tool_ids: conversationDisabledBuiltInToolIds,
+          subagents_enabled: activeConversation.subagents_enabled !== false,
+          tool_options: nextOptions,
+        });
+      } catch (err) {
+        conversationToolOptionsRef.current = previousOptions;
+        setConversationToolOptions(previousOptions);
+        setError(err instanceof Error ? err.message : 'Failed to update tool option');
+      } finally {
+        setSavingTools(false);
+      }
+    },
+    [activeConversation, conversationDisabledBuiltInToolIds, effectiveConversationToolSelection],
+  );
+
+  const handleToggleConversationToolOption = useCallback(
+    async (
+      toolId: string,
+      optionKey: 'write_access_enabled' | 'read_only_enabled',
+      nextValue: boolean,
+    ) => {
+      if (!activeConversation || isConversationViewer) return;
+      const previous = conversationToolOptionsRef.current;
+      const nextOptions: Record<string, ConversationToolOptionState> = { ...previous };
+      if (nextValue) {
+        nextOptions[toolId] = { [optionKey]: true };
+      } else {
+        const current = nextOptions[toolId];
+        if (current) {
+          const { [optionKey]: _removed, ...rest } = current;
+          if (Object.keys(rest).length === 0) {
+            delete nextOptions[toolId];
+          } else {
+            nextOptions[toolId] = rest as ConversationToolOptionState;
+          }
+        }
+      }
+      await saveConversationToolOptions(nextOptions, previous);
+    },
+    [activeConversation, isConversationViewer, saveConversationToolOptions],
+  );
+
+  const isToolEffectivelyWritableForConversation = useCallback(
+    (tool: UserSpaceAvailableTool): boolean => {
+      const options = conversationToolOptions[tool.id] || {};
+      if (options.read_only_enabled === true) return false;
+      if (options.write_access_enabled === true) return true;
+      return tool.allow_write === true;
+    },
+    [conversationToolOptions],
+  );
+
+  const getToolMenuItems = useCallback(
+    (tool: UserSpaceAvailableTool): ToolSelectorMenuItem[] => {
+      if (!activeConversation || isConversationViewer || tool.allow_write === undefined) return [];
+      const options = conversationToolOptions[tool.id] || {};
+      const disabled = savingTools || false;
+      if (tool.allow_write) {
+        return [
+          {
+            label: 'Make read-only for this conversation',
+            checked: options.read_only_enabled === true,
+            disabled,
+            description: 'Override the global write setting and force this tool read-only here.',
+            onChange: () =>
+              handleToggleConversationToolOption(
+                tool.id,
+                'read_only_enabled',
+                options.read_only_enabled !== true,
+              ),
+          },
+        ];
+      }
+      return [
+        {
+          label: 'Enable write access for this conversation only',
+          checked: options.write_access_enabled === true,
+          disabled,
+          onChange: () =>
+            handleToggleConversationToolOption(
+              tool.id,
+              'write_access_enabled',
+              options.write_access_enabled !== true,
+            ),
+        },
+      ];
+    },
+    [
+      activeConversation,
+      conversationToolOptions,
+      handleToggleConversationToolOption,
+      isConversationViewer,
+      savingTools,
+    ],
+  );
+
+  const getToolStatusBadge = useCallback(
+    (tool: UserSpaceAvailableTool): ToolSelectorStatusBadge | null => {
+      if (tool.allow_write === undefined) return null;
+      const writable = isToolEffectivelyWritableForConversation(tool);
+      if (!writable) return null;
+      const options = conversationToolOptions[tool.id] || {};
+      const title =
+        options.write_access_enabled === true
+          ? 'Write access enabled for this conversation'
+          : 'Write access enabled globally';
+      return {
+        label: 'Write',
+        tone: 'write',
+        scope: options.write_access_enabled === true ? 'conversation' : 'global',
+        title,
+      };
+    },
+    [conversationToolOptions, isToolEffectivelyWritableForConversation],
+  );
+
+  const getToolGroupMenuItems = useCallback(
+    (group: ToolSelectorToolGroup): ToolSelectorMenuItem[] => {
+      if (!activeConversation || isConversationViewer) return [];
+      const tools = group.tools.filter((tool): tool is UserSpaceAvailableTool => Boolean(tool.id));
+      if (tools.length === 0) return [];
+      const checked = tools.every(isToolEffectivelyWritableForConversation);
+      const disabled = savingTools || false;
+      return [
+        {
+          label: 'Enable write access for all tools in this group',
+          checked,
+          disabled,
+          onChange: () => {
+            const previous = conversationToolOptionsRef.current;
+            const nextOptions: Record<string, ConversationToolOptionState> = { ...previous };
+            for (const tool of tools) {
+              const current = nextOptions[tool.id] || {};
+              if (!checked) {
+                if (tool.allow_write === true) {
+                  const { write_access_enabled: _write, ...rest } = current;
+                  nextOptions[tool.id] = { ...rest, read_only_enabled: false };
+                  delete nextOptions[tool.id].read_only_enabled;
+                  if (Object.keys(nextOptions[tool.id]).length === 0) delete nextOptions[tool.id];
+                } else {
+                  nextOptions[tool.id] = { write_access_enabled: true };
+                }
+              } else if (tool.allow_write === true) {
+                nextOptions[tool.id] = { read_only_enabled: true };
+              } else {
+                const { write_access_enabled: _write, ...rest } = current;
+                if (Object.keys(rest).length === 0) {
+                  delete nextOptions[tool.id];
+                } else {
+                  nextOptions[tool.id] = rest;
+                }
+              }
+            }
+            void saveConversationToolOptions(nextOptions, previous);
+          },
+        },
+      ];
+    },
+    [
+      activeConversation,
+      isConversationViewer,
+      isToolEffectivelyWritableForConversation,
+      saveConversationToolOptions,
+      savingTools,
+    ],
+  );
+
   const hasWorkspaceChatCollaboration = Boolean(workspaceId);
   const canManageConversationMembers =
     Boolean(activeConversation) && (hasWorkspaceChatCollaboration || isConversationOwner);
@@ -12173,12 +12367,14 @@ export function ChatPanel({
       setConversationDisabledBuiltInToolIds(
         normalizeDisabledBuiltInToolIds(data.disabled_builtin_tool_ids),
       );
+      setConversationToolOptions(data.tool_options || {});
     } catch (err) {
       console.error('Failed to fetch conversation tools:', err);
       setConversationToolSelectionMode('default_all');
       setConversationToolIds([]);
       setConversationToolGroupIds([]);
       setConversationDisabledBuiltInToolIds([]);
+      setConversationToolOptions({});
     }
   }, []);
 
@@ -12235,14 +12431,13 @@ export function ChatPanel({
   // Load conversation members, tools, and branches when conversation changes
   useEffect(() => {
     if (activeConversationId) {
-      if (!useWorkspaceToolSource) {
-        void fetchConversationTools(activeConversationId);
-      }
+      void fetchConversationTools(activeConversationId);
       void fetchConversationMembers(activeConversationId);
       void refreshBranchPoints(activeConversationId);
     } else {
       setConversationMembers([]);
       setConversationDisabledBuiltInToolIds([]);
+      setConversationToolOptions({});
       setBranchPoints([]);
     }
   }, [
@@ -12312,6 +12507,9 @@ export function ChatPanel({
             tool_selection_mode: selection.mode,
             tool_config_ids: selection.toolIds,
             tool_group_ids: selection.toolGroupIds,
+            disabled_builtin_tool_ids: conversationDisabledBuiltInToolIdsRef.current,
+            subagents_enabled: activeConversation.subagents_enabled !== false,
+            tool_options: conversationToolOptionsRef.current,
           })
           .then(() => {
             if (conversationToolSelectionSaveSeqRef.current !== seq) return;
@@ -12357,6 +12555,10 @@ export function ChatPanel({
     conversationDisabledBuiltInToolIdsRef.current = conversationDisabledBuiltInToolIds;
   }, [conversationDisabledBuiltInToolIds]);
 
+  useEffect(() => {
+    conversationToolOptionsRef.current = conversationToolOptions;
+  }, [conversationToolOptions]);
+
   const handleToggleConversationBuiltInTool = useCallback(
     async (toolId: string) => {
       if (!activeConversation || isConversationViewer) return;
@@ -12371,6 +12573,7 @@ export function ChatPanel({
             tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
             disabled_builtin_tool_ids: conversationDisabledBuiltInToolIds,
             subagents_enabled: nextEnabled,
+            tool_options: conversationToolOptionsRef.current,
           });
           const updatedConversation: Conversation = {
             ...activeConversation,
@@ -12417,6 +12620,7 @@ export function ChatPanel({
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
           subagents_enabled: activeConversation.subagents_enabled !== false,
+          tool_options: conversationToolOptionsRef.current,
         });
         const updatedConversation: Conversation = {
           ...activeConversation,
@@ -12461,7 +12665,9 @@ export function ChatPanel({
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
           subagents_enabled: nextSubagentsEnabled,
+          tool_options: conversationToolOptionsRef.current,
         });
+
         const updatedConversation: Conversation = {
           ...activeConversation,
           disabled_builtin_tool_ids: normalized,
@@ -12498,6 +12704,7 @@ export function ChatPanel({
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: conversationDisabledBuiltInToolIds,
           subagents_enabled: selected,
+          tool_options: conversationToolOptionsRef.current,
         });
         const updatedConversation: Conversation = {
           ...activeConversation,
@@ -12543,6 +12750,7 @@ export function ChatPanel({
           tool_group_ids: effectiveConversationToolSelection.toolGroupIds,
           disabled_builtin_tool_ids: normalized,
           subagents_enabled: activeConversation.subagents_enabled !== false,
+          tool_options: conversationToolOptionsRef.current,
         });
         const updatedConversation: Conversation = {
           ...activeConversation,
@@ -16566,6 +16774,9 @@ export function ChatPanel({
                     title="Conversation Tools"
                     showToolCalls={showToolCalls}
                     onToggleToolCalls={setShowToolCalls}
+                    getToolMenuItems={getToolMenuItems}
+                    getToolGroupMenuItems={getToolGroupMenuItems}
+                    getToolStatusBadge={getToolStatusBadge}
                   />
                 )}
                 <ModelSelector
@@ -17704,6 +17915,9 @@ export function ChatPanel({
                           readOnly={false}
                           saving={effectiveSavingTools}
                           title="Workspace Tools"
+                          getToolMenuItems={getToolMenuItems}
+                          getToolGroupMenuItems={getToolGroupMenuItems}
+                          getToolStatusBadge={getToolStatusBadge}
                         />
                       )}
                       <button
@@ -17737,6 +17951,9 @@ export function ChatPanel({
                             readOnly={false}
                             saving={effectiveSavingTools}
                             title="Workspace Tools"
+                            getToolMenuItems={getToolMenuItems}
+                            getToolGroupMenuItems={getToolGroupMenuItems}
+                            getToolStatusBadge={getToolStatusBadge}
                           />
                         )}
                         {(!segmentsAreEmpty(messageSegments) || attachments.length > 0) && (
