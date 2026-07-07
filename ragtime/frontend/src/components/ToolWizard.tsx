@@ -55,6 +55,8 @@ function isSystemMount(containerPath: string): boolean {
   );
 }
 
+const SQL_TOOLS_HOVER_EXPAND_DELAY_MS = 500;
+
 function ReadOnlySecurityNotice() {
   return (
     <p className="field-help warning" style={{ color: 'var(--color-warning)' }}>
@@ -1601,6 +1603,13 @@ function SSHAuthPanel({
         <div className="ssh-key-tabs">
           <button
             type="button"
+            className={`ssh-key-tab ${authMode === 'password' ? 'active' : ''}`}
+            onClick={() => onAuthModeChange('password')}
+          >
+            Password
+          </button>
+          <button
+            type="button"
             className={`ssh-key-tab ${authMode === 'generate' ? 'active' : ''}`}
             onClick={() => onAuthModeChange('generate')}
           >
@@ -1619,13 +1628,6 @@ function SSHAuthPanel({
             onClick={() => onAuthModeChange('path')}
           >
             File Path
-          </button>
-          <button
-            type="button"
-            className={`ssh-key-tab ${authMode === 'password' ? 'active' : ''}`}
-            onClick={() => onAuthModeChange('password')}
-          >
-            Password
           </button>
         </div>
 
@@ -2163,6 +2165,20 @@ export function ToolWizard({
 
   // SQL tools dropdown state
   const [sqlToolsExpanded, setSqlToolsExpanded] = useState(false);
+  const sqlToolsExpandTimeoutRef = useRef<number | null>(null);
+
+  const clearSqlToolsExpandTimeout = useCallback(() => {
+    if (sqlToolsExpandTimeoutRef.current !== null) {
+      window.clearTimeout(sqlToolsExpandTimeoutRef.current);
+      sqlToolsExpandTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearSqlToolsExpandTimeout();
+    };
+  }, [clearSqlToolsExpandTimeout]);
 
   // Auto-scroll active step into view
   useEffect(() => {
@@ -2574,7 +2590,7 @@ export function ToolWizard({
         if ('ssh_password' in config && config.ssh_password) return 'password';
         if ('password' in config && config.password) return 'password';
       }
-      return 'generate';
+      return 'password';
     })(),
   );
   const [generatingKey, setGeneratingKey] = useState(false);
@@ -2597,7 +2613,7 @@ export function ToolWizard({
         if (config.ssh_tunnel_key_path) return 'path';
         if (config.ssh_tunnel_password) return 'password';
       }
-      return 'generate';
+      return 'password';
     })(),
   );
   const [sshTunnelGeneratingKey, setSshTunnelGeneratingKey] = useState(false);
@@ -2611,7 +2627,7 @@ export function ToolWizard({
         if (config.docker_ssh_key_path) return 'path';
         if (config.docker_ssh_password) return 'password';
       }
-      return 'generate';
+      return 'password';
     })(),
   );
   const [dockerSSHGeneratingKey, setDockerSSHGeneratingKey] = useState(false);
@@ -3568,8 +3584,7 @@ export function ToolWizard({
   };
 
   const renderTypeSelection = () => {
-    const sqlToolTypes: ToolType[] = ['postgres', 'mysql', 'mssql', 'influxdb'];
-    const isSqlTool = (type: ToolType) => sqlToolTypes.includes(type);
+    const isSqlTool = (type: ToolType) => ['postgres', 'mysql', 'mssql', 'influxdb'].includes(type);
     const toolEntries = Object.entries(TOOL_TYPE_INFO) as ToolTypeInfoEntry[];
     const primaryTools = toolEntries.filter(([type]) => type === 'ssh_shell');
     const sqlTools = toolEntries.filter(([type]) => isSqlTool(type));
@@ -3577,12 +3592,30 @@ export function ToolWizard({
 
     // Check if any SQL tool is currently selected
     const sqlToolSelected = isSqlTool(toolType);
+    const handleSqlToolsMouseEnter = () => {
+      clearSqlToolsExpandTimeout();
+      if (sqlToolSelected || sqlToolsExpanded) {
+        return;
+      }
+      sqlToolsExpandTimeoutRef.current = window.setTimeout(() => {
+        setSqlToolsExpanded(true);
+        sqlToolsExpandTimeoutRef.current = null;
+      }, SQL_TOOLS_HOVER_EXPAND_DELAY_MS);
+    };
+    const handleSqlToolsMouseLeave = () => {
+      clearSqlToolsExpandTimeout();
+      setSqlToolsExpanded(false);
+    };
+    const handleToolTypeSelect = (type: ToolType) => {
+      clearSqlToolsExpandTimeout();
+      setToolType(type);
+    };
     const renderToolTypeOption = ([type, info]: ToolTypeInfoEntry, nested = false) => (
       <button
         key={type}
         type="button"
         className={`tool-type-option${nested ? ' tool-type-option-nested' : ''} ${toolType === type ? 'selected' : ''}`}
-        onClick={() => setToolType(type)}
+        onClick={() => handleToolTypeSelect(type)}
       >
         <span className="tool-type-option-icon">
           <Icon name={getToolIconType(info.icon)} size={nested ? 20 : 24} />
@@ -3601,8 +3634,8 @@ export function ToolWizard({
           {/* SQL Tools Dropdown Group */}
           <div
             className={`tool-type-group ${sqlToolsExpanded || sqlToolSelected ? 'expanded' : ''}`}
-            onMouseEnter={() => setSqlToolsExpanded(true)}
-            onMouseLeave={() => setSqlToolsExpanded(false)}
+            onMouseEnter={handleSqlToolsMouseEnter}
+            onMouseLeave={handleSqlToolsMouseLeave}
           >
             <div className={`tool-type-group-header ${sqlToolSelected ? 'selected' : ''}`}>
               <span className="tool-type-option-icon">
