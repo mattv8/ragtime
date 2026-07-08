@@ -1009,6 +1009,13 @@ legend {
   margin-top: var(--space-md);
 }
 
+/* Grid items default to min-width: auto (min-content), which lets long
+   unbreakable content stretch a card past its track. Cards must stay at the
+   track's width and truncate internally instead. */
+.tools-grid > * {
+  min-width: 0;
+}
+
 /* Tool Card */
 .tool-card {
   display: flex;
@@ -1098,10 +1105,14 @@ legend {
   border-color: var(--color-warning-border);
 }
 
+/* Two consumers: MCPRoutesPanel uses it as a plain wrapper around h3 + span;
+   ToolsPanel merges it onto the editable name wrapper (see
+   .tool-card-title.name-wrapper below). */
 .tool-card-title {
   display: flex;
   align-items: center;
   min-width: 0;
+  max-width: 100%;
   padding-left: 3px;
   flex-shrink: 1;
 }
@@ -1137,6 +1148,15 @@ legend {
   padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+}
+
+/* Tool card title merged with the editable name wrapper (single element).
+   Size to content (grow: 0) so the edit pencil stays next to the text, and
+   compensate the removed 3px .tool-card-title padding in the margins. */
+.tool-card-title.name-wrapper {
+  flex: 0 1 auto;
+  width: auto;
+  margin: -5px -6px 0;
 }
 
 .tool-card-connection-sub {
@@ -1214,9 +1234,16 @@ legend {
   margin-bottom: var(--space-md);
   line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 6;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* When a heartbeat error banner is present (even reserved via visibility:
+   hidden), clamp the description back to 3 lines so the banner occupies the
+   reclaimed space and the card height does not change. */
+.tool-card:has(.tool-card-heartbeat-error) .tool-card-description {
+  -webkit-line-clamp: 3;
 }
 
 .tool-card-heartbeat-error {
@@ -1389,13 +1416,20 @@ legend {
   border-radius: var(--radius-sm);
 }
 
+/* Take the pencil out of flow so the description text can extend to the
+   card's right margin instead of being squeezed by the button's flex width.
+   The button overlays the top-right corner and only shows on hover. */
 .description-wrapper .inline-edit-btn {
-  margin-top: 2px;
+  position: absolute;
+  top: 6px;
+  right: -14px;
+  margin-top: 0;
 }
 
 .description-wrapper .tool-card-description {
   margin-bottom: 0;
   flex: 1;
+  width: 100%;
 }
 
 .description-wrapper .tool-card-description.placeholder {

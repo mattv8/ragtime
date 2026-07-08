@@ -1998,6 +1998,11 @@ textarea:focus {
   height: 100%;
   display: flex;
   flex-direction: column;
+  /* Override .popover-container's align-items: center; in a column flex that
+     would disable cross-axis stretch and let long nowrap titles size the card
+     to its min-content width, overflowing the grid track. */
+  align-items: stretch;
+  min-width: 0;
 }
 
 .tool-card-drag-wrap.dragging {

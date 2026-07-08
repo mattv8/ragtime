@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { HTMLAttributes, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ToolsPanel } from './ToolsPanel';
@@ -34,19 +35,13 @@ const toolFilterState = {
 vi.mock('@/api', () => ({ api: apiMock }));
 vi.mock('./ToolWizard', () => ({ ToolWizard: () => null }));
 vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
+
+type MockPopoverProps = {
+  children: ReactNode;
+} & HTMLAttributes<HTMLDivElement>;
+
 vi.mock('./Popover', () => ({
-  Popover: ({
-    children,
-    content,
-    position,
-    trigger,
-    openDelayMs,
-    followCursor,
-    show,
-    disabled,
-    ignoreSelector,
-    ...rest
-  }: any) => <div {...rest}>{children}</div>,
+  Popover: ({ children, ...rest }: MockPopoverProps) => <div {...rest}>{children}</div>,
 }));
 vi.mock('./AnimatedCreateButton', () => ({
   AnimatedCreateButton: ({ onClick, label }: { onClick: () => void; label: string }) => (

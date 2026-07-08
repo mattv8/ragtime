@@ -389,48 +389,46 @@ function ToolCard({
         </div>
         <div className="tool-card-header-content">
           <div className="tool-card-header-main">
-            <div className="tool-card-title">
-              {editingField === 'name' ? (
-                <div className="inline-edit-field">
-                  <input
-                    ref={nameInputRef}
-                    type="text"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    onBlur={handleSaveEdit}
-                    disabled={saving}
-                    className="inline-edit-input"
-                  />
-                </div>
-              ) : (
-                <div
-                  className="editable-field-wrapper name-wrapper"
-                  onClick={() => handleStartEdit('name')}
+            {editingField === 'name' ? (
+              <div className="tool-card-title inline-edit-field">
+                <input
+                  ref={nameInputRef}
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  onBlur={handleSaveEdit}
+                  disabled={saving}
+                  className="inline-edit-input"
+                />
+              </div>
+            ) : (
+              <div
+                className="tool-card-title editable-field-wrapper name-wrapper"
+                onClick={() => handleStartEdit('name')}
+              >
+                <Popover
+                  className="tool-title-popover"
+                  content={tool.name}
+                  position="top"
+                  trigger="hover"
+                  disabled={!isTitleTruncated}
                 >
-                  <Popover
-                    className="tool-title-popover"
-                    content={tool.name}
-                    position="top"
-                    trigger="hover"
-                    disabled={!isTitleTruncated}
-                  >
-                    <h3 ref={titleRef}>{tool.name}</h3>
-                  </Popover>
-                  <button
-                    type="button"
-                    className="inline-edit-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleStartEdit('name');
-                    }}
-                    title="Edit name"
-                  >
-                    <Icon name="pencil" size={14} />
-                  </button>
-                </div>
-              )}
-            </div>
+                  <h3 ref={titleRef}>{tool.name}</h3>
+                </Popover>
+                <button
+                  type="button"
+                  className="inline-edit-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleStartEdit('name');
+                  }}
+                  title="Edit name"
+                >
+                  <Icon name="pencil" size={14} />
+                </button>
+              </div>
+            )}
             <div className="tool-card-header-actions">
               <div className="tool-card-badges">
                 {hasActiveIndexingJob && (
