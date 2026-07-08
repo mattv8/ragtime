@@ -1870,6 +1870,48 @@ textarea.chat-header-title-input {
 .chat-subagent-transcript-message:first-child {
   margin-top: 0;
 }
+
+.chat-subagent-stream-card-collapsed .chat-subagent-stream-header {
+  margin-bottom: calc(var(--space-xs) / 2);
+}
+
+.chat-subagent-transcript-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.chat-subagent-transcript-toggle:hover,
+.chat-subagent-transcript-toggle:focus-visible {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.chat-subagent-transcript-toggle svg {
+  transition: transform var(--transition-fast);
+}
+
+.chat-subagent-transcript-toggle svg.expanded {
+  transform: rotate(180deg);
+}
+
+.chat-subagent-transcript-summary {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chat-subagent-stream-status {
   display: inline-flex;
   align-items: center;

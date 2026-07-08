@@ -2950,10 +2950,7 @@ class UserSpaceService:
 
         db = await get_db()
         copied_count = 0
-        conversation_id_map = {
-            str(payload.get("id") or str(uuid4())): str(uuid4())
-            for payload in chat_payloads
-        }
+        conversation_id_map = {str(payload.get("id") or str(uuid4())): str(uuid4()) for payload in chat_payloads}
         created_conversation_ids: set[str] = set()
         pending_parent_updates: list[tuple[str, str]] = []
         for payload in chat_payloads:
@@ -2968,11 +2965,7 @@ class UserSpaceService:
             cloned_parent_conversation_id = conversation_id_map.get(parent_conversation_id) if parent_conversation_id else None
             if cloned_parent_conversation_id == cloned_conversation_id:
                 cloned_parent_conversation_id = None
-            inline_parent_conversation_id = (
-                cloned_parent_conversation_id
-                if cloned_parent_conversation_id in created_conversation_ids
-                else None
-            )
+            inline_parent_conversation_id = cloned_parent_conversation_id if cloned_parent_conversation_id in created_conversation_ids else None
             if cloned_parent_conversation_id and inline_parent_conversation_id is None:
                 pending_parent_updates.append((cloned_conversation_id, cloned_parent_conversation_id))
             subagent_index = payload.get("subagent_index")

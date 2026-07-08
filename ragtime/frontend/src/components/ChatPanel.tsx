@@ -8703,6 +8703,16 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
 }) {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const normalizedStatus = run.status.toLowerCase();
+  const isCompleted = normalizedStatus === 'completed' || normalizedStatus === 'success';
+  const [isExpanded, setIsExpanded] = useState(!isCompleted);
+  const wasCompletedRef = useRef(isCompleted);
+
+  useEffect(() => {
+    if (isCompleted === wasCompletedRef.current) return;
+    setIsExpanded(!isCompleted);
+    wasCompletedRef.current = isCompleted;
+  }, [isCompleted]);
 
   useEffect(() => {
     if (!run.conversationId) return;
@@ -8750,6 +8760,17 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
     });
   }, [conversation?.messages]);
 
+  const compactSummary = useMemo(() => {
+    const responseText = responseMessages
+      .map((message) => messageContentToText(message.content))
+      .join('\n')
+      .trim();
+    const source = run.finalOutput || responseText || promptText || 'Subagent transcript ready.';
+    const normalized = source.replace(/\s+/g, ' ').trim();
+    if (!normalized) return 'Subagent transcript ready.';
+    return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+  }, [promptText, responseMessages, run.finalOutput]);
+
   const openConversation = () => {
     if (!run.conversationId) return;
     onOpenSubagentConversation?.(run.conversationId);
@@ -8758,6 +8779,10 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
   const handleCardClick = (event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     if (target.closest('button, a, input, select, textarea, summary')) return;
+    if (isCompleted && !isExpanded) {
+      setIsExpanded(true);
+      return;
+    }
     openConversation();
   };
 
@@ -8765,17 +8790,25 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
     if (event.target !== event.currentTarget) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
+    if (isCompleted && !isExpanded) {
+      setIsExpanded(true);
+      return;
+    }
     openConversation();
   };
 
   const hasTranscript = responseMessages.length > 0;
+  const cardActionLabel =
+    isCompleted && !isExpanded
+      ? `Expand ${run.name} subagent card`
+      : `Open ${run.name} chat session`;
 
   return (
     <div
-      className={`chat-subagent-stream-card ${run.conversationId ? 'chat-subagent-stream-card-clickable' : ''}`}
+      className={`chat-subagent-stream-card ${run.conversationId ? 'chat-subagent-stream-card-clickable' : ''} ${isCompleted && !isExpanded ? 'chat-subagent-stream-card-collapsed' : ''}`}
       role={run.conversationId ? 'button' : undefined}
       tabIndex={run.conversationId ? 0 : undefined}
-      aria-label={run.conversationId ? `Open ${run.name} chat session` : undefined}
+      aria-label={run.conversationId ? cardActionLabel : undefined}
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
     >
@@ -8790,50 +8823,67 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
             scope: {run.fileScope.join(', ')}
           </span>
         )}
+        {isCompleted && (
+          <button
+            type="button"
+            className="chat-subagent-transcript-toggle"
+            onClick={() => setIsExpanded((expanded) => !expanded)}
+            aria-expanded={isExpanded}
+            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${run.name} subagent transcript`}
+          >
+            <ChevronDown size={14} className={isExpanded ? 'expanded' : ''} />
+          </button>
+        )}
       </div>
-      <div className="chat-subagent-stream-body">
-        {promptText && (
-          <div className="chat-subagent-user-prompt">
-            <div className="chat-subagent-user-prompt-label">Prompt</div>
+      {isCompleted && !isExpanded ? (
+        <div className="chat-subagent-transcript-summary" title={compactSummary}>
+          {compactSummary}
+        </div>
+      ) : (
+        <div className="chat-subagent-stream-body">
+          {promptText && (
+            <div className="chat-subagent-user-prompt">
+              <div className="chat-subagent-user-prompt-label">Prompt</div>
+              <div className="markdown-content">
+                <MemoizedMarkdown content={promptText} workspaceId={workspaceId} />
+              </div>
+            </div>
+          )}
+          {hasTranscript ? (
+            responseMessages.map((message, messageIndex) => (
+              <div
+                className={`chat-subagent-transcript-message chat-subagent-transcript-message-${message.role}`}
+                key={message.message_id || `${run.taskId || run.index}-${messageIndex}`}
+              >
+                {buildSubagentTranscriptSegments(message).map((segment, segmentIndex) => (
+                  <StreamingSegmentDisplay
+                    key={`${message.message_id || messageIndex}-${segmentIndex}-${segment.type}`}
+                    segment={segment}
+                    showToolCalls={showToolCalls}
+                    workspaceId={workspaceId}
+                    conversationId={run.conversationId}
+                    onOpenWorkspaceFile={onOpenWorkspaceFile}
+                    onOpenSubagentConversation={onOpenSubagentConversation}
+                  />
+                ))}
+              </div>
+            ))
+          ) : run.finalOutput ? (
             <div className="markdown-content">
-              <MemoizedMarkdown content={promptText} workspaceId={workspaceId} />
+              <MemoizedMarkdown
+                content={run.finalOutput}
+                conversationId={run.conversationId}
+                workspaceId={workspaceId}
+                enableTableExports={false}
+              />
             </div>
-          </div>
-        )}
-        {hasTranscript ? (
-          responseMessages.map((message, messageIndex) => (
-            <div
-              className={`chat-subagent-transcript-message chat-subagent-transcript-message-${message.role}`}
-              key={message.message_id || `${run.taskId || run.index}-${messageIndex}`}
-            >
-              {buildSubagentTranscriptSegments(message).map((segment, segmentIndex) => (
-                <StreamingSegmentDisplay
-                  key={`${message.message_id || messageIndex}-${segmentIndex}-${segment.type}`}
-                  segment={segment}
-                  showToolCalls={showToolCalls}
-                  workspaceId={workspaceId}
-                  conversationId={run.conversationId}
-                  onOpenWorkspaceFile={onOpenWorkspaceFile}
-                  onOpenSubagentConversation={onOpenSubagentConversation}
-                />
-              ))}
-            </div>
-          ))
-        ) : run.finalOutput ? (
-          <div className="markdown-content">
-            <MemoizedMarkdown
-              content={run.finalOutput}
-              conversationId={run.conversationId}
-              workspaceId={workspaceId}
-              enableTableExports={false}
-            />
-          </div>
-        ) : loadError ? (
-          <div className="chat-subagent-stream-empty">{loadError}</div>
-        ) : (
-          <div className="chat-subagent-stream-empty">Loading subagent transcript...</div>
-        )}
-      </div>
+          ) : loadError ? (
+            <div className="chat-subagent-stream-empty">{loadError}</div>
+          ) : (
+            <div className="chat-subagent-stream-empty">Loading subagent transcript...</div>
+          )}
+        </div>
+      )}
     </div>
   );
 });
