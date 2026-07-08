@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,6 +24,26 @@ def with_event_channel(event: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def sanitize_reasoning_text(text: str) -> str:
+    """Remove provider/rendering separators from reasoning summaries."""
+    if not text or "<!--" not in text:
+        return text
+
+    cleaned_lines: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        if re.match(r"^\s*(```|~~~)", line):
+            cleaned_lines.append(line)
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            cleaned_lines.append(line)
+            continue
+        cleaned_lines.append(re.sub(r"<!--\s*-->", "", line))
+
+    return re.sub(r"\n{3,}", "\n\n", "".join(cleaned_lines))
+
+
 def append_reasoning_event(
     events: list[dict[str, Any]],
     content: str,
@@ -35,9 +56,9 @@ def append_reasoning_event(
 
     if events and events[-1].get("type") == "reasoning":
         events[-1].setdefault("channel", "analysis")
-        events[-1]["content"] = f"{events[-1].get('content', '')}{content}"
+        events[-1]["content"] = sanitize_reasoning_text(f"{events[-1].get('content', '')}{content}")
     else:
-        events.append({"type": "reasoning", "channel": "analysis", "content": content})
+        events.append({"type": "reasoning", "channel": "analysis", "content": sanitize_reasoning_text(content)})
 
     return block_started_at
 

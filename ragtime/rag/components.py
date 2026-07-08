@@ -159,6 +159,7 @@ from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
 from ragtime.indexer.chat_attachments import extract_chat_image_context_from_part, preprocess_chat_attachment_content_parts
+from ragtime.indexer.chat_events import sanitize_reasoning_text
 from ragtime.indexer.conversation_tool_options import (
     load_conversation_tool_options,
     resolve_effective_allow_write,
@@ -7856,7 +7857,7 @@ class RAGComponents:
             elif isinstance(summary, str) and summary:
                 reasoning_parts.append(summary)
 
-        return "".join(reasoning_parts)
+        return sanitize_reasoning_text("".join(reasoning_parts))
 
     @classmethod
     def _extract_reasoning_text_from_payload(cls, payload: Any) -> str:
@@ -7865,13 +7866,13 @@ class RAGComponents:
             return ""
 
         if isinstance(payload, str):
-            return payload
+            return sanitize_reasoning_text(payload)
 
         if isinstance(payload, list):
             return cls._extract_reasoning_text_from_content_list(payload)
 
         if not isinstance(payload, dict):
-            return str(payload)
+            return sanitize_reasoning_text(str(payload))
 
         reasoning_parts: list[str] = []
         seen_parts: set[str] = set()
@@ -7918,7 +7919,7 @@ class RAGComponents:
         content = payload.get("content")
         append_reasoning_text(content)
 
-        return "".join(reasoning_parts)
+        return sanitize_reasoning_text("".join(reasoning_parts))
 
     @classmethod
     def _extract_reasoning_from_stream_chunk(cls, chunk: Any) -> str:
