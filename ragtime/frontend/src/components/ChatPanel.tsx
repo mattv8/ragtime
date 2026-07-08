@@ -5188,36 +5188,40 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
     if (toolCall.tool !== 'capture_userspace_screenshot' || (!effectiveOutput && !toolCall.mcp)) {
       return null;
     }
+    let parsed = {} as ScreenshotToolOutput;
     try {
-      const parsed = effectiveOutput
-        ? (JSON.parse(effectiveOutput) as ScreenshotToolOutput)
-        : ({} as ScreenshotToolOutput);
-      const nested =
-        parsed.screenshot && typeof parsed.screenshot === 'object' ? parsed.screenshot : null;
-      const mcpResponse = asRecord(parsed.mcp?.response) ?? asRecord(toolCall.mcp?.response);
-      const url =
-        typeof parsed.preview_image_url === 'string'
-          ? parsed.preview_image_url.trim()
-          : typeof nested?.preview_image_url === 'string'
-            ? nested.preview_image_url.trim()
-            : typeof mcpResponse?.preview_image_url === 'string'
-              ? mcpResponse.preview_image_url.trim()
-              : '';
-      if (!url) return null;
-      const render = parsed.render ?? nested?.render;
-      const width = Number(render?.width || 0);
-      const height = Number(render?.height || 0);
-      const effectiveWait = Number(render?.effective_wait_after_load_ms || 0);
-      return {
-        imageUrl: url,
-        width: Number.isFinite(width) && width > 0 ? width : null,
-        height: Number.isFinite(height) && height > 0 ? height : null,
-        effectiveWait: Number.isFinite(effectiveWait) && effectiveWait > 0 ? effectiveWait : null,
-      };
+      parsed = effectiveOutput ? (JSON.parse(effectiveOutput) as ScreenshotToolOutput) : parsed;
     } catch {
-      return null;
+      parsed = {} as ScreenshotToolOutput;
     }
+
+    const nested =
+      parsed.screenshot && typeof parsed.screenshot === 'object' ? parsed.screenshot : null;
+    const mcpResponse = asRecord(parsed.mcp?.response) ?? asRecord(toolCall.mcp?.response);
+    const url =
+      typeof parsed.preview_image_url === 'string'
+        ? parsed.preview_image_url.trim()
+        : typeof nested?.preview_image_url === 'string'
+          ? nested.preview_image_url.trim()
+          : typeof mcpResponse?.preview_image_url === 'string'
+            ? mcpResponse.preview_image_url.trim()
+            : '';
+    if (!url) return null;
+    const render = parsed.render ?? nested?.render;
+    const width = Number(render?.width || mcpResponse?.effective_width || 0);
+    const height = Number(render?.height || mcpResponse?.effective_height || 0);
+    const effectiveWait = Number(
+      render?.effective_wait_after_load_ms || mcpResponse?.effective_wait_after_load_ms || 0,
+    );
+    return {
+      imageUrl: url,
+      width: Number.isFinite(width) && width > 0 ? width : null,
+      height: Number.isFinite(height) && height > 0 ? height : null,
+      effectiveWait: Number.isFinite(effectiveWait) && effectiveWait > 0 ? effectiveWait : null,
+    };
   }, [effectiveOutput, toolCall.mcp, toolCall.tool]);
+  const screenshotPreviewForDisplay = !hasErrorInOutput ? screenshotPreview : null;
+  const shouldRenderScreenshotOnly = screenshotPreviewForDisplay != null;
 
   // Check if this is a chart tool
   const chartData = useMemo(() => {
@@ -7599,6 +7603,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               </div>
             )}
             {inputDisplay &&
+              !shouldRenderScreenshotOnly &&
               !userspaceWriteResult &&
               !userspaceReadResult &&
               !isUserspaceStructuredJsonTool &&
@@ -7642,7 +7647,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   <pre className="tool-call-code">{inputDisplay}</pre>
                 </div>
               )}
-            {mcpDisplay && (
+            {mcpDisplay && !shouldRenderScreenshotOnly && (
               <div className="tool-call-section">
                 <div className="tool-call-section-header">
                   <span className="tool-call-section-label">MCP:</span>
@@ -7848,26 +7853,27 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 </div>
               </div>
             ) : null}
-            {(effectiveOutput ||
+            {(shouldRenderScreenshotOnly ||
+              effectiveOutput ||
               isUserspaceStructuredJsonTool ||
               isKnowledgeSearchToolName(toolCall.tool)) &&
               !isTerminalCommand &&
-              (screenshotPreview && !hasErrorInOutput ? (
+              (shouldRenderScreenshotOnly ? (
                 <div className="tool-call-section">
                   <div className="tool-call-screenshot-meta">
-                    {screenshotPreview.width && screenshotPreview.height
-                      ? `${screenshotPreview.width}\u00d7${screenshotPreview.height}`
+                    {screenshotPreviewForDisplay.width && screenshotPreviewForDisplay.height
+                      ? `${screenshotPreviewForDisplay.width}\u00d7${screenshotPreviewForDisplay.height}`
                       : 'Screenshot'}
-                    {screenshotPreview.effectiveWait
-                      ? ` | settled ${screenshotPreview.effectiveWait}ms`
+                    {screenshotPreviewForDisplay.effectiveWait
+                      ? ` | settled ${screenshotPreviewForDisplay.effectiveWait}ms`
                       : ''}
                   </div>
                   <img
-                    src={screenshotPreview.imageUrl}
+                    src={screenshotPreviewForDisplay.imageUrl}
                     alt="Captured User Space screenshot"
                     className="tool-call-screenshot-image"
                     loading="lazy"
-                    onClick={() => setZoomedImage(screenshotPreview.imageUrl)}
+                    onClick={() => setZoomedImage(screenshotPreviewForDisplay.imageUrl)}
                     style={{ cursor: 'zoom-in' }}
                   />
                 </div>
