@@ -2742,6 +2742,49 @@ textarea.chat-header-title-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Integrated right-side rail for terminal-style tool calls. It identifies the
+   target tool/server while the command ellipsizes in the remaining space. */
+.tool-call-tool-pill {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-left: auto;
+  padding-left: var(--space-sm);
+  padding-right: var(--space-xs);
+  min-width: 72px;
+  max-width: min(150px, 40%);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--color-text-muted);
+  line-height: 1;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-surface-secondary) 78%, transparent) 28%
+  );
+  border-left: 1px solid var(--color-border);
+  border-radius: 0 var(--tool-call-radius-sm) var(--tool-call-radius-sm) 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+.tool-call:hover .tool-call-tool-pill,
+.tool-call:has(.tool-call-details) .tool-call-tool-pill,
+.tool-call-header:focus-visible .tool-call-tool-pill {
+  color: var(--color-text-secondary);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-surface-hover) 86%, transparent) 24%
+  );
+  border-color: var(--color-border-strong);
+}
 .tool-call-terminal-exit {
   font-family: var(--font-mono);
   font-size: 0.65rem;

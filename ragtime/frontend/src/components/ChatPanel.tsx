@@ -1058,6 +1058,23 @@ export interface ActiveToolCall {
   generating_lines?: number;
 }
 
+function getToolCallPillName(
+  toolCall: Pick<ActiveToolCall, 'tool' | 'connection' | 'mcp'>,
+): string {
+  const connectionName = toolCall.connection?.tool_config_name?.trim();
+  if (connectionName) return connectionName;
+
+  const mcpServerName = toolCall.mcp?.server_name?.trim();
+  const mcpToolName = toolCall.mcp?.tool_name?.trim();
+  if (mcpServerName && mcpToolName) return `${mcpServerName}:${mcpToolName}`;
+  if (mcpServerName) return mcpServerName;
+
+  if (toolCall.tool === CHAT_DIAGNOSTIC_COMMAND_TOOL_ID) return 'Local terminal';
+  if (toolCall.tool === 'run_terminal_command') return 'Workspace terminal';
+
+  return getToolVisualName(toolCall.tool);
+}
+
 // Local render event to keep streaming items in arrival order
 type StreamingRenderEvent =
   | { type: 'content'; channel?: 'final'; content: string }
@@ -4783,6 +4800,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const [isSwitchingVisualizationBranch, setIsSwitchingVisualizationBranch] = useState(false);
   const retryProgressTimers = useRef<number[]>([]);
   const visualToolName = useMemo(() => getToolVisualName(toolCall.tool), [toolCall.tool]);
+  const toolCallPillName = getToolCallPillName(toolCall);
   const [isRerunning, setIsRerunning] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   // Per-entry diff state keyed by snapshot+path+writeSignature so a batched
@@ -7536,6 +7554,11 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               </span>
             ) : (
               <span className="tool-call-name">{visualToolName}</span>
+            )}
+            {isTerminalCommand && toolCallPillName && (
+              <span className="tool-call-tool-pill" title={toolCallPillName}>
+                {toolCallPillName}
+              </span>
             )}
             {toolCall.status === 'running' && toolCall.generating_lines ? (
               <span className="tool-call-progress">{toolCall.generating_lines} lines</span>
