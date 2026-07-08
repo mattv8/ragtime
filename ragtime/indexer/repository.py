@@ -2450,6 +2450,64 @@ class IndexerRepository:
             summary.subagent_conversation_ids = child_ids_by_parent.get(summary.id, [])
         return summaries
 
+    async def list_subagent_conversation_summaries(
+        self,
+        parent_conversation_id: str,
+    ) -> list[ConversationSummaryResponse]:
+        """List child subagent conversation summaries without message payloads."""
+        db = await self._get_db()
+        quoted_parent_id = _sql_quote_literal(parent_conversation_id)
+        rows = await db.query_raw(f"""
+            SELECT
+                c.id,
+                c.title,
+                c.model,
+                c.user_id,
+                c.workspace_id,
+                u.username,
+                u.display_name,
+                CASE
+                    WHEN jsonb_typeof(c.messages) = 'array' THEN jsonb_array_length(c.messages)
+                    ELSE 0
+                END AS message_count,
+                c.total_tokens,
+                c.active_task_id,
+                c.active_branch_id,
+                c.subagents_enabled,
+                c.parent_conversation_id,
+                c.subagent_role,
+                c.subagent_index,
+                c.created_at,
+                c.updated_at
+            FROM conversations c
+            LEFT JOIN users u ON u.id = c.user_id
+            WHERE c.parent_conversation_id = {quoted_parent_id}
+            ORDER BY c.subagent_index ASC NULLS LAST, c.created_at ASC, c.id ASC
+            """)
+
+        return [
+            ConversationSummaryResponse(
+                id=str(row.get("id") or ""),
+                title=str(row.get("title") or "Untitled Chat"),
+                model=str(row.get("model") or ""),
+                user_id=row.get("user_id"),
+                workspace_id=row.get("workspace_id"),
+                username=row.get("username"),
+                display_name=row.get("display_name"),
+                message_count=int(row.get("message_count") or 0),
+                total_tokens=int(row.get("total_tokens") or 0),
+                active_task_id=row.get("active_task_id"),
+                active_branch_id=row.get("active_branch_id"),
+                subagents_enabled=bool(row.get("subagents_enabled", True)),
+                parent_conversation_id=row.get("parent_conversation_id"),
+                subagent_role=row.get("subagent_role"),
+                subagent_index=row.get("subagent_index"),
+                created_at=cast(datetime, row.get("created_at")),
+                updated_at=cast(datetime, row.get("updated_at")),
+            )
+            for row in rows
+        ]
+
     async def get_subagent_conversation_ids_by_parent(self, parent_conversation_ids: list[str]) -> dict[str, list[str]]:
         """Return child subagent conversation IDs keyed by parent conversation ID."""
         parent_ids = [parent_id for parent_id in dict.fromkeys(parent_conversation_ids) if parent_id]

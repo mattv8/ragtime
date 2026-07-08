@@ -434,6 +434,29 @@ class SandboxProvisioningTests(unittest.TestCase):
             self.assertTrue(response.exists)
             self.assertEqual(response.content, "canonical\n")
 
+    def test_runtime_file_read_hides_symlink_escape_for_non_mounted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            workspace_root = tmp / "workspaces" / "workspace-1"
+            files = workspace_root / "files"
+            rootfs = workspace_root / "rootfs"
+            outside = tmp / "outside"
+            files.mkdir(parents=True)
+            rootfs.mkdir(parents=True)
+            outside.mkdir()
+            (outside / "secret.txt").write_text("secret\n", encoding="utf-8")
+            (files / "escape.txt").symlink_to(outside / "secret.txt")
+            spec = self._pivot_root_spec(files, rootfs)
+            service = self._service_with_session(tmp, spec, files, rootfs)
+            caps = self._pivot_root_caps()
+
+            with mock.patch("runtime.worker.service.detect_capabilities", return_value=caps):
+                response = asyncio.run(service.read_file("session-1", "escape.txt"))
+
+            self.assertEqual(response.path, "escape.txt")
+            self.assertFalse(response.exists)
+            self.assertEqual(response.content, "")
+
     def test_runtime_file_write_uses_active_chroot_mirror_without_mounts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

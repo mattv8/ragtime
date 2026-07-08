@@ -1187,6 +1187,7 @@ export function UserSpacePanel({
   const previousRuntimeDisplayStateRef = useRef<string | null>(null);
   const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
   const refreshRuntimeStatusPendingRef = useRef(false);
+  const refreshRuntimeStatusPendingIncludeRef = useRef<boolean>(true);
   const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
   const workspacesRef = useRef(workspaces);
   const lastWorkspaceCookieNameRef = useRef('');
@@ -2562,7 +2563,7 @@ export function UserSpacePanel({
           return;
         }
 
-        const summaries = await api.getWorkspacesConversationStateSummary(workspaceIds);
+        const summaries = await api.getWorkspacesConversationStateSummaryLite(workspaceIds);
 
         const updates = summaries.map((summary) => {
           const resolved = resolveWorkspaceInterruptStateFromSummary(
@@ -2669,6 +2670,49 @@ export function UserSpacePanel({
     [previewEntryPath],
   );
 
+  const BINARY_USER_SPACE_FILE_EXTENSIONS = [
+    '.sqlite',
+    '.sqlite3',
+    '.db',
+    '.db-wal',
+    '.db-shm',
+    '.sqlite-wal',
+    '.sqlite-shm',
+    // images
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.bmp',
+    '.tiff',
+    '.ico',
+    // fonts
+    '.woff',
+    '.woff2',
+    '.ttf',
+    '.otf',
+    '.eot',
+    // archives
+    '.zip',
+    '.tar',
+    '.gz',
+    '.bz2',
+    '.7z',
+    '.rar',
+    // other common binaries
+    '.pdf',
+  ];
+
+  function isLikelyBinaryUserSpaceFilePath(path: string): boolean {
+    const lower = path.toLowerCase();
+    return BINARY_USER_SPACE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+  }
+
+  // Warm-cache prefetch skips large files (e.g. package-lock.json, generated
+  // bundles); they still load on demand when the user opens them.
+  const WARM_CACHE_MAX_FILE_BYTES = 512 * 1024;
+
   const warmWorkspaceFileCache = useCallback(
     async (
       workspaceId: string,
@@ -2680,6 +2724,12 @@ export function UserSpacePanel({
       const excludedPaths = new Set(options?.excludePaths ?? []);
       const staleFiles = nextFiles.filter((file) => {
         if (excludedPaths.has(file.path)) {
+          return false;
+        }
+        if (isLikelyBinaryUserSpaceFilePath(file.path)) {
+          return false;
+        }
+        if ((file.size_bytes ?? 0) > WARM_CACHE_MAX_FILE_BYTES) {
           return false;
         }
         const cached = fileContentCacheRef.current[file.path];
@@ -3360,7 +3410,11 @@ export function UserSpacePanel({
   }, [activeWorkspaceConversationId]);
 
   const runRefreshActiveWorkspaceState = useCallback(
-    async (workspaceId: string | null, conversationId: string | null) => {
+    async (
+      workspaceId: string | null,
+      conversationId: string | null,
+      includeSelectedConversation: boolean = true,
+    ) => {
       if (!workspaceId) {
         setRuntimeStatus(null);
         setActiveWorkspaceChatSnapshot(null);
@@ -3372,7 +3426,11 @@ export function UserSpacePanel({
       const requestedConversationId = conversationId ?? null;
 
       try {
-        const state = await api.getUserSpaceWorkspaceTabState(workspaceId, conversationId);
+        const state = await api.getUserSpaceWorkspaceTabState(
+          workspaceId,
+          conversationId,
+          includeSelectedConversation,
+        );
 
         const isCurrentWorkspaceRequest =
           requestId === loadRuntimeStatusRequestIdRef.current &&
@@ -3407,9 +3465,12 @@ export function UserSpacePanel({
 
         if (refreshRuntimeStatusPendingRef.current) {
           refreshRuntimeStatusPendingRef.current = false;
+          const pendingIncludeSelectedConversation = refreshRuntimeStatusPendingIncludeRef.current;
+          refreshRuntimeStatusPendingIncludeRef.current = true;
           void runRefreshActiveWorkspaceState(
             activeWorkspaceIdRef.current,
             activeWorkspaceConversationIdRef.current,
+            pendingIncludeSelectedConversation,
           );
         }
       }
@@ -3417,17 +3478,23 @@ export function UserSpacePanel({
     [],
   );
 
-  const refreshActiveWorkspaceState = useCallback(async () => {
-    if (refreshRuntimeStatusInflightRef.current) {
-      refreshRuntimeStatusPendingRef.current = true;
-      return;
-    }
+  const refreshActiveWorkspaceState = useCallback(
+    async (includeSelectedConversation: boolean = true) => {
+      if (refreshRuntimeStatusInflightRef.current) {
+        refreshRuntimeStatusPendingRef.current = true;
+        refreshRuntimeStatusPendingIncludeRef.current =
+          refreshRuntimeStatusPendingIncludeRef.current || includeSelectedConversation;
+        return;
+      }
 
-    await runRefreshActiveWorkspaceState(
-      activeWorkspaceIdRef.current,
-      activeWorkspaceConversationIdRef.current,
-    );
-  }, [runRefreshActiveWorkspaceState]);
+      await runRefreshActiveWorkspaceState(
+        activeWorkspaceIdRef.current,
+        activeWorkspaceConversationIdRef.current,
+        includeSelectedConversation,
+      );
+    },
+    [runRefreshActiveWorkspaceState],
+  );
 
   // SSE subscription for workspace change events (file upsert/patch/delete, snapshots).
   // Bumps previewRefreshCounter to remount the preview iframe and reloads workspace data.
@@ -4840,7 +4907,7 @@ export function UserSpacePanel({
     };
 
     const runPoll = async () => {
-      await refreshActiveWorkspaceState();
+      await refreshActiveWorkspaceState(false);
       if (isTransitional && isPageVisible) {
         attempt += 1;
       } else {

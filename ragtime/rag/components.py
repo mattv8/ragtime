@@ -633,6 +633,72 @@ def should_truncate_stream_display_output(
     return True
 
 
+_STREAM_DISPLAY_FINAL_OUTPUT_MAX_LEN = 800
+
+
+def _compact_spawn_subagents_display_output(display_output: str) -> str:
+    """Truncate verbose subagent final_output strings while keeping JSON parseable."""
+    try:
+        parsed = json.loads(display_output)
+    except (json.JSONDecodeError, TypeError):
+        return display_output
+
+    if not isinstance(parsed, dict):
+        return display_output
+
+    subagents = parsed.get("subagents")
+    if not isinstance(subagents, list):
+        return display_output
+
+    truncated_any = False
+    for entry in subagents:
+        if not isinstance(entry, dict):
+            continue
+        final_output = entry.get("final_output")
+        if not isinstance(final_output, str):
+            continue
+        max_len = _STREAM_DISPLAY_FINAL_OUTPUT_MAX_LEN
+        if len(final_output) > max_len:
+            omitted = len(final_output) - max_len
+            entry["final_output"] = final_output[:max_len] + f" ... [{omitted:,} characters omitted]"
+            truncated_any = True
+
+    if truncated_any:
+        parsed["_ragtime_output_truncated"] = True
+    return json.dumps(parsed, indent=2, ensure_ascii=False)
+
+
+def compact_stream_display_output(
+    tool_name: str,
+    display_output: Any,
+    presentation_meta: Any = None,
+) -> Any:
+    """Apply streaming display truncation while preserving JSON parseability.
+
+    Falls back to the legacy blind slice only for non-JSON strings or when
+    structured truncation cannot produce a compact enough result.
+    """
+    if not should_truncate_stream_display_output(tool_name, display_output, presentation_meta):
+        return display_output
+
+    assert isinstance(display_output, str)
+
+    if tool_name == "spawn_subagents":
+        return _compact_spawn_subagents_display_output(display_output)
+
+    try:
+        parsed = json.loads(display_output)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    if isinstance(parsed, (dict, list)):
+        truncated_json = _truncate_structured_tool_output(parsed, 2000)
+        if truncated_json is not None:
+            return truncated_json
+
+    return display_output[:2000] + "... (truncated)"
+
+
 def _truncate_structured_tool_output(value: Any, max_chars: int) -> str | None:
     """Shrink large string fields while keeping tool JSON parseable."""
 
@@ -16066,7 +16132,7 @@ class RAGComponents:
                                 # web tools are already bounded by their own tool
                                 # limits and frontend scroll containers.
                                 if should_truncate_stream_display_output(tool_name, display_output, presentation_meta):
-                                    display_output = display_output[:2000] + "... (truncated)"
+                                    display_output = compact_stream_display_output(tool_name, display_output, presentation_meta)
                                 tool_args = start_payload.get("input") if start_payload else {}
                                 if not isinstance(tool_args, dict):
                                     tool_args = {"input": tool_args}

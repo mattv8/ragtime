@@ -315,7 +315,7 @@ from ragtime.indexer.visualization_retry import (
     VisualizationRetryContext,
     retry_visualization_with_repair,
 )
-from ragtime.indexer.workspace_state import build_workspace_chat_state
+from ragtime.indexer.workspace_state import build_workspace_chat_state, summary_to_conversation_response
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.rag import rag
 from ragtime.tools.influxdb import test_influxdb_connection
@@ -11563,6 +11563,7 @@ class UpdateConversationShareSlugRequest(BaseModel):
 async def get_workspace_chat_state(
     workspace_id: str,
     selected_conversation_id: Optional[str] = None,
+    include_selected_conversation: bool = True,
     user: User = Depends(get_current_user),
 ):
     """Return workspace conversations plus selected conversation task state."""
@@ -11572,6 +11573,7 @@ async def get_workspace_chat_state(
         user_id=user.id,
         is_admin=(user.role == "admin"),
         selected_conversation_id=selected_conversation_id,
+        include_selected_conversation=include_selected_conversation,
     )
 
 
@@ -11898,68 +11900,23 @@ async def get_workspace_conversation_state(
     """Return combined workspace conversation summaries and interrupted-task IDs."""
     await _assert_workspace_access(workspace_id, user, "viewer")
     is_admin = user.role == "admin"
-    convs = await repository.list_conversations(
+    summaries = await repository.list_conversation_summaries(
         user_id=user.id,
         include_all=is_admin,
         workspace_id=workspace_id,
     )
     interrupted_conversation_ids = await repository.get_interrupted_conversation_ids_for_workspace(workspace_id)
     return WorkspaceConversationStateResponse(
-        conversations=[_to_conversation_response(c) for c in convs],
+        conversations=[summary_to_conversation_response(s) for s in summaries],
         interrupted_conversation_ids=interrupted_conversation_ids,
     )
 
 
-@router.post(
-    "/conversations/workspaces/state-summary",
-    response_model=List[WorkspaceConversationStateSummaryItem],
-)
-async def get_workspaces_conversation_state_summary(
+async def _build_workspaces_conversation_state_summary(
     request: WorkspaceConversationStateSummaryRequest,
-    user: User = Depends(get_current_user),
-):
-    """Return live/interrupted summary for multiple workspaces in one request."""
-    workspace_ids = [wid.strip() for wid in request.workspace_ids if wid and wid.strip()]
-    if not workspace_ids:
-        return []
-
-    # Preserve order while deduplicating
-    deduped_workspace_ids = list(dict.fromkeys(workspace_ids))
-    is_admin = user.role == "admin"
-    results: list[WorkspaceConversationStateSummaryItem] = []
-
-    for workspace_id in deduped_workspace_ids:
-        await _assert_workspace_access(workspace_id, user, "viewer")
-        convs, interrupted_conversation_ids = await asyncio.gather(
-            repository.list_conversations(
-                user_id=user.id,
-                include_all=is_admin,
-                workspace_id=workspace_id,
-            ),
-            repository.get_interrupted_conversation_ids_for_workspace(workspace_id),
-        )
-        has_live_task = any(bool(conv.active_task_id) for conv in convs)
-        has_interrupted_task = len(interrupted_conversation_ids) > 0
-        results.append(
-            WorkspaceConversationStateSummaryItem(
-                workspace_id=workspace_id,
-                has_live_task=has_live_task,
-                has_interrupted_task=has_interrupted_task,
-            )
-        )
-
-    return results
-
-
-@router.post(
-    "/conversations/workspaces/state-summary-lite",
-    response_model=List[WorkspaceConversationStateSummaryItem],
-)
-async def get_workspaces_conversation_state_summary_lite(
-    request: WorkspaceConversationStateSummaryRequest,
-    user: User = Depends(get_current_user),
-):
-    """Return workspace live/interrupted flags using batched lookups."""
+    user: User,
+) -> list[WorkspaceConversationStateSummaryItem]:
+    """Shared batched implementation for workspace live/interrupted summaries."""
     workspace_ids = [wid.strip() for wid in request.workspace_ids if wid and wid.strip()]
     if not workspace_ids:
         return []
@@ -11980,6 +11937,30 @@ async def get_workspaces_conversation_state_summary_lite(
         )
         for workspace_id in deduped_workspace_ids
     ]
+
+
+@router.post(
+    "/conversations/workspaces/state-summary",
+    response_model=List[WorkspaceConversationStateSummaryItem],
+)
+async def get_workspaces_conversation_state_summary(
+    request: WorkspaceConversationStateSummaryRequest,
+    user: User = Depends(get_current_user),
+):
+    """Return live/interrupted summary for multiple workspaces in one request."""
+    return await _build_workspaces_conversation_state_summary(request, user)
+
+
+@router.post(
+    "/conversations/workspaces/state-summary-lite",
+    response_model=List[WorkspaceConversationStateSummaryItem],
+)
+async def get_workspaces_conversation_state_summary_lite(
+    request: WorkspaceConversationStateSummaryRequest,
+    user: User = Depends(get_current_user),
+):
+    """Return workspace live/interrupted flags using batched lookups."""
+    return await _build_workspaces_conversation_state_summary(request, user)
 
 
 @router.post(
@@ -12113,6 +12094,29 @@ async def create_conversation(
         workspace_id=workspace_id,
     )
     return _to_conversation_response(conv)
+
+
+@router.get(
+    "/conversations/{conversation_id}/subagents/summaries",
+    response_model=List[ConversationSummaryResponse],
+)
+async def list_subagent_conversation_summaries_route(
+    conversation_id: str,
+    workspace_id: Optional[str] = None,
+    user: User = Depends(get_current_user),
+):
+    """Return lightweight summaries of child subagent conversations."""
+    await _assert_workspace_access(workspace_id, user, "viewer")
+    has_access = await repository.check_conversation_access(
+        conversation_id,
+        user.id,
+        is_admin=(user.role == "admin"),
+        workspace_id=workspace_id,
+    )
+    if not has_access:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return await repository.list_subagent_conversation_summaries(conversation_id)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)

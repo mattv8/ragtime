@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import posixpath
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Collection, Literal
+from typing import Any, Callable, Collection, Iterator, Literal
 
 from fastapi import HTTPException
 
 SQLITE_MANAGED_DIR_PREFIX = ".ragtime/db/"
 SQLITE_FILE_EXTENSIONS = frozenset({".sqlite", ".sqlite3", ".db", ".db3"})
+
+# Directory names hidden by the downstream filtering layer in
+# ragtime/userspace/service.py (_HIDDEN_DIRS), minus `.ragtime`: parts of
+# `.ragtime` are surfaced intentionally (e.g. `.ragtime/db/migrations/`,
+# `.ragtime/scripts/`, `.ragtime/runtime-entrypoint.json`). Keep this aligned
+# with downstream hide rules while preserving that exception.
+_HIDDEN_DIR_NAMES = frozenset({".git", "node_modules", "__pycache__", "dist"})
+
 PLATFORM_MANAGED_GITIGNORE_PATTERNS = (
     ".ragtime/runtime-bootstrap.json",
     ".ragtime/.runtime-bootstrap.done",
@@ -182,28 +191,110 @@ def sync_scope_relative_paths(
     return results
 
 
+def _iter_tree_entries(
+    root: Path,
+    include_dirs: bool,
+) -> Iterator[WorkspaceTreeEntry]:
+    """Yield tree entries under ``root`` while pruning hidden directories.
+
+    This mirrors the downstream filtering in ``ragtime/userspace/service.py``:
+    entries inside ``_HIDDEN_DIR_NAMES`` are skipped at any depth.  We never
+    prune ``.ragtime`` because parts of it are surfaced to callers.
+
+    Symlink semantics (workspace filesystem mounts are by design and must
+    appear in the tree UI):
+
+    - Symlinks whose resolved target stays inside ``root`` are listed and,
+      for directories, traversed.  This keeps contained mount/volume layouts
+      (e.g. ``current -> releases/v2``) browsable.
+    - Symlinks escaping ``root`` are neither listed nor followed, matching the
+      access-time containment in ``resolve_workspace_mount_source_path`` and
+      the repo symlink-safety guidance (never wander into host filesystem
+      areas the walk root does not own).
+    - Loops are broken with per-branch ancestor-chain cycle detection using
+      ``(st_dev, st_ino)`` identities: a link back to an ancestor is shown as
+      a directory entry but never descended.  Sibling links to the same
+      target do not shadow the real directory.
+    """
+    try:
+        root_resolved = root.resolve()
+        root_stat = root.stat()
+    except OSError:
+        return
+
+    # Stack of (directory path, relative posix path, ancestor identities).
+    stack: list[tuple[Path, str, frozenset[tuple[int, int]]]] = [
+        (root, "", frozenset({(root_stat.st_dev, root_stat.st_ino)})),
+    ]
+
+    while stack:
+        dirpath, rel_prefix, ancestor_ids = stack.pop()
+        try:
+            with os.scandir(dirpath) as scan:
+                children = sorted(scan, key=lambda item: item.name)
+        except OSError:
+            continue
+
+        for child in children:
+            rel_path = f"{rel_prefix}/{child.name}" if rel_prefix else child.name
+            try:
+                is_symlink = child.is_symlink()
+                is_dir = child.is_dir(follow_symlinks=True)
+            except OSError:
+                continue
+
+            if is_symlink:
+                # Dangling links fail resolution; escaping links are hidden to
+                # match access-time containment.
+                try:
+                    resolved_target = Path(child.path).resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if not resolved_target.is_relative_to(root_resolved):
+                    continue
+
+            if is_dir:
+                if child.name in _HIDDEN_DIR_NAMES:
+                    continue
+                try:
+                    dir_stat = os.stat(child.path)
+                except OSError:
+                    continue
+                if include_dirs:
+                    yield WorkspaceTreeEntry(
+                        path=rel_path,
+                        size_bytes=0,
+                        updated_at=datetime.fromtimestamp(dir_stat.st_mtime, tz=timezone.utc),
+                        entry_type="directory",
+                    )
+                dir_id = (dir_stat.st_dev, dir_stat.st_ino)
+                if dir_id in ancestor_ids:
+                    # Symlink loop back to an ancestor: entry stays visible,
+                    # but we never descend.
+                    continue
+                stack.append((Path(child.path), rel_path, ancestor_ids | {dir_id}))
+                continue
+
+            try:
+                file_stat = child.stat(follow_symlinks=True)
+            except OSError:
+                continue
+            yield WorkspaceTreeEntry(
+                path=rel_path,
+                size_bytes=file_stat.st_size,
+                updated_at=datetime.fromtimestamp(file_stat.st_mtime, tz=timezone.utc),
+                entry_type="file",
+            )
+
+
 def list_workspace_tree_entries(
     files_dir: Path,
     *,
     include_dirs: bool = False,
 ) -> list[WorkspaceTreeEntry]:
-    entries: list[WorkspaceTreeEntry] = []
     if not files_dir.exists():
-        return entries
-    for path in files_dir.rglob("*"):
-        is_file = path.is_file()
-        is_dir = path.is_dir()
-        if not is_file and not (include_dirs and is_dir):
-            continue
-        stat = path.stat()
-        entries.append(
-            WorkspaceTreeEntry(
-                path=str(path.relative_to(files_dir)),
-                size_bytes=stat.st_size if is_file else 0,
-                updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                entry_type="directory" if is_dir else "file",
-            )
-        )
+        return []
+    entries = list(_iter_tree_entries(files_dir, include_dirs))
     entries.sort(key=lambda item: item.path)
     return entries
 
@@ -240,24 +331,16 @@ def list_mount_source_tree_entries(
             except OSError:
                 pass
 
-        for path in source_dir.rglob("*"):
-            is_file = path.is_file()
-            is_dir = path.is_dir()
-            if not is_file and not (include_dirs and is_dir):
-                continue
-            try:
-                relative = path.relative_to(source_dir).as_posix()
-                mapped_path = f"{repo_rel}/{relative}"
-                stat = path.stat()
-            except (OSError, ValueError):
-                continue
+        for entry in _iter_tree_entries(source_dir, include_dirs):
+            relative = Path(entry.path).as_posix()
+            mapped_path = f"{repo_rel}/{relative}"
             entries_by_path.setdefault(
                 mapped_path,
                 WorkspaceTreeEntry(
                     path=mapped_path,
-                    size_bytes=stat.st_size if is_file else 0,
-                    updated_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
-                    entry_type="directory" if is_dir else "file",
+                    size_bytes=entry.size_bytes,
+                    updated_at=entry.updated_at,
+                    entry_type=entry.entry_type,
                 ),
             )
 

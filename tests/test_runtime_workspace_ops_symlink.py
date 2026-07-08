@@ -10,6 +10,8 @@ import pytest
 workspace_ops = pytest.importorskip("runtime.core.workspace_ops")
 resolve_workspace_mount_source_path = workspace_ops.resolve_workspace_mount_source_path
 _is_path_contained_under = workspace_ops._is_path_contained_under
+list_workspace_tree_entries = workspace_ops.list_workspace_tree_entries
+list_mount_source_tree_entries = workspace_ops.list_mount_source_tree_entries
 
 
 def _mount(target: str, source: str, *, read_only: bool = False) -> dict:
@@ -215,6 +217,169 @@ class ResolveMountSourcePathSymlinkTests(unittest.TestCase):
             mounts = [_mount("/workspace/data", str(source))]
             result = resolve_workspace_mount_source_path(mounts, "other/file.txt")
             self.assertIsNone(result)
+
+
+class TreeEntrySymlinkVisibilityTests(unittest.TestCase):
+    """Symlinked directories are by-design workspace mounts (cloud mounts,
+    docker volumes, local paths) and must appear in the runtime tree UI."""
+
+    def test_contained_symlinked_directory_and_contents_are_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            mount_src = files_dir / ".data" / "mount-src"
+            (mount_src / "sub").mkdir(parents=True)
+            (mount_src / "data.csv").write_text("a,b\n", encoding="utf-8")
+            (mount_src / "sub" / "deep.txt").write_text("x", encoding="utf-8")
+            (files_dir / "mounted").symlink_to(mount_src)
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = {entry.path: entry.entry_type for entry in entries}
+
+            self.assertEqual(paths.get("mounted"), "directory")
+            self.assertEqual(paths.get("mounted/data.csv"), "file")
+            self.assertEqual(paths.get("mounted/sub"), "directory")
+            self.assertEqual(paths.get("mounted/sub/deep.txt"), "file")
+
+    def test_contained_symlinked_file_is_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            files_dir.mkdir()
+            target = files_dir / "real.txt"
+            target.write_text("data", encoding="utf-8")
+            (files_dir / "link.txt").symlink_to(target)
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=False)
+            paths = {entry.path for entry in entries}
+
+            self.assertIn("link.txt", paths)
+            self.assertIn("real.txt", paths)
+
+    def test_symlink_escaping_walk_root_is_not_listed_or_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            files_dir = root / "files"
+            outside = root / "outside"
+            files_dir.mkdir()
+            outside.mkdir()
+            (outside / "secret.txt").write_text("secret", encoding="utf-8")
+            (files_dir / "escape-dir").symlink_to(outside)
+            (files_dir / "escape.txt").symlink_to(outside / "secret.txt")
+            (files_dir / "kept.txt").write_text("x", encoding="utf-8")
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = {entry.path for entry in entries}
+
+            self.assertIn("kept.txt", paths)
+            self.assertNotIn("escape-dir", paths)
+            self.assertNotIn("escape-dir/secret.txt", paths)
+            self.assertNotIn("escape.txt", paths)
+
+    def test_sibling_symlink_does_not_shadow_real_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            (files_dir / "docs").mkdir(parents=True)
+            (files_dir / "docs" / "a.txt").write_text("x", encoding="utf-8")
+            # Name sorts before "docs" so a naive global visited-set would
+            # consume the inode first and leave the real directory empty.
+            (files_dir / "alias").symlink_to(files_dir / "docs")
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = {entry.path for entry in entries}
+
+            self.assertIn("docs/a.txt", paths)
+            self.assertIn("alias", paths)
+
+    def test_symlink_loop_terminates_without_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            (files_dir / "child").mkdir(parents=True)
+            (files_dir / "child" / "up").symlink_to(files_dir)
+            (files_dir / "self").symlink_to(files_dir)
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = [entry.path for entry in entries]
+
+            # Loop links appear as directory entries but are never descended.
+            self.assertIn("child", paths)
+            self.assertIn("child/up", paths)
+            self.assertIn("self", paths)
+            self.assertNotIn("child/up/child", paths)
+            self.assertNotIn("self/child", paths)
+            self.assertEqual(len(paths), len(set(paths)))
+
+    def test_dangling_symlink_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            files_dir.mkdir()
+            (files_dir / "gone").symlink_to(Path(tmpdir) / "missing")
+            (files_dir / "kept.txt").write_text("x", encoding="utf-8")
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = {entry.path for entry in entries}
+
+            self.assertIn("kept.txt", paths)
+            self.assertNotIn("gone", paths)
+
+    def test_hidden_dirs_pruned_inside_symlinked_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            mount_src = files_dir / ".data" / "mount-src"
+            (mount_src / "node_modules" / "pkg").mkdir(parents=True)
+            (mount_src / "node_modules" / "pkg" / "index.js").write_text("x", encoding="utf-8")
+            (mount_src / "src").mkdir()
+            (mount_src / "src" / "app.ts").write_text("x", encoding="utf-8")
+            (files_dir / "mounted").symlink_to(mount_src)
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = {entry.path for entry in entries}
+
+            self.assertIn("mounted/src/app.ts", paths)
+            self.assertNotIn("mounted/node_modules", paths)
+            self.assertNotIn("mounted/node_modules/pkg/index.js", paths)
+
+    def test_duplicate_symlink_target_lists_both_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files_dir = Path(tmpdir) / "files"
+            (files_dir / "docs").mkdir(parents=True)
+            (files_dir / "docs" / "a.txt").write_text("x", encoding="utf-8")
+            (files_dir / "docs-link").symlink_to(files_dir / "docs")
+
+            entries = list_workspace_tree_entries(files_dir, include_dirs=True)
+            paths = {entry.path for entry in entries}
+
+            # Both the canonical dir and the contained alias are browsable.
+            self.assertIn("docs/a.txt", paths)
+            self.assertIn("docs-link", paths)
+            self.assertIn("docs-link/a.txt", paths)
+
+    def test_mount_source_with_internal_symlinked_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "volume"
+            shared = source / "releases" / "v2"
+            outside = root / "outside"
+            (source / "reports").mkdir(parents=True)
+            (source / "reports" / "q1.csv").write_text("x", encoding="utf-8")
+            shared.mkdir(parents=True)
+            (shared / "ref.txt").write_text("x", encoding="utf-8")
+            outside.mkdir()
+            (outside / "secret.txt").write_text("x", encoding="utf-8")
+            # Contained internal symlink (common volume layout) stays visible;
+            # a link escaping the mount source root is hidden, matching the
+            # access-time containment in resolve_workspace_mount_source_path.
+            (source / "current").symlink_to(shared)
+            (source / "leak").symlink_to(outside)
+
+            mounts = [{"target_path": "/workspace/data", "source_local_path": str(source)}]
+            entries = list_mount_source_tree_entries(mounts, include_dirs=True)
+            paths = {entry.path: entry.entry_type for entry in entries}
+
+            self.assertEqual(paths.get("data"), "directory")
+            self.assertEqual(paths.get("data/reports/q1.csv"), "file")
+            self.assertEqual(paths.get("data/current"), "directory")
+            self.assertEqual(paths.get("data/current/ref.txt"), "file")
+            self.assertNotIn("data/leak", paths)
+            self.assertNotIn("data/leak/secret.txt", paths)
 
 
 if __name__ == "__main__":

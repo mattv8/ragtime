@@ -43,7 +43,7 @@ def _to_conversation_response(conversation: Conversation) -> ConversationRespons
     )
 
 
-def _summary_to_conversation_response(
+def summary_to_conversation_response(
     summary: ConversationSummaryResponse,
 ) -> ConversationResponse:
     return ConversationResponse(
@@ -93,6 +93,7 @@ async def build_workspace_chat_state(
     user_id: Optional[str],
     is_admin: bool,
     selected_conversation_id: Optional[str] = None,
+    include_selected_conversation: bool = True,
 ) -> WorkspaceChatStateResponse:
     conversation_summaries, interrupted_conversation_ids = await asyncio.gather(
         repository.list_conversation_summaries(
@@ -115,23 +116,40 @@ async def build_workspace_chat_state(
         candidate = await repository.get_conversation(selected_conversation_id)
         if candidate and candidate.workspace_id == workspace_id:
             selected_id = selected_conversation_id
+            selected_conversation = candidate
     elif conversation_summaries:
         selected_id = conversation_summaries[0].id
 
     if selected_id:
-        selected_conversation, active_task = await asyncio.gather(
-            repository.get_conversation(selected_id),
-            repository.get_active_task_for_conversation(selected_id),
-        )
-        if selected_conversation is None:
+        if include_selected_conversation and selected_conversation is None:
+            selected_conversation, active_task = await asyncio.gather(
+                repository.get_conversation(selected_id),
+                repository.get_active_task_for_conversation(selected_id),
+            )
+        else:
+            active_task = await repository.get_active_task_for_conversation(selected_id)
+
+        if include_selected_conversation and selected_conversation is None:
             selected_id = None
             active_task = None
-        elif not active_task:
+
+        if selected_id and not active_task:
             interrupted_task = await repository.get_last_interrupted_task_for_conversation(selected_id)
 
-    conversations = [_summary_to_conversation_response(summary) for summary in conversation_summaries]
+    conversations = [summary_to_conversation_response(summary) for summary in conversation_summaries]
     if selected_conversation is not None:
-        selected_response = _to_conversation_response(selected_conversation)
+        if include_selected_conversation:
+            selected_response = _to_conversation_response(selected_conversation)
+        else:
+            matching_summary = next(
+                (summary for summary in conversation_summaries if summary.id == selected_conversation.id),
+                None,
+            )
+            if matching_summary is not None:
+                selected_response = summary_to_conversation_response(matching_summary)
+            else:
+                selected_response = _to_conversation_response(selected_conversation)
+                selected_response.messages = []
         if selected_response.id in {conversation.id for conversation in conversations}:
             conversations = [(selected_response if conversation.id == selected_response.id else conversation) for conversation in conversations]
         else:

@@ -2145,6 +2145,7 @@ class UserSpaceRuntimeService:
         user_id: str,
         *,
         selected_conversation_id: str | None = None,
+        include_selected_conversation: bool = True,
         is_admin: bool = False,
     ) -> UserSpaceWorkspaceTabStateResponse:
         await userspace_service.enforce_workspace_role(
@@ -2160,6 +2161,7 @@ class UserSpaceRuntimeService:
                 user_id=user_id,
                 is_admin=is_admin,
                 selected_conversation_id=selected_conversation_id,
+                include_selected_conversation=include_selected_conversation,
             ),
         )
         return UserSpaceWorkspaceTabStateResponse(

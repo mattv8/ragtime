@@ -2321,6 +2321,22 @@ export const api = {
   },
 
   /**
+   * List lightweight summaries for child subagent conversations of a parent conversation.
+   */
+  async getSubagentConversationSummaries(
+    parentConversationId: string,
+    workspaceId?: string,
+  ): Promise<ConversationSummary[]> {
+    const response = await apiFetch(
+      withWorkspaceQuery(
+        `${API_BASE}/conversations/${parentConversationId}/subagents/summaries`,
+        workspaceId,
+      ),
+    );
+    return handleResponse<ConversationSummary[]>(response);
+  },
+
+  /**
    * List DEBUG-mode provider prompt records for a conversation (admin only).
    */
   async getConversationProviderDebugPrompts(
@@ -2896,12 +2912,18 @@ export const api = {
   async getWorkspaceChatState(
     workspaceId: string,
     selectedConversationId?: string | null,
+    includeSelectedConversation: boolean = true,
   ): Promise<import('@/types').WorkspaceChatStateResponse> {
-    const selectedQuery = selectedConversationId
-      ? `?selected_conversation_id=${encodeURIComponent(selectedConversationId)}`
-      : '';
+    const params = new URLSearchParams();
+    if (selectedConversationId) {
+      params.set('selected_conversation_id', selectedConversationId);
+    }
+    if (includeSelectedConversation === false) {
+      params.set('include_selected_conversation', 'false');
+    }
+    const queryString = params.toString();
     const response = await apiFetch(
-      `${API_BASE}/conversations/workspace/${workspaceId}/chat-state${selectedQuery}`,
+      `${API_BASE}/conversations/workspace/${workspaceId}/chat-state${queryString ? `?${queryString}` : ''}`,
     );
     return handleResponse<import('@/types').WorkspaceChatStateResponse>(response);
   },
@@ -5217,12 +5239,18 @@ export const api = {
   async getUserSpaceWorkspaceTabState(
     workspaceId: string,
     selectedConversationId?: string | null,
+    includeSelectedConversation: boolean = true,
   ): Promise<UserSpaceWorkspaceTabStateResponse> {
-    const selectedQuery = selectedConversationId
-      ? `?selected_conversation_id=${encodeURIComponent(selectedConversationId)}`
-      : '';
+    const params = new URLSearchParams();
+    if (selectedConversationId) {
+      params.set('selected_conversation_id', selectedConversationId);
+    }
+    if (includeSelectedConversation === false) {
+      params.set('include_selected_conversation', 'false');
+    }
+    const queryString = params.toString();
     const response = await apiFetch(
-      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/tab-state${selectedQuery}`,
+      `${API_BASE}/userspace/runtime/workspaces/${workspaceId}/tab-state${queryString ? `?${queryString}` : ''}`,
     );
     return handleResponse<UserSpaceWorkspaceTabStateResponse>(response);
   },

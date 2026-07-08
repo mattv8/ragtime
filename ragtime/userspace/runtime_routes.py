@@ -2104,12 +2104,14 @@ async def get_workspace_tab_state(
     workspace_id: str,
     request: Request,
     selected_conversation_id: str | None = None,
+    include_selected_conversation: bool = True,
     user: Any = Depends(get_current_user),
 ):
     tab_state = await _runtime_service().get_workspace_tab_state(
         workspace_id,
         user.id,
         selected_conversation_id=selected_conversation_id,
+        include_selected_conversation=include_selected_conversation,
         is_admin=bool(getattr(user, "role", None) == "admin"),
     )
     tab_state.runtime_status.preview_url = _runtime_service().get_preview_origin(

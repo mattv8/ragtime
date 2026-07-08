@@ -74,6 +74,7 @@ from ..core.shared import (
 from ..core.utils import get_positive_int_env, utc_now
 from ..core.workspace_ops import (
     PLATFORM_MANAGED_GITIGNORE_PATTERNS,
+    _is_path_contained_under,
     deduplicate_ancestor_paths,
     list_mount_source_tree_entries,
     list_workspace_tree_entries,
@@ -2534,7 +2535,12 @@ class WorkerService:
             )
             mounted_target = self._resolve_workspace_mount_file_path(session.workspace_mounts, rel_path)
             workspace_tree_root = self._workspace_tree_root_for_session(session)
-            target = mounted_target[0] if mounted_target else workspace_tree_root / rel_path
+            if mounted_target:
+                target = mounted_target[0]
+            else:
+                target = workspace_tree_root / rel_path
+                if not _is_path_contained_under(target, workspace_tree_root):
+                    return self._runtime_file_response(session, rel_path, "", False)
             if not target.exists() or not target.is_file():
                 return self._runtime_file_response(session, rel_path, "", False)
             content = await asyncio.to_thread(target.read_text, encoding="utf-8")

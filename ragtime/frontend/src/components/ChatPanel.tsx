@@ -65,6 +65,7 @@ import { api, type ChatTaskStreamEvent } from '@/api';
 import { getThemeFontFamily } from '@/theme';
 import type {
   Conversation,
+  ConversationSummary,
   ConversationToolOptionState,
   ChatContextReference,
   ChatMessage,
@@ -5855,6 +5856,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       <SubAgentToolDisplay
         toolCall={toolCall}
         workspaceId={workspaceId}
+        parentConversationId={conversationId}
         onOpenWorkspaceFile={onOpenWorkspaceFile}
         onOpenSubagentConversation={onOpenSubagentConversation}
         showToolCalls={true}
@@ -8418,20 +8420,47 @@ function parseStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
 }
 
+function recoverSubagentAgentsFromMalformedOutput(output: string): Record<string, string>[] {
+  const conversationIds = Array.from(output.matchAll(/"conversation_id"\s*:\s*"([^"]+)"/g)).map(
+    (match) => match[1],
+  );
+  const taskIds = Array.from(output.matchAll(/"task_id"\s*:\s*"([^"]+)"/g)).map(
+    (match) => match[1],
+  );
+  const statuses = Array.from(output.matchAll(/"status"\s*:\s*"([^"]+)"/g)).map(
+    (match) => match[1],
+  );
+
+  return conversationIds.map((conversationId, index) => ({
+    conversation_id: conversationId,
+    task_id: taskIds[index] ?? '',
+    status: statuses[index] ?? '',
+  }));
+}
+
 function parseSubagentToolCall(toolCall: ActiveToolCall): SubAgentRunInfo[] {
   const inputRecord = asRecord(toolCall.input);
   const inputAgents = Array.isArray(inputRecord?.subagents) ? inputRecord.subagents : [];
 
   let outputRecord: Record<string, unknown> | null = null;
+  let recoveredOutputAgents: Record<string, string>[] = [];
   if (typeof toolCall.output === 'string' && toolCall.output.trim().length > 0) {
     try {
       const parsed = JSON.parse(toolCall.output);
       outputRecord = asRecord(parsed);
     } catch {
       outputRecord = null;
+      recoveredOutputAgents = recoverSubagentAgentsFromMalformedOutput(toolCall.output);
+      // Spurious "conversation_id" substrings inside final_output text can
+      // inflate the recovered list; the input agent count is authoritative.
+      if (inputAgents.length > 0 && recoveredOutputAgents.length > inputAgents.length) {
+        recoveredOutputAgents = recoveredOutputAgents.slice(0, inputAgents.length);
+      }
     }
   }
-  const outputAgents = Array.isArray(outputRecord?.subagents) ? outputRecord.subagents : [];
+  const outputAgents = Array.isArray(outputRecord?.subagents)
+    ? outputRecord.subagents
+    : recoveredOutputAgents;
 
   const count = Math.max(inputAgents.length, outputAgents.length);
   if (count === 0) {
@@ -8715,7 +8744,11 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
   }, [isCompleted]);
 
   useEffect(() => {
-    if (!run.conversationId) return;
+    if (!run.conversationId) {
+      setLoadError('Subagent transcript is unavailable for this archived tool result.');
+      return;
+    }
+    setLoadError(null);
     let cancelled = false;
     void (async () => {
       try {
@@ -8879,6 +8912,8 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
             </div>
           ) : loadError ? (
             <div className="chat-subagent-stream-empty">{loadError}</div>
+          ) : conversation !== null ? (
+            <div className="chat-subagent-stream-empty">No subagent transcript was recorded.</div>
           ) : (
             <div className="chat-subagent-stream-empty">Loading subagent transcript...</div>
           )}
@@ -8891,17 +8926,79 @@ const SubAgentTranscriptCard = memo(function SubAgentTranscriptCard({
 const SubAgentToolDisplay = memo(function SubAgentToolDisplay({
   toolCall,
   workspaceId,
+  parentConversationId,
   onOpenWorkspaceFile,
   onOpenSubagentConversation,
   showToolCalls,
 }: {
   toolCall: ActiveToolCall;
   workspaceId?: string;
+  parentConversationId?: string;
   onOpenWorkspaceFile?: (path: string) => void;
   onOpenSubagentConversation?: (conversationId: string) => void;
   showToolCalls: boolean;
 }) {
   const runs = useMemo(() => parseSubagentToolCall(toolCall), [toolCall]);
+  const [childSummaries, setChildSummaries] = useState<ConversationSummary[]>([]);
+  // Legacy truncated records never regain ids on re-render, so fetch summaries
+  // at most once per parent/workspace instead of on every poll-driven re-render.
+  const summariesFetchKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!parentConversationId || runs.every((run) => Boolean(run.conversationId))) {
+      return;
+    }
+    const fetchKey = `${parentConversationId}:${workspaceId ?? ''}`;
+    if (summariesFetchKeyRef.current === fetchKey) {
+      return;
+    }
+    summariesFetchKeyRef.current = fetchKey;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const summaries = await api.getSubagentConversationSummaries(
+          parentConversationId,
+          workspaceId,
+        );
+        if (!cancelled) setChildSummaries(summaries);
+      } catch (err) {
+        console.error('Failed to load subagent summaries for recovery:', err);
+        if (!cancelled) setChildSummaries([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [parentConversationId, workspaceId, runs]);
+
+  const resolvedRuns = useMemo(() => {
+    if (!parentConversationId || childSummaries.length === 0) {
+      return runs;
+    }
+    if (runs.every((run) => Boolean(run.conversationId))) {
+      return runs;
+    }
+    const remaining = childSummaries.slice();
+    const consumedIds = new Set<string>();
+    return runs.map((run) => {
+      if (run.conversationId) return run;
+      const expectedTitle = `${run.name} (${run.role})`;
+      const titleIndex = remaining.findIndex(
+        (summary) =>
+          !consumedIds.has(summary.id) &&
+          summary.title.toLowerCase() === expectedTitle.toLowerCase(),
+      );
+      const summary =
+        titleIndex >= 0
+          ? remaining[titleIndex]
+          : remaining.find((candidate) => !consumedIds.has(candidate.id));
+      if (summary) {
+        consumedIds.add(summary.id);
+        return { ...run, conversationId: summary.id };
+      }
+      return run;
+    });
+  }, [runs, childSummaries, parentConversationId]);
 
   const statusClass = (status: string) => {
     const normalized = status.toLowerCase();
@@ -8944,7 +9041,7 @@ const SubAgentToolDisplay = memo(function SubAgentToolDisplay({
         </div>
       </div>
       <div className="chat-subagent-tool-cards">
-        {runs.map((run) => (
+        {resolvedRuns.map((run) => (
           <SubAgentTranscriptCard
             key={run.taskId || run.conversationId || run.index}
             run={run}
@@ -12406,6 +12503,7 @@ export function ChatPanel({
         const workspaceState = await api.getWorkspaceChatState(
           workspaceId,
           activeConversationRef.current?.id ?? null,
+          false,
         );
         if (cancelled) return;
         applyWorkspaceChatState(workspaceState);

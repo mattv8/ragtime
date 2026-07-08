@@ -58,7 +58,7 @@ from ragtime.core.auth import (
     validate_session_and_fetch_user,
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
-from ragtime.core.logging import setup_logging
+from ragtime.core.logging import get_logger, setup_logging
 from ragtime.core.mfa import (
     MFA_TRUST_COOKIE_NAME,
     create_pending_mfa_token,
@@ -115,7 +115,9 @@ from ragtime.userspace.workspace_code_index_service import workspace_code_index_
 load_dotenv()
 
 # Set up logging
-logger = setup_logging("rag_api")
+setup_logging("rag_api")
+logger = get_logger(__name__)
+
 
 _SHARE_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
@@ -365,6 +367,24 @@ app.add_middleware(
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
 )
 app.add_middleware(PreviewHostDispatchMiddleware)
+
+
+@app.middleware("http")
+async def _log_slow_requests(request: Request, call_next):
+    """Log requests that take longer than one second to start responding."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start
+    if duration > 1.0:
+        logger.warning(
+            "Slow request: %s %s took %.3fs (status %d)",
+            request.method,
+            request.url.path,
+            duration,
+            response.status_code,
+        )
+    return response
+
 
 # Rate limiting
 app.state.limiter = limiter

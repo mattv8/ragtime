@@ -67,7 +67,7 @@ type WorkspaceScmWizardActivity =
     };
 
 const EMPTY_STATUS = { type: null, message: '' } as const;
-const ARCHIVE_POLL_INTERVAL_MS = 1000;
+const ARCHIVE_POLL_INTERVAL_MS = 2500;
 const SQLITE_IMPORT_POLL_INTERVAL_MS = ARCHIVE_POLL_INTERVAL_MS;
 const SCM_IMPORT_POLL_INTERVAL_MS = ARCHIVE_POLL_INTERVAL_MS;
 
