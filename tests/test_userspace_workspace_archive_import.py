@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 
 from ragtime.userspace.models import UserSpaceWorkspaceArchiveExportRequest
-from ragtime.userspace.service import UserSpaceService
+from ragtime.userspace.service import UserSpaceService, _GitCommandResult
 
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
@@ -57,6 +57,22 @@ class _CaptureTable:
     ) -> SimpleNamespace:
         self.updated.append({"where": where, "data": data})
         return SimpleNamespace(**data)
+
+
+class _FindManyTable:
+    def __init__(self, records: list[SimpleNamespace]) -> None:
+        self._records = records
+
+    async def find_many(self, **_: object) -> list[SimpleNamespace]:
+        return self._records
+
+
+class _ConversationFkCaptureTable(_CaptureTable):
+    async def create(self, *, data: dict[str, object]) -> SimpleNamespace:
+        parent_id = data.get("parentConversationId")
+        if parent_id and parent_id not in {row.get("id") for row in self.created}:
+            raise AssertionError("parent conversation must exist before child insert")
+        return await super().create(data=data)
 
 
 class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
@@ -422,6 +438,262 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
             [row["toolGroupId"] for row in fake_db.conversationtoolgroupselection.created],
             ["group-a"],
         )
+
+    async def test_serialize_workspace_chat_payloads_includes_subagent_linkage(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace(
+            conversation=_FindManyTable(
+                [
+                    SimpleNamespace(
+                        id="parent-chat",
+                        title="Parent",
+                        model="gpt-4.1",
+                        messages=[],
+                        totalTokens=0,
+                        toolOutputMode="default",
+                        activeBranchId=None,
+                        subagentsEnabled=True,
+                        parentConversationId=None,
+                        subagentRole=None,
+                        subagentIndex=None,
+                    ),
+                    SimpleNamespace(
+                        id="child-chat",
+                        title="Worker",
+                        model="gpt-4.1",
+                        messages=[],
+                        totalTokens=0,
+                        toolOutputMode="default",
+                        activeBranchId=None,
+                        subagentsEnabled=False,
+                        parentConversationId="parent-chat",
+                        subagentRole="frontend",
+                        subagentIndex=2,
+                    ),
+                ]
+            ),
+            conversationtoolselection=_FindManyTable([]),
+            conversationtoolgroupselection=_FindManyTable([]),
+            conversationbranch=_FindManyTable([]),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            payloads = await service._serialize_workspace_chat_payloads("workspace-1")
+
+        child_payload = next(payload for payload in payloads if payload["id"] == "child-chat")
+        self.assertEqual(child_payload["parent_conversation_id"], "parent-chat")
+        self.assertEqual(child_payload["subagent_role"], "frontend")
+        self.assertEqual(child_payload["subagent_index"], 2)
+        self.assertFalse(child_payload["subagents_enabled"])
+
+    async def test_import_workspace_chat_payloads_remaps_subagent_parent_linkage(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace(
+            conversation=_CaptureTable(),
+            conversationtoolselection=_CaptureTable(),
+            conversationtoolgroupselection=_CaptureTable(),
+            conversationbranch=_CaptureTable(),
+        )
+        chat_payloads = [
+            {
+                "id": "source-parent",
+                "title": "Parent",
+                "messages": [],
+                "subagents_enabled": True,
+                "branches": [],
+            },
+            {
+                "id": "source-child",
+                "title": "Worker",
+                "messages": [],
+                "subagents_enabled": False,
+                "parent_conversation_id": "source-parent",
+                "subagent_role": "frontend",
+                "subagent_index": 1,
+                "branches": [],
+            },
+        ]
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            imported_count = await service._import_workspace_chat_payloads(
+                "workspace-1",
+                "user-1",
+                chat_payloads,
+            )
+
+        self.assertEqual(imported_count, 2)
+        parent_row, child_row = fake_db.conversation.created
+        self.assertEqual(child_row["parentConversationId"], parent_row["id"])
+        self.assertEqual(child_row["subagentRole"], "frontend")
+        self.assertEqual(child_row["subagentIndex"], 1)
+        self.assertFalse(child_row["subagentsEnabled"])
+
+    async def test_import_workspace_chat_payloads_links_subagent_after_parent_exists(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace(
+            conversation=_ConversationFkCaptureTable(),
+            conversationtoolselection=_CaptureTable(),
+            conversationtoolgroupselection=_CaptureTable(),
+            conversationbranch=_CaptureTable(),
+        )
+        chat_payloads = [
+            {
+                "id": "source-child",
+                "title": "Worker",
+                "messages": [],
+                "parent_conversation_id": "source-parent",
+                "branches": [],
+            },
+            {
+                "id": "source-parent",
+                "title": "Parent",
+                "messages": [],
+                "branches": [],
+            },
+        ]
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            imported_count = await service._import_workspace_chat_payloads(
+                "workspace-1",
+                "user-1",
+                chat_payloads,
+            )
+
+        self.assertEqual(imported_count, 2)
+        child_row, parent_row = fake_db.conversation.created
+        self.assertIsNone(child_row["parentConversationId"])
+        self.assertEqual(
+            fake_db.conversation.updated[-1],
+            {
+                "where": {"id": child_row["id"]},
+                "data": {"parentConversationId": parent_row["id"]},
+            },
+        )
+
+    async def test_import_workspace_chat_payloads_ignores_invalid_subagent_index(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace(
+            conversation=_CaptureTable(),
+            conversationtoolselection=_CaptureTable(),
+            conversationtoolgroupselection=_CaptureTable(),
+            conversationbranch=_CaptureTable(),
+        )
+        chat_payloads = [
+            {
+                "id": "source-child",
+                "title": "Worker",
+                "messages": [],
+                "subagent_index": "not-a-number",
+                "branches": [],
+            }
+        ]
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            imported_count = await service._import_workspace_chat_payloads(
+                "workspace-1",
+                "user-1",
+                chat_payloads,
+            )
+
+        self.assertEqual(imported_count, 1)
+        self.assertIsNone(fake_db.conversation.created[0]["subagentIndex"])
+
+    async def test_build_workspace_snapshot_archive_payload_bundles_dirty_worktree(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace()
+        git_calls: list[list[str]] = []
+
+        async def _fake_query_raw(query: str) -> list[dict[str, object]]:
+            if "FROM workspaces" in query:
+                return [
+                    {
+                        "current_snapshot_id": "snapshot-1",
+                        "current_snapshot_branch_id": "branch-1",
+                    }
+                ]
+            if "FROM userspace_snapshot_branches" in query:
+                return [
+                    {
+                        "id": "branch-1",
+                        "name": "Main",
+                        "git_ref_name": "refs/heads/main",
+                        "base_snapshot_id": None,
+                        "branched_from_snapshot_id": None,
+                        "is_active": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            if "FROM userspace_snapshots" in query:
+                return [
+                    {
+                        "id": "snapshot-1",
+                        "branch_id": "branch-1",
+                        "git_commit_hash": "abc123",
+                        "message": "Initial",
+                        "remote_commit_hash": None,
+                        "file_count": 1,
+                        "parent_snapshot_id": None,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            return []
+
+        fake_db.query_raw = _fake_query_raw
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        async def _fake_run_git(
+            workspace_id: str,
+            args: list[str],
+            check: bool = True,
+            env: dict[str, str] | None = None,
+        ) -> _GitCommandResult:
+            git_calls.append(args)
+            if args[:2] == ["status", "--porcelain"]:
+                return _GitCommandResult(0, " M app.py\n", "")
+            if args[:2] == ["bundle", "create"]:
+                Path(args[2]).write_bytes(b"bundle")
+                return _GitCommandResult(0, "", "")
+            return _GitCommandResult(1, "", "unexpected git command")
+
+        with TemporaryDirectory() as tmpdir:
+            with (
+                patch("ragtime.userspace.service.get_db", new=_fake_get_db),
+                patch.object(service, "_run_git", new=_fake_run_git),
+            ):
+                snapshot_manifest, bundle_path, warnings = await service._build_workspace_snapshot_archive_payload(
+                    "workspace-1",
+                    Path(tmpdir),
+                )
+
+        self.assertIsNotNone(snapshot_manifest)
+        self.assertIsNotNone(bundle_path)
+        self.assertEqual(warnings, [])
+        self.assertFalse(any(call[:2] == ["status", "--porcelain"] for call in git_calls))
+        self.assertTrue(any(call[:2] == ["bundle", "create"] for call in git_calls))
 
 
 if __name__ == "__main__":

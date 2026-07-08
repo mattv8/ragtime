@@ -2844,6 +2844,10 @@ class UserSpaceService:
                     "messages": self._json_safe_clone(getattr(source_conversation, "messages", None) or []),
                     "total_tokens": int(getattr(source_conversation, "totalTokens", 0) or 0),
                     "tool_output_mode": str(getattr(source_conversation, "toolOutputMode", "default") or "default"),
+                    "subagents_enabled": bool(getattr(source_conversation, "subagentsEnabled", True)),
+                    "parent_conversation_id": (str(getattr(source_conversation, "parentConversationId", "") or "") or None),
+                    "subagent_role": (str(getattr(source_conversation, "subagentRole", "") or "") or None),
+                    "subagent_index": getattr(source_conversation, "subagentIndex", None),
                     "active_branch_id": (str(getattr(source_conversation, "activeBranchId", "") or "") or None),
                     "tool_config_ids": [str(selection.toolConfigId) for selection in source_tool_selections if getattr(selection, "toolConfigId", None)],
                     "tool_group_ids": [str(selection.toolGroupId) for selection in source_tool_group_selections if getattr(selection, "toolGroupId", None)],
@@ -2936,15 +2940,42 @@ class UserSpaceService:
 
             return messages
 
+        def _coerce_optional_int(value: Any) -> int | None:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
         db = await get_db()
         copied_count = 0
+        conversation_id_map = {
+            str(payload.get("id") or str(uuid4())): str(uuid4())
+            for payload in chat_payloads
+        }
+        created_conversation_ids: set[str] = set()
+        pending_parent_updates: list[tuple[str, str]] = []
         for payload in chat_payloads:
-            cloned_conversation_id = str(uuid4())
+            source_conversation_id = str(payload.get("id") or "")
+            cloned_conversation_id = conversation_id_map.get(source_conversation_id) or str(uuid4())
             message_id_map: dict[str, str] = {}
             cloned_messages = _rekey_chat_messages(
                 payload.get("messages"),
                 id_map=message_id_map,
             )
+            parent_conversation_id = str(payload.get("parent_conversation_id") or "") or None
+            cloned_parent_conversation_id = conversation_id_map.get(parent_conversation_id) if parent_conversation_id else None
+            if cloned_parent_conversation_id == cloned_conversation_id:
+                cloned_parent_conversation_id = None
+            inline_parent_conversation_id = (
+                cloned_parent_conversation_id
+                if cloned_parent_conversation_id in created_conversation_ids
+                else None
+            )
+            if cloned_parent_conversation_id and inline_parent_conversation_id is None:
+                pending_parent_updates.append((cloned_conversation_id, cloned_parent_conversation_id))
+            subagent_index = payload.get("subagent_index")
             await db.conversation.create(
                 data=cast(
                     Any,
@@ -2955,12 +2986,17 @@ class UserSpaceService:
                         "messages": Json(cloned_messages),
                         "totalTokens": int(payload.get("total_tokens") or 0),
                         "toolOutputMode": str(payload.get("tool_output_mode") or "default"),
+                        "subagentsEnabled": bool(payload.get("subagents_enabled", True)),
+                        "parentConversationId": inline_parent_conversation_id,
+                        "subagentRole": (str(payload.get("subagent_role") or "") or None),
+                        "subagentIndex": _coerce_optional_int(subagent_index),
                         "userId": user_id,
                         "workspaceId": workspace_id,
                         "activeTaskId": None,
                     },
                 )
             )
+            created_conversation_ids.add(cloned_conversation_id)
 
             resolved_tool_config_ids = (
                 self._filter_workspace_archive_selection_ids(
@@ -3034,6 +3070,11 @@ class UserSpaceService:
                 )
 
             copied_count += 1
+        for cloned_conversation_id, cloned_parent_conversation_id in pending_parent_updates:
+            await db.conversation.update(
+                where={"id": cloned_conversation_id},
+                data={"parentConversationId": cloned_parent_conversation_id},
+            )
         return copied_count
 
     async def _copy_workspace_chats_for_duplicate(
@@ -3684,14 +3725,6 @@ class UserSpaceService:
         task_dir: Path,
     ) -> tuple[dict[str, Any] | None, Path | None, list[str]]:
         warnings: list[str] = []
-        git_status = await self._run_git(
-            workspace_id,
-            ["status", "--porcelain"],
-            check=False,
-        )
-        if git_status.returncode != 0 or git_status.stdout.strip():
-            warnings.append("Snapshot history was skipped because the workspace has uncommitted changes")
-            return None, None, warnings
         db = await get_db()
         cursor_rows = await db.query_raw(
             f"SELECT current_snapshot_id, current_snapshot_branch_id FROM workspaces WHERE id = {self._sql_quote(workspace_id)} LIMIT 1"
