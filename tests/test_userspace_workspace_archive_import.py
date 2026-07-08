@@ -672,8 +672,6 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
             env: dict[str, str] | None = None,
         ) -> _GitCommandResult:
             git_calls.append(args)
-            if args[:2] == ["status", "--porcelain"]:
-                return _GitCommandResult(0, " M app.py\n", "")
             if args[:2] == ["bundle", "create"]:
                 Path(args[2]).write_bytes(b"bundle")
                 return _GitCommandResult(0, "", "")
@@ -683,17 +681,256 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch("ragtime.userspace.service.get_db", new=_fake_get_db),
                 patch.object(service, "_run_git", new=_fake_run_git),
+                patch.object(
+                    service,
+                    "list_workspace_changed_file_paths",
+                    new=AsyncMock(return_value=["app.py"]),
+                ) as list_changed,
             ):
                 snapshot_manifest, bundle_path, warnings = await service._build_workspace_snapshot_archive_payload(
                     "workspace-1",
                     Path(tmpdir),
+                    "user-1",
+                )
+
+        self.assertIsNotNone(snapshot_manifest)
+        self.assertIsNotNone(bundle_path)
+        self.assertTrue(
+            any("Snapshot history includes committed snapshots only" in warning and "current uncommitted workspace changes" in warning for warning in warnings)
+        )
+        list_changed.assert_awaited_once_with("workspace-1", "user-1", is_admin=False)
+        self.assertTrue(any(call[:2] == ["bundle", "create"] for call in git_calls))
+
+    async def test_build_workspace_snapshot_archive_payload_no_warning_for_clean_worktree(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace()
+
+        async def _fake_query_raw(query: str) -> list[dict[str, object]]:
+            if "FROM workspaces" in query:
+                return [
+                    {
+                        "current_snapshot_id": "snapshot-1",
+                        "current_snapshot_branch_id": "branch-1",
+                    }
+                ]
+            if "FROM userspace_snapshot_branches" in query:
+                return [
+                    {
+                        "id": "branch-1",
+                        "name": "Main",
+                        "git_ref_name": "refs/heads/main",
+                        "base_snapshot_id": None,
+                        "branched_from_snapshot_id": None,
+                        "is_active": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            if "FROM userspace_snapshots" in query:
+                return [
+                    {
+                        "id": "snapshot-1",
+                        "branch_id": "branch-1",
+                        "git_commit_hash": "abc123",
+                        "message": "Initial",
+                        "remote_commit_hash": None,
+                        "file_count": 1,
+                        "parent_snapshot_id": None,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            return []
+
+        fake_db.query_raw = _fake_query_raw
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        async def _fake_run_git(
+            workspace_id: str,
+            args: list[str],
+            check: bool = True,
+            env: dict[str, str] | None = None,
+        ) -> _GitCommandResult:
+            if args[:2] == ["bundle", "create"]:
+                Path(args[2]).write_bytes(b"bundle")
+                return _GitCommandResult(0, "", "")
+            return _GitCommandResult(1, "", "unexpected git command")
+
+        with TemporaryDirectory() as tmpdir:
+            with (
+                patch("ragtime.userspace.service.get_db", new=_fake_get_db),
+                patch.object(service, "_run_git", new=_fake_run_git),
+                patch.object(
+                    service,
+                    "list_workspace_changed_file_paths",
+                    new=AsyncMock(return_value=[]),
+                ) as list_changed,
+            ):
+                snapshot_manifest, bundle_path, warnings = await service._build_workspace_snapshot_archive_payload(
+                    "workspace-1",
+                    Path(tmpdir),
+                    "user-1",
                 )
 
         self.assertIsNotNone(snapshot_manifest)
         self.assertIsNotNone(bundle_path)
         self.assertEqual(warnings, [])
-        self.assertFalse(any(call[:2] == ["status", "--porcelain"] for call in git_calls))
-        self.assertTrue(any(call[:2] == ["bundle", "create"] for call in git_calls))
+        list_changed.assert_awaited_once_with("workspace-1", "user-1", is_admin=False)
+
+    async def test_build_workspace_snapshot_archive_payload_passes_is_admin_to_dirty_check(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace()
+
+        async def _fake_query_raw(query: str) -> list[dict[str, object]]:
+            if "FROM workspaces" in query:
+                return [
+                    {
+                        "current_snapshot_id": "snapshot-1",
+                        "current_snapshot_branch_id": "branch-1",
+                    }
+                ]
+            if "FROM userspace_snapshot_branches" in query:
+                return [
+                    {
+                        "id": "branch-1",
+                        "name": "Main",
+                        "git_ref_name": "refs/heads/main",
+                        "base_snapshot_id": None,
+                        "branched_from_snapshot_id": None,
+                        "is_active": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            if "FROM userspace_snapshots" in query:
+                return [
+                    {
+                        "id": "snapshot-1",
+                        "branch_id": "branch-1",
+                        "git_commit_hash": "abc123",
+                        "message": "Initial",
+                        "remote_commit_hash": None,
+                        "file_count": 1,
+                        "parent_snapshot_id": None,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            return []
+
+        fake_db.query_raw = _fake_query_raw
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        async def _fake_run_git(
+            workspace_id: str,
+            args: list[str],
+            check: bool = True,
+            env: dict[str, str] | None = None,
+        ) -> _GitCommandResult:
+            if args[:2] == ["bundle", "create"]:
+                Path(args[2]).write_bytes(b"bundle")
+                return _GitCommandResult(0, "", "")
+            return _GitCommandResult(1, "", "unexpected git command")
+
+        with TemporaryDirectory() as tmpdir:
+            with (
+                patch("ragtime.userspace.service.get_db", new=_fake_get_db),
+                patch.object(service, "_run_git", new=_fake_run_git),
+                patch.object(
+                    service,
+                    "list_workspace_changed_file_paths",
+                    new=AsyncMock(return_value=[]),
+                ) as list_changed,
+            ):
+                await service._build_workspace_snapshot_archive_payload(
+                    "workspace-1",
+                    Path(tmpdir),
+                    "user-1",
+                    is_admin=True,
+                )
+
+        list_changed.assert_awaited_once_with("workspace-1", "user-1", is_admin=True)
+
+    async def test_build_workspace_snapshot_archive_payload_warns_on_dirty_check_failure(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace()
+
+        async def _fake_query_raw(query: str) -> list[dict[str, object]]:
+            if "FROM workspaces" in query:
+                return [
+                    {
+                        "current_snapshot_id": "snapshot-1",
+                        "current_snapshot_branch_id": "branch-1",
+                    }
+                ]
+            if "FROM userspace_snapshot_branches" in query:
+                return [
+                    {
+                        "id": "branch-1",
+                        "name": "Main",
+                        "git_ref_name": "refs/heads/main",
+                        "base_snapshot_id": None,
+                        "branched_from_snapshot_id": None,
+                        "is_active": True,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            if "FROM userspace_snapshots" in query:
+                return [
+                    {
+                        "id": "snapshot-1",
+                        "branch_id": "branch-1",
+                        "git_commit_hash": "abc123",
+                        "message": "Initial",
+                        "remote_commit_hash": None,
+                        "file_count": 1,
+                        "parent_snapshot_id": None,
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            return []
+
+        fake_db.query_raw = _fake_query_raw
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        async def _fake_run_git(
+            workspace_id: str,
+            args: list[str],
+            check: bool = True,
+            env: dict[str, str] | None = None,
+        ) -> _GitCommandResult:
+            if args[:2] == ["bundle", "create"]:
+                Path(args[2]).write_bytes(b"bundle")
+                return _GitCommandResult(0, "", "")
+            return _GitCommandResult(1, "", "unexpected git command")
+
+        with TemporaryDirectory() as tmpdir:
+            with (
+                patch("ragtime.userspace.service.get_db", new=_fake_get_db),
+                patch.object(service, "_run_git", new=_fake_run_git),
+                patch.object(
+                    service,
+                    "list_workspace_changed_file_paths",
+                    new=AsyncMock(side_effect=RuntimeError("git status failed")),
+                ),
+            ):
+                snapshot_manifest, bundle_path, warnings = await service._build_workspace_snapshot_archive_payload(
+                    "workspace-1",
+                    Path(tmpdir),
+                    "user-1",
+                )
+
+        self.assertIsNotNone(snapshot_manifest)
+        self.assertIsNotNone(bundle_path)
+        self.assertTrue(any("Could not determine whether the workspace has uncommitted changes" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

@@ -520,6 +520,7 @@ export function WorkspaceScmWizard({
   const [archiveIncludeChatHistory, setArchiveIncludeChatHistory] = useState(false);
   const [archiveFile, setArchiveFile] = useState<File | null>(null);
   const [archiveDragOver, setArchiveDragOver] = useState(false);
+  const [archiveRestoreConfirmed, setArchiveRestoreConfirmed] = useState(false);
   const [archiveExportTask, setArchiveExportTask] =
     useState<UserSpaceWorkspaceArchiveExportTask | null>(null);
   const [archiveImportTask, setArchiveImportTask] =
@@ -701,6 +702,10 @@ export function WorkspaceScmWizard({
     setArchiveMode(hasActiveArchiveImportTask ? 'import' : 'export');
     setStep('input');
   }, [hasActiveArchiveExportTask, hasActiveArchiveImportTask, workspace.id]);
+
+  useEffect(() => {
+    setArchiveRestoreConfirmed(false);
+  }, [archiveFile, archiveMode, activeTab]);
 
   useEffect(() => {
     if (!hasActiveScmImportTask) {
@@ -1346,6 +1351,7 @@ export function WorkspaceScmWizard({
       const task = await api.queueUserSpaceWorkspaceArchiveImport(workspace.id, formData);
       setArchiveImportTask(task);
       setArchiveExportTask(null);
+      setArchiveRestoreConfirmed(false);
       lastNotifiedArchiveImportTaskIdRef.current = null;
       clearStatus();
       toast.success('Workspace archive import queued.');
@@ -1356,6 +1362,19 @@ export function WorkspaceScmWizard({
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function handleArchiveImportClick(): void {
+    if (!archiveFile) {
+      clearStatus();
+      toast.error('Select an archive file to import.');
+      return;
+    }
+    if (!archiveRestoreConfirmed) {
+      setArchiveRestoreConfirmed(true);
+      return;
+    }
+    void handleQueueArchiveImport();
   }
 
   async function handleDownloadArchive(taskId: string): Promise<void> {
@@ -2184,10 +2203,25 @@ export function WorkspaceScmWizard({
                     </label>
                   </div>
 
-                  <p className="userspace-muted" style={{ fontSize: 12, margin: 0 }}>
-                    Import replaces workspace files and metadata. Existing env var secret values are
-                    preserved when keys match.
-                  </p>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      padding: 12,
+                      borderRadius: 8,
+                      border: '1px solid var(--color-warning, #d69d2a)',
+                      background: 'var(--color-warning-light)',
+                    }}
+                  >
+                    <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div>
+                      <strong>Explicit restore confirmation required.</strong>
+                      <div className="userspace-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                        Import replaces workspace files and metadata. Existing env var secret values
+                        are preserved when keys match.
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -3798,8 +3832,8 @@ export function WorkspaceScmWizard({
             )}
             {activeTab === 'archive' && archiveStep === 'configure' && archiveMode === 'import' && (
               <button
-                className="btn btn-primary"
-                onClick={() => void handleQueueArchiveImport()}
+                className={`btn ${archiveRestoreConfirmed ? 'btn-danger' : 'btn-primary'}`}
+                onClick={() => void handleArchiveImportClick()}
                 disabled={
                   isLoading ||
                   !archiveFile ||
@@ -3813,7 +3847,7 @@ export function WorkspaceScmWizard({
                 ) : (
                   <ArrowDownToLine size={14} />
                 )}
-                Import
+                {archiveRestoreConfirmed ? 'Restore Workspace' : 'Import'}
               </button>
             )}
             {activeTab === 'git-source' &&

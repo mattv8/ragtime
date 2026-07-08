@@ -3503,14 +3503,17 @@ export function UserSpacePanel({
               return next;
             });
           }
-          if (eventType === 'snapshot') {
+          if (eventType === 'snapshot' || eventType === 'archive_import') {
             setChangedFiles(new Set());
             setAcknowledgedFiles(new Set());
           }
 
           // Avoid remounting preview on high-frequency collab doc updates.
           // Runtime HMR handles content refresh; remount only for structural events.
-          const shouldRefreshPreview = eventType === 'file_upsert' || eventType === 'file_delete';
+          const shouldRefreshPreview =
+            eventType === 'file_upsert' ||
+            eventType === 'file_delete' ||
+            eventType === 'archive_import';
           if (shouldRefreshPreview) {
             setPreviewRefreshCounter((c) => c + 1);
           }

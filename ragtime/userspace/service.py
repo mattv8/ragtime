@@ -3716,6 +3716,9 @@ class UserSpaceService:
         self,
         workspace_id: str,
         task_dir: Path,
+        user_id: str,
+        *,
+        is_admin: bool = False,
     ) -> tuple[dict[str, Any] | None, Path | None, list[str]]:
         warnings: list[str] = []
         db = await get_db()
@@ -3734,6 +3737,30 @@ class UserSpaceService:
         if not branch_rows or not snapshot_rows:
             warnings.append("Snapshot history was skipped because the workspace snapshot records are incomplete")
             return None, None, warnings
+
+        # Dirty-state detection honors .gitignore and ignores workspace mount paths.
+        try:
+            changed_paths = await self.list_workspace_changed_file_paths(
+                workspace_id,
+                user_id,
+                is_admin=is_admin,
+            )
+            if changed_paths:
+                warnings.append(
+                    "Snapshot history includes committed snapshots only; "
+                    "current uncommitted workspace changes are included in the archive files but not in snapshot history."
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to detect workspace dirty state during archive export",
+                extra={
+                    "workspace_id": workspace_id,
+                    "task_dir": str(task_dir),
+                    "error": str(exc),
+                },
+            )
+            warnings.append("Could not determine whether the workspace has uncommitted changes; snapshot history includes committed snapshots only.")
+
         bundle_path = task_dir / "snapshots" / "workspace.bundle"
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
         bundle_result = await self._run_git(
@@ -4022,6 +4049,8 @@ class UserSpaceService:
                 snapshot_manifest, bundle_path, snapshot_warnings = await self._build_workspace_snapshot_archive_payload(
                     workspace_id,
                     task_dir,
+                    user_id,
+                    is_admin=is_admin,
                 )
                 warnings.extend(snapshot_warnings)
                 if snapshot_manifest is not None:
@@ -18868,8 +18897,10 @@ class UserSpaceService:
         self,
         workspace_id: str,
         user_id: str,
+        *,
+        is_admin: bool = False,
     ) -> list[str]:
-        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
         await self._ensure_workspace_git_repo(workspace_id)
 
         async with self._git_status_semaphore:
