@@ -7,7 +7,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-Send = Callable[[dict[str, Any]], Awaitable[None]]
+from starlette.types import Message, Receive, Send
+
 AppCall = Callable[[Send], Awaitable[None]]
 
 
@@ -17,11 +18,11 @@ def basic_auth_header(client_id: str, client_secret: str) -> str:
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
-def form_receive(body: bytes) -> Callable[[], Awaitable[dict[str, Any]]]:
+def form_receive(body: bytes) -> Receive:
     """Build an ASGI receive callable that yields a single request body."""
     sent = False
 
-    async def receive() -> dict[str, Any]:
+    async def receive() -> Message:
         nonlocal sent
         if sent:
             return {"type": "http.request", "body": b"", "more_body": False}
@@ -33,9 +34,9 @@ def form_receive(body: bytes) -> Callable[[], Awaitable[dict[str, Any]]]:
 
 async def capture_response(call: AppCall) -> tuple[int, dict[str, str], dict[str, Any]]:
     """Capture an ASGI app call and return (status, headers, parsed JSON body)."""
-    messages: list[dict[str, Any]] = []
+    messages: list[Message] = []
 
-    async def send(message: dict[str, Any]) -> None:
+    async def send(message: Message) -> None:
         messages.append(message)
 
     await call(send)

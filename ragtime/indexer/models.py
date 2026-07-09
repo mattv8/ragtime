@@ -22,6 +22,11 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_CONTEXT_TOKEN_BUDGET,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EMBEDDING_PROVIDER,
+    DEFAULT_EXPORT_PASSWORD_MIN_LENGTH,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_LOWERCASE,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_NUMBER,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_SPECIAL,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_UPPERCASE,
     DEFAULT_GITHUB_COPILOT_BASE_URL,
     DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
     DEFAULT_IMAGE_PAYLOAD_MAX_BYTES,
@@ -991,6 +996,29 @@ class AppSettings(BaseModel):
     # Security
     enable_write_ops: bool = Field(default=False, description="Allow write operations (INSERT/UPDATE/DELETE)")
 
+    # Export password policy
+    export_password_min_length: int = Field(
+        default=DEFAULT_EXPORT_PASSWORD_MIN_LENGTH,
+        ge=1,
+        description="Minimum length for tool config export passwords.",
+    )
+    export_password_require_uppercase: bool = Field(
+        default=DEFAULT_EXPORT_PASSWORD_REQUIRE_UPPERCASE,
+        description="Require at least one uppercase letter in export passwords.",
+    )
+    export_password_require_lowercase: bool = Field(
+        default=DEFAULT_EXPORT_PASSWORD_REQUIRE_LOWERCASE,
+        description="Require at least one lowercase letter in export passwords.",
+    )
+    export_password_require_number: bool = Field(
+        default=DEFAULT_EXPORT_PASSWORD_REQUIRE_NUMBER,
+        description="Require at least one digit in export passwords.",
+    )
+    export_password_require_special: bool = Field(
+        default=DEFAULT_EXPORT_PASSWORD_REQUIRE_SPECIAL,
+        description="Require at least one special (non-alphanumeric) character in export passwords.",
+    )
+
     # Embedding dimension tracking
     embedding_dimension: Optional[int] = Field(
         default=None,
@@ -1431,6 +1459,28 @@ class UpdateSettingsRequest(BaseModel):
         description="Maximum seconds for synchronous HTTP handlers before returning an in-app timeout response.",
     )
     enable_write_ops: Optional[bool] = None
+    # Export password policy
+    export_password_min_length: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Minimum length for tool config export passwords.",
+    )
+    export_password_require_uppercase: Optional[bool] = Field(
+        default=None,
+        description="Require at least one uppercase letter in export passwords.",
+    )
+    export_password_require_lowercase: Optional[bool] = Field(
+        default=None,
+        description="Require at least one lowercase letter in export passwords.",
+    )
+    export_password_require_number: Optional[bool] = Field(
+        default=None,
+        description="Require at least one digit in export passwords.",
+    )
+    export_password_require_special: Optional[bool] = Field(
+        default=None,
+        description="Require at least one special (non-alphanumeric) character in export passwords.",
+    )
     # Search configuration
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
     aggregate_search: Optional[bool] = None
@@ -2261,8 +2311,13 @@ class ToolConfig(BaseModel):
     allow_write: bool = Field(default=False, description="Allow write operations")
     sort_order: int = Field(default=0, description="Display order within group or ungrouped list")
 
-    # Transient runtime status (not persisted)
     disabled_reason: Optional[str] = Field(default=None, description="Reason why the tool is disabled (runtime check)")
+
+    # Transient credential health metadata: names of connection_config fields that
+    # are encrypted but could not be decrypted with the active server key. Values
+    # are never exposed; only field names are returned so admins can clear and
+    # re-enter those credentials.
+    undecryptable_fields: List[str] = Field(default_factory=list, description="Names of encrypted credential fields that failed decryption")
 
     # Test results
     last_test_at: Optional[datetime] = None

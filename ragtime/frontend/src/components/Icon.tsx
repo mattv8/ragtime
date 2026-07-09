@@ -25,6 +25,7 @@ import {
   FolderSearch,
   RotateCcw,
   Activity,
+  Download,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -54,7 +55,8 @@ export type IconType =
   | 'shield-off'
   | 'folder-search'
   | 'rotate-ccw'
-  | 'activity';
+  | 'activity'
+  | 'download';
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
@@ -83,6 +85,7 @@ const iconMap: Record<IconType, LucideIcon> = {
   'folder-search': FolderSearch,
   'rotate-ccw': RotateCcw,
   activity: Activity,
+  download: Download,
 };
 
 interface IconProps {

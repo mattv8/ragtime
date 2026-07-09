@@ -13,6 +13,7 @@ from typing import Optional
 from unittest import mock
 
 from asgi_test_utils import basic_auth_header, capture_response, form_receive
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -327,7 +328,7 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
         self,
         redirect_uri: str | None = "https://client.example/callback",
         client_id: str | None = "client-a",
-    ) -> Response:
+    ) -> JSONResponse | api_auth.OAuth2TokenResponse:
         with (
             mock.patch.object(api_auth, "_verify_pkce", return_value=True),
             mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),

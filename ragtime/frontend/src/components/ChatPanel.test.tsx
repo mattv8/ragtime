@@ -2,25 +2,20 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { api } from '@/api';
 import type { Conversation, ConversationSummary } from '@/types';
 import { ToolCallDisplay, type ActiveToolCall } from './ChatPanel';
 
-vi.mock('@/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api')>();
-  return {
-    api: {
-      ...actual.api,
-      getConversation: vi.fn().mockResolvedValue(null),
-      getSubagentConversationSummaries: vi.fn().mockResolvedValue([] as ConversationSummary[]),
-      streamChatTask: vi.fn().mockReturnValue(
-        (async function* () {
-          return;
-        })(),
-      ),
-    },
-  };
-});
+const apiMock = vi.hoisted(() => ({
+  getConversation: vi.fn().mockResolvedValue(null),
+  getSubagentConversationSummaries: vi.fn().mockResolvedValue([] as ConversationSummary[]),
+  streamChatTask: vi.fn().mockReturnValue(
+    (async function* () {
+      yield* [];
+    })(),
+  ),
+}));
+
+vi.mock('@/api', () => ({ api: apiMock }));
 
 afterEach(() => {
   cleanup();
@@ -264,8 +259,8 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
     };
     const child = makeConversation('child-recovered-1', 'Recovered child response');
 
-    (api as any).getSubagentConversationSummaries.mockResolvedValue([summary]);
-    (api as any).getConversation.mockResolvedValue(child);
+    apiMock.getSubagentConversationSummaries.mockResolvedValue([summary]);
+    apiMock.getConversation.mockResolvedValue(child);
 
     render(
       <ToolCallDisplay
@@ -278,10 +273,7 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
     );
 
     await waitFor(() => {
-      expect((api as any).getSubagentConversationSummaries).toHaveBeenCalledWith(
-        'parent-1',
-        'ws-1',
-      );
+      expect(apiMock.getSubagentConversationSummaries).toHaveBeenCalledWith('parent-1', 'ws-1');
     });
 
     await user.click(screen.getByLabelText('Expand Types update subagent transcript'));
@@ -340,8 +332,8 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
     const firstChild = makeConversation('first-child', 'Recovered first child response');
     const secondChild = makeConversation('second-child', 'Recovered second child response');
 
-    (api as any).getSubagentConversationSummaries.mockResolvedValue(duplicateSummaries);
-    (api as any).getConversation.mockImplementation((conversationId: string) =>
+    apiMock.getSubagentConversationSummaries.mockResolvedValue(duplicateSummaries);
+    apiMock.getConversation.mockImplementation((conversationId: string) =>
       Promise.resolve(conversationId === 'second-child' ? secondChild : firstChild),
     );
 
@@ -358,7 +350,7 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
     await user.click(screen.getByLabelText('Expand Types update subagent transcript'));
     expect(await screen.findByText('Recovered second child response')).toBeDefined();
     expect(screen.queryByText('Recovered first child response')).toBeNull();
-    expect((api as any).getConversation).toHaveBeenCalledWith('second-child', 'ws-1');
+    expect(apiMock.getConversation).toHaveBeenCalledWith('second-child', 'ws-1');
   });
 
   it('shows a terminal unavailable message for truncated output without parent recovery', async () => {
@@ -379,8 +371,8 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
         '{"subagents": [{"name": "Types update", "role": "worker", "status": "completed"... (truncated)',
     };
 
-    (api as any).getSubagentConversationSummaries.mockResolvedValue([]);
-    (api as any).getConversation.mockResolvedValue(null);
+    apiMock.getSubagentConversationSummaries.mockResolvedValue([]);
+    apiMock.getConversation.mockResolvedValue(null);
 
     render(<ToolCallDisplay toolCall={toolCall} defaultExpanded workspaceId="ws-1" />);
 
@@ -390,6 +382,6 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
       screen.getByText('Subagent transcript is unavailable for this archived tool result.'),
     ).toBeDefined();
     expect(screen.queryByText('Loading subagent transcript...')).toBeNull();
-    expect((api as any).getSubagentConversationSummaries).not.toHaveBeenCalled();
+    expect(apiMock.getSubagentConversationSummaries).not.toHaveBeenCalled();
   });
 });

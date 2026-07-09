@@ -180,6 +180,55 @@
   color: var(--color-text-muted);
 }
 
+.password-requirements {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  margin-top: var(--space-xs);
+}
+
+.password-requirements-heading {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.password-requirements-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.password-requirement-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-sm);
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  background: var(--color-warning-light);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+
+.password-requirements-success {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+  font-size: var(--text-xs);
+  color: var(--color-success);
+}
+
+.password-requirements-success-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 input[type='text'],
 input[type='number'],
 input[type='password'],

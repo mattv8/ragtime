@@ -684,6 +684,11 @@ export interface AppSettings {
   authenticated_webgl_background_enabled: boolean;
   openapi_model_prefix_enabled: boolean;
   show_tool_card_footer_actions: boolean;
+  export_password_min_length?: number;
+  export_password_require_uppercase?: boolean;
+  export_password_require_lowercase?: boolean;
+  export_password_require_number?: boolean;
+  export_password_require_special?: boolean;
   // Embedding Configuration (for FAISS indexing)
   embedding_provider:
     | 'ollama'
@@ -841,6 +846,11 @@ export interface UpdateSettingsRequest {
   authenticated_webgl_background_enabled?: boolean;
   openapi_model_prefix_enabled?: boolean;
   show_tool_card_footer_actions?: boolean;
+  export_password_min_length?: number;
+  export_password_require_uppercase?: boolean;
+  export_password_require_lowercase?: boolean;
+  export_password_require_number?: boolean;
+  export_password_require_special?: boolean;
   // Embedding settings
   embedding_provider?:
     | 'ollama'
@@ -1562,6 +1572,8 @@ export interface ToolConfig {
   group_id?: string | null;
   group_name?: string | null;
   disabled_reason?: string;
+  /** Credential field names that are encrypted but cannot be decrypted with the current server key. */
+  undecryptable_fields: string[];
   last_test_at: string | null;
   last_test_result: boolean | null;
   last_test_error: string | null;
@@ -1616,6 +1628,15 @@ export interface UpdateToolConfigRequest {
 
 export interface ReorderToolsRequest {
   tool_ids: string[];
+}
+
+export interface ExportToolConfigRequest {
+  password: string;
+}
+
+export interface ImportToolConfigRequest {
+  password: string;
+  file_content: string;
 }
 
 export interface ToolTestRequest {

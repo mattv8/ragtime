@@ -14,9 +14,12 @@ API keys and connection passwords.
 
 import base64
 import hashlib
+import os
 from functools import lru_cache
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from ragtime.config.settings import settings
 from ragtime.core.logging import get_logger
@@ -237,6 +240,87 @@ def decrypt_json_passwords(data: dict, password_fields: list[str]) -> dict:
         if field in result and result[field]:
             result[field] = decrypt_secret(result[field])
     return result
+
+
+# Password-derived Fernet export constants
+PASSWORD_EXPORT_KDF_ALGORITHM = "PBKDF2-SHA256"
+PASSWORD_EXPORT_KDF_ITERATIONS = 600000
+
+
+def derive_password_fernet_key(password: str, salt: bytes, *, iterations: int = PASSWORD_EXPORT_KDF_ITERATIONS) -> bytes:
+    """
+    Derive a Fernet-compatible key from a password using PBKDF2-SHA256.
+
+    Args:
+        password: The user-provided export password.
+        salt: Random salt bytes.
+        iterations: PBKDF2 iteration count.
+
+    Returns:
+        A URL-safe base64-encoded 32-byte key suitable for Fernet.
+    """
+    if not password:
+        raise ValueError("Password is required for key derivation")
+    if not salt:
+        raise ValueError("Salt is required for key derivation")
+
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=iterations,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def encrypt_with_password(plaintext: str, password: str) -> tuple[str, str]:
+    """
+    Encrypt a plaintext string with a password-derived Fernet key.
+
+    Args:
+        plaintext: Data to encrypt.
+        password: Export password.
+
+    Returns:
+        Tuple of (url-safe base64 salt, Fernet token).
+    """
+    if not plaintext:
+        return "", ""
+
+    salt = os.urandom(16)
+    key = derive_password_fernet_key(password, salt)
+    token = Fernet(key).encrypt(plaintext.encode("utf-8"))
+    return base64.urlsafe_b64encode(salt).decode("ascii"), token.decode("ascii")
+
+
+def decrypt_with_password(token: str, password: str, salt_b64: str, *, iterations: int = PASSWORD_EXPORT_KDF_ITERATIONS) -> str:
+    """
+    Decrypt a Fernet token with a password-derived key.
+
+    Args:
+        token: Fernet token string.
+        password: Export password.
+        salt_b64: Url-safe base64-encoded salt.
+        iterations: PBKDF2 iteration count (must match encryption).
+
+    Returns:
+        Decrypted plaintext.
+
+    Raises:
+        ValueError: If password, token or salt is empty.
+        cryptography.fernet.InvalidToken: If decryption fails (wrong password or tampered token).
+    """
+    if not password:
+        raise ValueError("Password is required for decryption")
+    if not token:
+        raise ValueError("Token is required for decryption")
+    if not salt_b64:
+        raise ValueError("Salt is required for decryption")
+
+    salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
+    key = derive_password_fernet_key(password, salt, iterations=iterations)
+    decrypted = Fernet(key).decrypt(token.encode("ascii"))
+    return decrypted.decode("utf-8")
 
 
 # Password fields in connection_config JSON

@@ -25,9 +25,15 @@ import {
   searchFilterTextMatchesQuery,
   useUrlSearchFilterState,
 } from './shared/SearchFilterBar';
-import { HardDrive, Trash2, Pencil, X } from 'lucide-react';
+import { HardDrive, Trash2, Pencil, X, Upload } from 'lucide-react';
 import { resolveSourceDisplayPath } from '@/utils/mountPaths';
 import { useIsTruncated } from '@/utils/useIsTruncated';
+import {
+  getExportPasswordPolicy,
+  passwordMeetsRequirements,
+  type ExportPasswordPolicy,
+} from '@/utils/exportPasswordPolicy';
+import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChecklist';
 import { Popover } from './Popover';
 
 // Inline field being edited
@@ -462,6 +468,21 @@ function ToolCard({
                     </span>
                   </Popover>
                 )}
+                {tool.undecryptable_fields.length > 0 && (
+                  <Popover
+                    content={`Credential ${tool.undecryptable_fields.length === 1 ? 'field' : 'fields'} ${tool.undecryptable_fields.join(', ')} cannot be decrypted with the current server key.`}
+                    position="top"
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <span
+                      className="tool-badge badge-warning"
+                      title="Some credentials cannot be decrypted with the current server key."
+                    >
+                      <Icon name="alert-circle" size={12} />
+                      <span className="path-text">Key Mismatch</span>
+                    </span>
+                  </Popover>
+                )}
               </div>
               <div className="tool-card-heartbeat">
                 <Popover
@@ -656,6 +677,7 @@ export function ToolsPanel({
   } | null>(null);
   const [writeConfirmTool, setWriteConfirmTool] = useState<ToolConfig | null>(null);
   const [deleteConfirmTool, setDeleteConfirmTool] = useState<ToolConfig | null>(null);
+  const [clearConfirmTool, setClearConfirmTool] = useState<ToolConfig | null>(null);
   const [toolContextMenu, setToolContextMenu] = useState<{
     toolId: string;
     x: number;
@@ -663,13 +685,29 @@ export function ToolsPanel({
   } | null>(null);
   const toolContextMenuRef = useRef<HTMLDivElement>(null);
 
+  const [toolPasswordModal, setToolPasswordModal] = useState<
+    { mode: 'export'; toolId: string } | { mode: 'import' } | null
+  >(null);
+  const [toolPassword, setToolPassword] = useState('');
+  const [toolPasswordConfirm, setToolPasswordConfirm] = useState('');
+  const [importFileContent, setImportFileContent] = useState<string | null>(null);
+  const [passwordModalBusy, setPasswordModalBusy] = useState(false);
+  const [exportPasswordPolicy, setExportPasswordPolicy] = useState<ExportPasswordPolicy>(
+    getExportPasswordPolicy(null),
+  );
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+
   // Selected group tab (null = show ungrouped / all)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const groupContentRef = useRef<HTMLDivElement>(null);
   const toolFilter = useUrlSearchFilterState();
   const toolFilterInputRef = useRef<HTMLInputElement | null>(null);
   const hasBlockingModalOpen = Boolean(
-    disableConfirmation || writeConfirmTool || deleteConfirmTool,
+    disableConfirmation ||
+    writeConfirmTool ||
+    deleteConfirmTool ||
+    clearConfirmTool ||
+    toolPasswordModal,
   );
 
   // Group the tools for display — include ALL groups (even empty) as drop targets
@@ -818,6 +856,7 @@ export function ToolsPanel({
       setGroups(groupData);
       setMountSources(sources);
       setShowFooterActions(Boolean(settingsResponse?.settings?.show_tool_card_footer_actions));
+      setExportPasswordPolicy(getExportPasswordPolicy(settingsResponse?.settings ?? null));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to load tools');
     } finally {
@@ -921,6 +960,90 @@ export function ToolsPanel({
   const handleAddTool = () => {
     setEditingTool(null);
     setShowWizard(true);
+  };
+
+  const handleImportClick = () => {
+    importFileInputRef.current?.click();
+  };
+
+  const handleImportFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      setImportFileContent(text);
+      setToolPasswordModal({ mode: 'import' });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to read file');
+    } finally {
+      // Reset the input so the same file can be selected again if needed.
+      e.target.value = '';
+    }
+  };
+
+  const closeToolPasswordModal = (force = false) => {
+    if (passwordModalBusy && !force) return;
+    setToolPasswordModal(null);
+    setToolPassword('');
+    setToolPasswordConfirm('');
+    setImportFileContent(null);
+  };
+
+  const handleToolPasswordModalSubmit = async () => {
+    if (!toolPasswordModal) return;
+
+    if (toolPasswordModal.mode === 'export') {
+      if (!toolPassword) {
+        toast.error('Password is required');
+        return;
+      }
+      if (!passwordMeetsRequirements(toolPassword, exportPasswordPolicy)) {
+        toast.error('Password does not meet the export password requirements');
+        return;
+      }
+      if (toolPassword !== toolPasswordConfirm) {
+        toast.error('Passwords do not match');
+        return;
+      }
+
+      const tool = tools.find((t) => t.id === toolPasswordModal.toolId);
+      if (!tool) return;
+
+      setPasswordModalBusy(true);
+      try {
+        await api.exportToolConfig(tool.id, toolPassword);
+        closeToolPasswordModal(true);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Export failed');
+      } finally {
+        setPasswordModalBusy(false);
+      }
+    } else {
+      if (!toolPassword) {
+        toast.error('Password is required');
+        return;
+      }
+      if (!importFileContent) {
+        toast.error('No import file selected');
+        return;
+      }
+
+      setPasswordModalBusy(true);
+      try {
+        const importedTool = await api.importToolConfig({
+          password: toolPassword,
+          file_content: importFileContent,
+        });
+        toast.success(`Imported ${importedTool.name}`);
+        await loadTools();
+        closeToolPasswordModal(true);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Import failed');
+      } finally {
+        setPasswordModalBusy(false);
+      }
+    }
   };
 
   const handleEditTool = (tool: ToolConfig) => {
@@ -1034,6 +1157,21 @@ export function ToolsPanel({
       toast.error(err instanceof Error ? err.message : 'Failed to enable write access');
     }
   }, [writeConfirmTool, replaceToolInState, toast]);
+
+  const handleClearUndecryptableCredentials = useCallback(async () => {
+    if (!clearConfirmTool) return;
+    const toolId = clearConfirmTool.id;
+    setClearConfirmTool(null);
+
+    try {
+      const updatedTool = await api.clearToolUndecryptableCredentials(toolId);
+      replaceToolInState(updatedTool);
+      toast.success('Broken tool credentials cleared. Re-enter them to restore the connection.');
+      handleEditTool(updatedTool);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to clear broken credentials');
+    }
+  }, [clearConfirmTool, handleEditTool, replaceToolInState, toast]);
 
   const handleDuplicateTool = useCallback(
     async (toolId: string) => {
@@ -2049,11 +2187,24 @@ export function ToolsPanel({
       <div className="card" id="tools-connections">
         <div className="card-header">
           <h2>Tool Connections</h2>
-          <AnimatedCreateButton
-            isExpanded={showWizard}
-            onClick={() => (showWizard ? handleWizardClose() : handleAddTool())}
-            label="Add Tool"
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button type="button" className="btn btn-secondary" onClick={handleImportClick}>
+              <Upload size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
+              Import
+            </button>
+            <input
+              type="file"
+              accept=".json,application/json"
+              ref={importFileInputRef}
+              onChange={handleImportFileChange}
+              style={{ display: 'none' }}
+            />
+            <AnimatedCreateButton
+              isExpanded={showWizard}
+              onClick={() => (showWizard ? handleWizardClose() : handleAddTool())}
+              label="Add Tool"
+            />
+          </div>
         </div>
 
         {showWizard ? (
@@ -2108,6 +2259,19 @@ export function ToolsPanel({
                         icon: 'pencil',
                         onSelect: () => closeAnd(() => handleEditTool(contextTool)),
                       },
+                      ...(contextTool.undecryptable_fields.length > 0
+                        ? [
+                            {
+                              label: 'Clear broken credentials...' as const,
+                              icon: 'alert-circle' as const,
+                              description: 'Remove fields that cannot be decrypted',
+                              onSelect: () => {
+                                setToolContextMenu(null);
+                                setClearConfirmTool(contextTool);
+                              },
+                            },
+                          ]
+                        : []),
                       ...(contextTool.tool_type === 'solidworks_pdm'
                         ? [
                             {
@@ -2141,6 +2305,14 @@ export function ToolsPanel({
                         label: 'Duplicate',
                         icon: 'copy',
                         onSelect: () => handleDuplicateTool(contextTool.id),
+                      },
+                      {
+                        label: 'Export',
+                        icon: 'download' as const,
+                        onSelect: () =>
+                          closeAnd(() =>
+                            setToolPasswordModal({ mode: 'export', toolId: contextTool.id }),
+                          ),
                       },
                       {
                         label: 'Delete',
@@ -2749,6 +2921,132 @@ export function ToolsPanel({
                 }}
               >
                 Delete Tool
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Tool Export/Import Password Modal */}
+
+      {clearConfirmTool && (
+        <div className="modal-overlay" onClick={() => setClearConfirmTool(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Clear Broken Credentials</h3>
+              <button className="modal-close" onClick={() => setClearConfirmTool(null)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>
+                Some credentials for <strong>{clearConfirmTool.name}</strong> cannot be decrypted
+                with the current server key.
+              </p>
+              <p>The following encrypted credential fields will be removed:</p>
+              <ul style={{ margin: 'var(--space-sm) 0', paddingLeft: 'var(--space-md)' }}>
+                {clearConfirmTool.undecryptable_fields.map((field) => (
+                  <li key={field}>
+                    <code>{field}</code>
+                  </li>
+                ))}
+              </ul>
+              <p>
+                Clearing removes only the listed broken fields. You must re-enter them in the next
+                step to restore the connection.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setClearConfirmTool(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={handleClearUndecryptableCredentials}
+              >
+                Clear Credentials
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toolPasswordModal && (
+        <div className="modal-overlay" onClick={() => closeToolPasswordModal()}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                {toolPasswordModal.mode === 'export' ? 'Export Tool Config' : 'Import Tool Config'}
+              </h3>
+              <button className="modal-close" onClick={() => closeToolPasswordModal()}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {toolPasswordModal.mode === 'export' && (
+                <p className="field-help" style={{ marginBottom: 'var(--space-md)' }}>
+                  This export is encrypted with your password. Choose a strong one, since anyone who obtains the file can attempt to crack a weak password offline.
+                </p>
+              )}
+              <div className="form-group">
+                <label htmlFor="tool-export-import-password">Password</label>
+                <input
+                  id="tool-export-import-password"
+                  type="password"
+                  value={toolPassword}
+                  onChange={(e) => setToolPassword(e.target.value)}
+                  placeholder="Enter password"
+                  autoFocus
+                />
+                {toolPasswordModal.mode === 'export' && (
+                  <PasswordRequirementsChecklist
+                    password={toolPassword}
+                    policy={exportPasswordPolicy}
+                  />
+                )}
+              </div>
+              {toolPasswordModal.mode === 'export' && (
+                <div className="form-group" style={{ marginTop: 'var(--space-md)' }}>
+                  <label htmlFor="tool-export-confirm-password">Confirm Password</label>
+                  <input
+                    id="tool-export-confirm-password"
+                    type="password"
+                    value={toolPasswordConfirm}
+                    onChange={(e) => setToolPasswordConfirm(e.target.value)}
+                    placeholder="Re-enter password"
+                  />
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn btn-secondary"
+                onClick={() => closeToolPasswordModal()}
+                disabled={passwordModalBusy}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => void handleToolPasswordModalSubmit()}
+                disabled={
+                  passwordModalBusy ||
+                  (toolPasswordModal.mode === 'export' &&
+                    (!passwordMeetsRequirements(toolPassword, exportPasswordPolicy) ||
+                      toolPassword !== toolPasswordConfirm))
+                }
+              >
+                {passwordModalBusy
+                  ? toolPasswordModal.mode === 'export'
+                    ? 'Exporting...'
+                    : 'Importing...'
+                  : toolPasswordModal.mode === 'export'
+                    ? 'Export'
+                    : 'Import'}
               </button>
             </div>
           </div>

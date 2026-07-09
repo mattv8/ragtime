@@ -35,6 +35,11 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_CONTEXT_TOKEN_BUDGET,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EMBEDDING_PROVIDER,
+    DEFAULT_EXPORT_PASSWORD_MIN_LENGTH,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_LOWERCASE,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_NUMBER,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_SPECIAL,
+    DEFAULT_EXPORT_PASSWORD_REQUIRE_UPPERCASE,
     DEFAULT_GITHUB_COPILOT_BASE_URL,
     DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
     DEFAULT_IMAGE_PAYLOAD_LIMITS,
@@ -87,6 +92,8 @@ from ragtime.core.datetimes import (
 )
 from ragtime.core.encryption import (
     CONNECTION_CONFIG_PASSWORD_FIELDS,
+    ENCRYPTED_PREFIX,
+    attempt_decrypt,
     decrypt_json_passwords,
     decrypt_secret,
     encrypt_json_passwords,
@@ -1282,6 +1289,31 @@ class IndexerRepository:
                 DEFAULT_HTTP_PROXY_SAFE_TIMEOUT_SECONDS,
             ),
             enable_write_ops=settings.enableWriteOps,
+            export_password_min_length=getattr(
+                settings,
+                "exportPasswordMinLength",
+                DEFAULT_EXPORT_PASSWORD_MIN_LENGTH,
+            ),
+            export_password_require_uppercase=getattr(
+                settings,
+                "exportPasswordRequireUppercase",
+                DEFAULT_EXPORT_PASSWORD_REQUIRE_UPPERCASE,
+            ),
+            export_password_require_lowercase=getattr(
+                settings,
+                "exportPasswordRequireLowercase",
+                DEFAULT_EXPORT_PASSWORD_REQUIRE_LOWERCASE,
+            ),
+            export_password_require_number=getattr(
+                settings,
+                "exportPasswordRequireNumber",
+                DEFAULT_EXPORT_PASSWORD_REQUIRE_NUMBER,
+            ),
+            export_password_require_special=getattr(
+                settings,
+                "exportPasswordRequireSpecial",
+                DEFAULT_EXPORT_PASSWORD_REQUIRE_SPECIAL,
+            ),
             # Token optimization
             max_tool_output_chars=getattr(
                 settings,
@@ -1546,6 +1578,12 @@ class IndexerRepository:
             "query_timeout": "queryTimeout",
             "http_proxy_safe_timeout_seconds": "httpProxySafeTimeoutSeconds",
             "enable_write_ops": "enableWriteOps",
+            # Export password policy
+            "export_password_min_length": "exportPasswordMinLength",
+            "export_password_require_uppercase": "exportPasswordRequireUppercase",
+            "export_password_require_lowercase": "exportPasswordRequireLowercase",
+            "export_password_require_number": "exportPasswordRequireNumber",
+            "export_password_require_special": "exportPasswordRequireSpecial",
             # Search configuration
             "search_results_k": "searchResultsK",
             "aggregate_search": "aggregateSearch",
@@ -2055,10 +2093,59 @@ class IndexerRepository:
         except Exception as e:
             logger.warning(f"Failed to update test result for {config_id}: {e}")
 
+    async def clear_tool_undecryptable_credentials(self, config_id: str) -> Optional[ToolConfig]:
+        """Clear only undecryptable credential fields for a single tool config.
+
+        Fetches the raw stored connection_config, removes keys that are encrypted
+        but fail decryption with the active server key, and updates the DB. Other
+        keys (decryptable secrets, plaintext, non-secret metadata) are preserved.
+
+        Returns:
+            Updated ToolConfig if found, otherwise None.
+        """
+        db = await self._get_db()
+
+        prisma_config = await db.toolconfig.find_unique(where={"id": config_id}, include={"group": True})
+        if prisma_config is None:
+            return None
+
+        raw_config = getattr(prisma_config, "connectionConfig", None) or {}
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+
+        cleaned_config = dict(raw_config)
+        changed = False
+        for field in CONNECTION_CONFIG_PASSWORD_FIELDS:
+            value = cleaned_config.get(field)
+            if isinstance(value, str) and value.startswith(ENCRYPTED_PREFIX) and not attempt_decrypt(value):
+                cleaned_config.pop(field, None)
+                changed = True
+
+        if changed:
+            await db.toolconfig.update(
+                where={"id": config_id},
+                data={"connectionConfig": Json(cleaned_config)},  # type: ignore[arg-type]
+            )
+            logger.info(f"Cleared undecryptable credential fields for tool config {config_id}: {list(set(raw_config) - set(cleaned_config))}")
+
+        return await self.get_tool_config(config_id)
+
     def _prisma_tool_config_to_model(self, prisma_config: Any) -> ToolConfig:
         """Convert Prisma ToolConfig to Pydantic model."""
+        # Inspect raw connection_config for encrypted fields that cannot be
+        # decrypted with the active server key. Expose field names only.
+        raw_config = getattr(prisma_config, "connectionConfig", None) or {}
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+
+        undecryptable_fields: list[str] = []
+        for field in CONNECTION_CONFIG_PASSWORD_FIELDS:
+            value = raw_config.get(field)
+            if isinstance(value, str) and value.startswith(ENCRYPTED_PREFIX) and not attempt_decrypt(value):
+                undecryptable_fields.append(field)
+
         # Decrypt password fields in connection_config
-        decrypted_config = decrypt_json_passwords(prisma_config.connectionConfig, CONNECTION_CONFIG_PASSWORD_FIELDS)
+        decrypted_config = decrypt_json_passwords(raw_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
         # Resolve group fields if relation or raw field present
         group_id = getattr(prisma_config, "groupId", None)
@@ -2085,6 +2172,7 @@ class IndexerRepository:
             last_test_error=prisma_config.lastTestError,
             created_at=prisma_config.createdAt,
             updated_at=prisma_config.updatedAt,
+            undecryptable_fields=undecryptable_fields,
         )
 
     # -------------------------------------------------------------------------

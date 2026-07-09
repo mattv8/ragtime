@@ -256,6 +256,13 @@ model AppSettings {
   // Security
   enableWriteOps Boolean @default(false) @map("enable_write_ops")
 
+  // Export password policy (shared, configurable via settings)
+  exportPasswordMinLength        Int     @default(12) @map("export_password_min_length")
+  exportPasswordRequireUppercase Boolean @default(true) @map("export_password_require_uppercase")
+  exportPasswordRequireLowercase Boolean @default(true) @map("export_password_require_lowercase")
+  exportPasswordRequireNumber    Boolean @default(true) @map("export_password_require_number")
+  exportPasswordRequireSpecial   Boolean @default(true) @map("export_password_require_special")
+
   // API Tool Output Configuration
   toolOutputMode ConversationToolOutputMode @default(default) @map("tool_output_mode") // API tool output mode
 

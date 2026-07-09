@@ -3066,7 +3066,7 @@ class UserSpaceService:
         for cloned_conversation_id, cloned_parent_conversation_id in pending_parent_updates:
             await db.conversation.update(
                 where={"id": cloned_conversation_id},
-                data={"parentConversationId": cloned_parent_conversation_id},
+                data=cast(Any, {"parentConversationId": cloned_parent_conversation_id}),
             )
         return copied_count
 

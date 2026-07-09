@@ -18,6 +18,7 @@ from ragtime.core.encryption import (
 from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.indexer import routes as indexer_routes
 from ragtime.indexer.models import AppSettings, ConfigurationWarning
+from ragtime.indexer.repository import IndexerRepository
 
 
 class _FindManyDelegate:
@@ -204,6 +205,66 @@ class EncryptionKeyHealthRecheckTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.configuration_warnings, [])
         self.assertFalse(encryption_key_mismatch_detected())
         recheck_mock.assert_awaited_once()
+
+
+class ToolConfigCredentialHealthTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        reset_key_mismatch_state()
+
+    def tearDown(self) -> None:
+        reset_key_mismatch_state()
+
+    async def test_clearing_broken_tool_credentials_uses_attempt_decrypt_not_decrypt_secret(self) -> None:
+        """Clearing broken tool credentials must not trip the sticky key-mismatch flag."""
+        from ragtime.core.encryption import CONNECTION_CONFIG_PASSWORD_FIELDS, ENCRYPTED_PREFIX
+
+        repo = IndexerRepository()
+        bad_password = f"{ENCRYPTED_PREFIX}bad-password-token"
+        good_token = encrypt_secret("valid-token")
+        raw_config = {"host": "db.example.com", "password": bad_password, "token": good_token}
+        captured_config: dict | None = None
+
+        async def fake_find_unique(where, include=None):
+            del include
+            if where.get("id") == "tool-123":
+                return SimpleNamespace(
+                    id="tool-123",
+                    name="Test",
+                    toolType="postgres",
+                    enabled=True,
+                    description="",
+                    connectionConfig=captured_config if captured_config is not None else raw_config,
+                    maxResults=100,
+                    timeoutMaxSeconds=300,
+                    allowWrite=False,
+                    sortOrder=0,
+                    groupId=None,
+                    group=None,
+                    lastTestAt=None,
+                    lastTestResult=None,
+                    lastTestError=None,
+                    createdAt=None,
+                    updatedAt=None,
+                )
+            return None
+
+        async def fake_update(where, data):
+            nonlocal captured_config
+            if where.get("id") == "tool-123":
+                json_value = data.get("connectionConfig")
+                captured_config = dict(json_value.data if hasattr(json_value, "data") else json_value or raw_config)
+
+        db = AsyncMock()
+        db.toolconfig.find_unique = fake_find_unique
+        db.toolconfig.update = fake_update
+
+        with patch.object(repo, "_get_db", return_value=db):
+            result = await repo.clear_tool_undecryptable_credentials("tool-123")
+
+        self.assertIsNotNone(result)
+        self.assertFalse(encryption_key_mismatch_detected())
+        self.assertNotIn("password", captured_config or {})
+        self.assertEqual((captured_config or {}).get("token"), good_token)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ const apiMock = vi.hoisted(() => ({
   deleteToolConfig: vi.fn(),
   createToolConfig: vi.fn(),
   reorderTools: vi.fn(),
+  clearToolUndecryptableCredentials: vi.fn(),
 }));
 
 const toastMock = {
@@ -33,7 +34,14 @@ const toolFilterState = {
 };
 
 vi.mock('@/api', () => ({ api: apiMock }));
-vi.mock('./ToolWizard', () => ({ ToolWizard: () => null }));
+let lastToolWizardExistingTool: ToolConfig | null | undefined = undefined;
+
+vi.mock('./ToolWizard', () => ({
+  ToolWizard: (props: { existingTool: ToolConfig | null }) => {
+    lastToolWizardExistingTool = props.existingTool;
+    return null;
+  },
+}));
 vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
 
 type MockPopoverProps = {
@@ -88,6 +96,7 @@ const groupedTool: ToolConfig = {
   sort_order: 100,
   group_id: 'group-1',
   group_name: 'Alpha Group',
+  undecryptable_fields: [],
   last_test_at: null,
   last_test_result: null,
   last_test_error: null,
@@ -108,6 +117,7 @@ const ungroupedTool: ToolConfig = {
   sort_order: 200,
   group_id: null,
   group_name: null,
+  undecryptable_fields: [],
   last_test_at: null,
   last_test_result: null,
   last_test_error: null,
@@ -309,6 +319,7 @@ describe('ToolsPanel', () => {
       id: 'tool-write',
       name: 'Write Tool',
       allow_write: true,
+      undecryptable_fields: [],
       connection_config: { host: 'example.org', user: 'deploy', port: 22 },
     };
     apiMock.listToolConfigs.mockResolvedValue([writeTool]);
@@ -324,6 +335,7 @@ describe('ToolsPanel', () => {
       ...ungroupedTool,
       id: 'tool-nowd',
       name: 'No Work Dir Tool',
+      undecryptable_fields: [],
       connection_config: { host: 'example.org', user: 'deploy', port: 22 },
     };
     apiMock.listToolConfigs.mockResolvedValue([noWdTool]);
@@ -341,6 +353,7 @@ describe('ToolsPanel', () => {
       id: 'tool-existing-copy',
       name: 'Ungrouped Tool Copy',
       sort_order: 300,
+      undecryptable_fields: [],
     };
     apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool, existingCopy]);
     apiMock.createToolConfig.mockResolvedValue({
@@ -375,6 +388,7 @@ describe('ToolsPanel', () => {
       name: 'Disabled Tool',
       enabled: false,
       sort_order: 300,
+      undecryptable_fields: [],
     };
     apiMock.listToolConfigs.mockResolvedValue([groupedTool, disabledTool]);
     apiMock.createToolConfig.mockResolvedValue({
@@ -407,5 +421,100 @@ describe('ToolsPanel', () => {
     expect(apiMock.reorderTools).toHaveBeenCalledWith({
       tool_ids: ['tool-grouped', 'tool-disabled', 'tool-disabled-copy'],
     });
+  });
+
+  it('shows a warning badge when a tool has undecryptable credential fields', async () => {
+    const brokenTool: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-broken',
+      name: 'Broken Tool',
+      undecryptable_fields: ['password'],
+    };
+    apiMock.listToolConfigs.mockResolvedValue([ungroupedTool, brokenTool]);
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Broken Tool');
+    expect(screen.getByText('Key Mismatch')).toBeTruthy();
+    expect(
+      screen.getByTitle(/credentials cannot be decrypted with the current server key/i),
+    ).toBeTruthy();
+  });
+
+  it('clears broken credentials and opens the edit wizard after confirmation', async () => {
+    const user = userEvent.setup();
+    const brokenTool: ToolConfig = {
+      ...ungroupedTool,
+      id: 'tool-broken',
+      name: 'Broken Tool',
+      undecryptable_fields: ['password'],
+    };
+    const clearedTool: ToolConfig = {
+      ...brokenTool,
+      undecryptable_fields: [],
+      updated_at: '2026-01-02T00:00:00Z',
+    };
+    apiMock.listToolConfigs.mockResolvedValue([ungroupedTool, brokenTool]);
+    apiMock.clearToolUndecryptableCredentials.mockResolvedValue(clearedTool);
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Broken Tool');
+
+    fireEvent.contextMenu(screen.getByText('Broken Tool'));
+    await user.click(await screen.findByRole('button', { name: /Clear broken credentials/ }));
+
+    await screen.findByRole('heading', { name: 'Clear Broken Credentials' });
+    expect(screen.getByText(/cannot be decrypted with the current server key/i)).toBeTruthy();
+    expect(screen.getByText('password')).toBeTruthy();
+    expect(apiMock.clearToolUndecryptableCredentials).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Clear Credentials' }));
+
+    await waitFor(() => {
+      expect(apiMock.clearToolUndecryptableCredentials).toHaveBeenCalledWith('tool-broken');
+    });
+    expect(toastMock.success).toHaveBeenCalledWith(
+      'Broken tool credentials cleared. Re-enter them to restore the connection.',
+    );
+    expect(lastToolWizardExistingTool).toEqual(clearedTool);
+  });
+
+  it('shows live password requirements in export modal and enables export only for a strong matching password', async () => {
+    const user = userEvent.setup();
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool'));
+    await user.click(await screen.findByRole('button', { name: /^Export$/ }));
+
+    await screen.findByRole('heading', { name: 'Export Tool Config' });
+    // With an empty password every requirement is still outstanding.
+    expect(screen.getByText('12+ characters')).toBeTruthy();
+    expect(screen.getByText('Uppercase')).toBeTruthy();
+    expect(screen.getByText('Lowercase')).toBeTruthy();
+    expect(screen.getByText('Number')).toBeTruthy();
+    expect(screen.getByText('Special character')).toBeTruthy();
+
+    const passwordInput = screen.getByLabelText(/^Password$/i) as HTMLInputElement;
+    const confirmInput = screen.getByLabelText(/^Confirm Password$/i) as HTMLInputElement;
+    const exportButton = screen.getByRole('button', { name: /^Export$/ }) as HTMLButtonElement;
+
+    await user.type(passwordInput, 'short1!');
+    expect(exportButton.disabled).toBe(true);
+    // Met requirements drop out of the "still needed" hint.
+    expect(screen.queryByText('Lowercase')).toBeNull();
+    expect(screen.getByText('12+ characters')).toBeTruthy();
+
+    await user.clear(passwordInput);
+    await user.type(passwordInput, 'StrongPass123!');
+    expect(exportButton.disabled).toBe(true);
+    // All requirements satisfied collapses to the success line.
+    expect(screen.getByText('Password meets all requirements')).toBeTruthy();
+
+    await user.type(confirmInput, 'StrongPass123!');
+    await waitFor(() => expect(exportButton.disabled).toBe(false));
   });
 });

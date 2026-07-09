@@ -27,6 +27,8 @@ import type {
   CreateToolConfigRequest,
   UpdateToolConfigRequest,
   ReorderToolsRequest,
+  ExportToolConfigRequest,
+  ImportToolConfigRequest,
   ToolTestRequest,
   ToolTestResponse,
   ToolGroup,
@@ -1416,6 +1418,45 @@ export const api = {
       body: JSON.stringify(request),
     });
     await handleResponse<{ message: string }>(response);
+  },
+
+  /**
+   * Export a tool configuration as a password-encrypted file.
+   */
+  async exportToolConfig(toolId: string, password: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password } satisfies ExportToolConfigRequest),
+    });
+    await downloadBlobResponse(response, 'tool-config.json', 'Export failed');
+  },
+
+  /**
+   * Import a tool configuration from a password-encrypted export file.
+   */
+  async importToolConfig(request: ImportToolConfigRequest): Promise<ToolConfig> {
+    const response = await apiFetch(`${API_BASE}/tools/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ToolConfig>(response);
+  },
+
+  /**
+   * Clear undecryptable credential fields for a tool after an encryption key mismatch.
+   * Returns the updated tool configuration so the fields can be re-entered.
+   */
+  async clearToolUndecryptableCredentials(toolId: string): Promise<ToolConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(toolId)}/clear-undecryptable-credentials`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+    return handleResponse<ToolConfig>(response);
   },
 
   /**

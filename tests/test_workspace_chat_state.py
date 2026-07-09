@@ -78,6 +78,7 @@ class BuildWorkspaceChatStateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.selected_conversation_id, "conv-1")
         self.assertIsNotNone(state.active_task)
+        assert state.active_task is not None
         self.assertEqual(state.active_task.id, "task-1")
         self.assertEqual(len(state.conversations), 1)
         self.assertEqual(state.conversations[0].id, "conv-1")

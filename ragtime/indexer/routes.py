@@ -44,7 +44,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ragtime.chat_runtime.payloads import (
     build_chat_diagnostic_command_payload,
@@ -80,7 +80,15 @@ from ragtime.core.embedding_models import (
     OPENAI_EMBEDDING_PRIORITY,
     get_embedding_models,
 )
-from ragtime.core.encryption import decrypt_secret, encryption_key_mismatch_detected
+from ragtime.core.encryption import (
+    PASSWORD_EXPORT_KDF_ALGORITHM,
+    PASSWORD_EXPORT_KDF_ITERATIONS,
+    InvalidToken,
+    decrypt_secret,
+    decrypt_with_password,
+    encrypt_with_password,
+    encryption_key_mismatch_detected,
+)
 from ragtime.core.encryption_health import recheck_encryption_key_health
 from ragtime.core.event_bus import task_event_bus
 from ragtime.core.git import check_repo_visibility as git_check_visibility
@@ -331,6 +339,33 @@ if TYPE_CHECKING:
     from prisma.models import User
 
 logger = get_logger(__name__)
+
+TOOL_CONFIG_INT_FIELDS = [
+    "port",
+    "ssh_tunnel_port",
+    "ssh_port",
+    "chunk_size",
+    "chunk_overlap",
+    "max_file_size_mb",
+    "max_total_files",
+    "schema_index_interval_hours",
+    "schema_index_start_minute",
+    "reindex_interval_hours",
+    "reindex_start_minute",
+]
+
+
+def _sanitize_tool_connection_int_fields(connection_config: dict[str, Any]) -> dict[str, Any]:
+    """Coerce numeric connection config fields that may arrive from forms as strings."""
+    sanitized = dict(connection_config)
+    for field in TOOL_CONFIG_INT_FIELDS:
+        if field in sanitized:
+            try:
+                sanitized[field] = int(sanitized[field])
+            except (ValueError, TypeError):
+                pass
+    return sanitized
+
 
 # GitHub Copilot OAuth device flow
 # We must use VSCode's Client ID to get user subscribed models
@@ -2172,32 +2207,7 @@ async def reorder_tool_configs(request: ReorderToolsRequest, _user: User = Depen
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])
 async def create_tool_config(request: CreateToolConfigRequest, _user: User = Depends(require_admin)):
     """Create a new tool configuration. Admin only."""
-    connection_config = request.connection_config.copy()
-
-    # Sanitize integer fields in connection_config
-    # This addresses an issue where the frontend might send them as strings (storing "24" in JSON)
-    # causing runtime type errors when consumed by backend services
-    int_fields = [
-        "port",
-        "ssh_tunnel_port",
-        "ssh_port",
-        "chunk_size",
-        "chunk_overlap",
-        "max_file_size_mb",
-        "max_total_files",
-        "schema_index_interval_hours",
-        "schema_index_start_minute",
-        "reindex_interval_hours",
-        "reindex_start_minute",
-    ]
-
-    for field in int_fields:
-        if field in connection_config:
-            try:
-                # Convert to int if possible associated with numeric fields
-                connection_config[field] = int(connection_config[field])
-            except (ValueError, TypeError):
-                pass  # Keep original value if conversion fails
+    connection_config = _sanitize_tool_connection_int_fields(request.connection_config)
 
     # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
@@ -2373,31 +2383,7 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
 
     # Sanitize connection_config if present
     if "connection_config" in updates and isinstance(updates["connection_config"], dict):
-        cc = updates["connection_config"]
-        # Sanitize integer fields in connection_config
-        # This addresses an issue where the frontend might send them as strings (storing "24" in JSON)
-        # causing runtime type errors when consumed by backend services
-        int_fields = [
-            "port",
-            "ssh_tunnel_port",
-            "ssh_port",
-            "chunk_size",
-            "chunk_overlap",
-            "max_file_size_mb",
-            "max_total_files",
-            "schema_index_interval_hours",
-            "schema_index_start_minute",
-            "reindex_interval_hours",
-            "reindex_start_minute",
-        ]
-
-        for field in int_fields:
-            if field in cc:
-                try:
-                    cc[field] = int(cc[field])
-                except (ValueError, TypeError):
-                    pass  # Keep original value if conversion fails
-        updates["connection_config"] = cc
+        updates["connection_config"] = _sanitize_tool_connection_int_fields(updates["connection_config"])
 
     # Capture the current config to detect changes (e.g., schema indexing enablement)
     original_config = await repository.get_tool_config(tool_id)
@@ -2606,6 +2592,317 @@ async def toggle_tool_config(tool_id: str, enabled: bool, _user: User = Depends(
 
     # Notify MCP clients that tools have changed
     notify_tools_changed()
+
+    return config
+
+
+# -----------------------------------------------------------------------------
+# Tool Config Export / Import
+# -----------------------------------------------------------------------------
+
+
+class ToolExportRequest(BaseModel):
+    """Request to export a tool configuration as a password-encrypted file."""
+
+    password: str = Field(
+        min_length=1,
+        description="Password used to derive the encryption key for the exported payload. Route-level policy enforces strength.",
+    )
+
+
+def validate_export_password_strength(password: str, settings: AppSettings) -> None:
+    """Validate that ``password`` meets the configured export password policy.
+
+    Raises:
+        HTTPException: 400 if the password violates the current policy.
+    """
+    min_length = max(settings.export_password_min_length, 1)
+    if len(password) < min_length:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Export password must be at least {min_length} characters",
+        )
+
+    if settings.export_password_require_uppercase and not any(c.isupper() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="Export password must contain at least one uppercase letter",
+        )
+
+    if settings.export_password_require_lowercase and not any(c.islower() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="Export password must contain at least one lowercase letter",
+        )
+
+    if settings.export_password_require_number and not any(c.isdigit() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="Export password must contain at least one number",
+        )
+
+    if settings.export_password_require_special and not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(
+            status_code=400,
+            detail="Export password must contain at least one special character",
+        )
+
+
+class ToolImportRequest(BaseModel):
+    """Request to import a tool configuration from an encrypted export file."""
+
+    password: str = Field(min_length=1, description="Password used to decrypt the exported payload")
+    file_content: str = Field(min_length=1, description="JSON export file contents")
+
+
+_TOOL_EXPORT_FORMAT = "ragtime-tool-config"
+_TOOL_EXPORT_VERSION = 1
+_TOOL_EXPORTABLE_FIELDS = {
+    "name",
+    "tool_type",
+    "description",
+    "connection_config",
+    "max_results",
+    "timeout_max_seconds",
+    "allow_write",
+}
+
+
+def _validate_tool_export_envelope(envelope: dict[str, Any]) -> None:
+    """Validate the export envelope format, version, and KDF parameters."""
+    if envelope.get("format") != _TOOL_EXPORT_FORMAT:
+        raise ValueError(f"Unsupported export format: {envelope.get('format')!r}")
+
+    if envelope.get("version") != _TOOL_EXPORT_VERSION:
+        raise ValueError(f"Unsupported export version: {envelope.get('version')!r}")
+
+    kdf = envelope.get("kdf")
+    if not isinstance(kdf, dict):
+        raise ValueError("Missing KDF metadata")
+
+    if kdf.get("algorithm") != PASSWORD_EXPORT_KDF_ALGORITHM:
+        raise ValueError(f"Unsupported KDF algorithm: {kdf.get('algorithm')!r}")
+
+    if kdf.get("iterations") != PASSWORD_EXPORT_KDF_ITERATIONS:
+        raise ValueError(f"Unsupported KDF iteration count: {kdf.get('iterations')!r}")
+
+    if not isinstance(kdf.get("salt"), str) or not kdf["salt"]:
+        raise ValueError("Missing or invalid KDF salt")
+
+    if not isinstance(envelope.get("payload"), str) or not envelope["payload"]:
+        raise ValueError("Missing or invalid encrypted payload")
+
+
+def _build_tool_export_envelope(config: ToolConfig, password: str) -> dict[str, Any]:
+    """Build the password-encrypted export envelope for a tool configuration."""
+    payload_data = {field: getattr(config, field) for field in _TOOL_EXPORTABLE_FIELDS}
+    payload_data["tool_type"] = config.tool_type.value
+    payload_json = json.dumps(payload_data, ensure_ascii=False, sort_keys=True)
+    salt, token = encrypt_with_password(payload_json, password)
+    return {
+        "format": _TOOL_EXPORT_FORMAT,
+        "version": _TOOL_EXPORT_VERSION,
+        "kdf": {
+            "algorithm": PASSWORD_EXPORT_KDF_ALGORITHM,
+            "iterations": PASSWORD_EXPORT_KDF_ITERATIONS,
+            "salt": salt,
+        },
+        "tool_hint": {
+            "name": config.name,
+            "tool_type": config.tool_type.value,
+        },
+        "payload": token,
+    }
+
+
+def _deduplicate_tool_name(name: str, existing_names: set[str]) -> str:
+    """Return a unique tool name, appending 'Copy', 'Copy 2', etc. if needed."""
+    if name not in existing_names:
+        return name
+
+    counter = 2
+    candidate = f"{name} Copy"
+    while candidate in existing_names:
+        candidate = f"{name} Copy {counter}"
+        counter += 1
+    return candidate
+
+
+async def _maybe_disable_imported_tool(config: ToolConfig) -> ToolConfig:
+    """Ensure an imported tool is disabled after creation."""
+    if not config.enabled:
+        return config
+
+    updated = await repository.update_tool_config(config.id, {"enabled": False}) if config.id else None
+    return updated if updated is not None else config
+
+
+def _prepare_imported_filesystem_config(imported_name: str, connection_config: dict[str, Any]) -> dict[str, Any]:
+    """Prepare filesystem-indexer config with a safe, import-specific index name."""
+    prepared = dict(connection_config)
+    sanitized_index_name = safe_tool_name(imported_name)
+    prepared["index_name"] = sanitized_index_name
+
+    if prepared.get("vector_store_type", "pgvector") == "faiss":
+        from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
+
+        index_path = FAISS_INDEX_BASE_PATH / sanitized_index_name
+        if index_path.exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"An index named '{sanitized_index_name}' already exists",
+            )
+
+    return prepared
+
+
+@router.post("/tools/import", response_model=ToolConfig)
+async def import_tool_config(
+    request: ToolImportRequest,
+    _user: User = Depends(require_admin),
+) -> ToolConfig:
+    """
+    Import a tool configuration from an encrypted export file.
+
+    The imported tool is always created disabled and its name will be
+    deduplicated if it collides with an existing tool.
+    """
+    try:
+        envelope = json.loads(request.file_content)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid export file JSON: {exc}") from exc
+
+    if not isinstance(envelope, dict):
+        raise HTTPException(status_code=400, detail="Invalid export file: expected JSON object")
+
+    try:
+        _validate_tool_export_envelope(envelope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        decrypted = decrypt_with_password(
+            envelope["payload"],
+            request.password,
+            envelope["kdf"]["salt"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Decryption failed: {exc}") from exc
+    except InvalidToken as exc:
+        raise HTTPException(status_code=400, detail="Incorrect password or corrupted export file") from exc
+
+    try:
+        payload = json.loads(decrypted)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Decrypted payload is not valid JSON: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Decrypted payload is not a JSON object")
+
+    missing = _TOOL_EXPORTABLE_FIELDS - set(payload.keys())
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required tool fields: {', '.join(sorted(missing))}")
+
+    try:
+        tool_type = ToolType(payload["tool_type"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Unsupported tool type: {payload['tool_type']!r}") from exc
+
+    if not isinstance(payload.get("connection_config") or {}, dict):
+        raise HTTPException(status_code=400, detail="Invalid connection_config: expected JSON object")
+
+    connection_config = _sanitize_tool_connection_int_fields(payload.get("connection_config") or {})
+
+    existing_tools = await repository.list_tool_configs()
+    existing_names = {tool.name for tool in existing_tools}
+    imported_name = _deduplicate_tool_name(str(payload["name"]), existing_names)
+
+    if tool_type == ToolType.FILESYSTEM_INDEXER:
+        connection_config = _prepare_imported_filesystem_config(imported_name, connection_config)
+
+    try:
+        config = ToolConfig(
+            name=imported_name,
+            tool_type=tool_type,
+            description=payload.get("description", ""),
+            connection_config=connection_config,
+            max_results=int(payload.get("max_results", 100)),
+            timeout_max_seconds=int(payload.get("timeout_max_seconds", 300)),
+            allow_write=bool(payload.get("allow_write", False)),
+            enabled=False,
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid imported tool config: {exc}") from exc
+
+    result = await repository.create_tool_config(config)
+
+    # create_tool_config may default enabled to True; force disabled for imports
+    result = await _maybe_disable_imported_tool(result)
+
+    invalidate_settings_cache()
+    notify_tools_changed()
+    await rag.initialize()
+
+    return result
+
+
+@router.post("/tools/{tool_id}/export")
+async def export_tool_config(
+    tool_id: str,
+    request: ToolExportRequest,
+    _user: User = Depends(require_admin),
+) -> Response:
+    """
+    Export a single tool configuration as a password-encrypted JSON file.
+
+    The returned file can be imported back via POST /indexes/tools/import using
+    the same password.
+    """
+    config = await repository.get_tool_config(tool_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+    if config.undecryptable_fields:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot export tool '{config.name}' because the following credentials cannot be decrypted "
+                f"with the current server encryption key: {', '.join(config.undecryptable_fields)}. "
+                f"Clear the broken credentials via POST /indexes/tools/{tool_id}/clear-undecryptable-credentials "
+                "and re-enter them before exporting."
+            ),
+        )
+
+    settings = await repository.get_settings()
+    validate_export_password_strength(request.password, settings)
+
+    envelope = _build_tool_export_envelope(config, request.password)
+    filename_base = safe_tool_name(config.name) or "tool-config"
+    content_disposition = f'attachment; filename="{filename_base}.json"'
+
+    return Response(
+        content=json.dumps(envelope, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": content_disposition},
+    )
+
+
+@router.post("/tools/{tool_id}/clear-undecryptable-credentials", response_model=ToolConfig, tags=["Tools"])
+async def clear_tool_undecryptable_credentials(tool_id: str, _user: User = Depends(require_admin)) -> ToolConfig:
+    """Clear only undecryptable credential fields for a single tool config.
+
+    Encrypted connection credentials that cannot be decrypted with the active
+    server key are removed from the stored raw JSON; decryptable secrets and
+    non-secret fields are preserved. The caller can then re-enter the cleared
+    credentials via the tool update flow.
+    """
+    config = await repository.clear_tool_undecryptable_credentials(tool_id)
+    if config is None:
+        raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    await recheck_encryption_key_health()
+    invalidate_settings_cache()
+    notify_tools_changed()
+    await rag.initialize()
 
     return config
 

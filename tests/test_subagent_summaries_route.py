@@ -5,9 +5,11 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma.models import User
 
 from ragtime.indexer import routes as indexer_routes
 from ragtime.indexer.models import ConversationSummaryResponse
@@ -16,9 +18,9 @@ from ragtime.indexer.repository import repository
 NOW = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _make_user(user_id: str = "user-1", role: str = "user") -> SimpleNamespace:
+def _make_user(user_id: str = "user-1", role: str = "user") -> User:
     """Route only reads user.id and user.role; a namespace stands in for prisma User."""
-    return SimpleNamespace(id=user_id, role=role)
+    return cast(User, SimpleNamespace(id=user_id, role=role))
 
 
 def _make_summary(conversation_id: str = "child-1") -> ConversationSummaryResponse:
