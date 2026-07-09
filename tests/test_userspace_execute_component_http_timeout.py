@@ -1,20 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
-if inserted_fake_rag_prompts:
-    fake_rag_package = types.ModuleType("ragtime.rag")
-    fake_prompts_module = types.ModuleType("ragtime.rag.prompts")
-    setattr(fake_prompts_module, "build_workspace_scm_setup_prompt", lambda *args, **kwargs: "")
-    setattr(fake_rag_package, "prompts", fake_prompts_module)
-    sys.modules.setdefault("ragtime.rag", fake_rag_package)
-    sys.modules["ragtime.rag.prompts"] = fake_prompts_module
+from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
+
+inserted_fake_rag_prompts = install_fake_rag_prompts()
 
 from ragtime.userspace import service as userspace_service_module
 from ragtime.userspace.models import (
@@ -25,9 +18,7 @@ from ragtime.userspace.models import (
 )
 from ragtime.userspace.service import UserSpaceService
 
-if inserted_fake_rag_prompts:
-    sys.modules.pop("ragtime.rag", None)
-    sys.modules.pop("ragtime.rag.prompts", None)
+remove_fake_rag_prompts(inserted_fake_rag_prompts)
 
 
 def _make_workspace() -> UserSpaceWorkspace:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import pickle
@@ -103,28 +104,48 @@ def _make_admin() -> Any:
 
 
 class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
+    def _make_service_and_patches(
+        self,
+        temp: _TempDir,
+        *,
+        load_return: bool | None = None,
+        metadata_return: Any = None,
+    ) -> tuple[IndexerService, SimpleNamespace, SimpleNamespace]:
+        service = IndexerService(index_base_path=str(temp.path))
+        fake_repo = SimpleNamespace(
+            get_index_metadata=AsyncMock(return_value=metadata_return),
+            upsert_index_metadata=AsyncMock(),
+        )
+        fake_rag = SimpleNamespace(
+            unload_index=lambda _name: None,
+            load_faiss_index_from_metadata=AsyncMock(return_value=load_return),
+        )
+        return service, fake_repo, fake_rag
+
+    @contextlib.contextmanager
+    def _patch_routes(
+        self,
+        service: IndexerService,
+        fake_repo: SimpleNamespace,
+        fake_rag: SimpleNamespace,
+    ):
+        with (
+            patch.object(_routes_module, "indexer", service),
+            patch.object(_routes_module, "repository", fake_repo),
+            patch.object(_routes_module, "rag", fake_rag),
+        ):
+            yield
+
     async def test_import_faiss_index_writes_files_and_metadata(self) -> None:
         description = "Custom description for odev_proj re-import"
         zip_bytes = _build_faiss_zip("odev_proj", description=description, chunks=7)
         upload = _make_upload("odev_proj_index.zip", zip_bytes)
 
         with _TempDir() as temp:
-            service = IndexerService(index_base_path=str(temp.path))
-
-            fake_repo = SimpleNamespace(
-                get_index_metadata=AsyncMock(return_value=None),
-                upsert_index_metadata=AsyncMock(),
+            service, fake_repo, fake_rag = self._make_service_and_patches(
+                temp, load_return=True
             )
-            fake_rag = SimpleNamespace(
-                unload_index=lambda _name: None,
-                load_faiss_index_from_metadata=AsyncMock(return_value=True),
-            )
-
-            with (
-                patch.object(_routes_module, "indexer", service),
-                patch.object(_routes_module, "repository", fake_repo),
-                patch.object(_routes_module, "rag", fake_rag),
-            ):
+            with self._patch_routes(service, fake_repo, fake_rag):
                 response = await import_faiss_index(
                     file=upload,
                     name=None,
@@ -154,22 +175,8 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload("broken.zip", zip_bytes)
 
         with _TempDir() as temp:
-            service = IndexerService(index_base_path=str(temp.path))
-
-            fake_repo = SimpleNamespace(
-                get_index_metadata=AsyncMock(return_value=None),
-                upsert_index_metadata=AsyncMock(),
-            )
-            fake_rag = SimpleNamespace(
-                unload_index=lambda _name: None,
-                load_faiss_index_from_metadata=AsyncMock(),
-            )
-
-            with (
-                patch.object(_routes_module, "indexer", service),
-                patch.object(_routes_module, "repository", fake_repo),
-                patch.object(_routes_module, "rag", fake_rag),
-            ):
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp)
+            with self._patch_routes(service, fake_repo, fake_rag):
                 with self.assertRaises(HTTPException) as ctx:
                     await import_faiss_index(
                         file=upload,
@@ -198,22 +205,10 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload("myindex_index.zip", zip_bytes)
 
         with _TempDir() as temp:
-            service = IndexerService(index_base_path=str(temp.path))
-
-            fake_repo = SimpleNamespace(
-                get_index_metadata=AsyncMock(return_value=None),
-                upsert_index_metadata=AsyncMock(),
+            service, fake_repo, fake_rag = self._make_service_and_patches(
+                temp, load_return=True
             )
-            fake_rag = SimpleNamespace(
-                unload_index=lambda _name: None,
-                load_faiss_index_from_metadata=AsyncMock(return_value=True),
-            )
-
-            with (
-                patch.object(_routes_module, "indexer", service),
-                patch.object(_routes_module, "repository", fake_repo),
-                patch.object(_routes_module, "rag", fake_rag),
-            ):
+            with self._patch_routes(service, fake_repo, fake_rag):
                 response = await import_faiss_index(
                     file=upload,
                     name=None,
@@ -235,30 +230,17 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload("odev_proj_index.zip", zip_bytes)
 
         with _TempDir() as temp:
-            service = IndexerService(index_base_path=str(temp.path))
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp)
             (service.index_base_path / "odev_proj").mkdir()
             (service.index_base_path / "odev_proj" / "index.faiss").write_bytes(b"x")
 
             # Repository reports the index already has metadata
-            fake_repo = SimpleNamespace(
-                get_index_metadata=AsyncMock(
-                    return_value=SimpleNamespace(
-                        name="odev_proj",
-                        path=str(service.index_base_path / "odev_proj"),
-                    )
-                ),
-                upsert_index_metadata=AsyncMock(),
-            )
-            fake_rag = SimpleNamespace(
-                unload_index=lambda _name: None,
-                load_faiss_index_from_metadata=AsyncMock(),
+            fake_repo.get_index_metadata.return_value = SimpleNamespace(
+                name="odev_proj",
+                path=str(service.index_base_path / "odev_proj"),
             )
 
-            with (
-                patch.object(_routes_module, "indexer", service),
-                patch.object(_routes_module, "repository", fake_repo),
-                patch.object(_routes_module, "rag", fake_rag),
-            ):
+            with self._patch_routes(service, fake_repo, fake_rag):
                 with self.assertRaises(HTTPException) as ctx:
                     await import_faiss_index(
                         file=upload,

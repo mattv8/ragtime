@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Any
 
 from ragtime.indexer.tool_health import ToolHealthMonitor, ToolHeartbeatStatus
 from ragtime.rag.prompts import build_tool_system_prompt
@@ -253,8 +254,16 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertIsNone(monitor.get_unavailable_reason("docker-1"))
         self.assertEqual(list(persisted_statuses[0]), ["docker-1"])
 
-    def test_older_heartbeat_does_not_overwrite_newer_manual_test(self) -> None:
-        monitor = ToolHealthMonitor(stale_after_seconds=30)
+    def _run_no_overwrite_failure_scenario(
+        self,
+        *,
+        failures_before_offline: int | None = None,
+        checked_at_offset_seconds: int,
+    ) -> tuple[ToolHealthMonitor, Any, list[Any]]:
+        kwargs: dict[str, Any] = {"stale_after_seconds": 30}
+        if failures_before_offline is not None:
+            kwargs["failures_before_offline"] = failures_before_offline
+        monitor = ToolHealthMonitor(**kwargs)
         now = datetime.now(timezone.utc)
         monitor._statuses = {
             "ssh-1": ToolHeartbeatStatus(
@@ -264,9 +273,9 @@ class ToolHealthMonitorTests(unittest.TestCase):
             )
         }
 
-        persisted_statuses = []
+        persisted_statuses: list[Any] = []
 
-        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
+        async def persist_noop(statuses: Any) -> None:
             persisted_statuses.append(statuses)
 
         monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
@@ -278,10 +287,17 @@ class ToolHealthMonitorTests(unittest.TestCase):
                         tool_id="ssh-1",
                         alive=False,
                         error="Connection timeout",
-                        checked_at=now - timedelta(seconds=1),
+                        checked_at=now + timedelta(seconds=checked_at_offset_seconds),
                     )
                 }
             )
+        )
+
+        return monitor, result, persisted_statuses
+
+    def test_older_heartbeat_does_not_overwrite_newer_manual_test(self) -> None:
+        monitor, result, persisted_statuses = self._run_no_overwrite_failure_scenario(
+            checked_at_offset_seconds=-1
         )
 
         self.assertEqual(result.statuses, {})
@@ -290,34 +306,8 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertEqual(persisted_statuses, [])
 
     def test_single_transient_failure_does_not_disable_healthy_tool(self) -> None:
-        monitor = ToolHealthMonitor(stale_after_seconds=30, failures_before_offline=2)
-        now = datetime.now(timezone.utc)
-        monitor._statuses = {
-            "ssh-1": ToolHeartbeatStatus(
-                tool_id="ssh-1",
-                alive=True,
-                checked_at=now,
-            )
-        }
-
-        persisted_statuses = []
-
-        async def persist_noop(statuses: dict[str, ToolHeartbeatStatus]) -> None:
-            persisted_statuses.append(statuses)
-
-        monitor._persist_statuses = persist_noop  # type: ignore[method-assign]
-
-        result = asyncio.run(
-            monitor._store_statuses(
-                {
-                    "ssh-1": ToolHeartbeatStatus(
-                        tool_id="ssh-1",
-                        alive=False,
-                        error="Connection timeout",
-                        checked_at=now + timedelta(seconds=1),
-                    )
-                }
-            )
+        monitor, result, persisted_statuses = self._run_no_overwrite_failure_scenario(
+            failures_before_offline=2, checked_at_offset_seconds=1
         )
 
         self.assertEqual(result.statuses, {})

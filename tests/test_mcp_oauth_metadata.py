@@ -1,15 +1,10 @@
-import base64
-import json
 import unittest
 from typing import Optional
 from unittest import mock
 
+from asgi_test_utils import basic_auth_header, capture_response, form_receive
+
 from ragtime.mcp import oauth
-
-
-def _basic(client_id: str, client_secret: str) -> str:
-    raw = f"{client_id}:{client_secret}".encode("utf-8")
-    return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
 def _scope(
@@ -29,32 +24,6 @@ def _scope(
 
 async def _empty_receive() -> dict:
     return {"type": "http.request", "body": b"", "more_body": False}
-
-
-def _form_receive(body: bytes):
-    sent = False
-
-    async def receive() -> dict:
-        nonlocal sent
-        if sent:
-            return {"type": "http.request", "body": b"", "more_body": False}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    return receive
-
-
-async def _capture_response(call) -> tuple[int, dict[str, str], dict]:
-    messages: list[dict] = []
-
-    async def send(message: dict) -> None:
-        messages.append(message)
-
-    await call(send)
-    status = messages[0]["status"]
-    headers = {key.decode("latin1"): value.decode("latin1") for key, value in messages[0].get("headers", [])}
-    body = json.loads(messages[-1].get("body", b"{}"))
-    return status, headers, body
 
 
 class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
@@ -77,7 +46,7 @@ class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
             "_get_route_client_credentials",
             new=mock.AsyncMock(return_value=("client-a", "secret-a")),
         ):
-            status, _headers, body = await _capture_response(lambda send: oauth.handle_protected_resource_metadata(_scope(), _empty_receive, send, "cowork"))
+            status, _headers, body = await capture_response(lambda send: oauth.handle_protected_resource_metadata(_scope(), _empty_receive, send, "cowork"))
 
         self.assertEqual(status, 200)
         self.assertEqual(body["resource"], "https://ragtime.example/mcp/cowork")
@@ -89,17 +58,17 @@ class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
             "_get_route_client_credentials",
             new=mock.AsyncMock(return_value=None),
         ):
-            status, _headers, body = await _capture_response(lambda send: oauth.handle_protected_resource_metadata(_scope(), _empty_receive, send, "workspace"))
+            status, _headers, body = await capture_response(lambda send: oauth.handle_protected_resource_metadata(_scope(), _empty_receive, send, "workspace"))
 
         self.assertEqual(status, 200)
         self.assertEqual(body["resource"], "https://ragtime.example/mcp/workspace")
         self.assertEqual(body["authorization_servers"], ["https://ragtime.example"])
 
     async def test_token_errors_are_rfc6749_top_level_json(self) -> None:
-        status, headers, body = await _capture_response(
+        status, headers, body = await capture_response(
             lambda send: oauth.handle_token_request(
                 _scope(method="POST"),
-                _form_receive(b"grant_type=password"),
+                form_receive(b"grant_type=password"),
                 send,
                 "cowork",
             )
@@ -114,17 +83,17 @@ class McpOAuthMetadataTests(unittest.IsolatedAsyncioTestCase):
     async def test_token_endpoint_accepts_basic_and_binds_bearer_to_route(self) -> None:
         headers = {
             b"host": b"ragtime.example",
-            b"authorization": _basic("client-a", "secret-a").encode("ascii"),
+            b"authorization": basic_auth_header("client-a", "secret-a").encode("ascii"),
         }
         with mock.patch.object(
             oauth,
             "_get_route_client_credentials",
             new=mock.AsyncMock(return_value=("client-a", "secret-a")),
         ):
-            status, _headers, body = await _capture_response(
+            status, _headers, body = await capture_response(
                 lambda send: oauth.handle_token_request(
                     _scope(method="POST", headers=headers),
-                    _form_receive(b"grant_type=client_credentials"),
+                    form_receive(b"grant_type=client_credentials"),
                     send,
                     "cowork",
                 )

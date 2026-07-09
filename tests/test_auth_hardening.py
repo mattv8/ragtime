@@ -6,7 +6,6 @@ Tests for scoped auth hardening:
 3. MCP OAuth metadata base URL uses EXTERNAL_BASE_URL when configured.
 """
 
-import base64
 import json
 import time
 import unittest
@@ -16,17 +15,14 @@ from unittest import mock
 from starlette.requests import Request
 from starlette.responses import Response
 
+from asgi_test_utils import basic_auth_header, capture_response, form_receive
+
 from ragtime.api import auth as api_auth
 from ragtime.mcp import oauth
 
 # ---------------------------------------------------------------------------
 # Helpers shared across test cases
 # ---------------------------------------------------------------------------
-
-
-def _basic(client_id: str, client_secret: str) -> str:
-    raw = f"{client_id}:{client_secret}".encode("utf-8")
-    return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
 def _scope(
@@ -46,32 +42,6 @@ def _scope(
     if client is not None:
         scope["client"] = client
     return scope
-
-
-def _form_receive(body: bytes):
-    sent = False
-
-    async def receive() -> dict:
-        nonlocal sent
-        if sent:
-            return {"type": "http.request", "body": b"", "more_body": False}
-        sent = True
-        return {"type": "http.request", "body": body, "more_body": False}
-
-    return receive
-
-
-async def _capture_response(call) -> tuple[int, dict[str, str], dict]:
-    messages: list[dict] = []
-
-    async def send(message: dict) -> None:
-        messages.append(message)
-
-    await call(send)
-    status = messages[0]["status"]
-    headers = {key.decode("latin1"): value.decode("latin1") for key, value in messages[0].get("headers", [])}
-    body = json.loads(messages[-1].get("body", b"{}"))
-    return status, headers, body
 
 
 def _json_response_body(response: Response) -> dict[str, object]:
@@ -220,14 +190,14 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
             method="POST",
             headers={
                 b"host": b"ragtime.example",
-                b"authorization": _basic("cid", "secret").encode("ascii"),
+                b"authorization": basic_auth_header("cid", "secret").encode("ascii"),
             },
             client=("1.2.3.4", 12345),
         )
-        status, _headers, body = await _capture_response(
+        status, _headers, body = await capture_response(
             lambda send: oauth.handle_token_request(
                 scope,
-                _form_receive(b"grant_type=client_credentials"),
+                form_receive(b"grant_type=client_credentials"),
                 send,
                 "cowork",
             )
@@ -241,7 +211,7 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
             method="POST",
             headers={
                 b"host": b"ragtime.example",
-                b"authorization": _basic("cid", "wrong").encode("ascii"),
+                b"authorization": basic_auth_header("cid", "wrong").encode("ascii"),
             },
             client=("5.6.7.8", 12345),
         )
@@ -258,10 +228,10 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
                 return_value=False,
             ),
         ):
-            status, _headers, body = await _capture_response(
+            status, _headers, body = await capture_response(
                 lambda send: oauth.handle_token_request(
                     scope,
-                    _form_receive(b"grant_type=client_credentials"),
+                    form_receive(b"grant_type=client_credentials"),
                     send,
                     "cowork",
                 )
@@ -279,7 +249,7 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
             method="POST",
             headers={
                 b"host": b"ragtime.example",
-                b"authorization": _basic("cid", "correct-secret").encode("ascii"),
+                b"authorization": basic_auth_header("cid", "correct-secret").encode("ascii"),
             },
             client=("9.9.9.9", 12345),
         )
@@ -301,10 +271,10 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
                 return_value={"access_token": "tok", "token_type": "Bearer", "expires_in": 3600, "scope": "mcp:cowork"},
             ),
         ):
-            status, _headers, body = await _capture_response(
+            status, _headers, body = await capture_response(
                 lambda send: oauth.handle_token_request(
                     scope,
-                    _form_receive(b"grant_type=client_credentials"),
+                    form_receive(b"grant_type=client_credentials"),
                     send,
                     "cowork",
                 )
@@ -320,7 +290,7 @@ class McpThrottleTests(unittest.IsolatedAsyncioTestCase):
         scope = _scope(
             headers={
                 b"host": b"ragtime.example",
-                b"authorization": _basic("cid", "secret").encode("ascii"),
+                b"authorization": basic_auth_header("cid", "secret").encode("ascii"),
             },
             client=("2.3.4.5", 12345),
         )
@@ -354,23 +324,29 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
             "expires": time.time() + api_auth.AUTH_CODE_EXPIRY,
         }
 
-    async def test_authorization_code_requires_client_id(self) -> None:
-        self._store_code()
-
+    async def _call_oauth2_token(
+        self,
+        redirect_uri: str | None = "https://client.example/callback",
+        client_id: str | None = "client-a",
+    ) -> Response:
         with (
             mock.patch.object(api_auth, "_verify_pkce", return_value=True),
             mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
         ):
-            response = await api_auth.oauth2_token(
+            return await api_auth.oauth2_token(
                 self._request(),
                 Response(),
                 grant_type="authorization_code",
                 code="code-1",
                 code_verifier="verifier",
-                redirect_uri="https://client.example/callback",
-                client_id=None,
+                redirect_uri=redirect_uri,
+                client_id=client_id,
                 scope=None,
             )
+
+    async def test_authorization_code_requires_client_id(self) -> None:
+        self._store_code()
+        response = await self._call_oauth2_token(client_id=None)
 
         self.assertIsInstance(response, Response)
         assert isinstance(response, Response)
@@ -379,21 +355,7 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authorization_code_allows_missing_redirect_uri(self) -> None:
         self._store_code()
-
-        with (
-            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
-            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
-        ):
-            response = await api_auth.oauth2_token(
-                self._request(),
-                Response(),
-                grant_type="authorization_code",
-                code="code-1",
-                code_verifier="verifier",
-                redirect_uri=None,
-                client_id="client-a",
-                scope=None,
-            )
+        response = await self._call_oauth2_token(redirect_uri=None)
 
         self.assertIsInstance(response, api_auth.OAuth2TokenResponse)
         assert isinstance(response, api_auth.OAuth2TokenResponse)
@@ -402,21 +364,7 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authorization_code_missing_client_id_does_not_consume_code(self) -> None:
         self._store_code()
-
-        with (
-            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
-            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
-        ):
-            response = await api_auth.oauth2_token(
-                self._request(),
-                Response(),
-                grant_type="authorization_code",
-                code="code-1",
-                code_verifier="verifier",
-                redirect_uri="https://client.example/callback",
-                client_id=None,
-                scope=None,
-            )
+        response = await self._call_oauth2_token(client_id=None)
 
         self.assertIsInstance(response, Response)
         assert isinstance(response, Response)
@@ -426,21 +374,7 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authorization_code_rejects_client_id_mismatch_and_consumes_code(self) -> None:
         self._store_code()
-
-        with (
-            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
-            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
-        ):
-            response = await api_auth.oauth2_token(
-                self._request(),
-                Response(),
-                grant_type="authorization_code",
-                code="code-1",
-                code_verifier="verifier",
-                redirect_uri="https://client.example/callback",
-                client_id="client-b",
-                scope=None,
-            )
+        response = await self._call_oauth2_token(client_id="client-b")
 
         self.assertIsInstance(response, Response)
         assert isinstance(response, Response)
@@ -450,21 +384,10 @@ class OAuth2AuthorizationCodeBindingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authorization_code_rejects_redirect_uri_mismatch_and_consumes_code(self) -> None:
         self._store_code()
-
-        with (
-            mock.patch.object(api_auth, "_verify_pkce", return_value=True),
-            mock.patch.object(api_auth, "_issue_login_session", new=mock.AsyncMock(return_value="session-token")),
-        ):
-            response = await api_auth.oauth2_token(
-                self._request(),
-                Response(),
-                grant_type="authorization_code",
-                code="code-1",
-                code_verifier="verifier",
-                redirect_uri="https://evil.example/callback",
-                client_id="client-a",
-                scope=None,
-            )
+        response = await self._call_oauth2_token(
+            redirect_uri="https://evil.example/callback",
+            client_id="client-a",
+        )
 
         self.assertIsInstance(response, Response)
         assert isinstance(response, Response)
@@ -556,8 +479,8 @@ class McpResourceBaseTests(unittest.TestCase):
                     new=mock.AsyncMock(return_value=("cid", "enc-secret")),
                 ),
             ):
-                _status, _headers, body = await _capture_response(
-                    lambda send: oauth.handle_authorization_server_metadata(scope, _form_receive(b""), send, "cowork")
+                _status, _headers, body = await capture_response(
+                    lambda send: oauth.handle_authorization_server_metadata(scope, form_receive(b""), send, "cowork")
                 )
             return body
 

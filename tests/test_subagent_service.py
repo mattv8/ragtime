@@ -2,7 +2,7 @@ import asyncio
 import json
 import unittest
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Awaitable, Callable
 from unittest import mock
 
 from fastapi import HTTPException
@@ -216,7 +216,10 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("child-task-1", result)
 
-    async def test_spawn_returns_structured_handoff_instead_of_freeform_response(self) -> None:
+    async def _run_spawn_handoff_test(
+        self,
+        get_chat_task: Callable[[str], Awaitable[SimpleNamespace]],
+    ) -> dict[str, Any]:
         service = SubAgentService()
         repo = SimpleNamespace()
         background = SimpleNamespace(started=[], registered=[])
@@ -224,30 +227,10 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def create_conversation(**_: object) -> SimpleNamespace:
             return SimpleNamespace(id="child-conv-1")
 
-        async def add_user_message_and_create_chat_task_if_idle(*_: object) -> tuple[None, SimpleNamespace, bool]:
+        async def add_user_message_and_create_chat_task_if_idle(
+            *_: object,
+        ) -> tuple[None, SimpleNamespace, bool]:
             return None, SimpleNamespace(id="child-task-1"), True
-
-        async def get_chat_task(task_id: str) -> SimpleNamespace:
-            return SimpleNamespace(
-                id=task_id,
-                status=ChatTaskStatus.completed,
-                response_content="freeform child text should not be returned",
-                streaming_state=SimpleNamespace(
-                    tool_calls=[
-                        {
-                            "tool": SUBAGENT_HANDOFF_TOOL_NAME,
-                            "input": {
-                                "final_output": "## Done\n\nParent-visible handoff.",
-                                "summary": "Parent-visible handoff",
-                                "files_changed": ["dashboard/main.ts"],
-                                "validation_performed": ["pytest tests/test_subagent_service.py"],
-                                "remaining_risks": [],
-                            },
-                            "output": '{"status":"accepted"}',
-                        }
-                    ]
-                ),
-            )
 
         async def get_conversation(_conversation_id: str) -> SimpleNamespace:
             return SimpleNamespace(messages=[])
@@ -288,7 +271,32 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 blocked_tool_names=set(),
             )
 
-        result = json.loads(raw_result)
+        return json.loads(raw_result)
+
+    async def test_spawn_returns_structured_handoff_instead_of_freeform_response(self) -> None:
+        async def get_chat_task(task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=task_id,
+                status=ChatTaskStatus.completed,
+                response_content="freeform child text should not be returned",
+                streaming_state=SimpleNamespace(
+                    tool_calls=[
+                        {
+                            "tool": SUBAGENT_HANDOFF_TOOL_NAME,
+                            "input": {
+                                "final_output": "## Done\n\nParent-visible handoff.",
+                                "summary": "Parent-visible handoff",
+                                "files_changed": ["dashboard/main.ts"],
+                                "validation_performed": ["pytest tests/test_subagent_service.py"],
+                                "remaining_risks": [],
+                            },
+                            "output": '{"status":"accepted"}',
+                        }
+                    ]
+                ),
+            )
+
+        result = await self._run_spawn_handoff_test(get_chat_task)
         child_result = result["subagents"][0]
         self.assertEqual(child_result["status"], "completed")
         self.assertEqual(child_result["final_output"], "## Done\n\nParent-visible handoff.")
@@ -375,16 +383,6 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("read-linked subagent", runtime_contexts[0][SUBAGENT_PRIVATE_PROMPT_CONTEXT_KEY])
 
     async def test_spawn_marks_child_failed_when_handoff_tool_missing(self) -> None:
-        service = SubAgentService()
-        repo = SimpleNamespace()
-        background = SimpleNamespace(started=[], registered=[])
-
-        async def create_conversation(**_: object) -> SimpleNamespace:
-            return SimpleNamespace(id="child-conv-1")
-
-        async def add_user_message_and_create_chat_task_if_idle(*_: object) -> tuple[None, SimpleNamespace, bool]:
-            return None, SimpleNamespace(id="child-task-1"), True
-
         async def get_chat_task(task_id: str) -> SimpleNamespace:
             return SimpleNamespace(
                 id=task_id,
@@ -393,46 +391,7 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 streaming_state=SimpleNamespace(tool_calls=[]),
             )
 
-        async def get_conversation(_conversation_id: str) -> SimpleNamespace:
-            return SimpleNamespace(messages=[])
-
-        def start_task(*_: object, existing_task_id: str, **__: object) -> None:
-            background.started.append(existing_task_id)
-
-        def register_subagent_children(parent_task_id: str, child_task_ids: list[str]) -> None:
-            background.registered.append((parent_task_id, list(child_task_ids)))
-
-        async def await_task(_task_id: str) -> None:
-            return None
-
-        repo.create_conversation = create_conversation
-        repo.add_user_message_and_create_chat_task_if_idle = add_user_message_and_create_chat_task_if_idle
-        repo.get_chat_task = get_chat_task
-        repo.get_conversation = get_conversation
-        background.start_task = start_task
-        background.register_subagent_children = register_subagent_children
-        background.await_task = await_task
-
-        with (
-            mock.patch("ragtime.userspace.subagent_service.repository", repo),
-            mock.patch(
-                "ragtime.userspace.subagent_service.task_event_bus",
-                SimpleNamespace(publish=mock.AsyncMock()),
-            ),
-            mock.patch("ragtime.indexer.background_tasks.background_task_service", background),
-        ):
-            raw_result = await service.spawn_subagents(
-                parent_conversation_id="parent-conv-1",
-                parent_task_id="parent-task-1",
-                workspace_id="workspace-1",
-                user_id="user-1",
-                parent_model="openai::gpt-4.1",
-                specs=[{"name": "Child", "role": "worker", "instructions": "Do work", "file_scope": ["dashboard"]}],
-                workspace_context={"workspace_id": "workspace-1"},
-                blocked_tool_names=set(),
-            )
-
-        result = json.loads(raw_result)
+        result = await self._run_spawn_handoff_test(get_chat_task)
         child_result = result["subagents"][0]
         self.assertEqual(child_result["status"], "failed")
         self.assertIn(SUBAGENT_HANDOFF_TOOL_NAME, child_result["final_output"])

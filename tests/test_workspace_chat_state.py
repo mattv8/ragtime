@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 from ragtime.indexer.models import ChatMessage, ChatTask, ChatTaskStatus, Conversation, ConversationSummaryResponse
@@ -113,9 +114,13 @@ class BuildWorkspaceChatStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state.conversations[0].messages), 2)
         get_conv_mock.assert_awaited_once_with("conv-1")
 
-    async def test_candidate_validation_reuses_get_conversation(self) -> None:
+    async def _build_state_for_candidate(
+        self,
+        candidate: Conversation,
+        *,
+        include_selected_conversation: bool,
+    ) -> tuple[Any, mock.AsyncMock]:
         summary = _make_summary(conversation_id="conv-1")
-        candidate = _make_conversation(conversation_id="conv-2", workspace_id="ws-1")
 
         with (
             mock.patch.object(repository, "list_conversation_summaries", mock.AsyncMock(return_value=[summary])),
@@ -129,15 +134,23 @@ class BuildWorkspaceChatStateTests(unittest.IsolatedAsyncioTestCase):
                 user_id="user-1",
                 is_admin=False,
                 selected_conversation_id="conv-2",
-                include_selected_conversation=True,
+                include_selected_conversation=include_selected_conversation,
             )
+
+        return state, get_conv_mock
+
+    async def test_candidate_validation_reuses_get_conversation(self) -> None:
+        candidate = _make_conversation(conversation_id="conv-2", workspace_id="ws-1")
+
+        state, get_conv_mock = await self._build_state_for_candidate(
+            candidate, include_selected_conversation=True
+        )
 
         self.assertEqual(state.selected_conversation_id, "conv-2")
         self.assertEqual(len(state.conversations), 2)
         get_conv_mock.assert_awaited_once_with("conv-2")
 
     async def test_include_selected_false_validates_candidate_without_embedding_messages(self) -> None:
-        summary = _make_summary(conversation_id="conv-1")
         candidate = _make_conversation(
             conversation_id="conv-2",
             workspace_id="ws-1",
@@ -147,20 +160,9 @@ class BuildWorkspaceChatStateTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        with (
-            mock.patch.object(repository, "list_conversation_summaries", mock.AsyncMock(return_value=[summary])),
-            mock.patch.object(repository, "get_interrupted_conversation_ids_for_workspace", mock.AsyncMock(return_value=[])),
-            mock.patch.object(repository, "get_conversation", mock.AsyncMock(return_value=candidate)) as get_conv_mock,
-            mock.patch.object(repository, "get_active_task_for_conversation", mock.AsyncMock(return_value=None)),
-            mock.patch.object(repository, "get_last_interrupted_task_for_conversation", mock.AsyncMock(return_value=None)),
-        ):
-            state = await build_workspace_chat_state(
-                workspace_id="ws-1",
-                user_id="user-1",
-                is_admin=False,
-                selected_conversation_id="conv-2",
-                include_selected_conversation=False,
-            )
+        state, get_conv_mock = await self._build_state_for_candidate(
+            candidate, include_selected_conversation=False
+        )
 
         self.assertEqual(state.selected_conversation_id, "conv-2")
         self.assertEqual([conversation.id for conversation in state.conversations], ["conv-1", "conv-2"])

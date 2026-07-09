@@ -2,6 +2,7 @@ import base64
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,6 +22,44 @@ from ragtime.rag.components import _build_codex_request
 def _jwt_with_payload(payload: dict) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("ascii").rstrip("=")
     return f"header.{encoded}.signature"
+
+
+class _FakeJsonResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _CapturingAsyncClient:
+    def __init__(
+        self,
+        captured: dict[str, object],
+        url_keyword: str,
+        payload: dict,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        self._captured = captured
+        self._url_keyword = url_keyword
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+    async def get(self, url, params=None, headers=None):
+        if self._url_keyword in str(url):
+            self._captured["url"] = str(url)
+            self._captured["params"] = params or {}
+            self._captured["headers"] = headers or {}
+        return _FakeJsonResponse(self._payload)
 
 
 class FakeRepository:
@@ -136,37 +175,16 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
             }
             captured: dict[str, object] = {}
 
-            class _FakeResponse:
-                def raise_for_status(self) -> None:
-                    return None
-
-                def json(self) -> dict:
-                    return payload
-
-            class _FakeClient:
-                def __init__(self, *args, **kwargs) -> None:
-                    pass
-
-                async def __aenter__(self):
-                    return self
-
-                async def __aexit__(self, *args) -> None:
-                    return None
-
-                async def get(self, url, params=None, headers=None):
-                    if "backend-api/codex/models" in str(url):
-                        captured["url"] = str(url)
-                        captured["params"] = params or {}
-                        captured["headers"] = headers or {}
-                    return _FakeResponse()
-
             settings = SimpleNamespace(openai_codex_account_id="acct_123")
             with (
                 mock.patch(
                     "ragtime.indexer.routes.ensure_openai_codex_token_fresh",
                     new=mock.AsyncMock(return_value="codex-token"),
                 ),
-                mock.patch("ragtime.indexer.routes.httpx.AsyncClient", _FakeClient),
+                mock.patch(
+                    "ragtime.indexer.routes.httpx.AsyncClient",
+                    partial(_CapturingAsyncClient, captured, "backend-api/codex/models", payload),
+                ),
             ):
                 result = await indexer_routes._fetch_openai_codex_models(settings)
 
@@ -257,31 +275,6 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
         }
         captured: dict[str, object] = {}
 
-        class _FakeResponse:
-            def raise_for_status(self) -> None:
-                return None
-
-            def json(self) -> dict:
-                return payload
-
-        class _FakeClient:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args) -> None:
-                return None
-
-            async def get(self, url, headers=None):
-                # Only record the Anthropic models call; the shared client is also
-                # used by model_limits' models.dev fetch in this environment.
-                if "api.anthropic.com" in str(url):
-                    captured["url"] = url
-                    captured["headers"] = headers or {}
-                return _FakeResponse()
-
         model_limits.invalidate_cache()
         try:
             with (
@@ -289,7 +282,10 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
                     "ragtime.indexer.routes.get_claude_code_oauth_token",
                     new=mock.AsyncMock(return_value="sk-ant-oat01-test"),
                 ),
-                mock.patch("ragtime.indexer.routes.httpx.AsyncClient", _FakeClient),
+                mock.patch(
+                    "ragtime.indexer.routes.httpx.AsyncClient",
+                    partial(_CapturingAsyncClient, captured, "api.anthropic.com", payload),
+                ),
             ):
                 result = await indexer_routes._fetch_claude_code_models()
 

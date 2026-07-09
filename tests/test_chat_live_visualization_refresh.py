@@ -56,6 +56,29 @@ class _CaptureComponentExecutionService(UserSpaceService):
         return (response, "select * from accounts")
 
 
+def _run_default_workspace_component_execution(service: _CaptureComponentExecutionService) -> None:
+    now = datetime.now(timezone.utc)
+    workspace = UserSpaceWorkspace(
+        id="workspace-1",
+        name="Workspace",
+        owner_user_id="user-1",
+        selected_tool_ids=["tool-1"],
+        created_at=now,
+        updated_at=now,
+    )
+
+    asyncio.run(
+        service._execute_component_for_workspace(
+            workspace,
+            ExecuteComponentRequest(
+                component_id="tool-1",
+                request={"query": "select * from accounts"},
+            ),
+            error_log_prefix="test",
+        )
+    )
+
+
 class ChatLiveVisualizationRefreshTests(unittest.TestCase):
     def test_live_datatable_schema_rejects_static_payload(self) -> None:
         with self.assertRaises(ValidationError):
@@ -358,26 +381,7 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
 
     def test_workspace_component_execution_defaults_to_unbounded_live_data(self) -> None:
         service = _CaptureComponentExecutionService()
-        now = datetime.now(timezone.utc)
-        workspace = UserSpaceWorkspace(
-            id="workspace-1",
-            name="Workspace",
-            owner_user_id="user-1",
-            selected_tool_ids=["tool-1"],
-            created_at=now,
-            updated_at=now,
-        )
-
-        asyncio.run(
-            service._execute_component_for_workspace(
-                workspace,
-                ExecuteComponentRequest(
-                    component_id="tool-1",
-                    request={"query": "select * from accounts"},
-                ),
-                error_log_prefix="test",
-            )
-        )
+        _run_default_workspace_component_execution(service)
 
         call = service.component_execution_calls[0]
         self.assertIs(call["require_result_limit"], False)
@@ -402,26 +406,7 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
 
     def test_workspace_component_execution_records_live_data_warning_on_error(self) -> None:
         service = _CaptureComponentExecutionService()
-        now = datetime.now(timezone.utc)
-        workspace = UserSpaceWorkspace(
-            id="workspace-1",
-            name="Workspace",
-            owner_user_id="user-1",
-            selected_tool_ids=["tool-1"],
-            created_at=now,
-            updated_at=now,
-        )
-
-        asyncio.run(
-            service._execute_component_for_workspace(
-                workspace,
-                ExecuteComponentRequest(
-                    component_id="tool-1",
-                    request={"query": "select * from accounts"},
-                ),
-                error_log_prefix="test",
-            )
-        )
+        _run_default_workspace_component_execution(service)
 
         self.assertEqual(
             service.get_live_data_execution_warning("workspace-1"),
