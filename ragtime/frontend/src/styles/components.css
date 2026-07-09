@@ -1901,23 +1901,57 @@ textarea:focus {
   box-shadow: 0 0 0 3px var(--color-primary-light);
 }
 
+/* Seamless description editor: the edit box mirrors the static
+   .description-wrapper geometry (same negative margins, padding, and
+   transparent border) so switching to edit mode never shifts the text. It
+   fills the same flex space and scrolls internally, so typing never changes
+   the card height either. */
+.tools-panel .description-edit {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  /* width:auto (not the inherited 100%) lets the negative margins widen the
+     box so the textarea scrollbar reaches close to the card border. */
+  width: auto;
+  margin-top: -7px;
+  margin-right: -14px;
+  margin-bottom: var(--space-sm);
+  margin-left: -11px;
+  padding: 6px 0 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  transition: border-color var(--transition-fast);
+}
+
+.tools-panel .description-edit:focus-within {
+  border-color: var(--color-input-focus);
+}
+
 .tools-panel .inline-edit-textarea {
-  background: var(--color-input-bg) !important;
-  border-color: var(--color-input-border) !important;
-  border-radius: var(--radius-md) !important;
-  color: var(--color-text-primary) !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  color: var(--color-text-secondary) !important;
   font-family: inherit !important;
+  font-size: var(--text-sm) !important;
+  line-height: 1.5 !important;
   margin: 0 !important;
-  min-height: 42px !important;
-  padding: 8px 10px !important;
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast) !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  width: 100% !important;
+  /* Right gap keeps text off the scrollbar; the container supplies the left. */
+  padding: 0 6px 0 0 !important;
+  display: block !important;
+  overflow-y: auto !important;
+  resize: none !important;
+  outline: none !important;
 }
 
 .tools-panel .inline-edit-textarea:focus {
-  border-color: var(--color-input-focus) !important;
-  box-shadow: 0 0 0 3px var(--color-primary-light) !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
 .tool-group-tab.editing {

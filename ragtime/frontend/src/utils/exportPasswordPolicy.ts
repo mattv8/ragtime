@@ -111,9 +111,6 @@ export function getPasswordRequirementResults(
   });
 }
 
-export function passwordMeetsRequirements(
-  password: string,
-  policy: ExportPasswordPolicy,
-): boolean {
+export function passwordMeetsRequirements(password: string, policy: ExportPasswordPolicy): boolean {
   return getPasswordRequirementResults(password, policy).every((result) => result.met);
 }

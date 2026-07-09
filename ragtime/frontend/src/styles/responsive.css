@@ -308,17 +308,7 @@
   }
 
   .tool-card-header-main {
-    flex-direction: column;
-    align-items: flex-start;
     gap: var(--space-xs);
-  }
-
-  .tool-card-header-actions {
-    width: 100%;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: 4px;
   }
 
   .tool-card-actions {

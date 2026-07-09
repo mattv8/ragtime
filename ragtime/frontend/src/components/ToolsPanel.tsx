@@ -305,13 +305,6 @@ function ToolCard({
 
   const heartbeatDisplay = getHeartbeatDisplay();
 
-  // Auto-resize textarea to fit content
-  const autoResizeTextarea = (textarea: HTMLTextAreaElement | null) => {
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = `${textarea.scrollHeight}px`;
-  };
-
   // Focus input/textarea when entering edit mode
   useEffect(() => {
     if (editingField === 'name' && nameInputRef.current) {
@@ -320,7 +313,6 @@ function ToolCard({
     } else if (editingField === 'description' && descTextareaRef.current) {
       descTextareaRef.current.focus();
       descTextareaRef.current.select();
-      autoResizeTextarea(descTextareaRef.current);
     }
   }, [editingField]);
 
@@ -435,69 +427,69 @@ function ToolCard({
                 </button>
               </div>
             )}
-            <div className="tool-card-header-actions">
-              <div className="tool-card-badges">
-                {hasActiveIndexingJob && (
-                  <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
-                )}
-                {toolSupportsWorkingDir && (
-                  <Popover
-                    content={
-                      workingDirectory
-                        ? `Constrained to ${workingDirectory}`
-                        : 'Working directory not set'
-                    }
-                    position="top"
-                    style={{ display: 'inline-flex' }}
-                  >
-                    <span className="tool-badge">
-                      <Icon name="folder" size={12} />
-                      <span className="path-text">{workingDirectory || '/'}</span>
-                    </span>
-                  </Popover>
-                )}
-                {tool.allow_write && (
-                  <Popover
-                    content="Write access enabled"
-                    position="top"
-                    style={{ display: 'inline-flex' }}
-                  >
-                    <span className="tool-badge badge-warning">
-                      <Icon name="alert-triangle" size={12} />
-                      <span className="path-text">Write</span>
-                    </span>
-                  </Popover>
-                )}
-                {tool.undecryptable_fields.length > 0 && (
-                  <Popover
-                    content={`Credential ${tool.undecryptable_fields.length === 1 ? 'field' : 'fields'} ${tool.undecryptable_fields.join(', ')} cannot be decrypted with the current server key.`}
-                    position="top"
-                    style={{ display: 'inline-flex' }}
-                  >
-                    <span
-                      className="tool-badge badge-warning"
-                      title="Some credentials cannot be decrypted with the current server key."
-                    >
-                      <Icon name="alert-circle" size={12} />
-                      <span className="path-text">Key Mismatch</span>
-                    </span>
-                  </Popover>
-                )}
-              </div>
-              <div className="tool-card-heartbeat">
+            <div className="tool-card-heartbeat">
+              <Popover
+                content={heartbeatDisplay.label}
+                position="top"
+                style={{ display: 'inline-flex' }}
+              >
+                <span className={`heartbeat-indicator ${heartbeatDisplay.status}`}>
+                  {heartbeatDisplay.node}
+                </span>
+              </Popover>
+            </div>
+          </div>
+          <div className="tool-card-meta-row">
+            <code className="tool-card-connection-sub">{getToolConnectionSummary(tool)}</code>
+            <div className="tool-card-badges">
+              {hasActiveIndexingJob && (
+                <IndexingPill activeJob={activeSchemaJob} progressLabelPrefix="Indexing" />
+              )}
+              {toolSupportsWorkingDir && (
                 <Popover
-                  content={heartbeatDisplay.label}
+                  content={
+                    workingDirectory
+                      ? `Constrained to ${workingDirectory}`
+                      : 'Working directory not set'
+                  }
                   position="top"
                   style={{ display: 'inline-flex' }}
                 >
-                  <span className={`heartbeat-indicator ${heartbeatDisplay.status}`}>
-                    {heartbeatDisplay.node}
+                  <span className="tool-badge">
+                    <Icon name="folder" size={12} />
+                    <span className="path-text">{workingDirectory || '/'}</span>
                   </span>
                 </Popover>
-              </div>
+              )}
+              {tool.allow_write && (
+                <Popover
+                  content="Write access enabled"
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span className="tool-badge badge-warning">
+                    <Icon name="alert-triangle" size={12} />
+                    <span className="path-text">Write</span>
+                  </span>
+                </Popover>
+              )}
+              {tool.undecryptable_fields.length > 0 && (
+                <Popover
+                  content={`Credential ${tool.undecryptable_fields.length === 1 ? 'field' : 'fields'} ${tool.undecryptable_fields.join(', ')} cannot be decrypted with the current server key.`}
+                  position="top"
+                  style={{ display: 'inline-flex' }}
+                >
+                  <span
+                    className="tool-badge badge-warning"
+                    title="Some credentials cannot be decrypted with the current server key."
+                  >
+                    <Icon name="alert-circle" size={12} />
+                    <span className="path-text">Key Mismatch</span>
+                  </span>
+                </Popover>
+              )}
             </div>
           </div>
-          <code className="tool-card-connection-sub">{getToolConnectionSummary(tool)}</code>
         </div>
       </div>
 
@@ -506,10 +498,7 @@ function ToolCard({
           <textarea
             ref={descTextareaRef}
             value={editDescription}
-            onChange={(e) => {
-              setEditDescription(e.target.value);
-              autoResizeTextarea(e.target);
-            }}
+            onChange={(e) => setEditDescription(e.target.value)}
             onKeyDown={handleKeyDown}
             onBlur={handleSaveEdit}
             disabled={saving}
@@ -2989,7 +2978,8 @@ export function ToolsPanel({
             <div className="modal-body">
               {toolPasswordModal.mode === 'export' && (
                 <p className="field-help" style={{ marginBottom: 'var(--space-md)' }}>
-                  This export is encrypted with your password. Choose a strong one, since anyone who obtains the file can attempt to crack a weak password offline.
+                  This export is encrypted with your password. Choose a strong one, since anyone who
+                  obtains the file can attempt to crack a weak password offline.
                 </p>
               )}
               <div className="form-group">
