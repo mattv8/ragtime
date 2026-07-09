@@ -142,9 +142,7 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload("odev_proj_index.zip", zip_bytes)
 
         with _TempDir() as temp:
-            service, fake_repo, fake_rag = self._make_service_and_patches(
-                temp, load_return=True
-            )
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp, load_return=True)
             with self._patch_routes(service, fake_repo, fake_rag):
                 response = await import_faiss_index(
                     file=upload,
@@ -205,9 +203,7 @@ class ImportFaissIndexTests(unittest.IsolatedAsyncioTestCase):
         upload = _make_upload("myindex_index.zip", zip_bytes)
 
         with _TempDir() as temp:
-            service, fake_repo, fake_rag = self._make_service_and_patches(
-                temp, load_return=True
-            )
+            service, fake_repo, fake_rag = self._make_service_and_patches(temp, load_return=True)
             with self._patch_routes(service, fake_repo, fake_rag):
                 response = await import_faiss_index(
                     file=upload,

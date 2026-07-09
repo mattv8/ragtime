@@ -17,6 +17,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import DB_TYPE_MYSQL, enforce_max_results, format_query_result, validate_sql_query
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.tools.descriptions import format_tool_write_access_sentence
 
 logger = get_logger(__name__)
 
@@ -332,7 +333,8 @@ def create_mysql_tool(
     tool_description = f"Query the {name} MySQL/MariaDB database using SQL."
     if description:
         tool_description += f" This database contains: {description}"
-    tool_description += " Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100). SELECT queries only unless writes are enabled."
+    tool_description += f" {format_tool_write_access_sentence(allow_write)}"
+    tool_description += " Include LIMIT clause to limit results (e.g., SELECT ... LIMIT 100)."
 
     return StructuredTool.from_function(
         coroutine=execute_query,

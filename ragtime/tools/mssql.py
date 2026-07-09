@@ -17,6 +17,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import DB_TYPE_MSSQL, enforce_max_results, format_query_result, normalize_mssql_error_message, validate_sql_query
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.tools.descriptions import format_tool_write_access_sentence
 
 logger = get_logger(__name__)
 
@@ -323,7 +324,8 @@ def create_mssql_tool(
     tool_description = f"Query the {name} MSSQL/SQL Server database using SQL."
     if description:
         tool_description += f" This database contains: {description}"
-    tool_description += " Include TOP n clause to limit results (e.g., SELECT TOP 100 ...). SELECT queries only unless writes are enabled."
+    tool_description += f" {format_tool_write_access_sentence(allow_write)}"
+    tool_description += " Include TOP n clause to limit results (e.g., SELECT TOP 100 ...)."
 
     return StructuredTool.from_function(
         coroutine=execute_query,

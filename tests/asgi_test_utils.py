@@ -7,7 +7,6 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 AppCall = Callable[[Send], Awaitable[None]]
 
@@ -41,9 +40,6 @@ async def capture_response(call: AppCall) -> tuple[int, dict[str, str], dict[str
 
     await call(send)
     status = messages[0]["status"]
-    headers = {
-        key.decode("latin1"): value.decode("latin1")
-        for key, value in messages[0].get("headers", [])
-    }
+    headers = {key.decode("latin1"): value.decode("latin1") for key, value in messages[0].get("headers", [])}
     body = json.loads(messages[-1].get("body", b"{}"))
     return status, headers, body

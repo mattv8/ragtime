@@ -3,11 +3,11 @@ import tarfile
 import types
 import unittest
 import zipfile
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from contextlib import contextmanager
 from typing import Generator, Optional
 from unittest.mock import AsyncMock, patch
 
@@ -734,11 +734,7 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(snapshot_manifest)
         self.assertIsNotNone(bundle_path)
         self.assertTrue(
-            any(
-                "Snapshot history includes committed snapshots only" in warning
-                and "current uncommitted workspace changes" in warning
-                for warning in warnings
-            )
+            any("Snapshot history includes committed snapshots only" in warning and "current uncommitted workspace changes" in warning for warning in warnings)
         )
         list_changed.assert_awaited_once_with("workspace-1", "user-1", is_admin=False)
         self.assertTrue(any(call[:2] == ["bundle", "create"] for call in git_calls))
@@ -783,13 +779,7 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(snapshot_manifest)
         self.assertIsNotNone(bundle_path)
-        self.assertTrue(
-            any(
-                "Could not determine whether the workspace has uncommitted changes"
-                in warning
-                for warning in warnings
-            )
-        )
+        self.assertTrue(any("Could not determine whether the workspace has uncommitted changes" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

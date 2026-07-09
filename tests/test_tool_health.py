@@ -296,9 +296,7 @@ class ToolHealthMonitorTests(unittest.TestCase):
         return monitor, result, persisted_statuses
 
     def test_older_heartbeat_does_not_overwrite_newer_manual_test(self) -> None:
-        monitor, result, persisted_statuses = self._run_no_overwrite_failure_scenario(
-            checked_at_offset_seconds=-1
-        )
+        monitor, result, persisted_statuses = self._run_no_overwrite_failure_scenario(checked_at_offset_seconds=-1)
 
         self.assertEqual(result.statuses, {})
         self.assertEqual(result.changed_tool_ids, set())
@@ -306,9 +304,7 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertEqual(persisted_statuses, [])
 
     def test_single_transient_failure_does_not_disable_healthy_tool(self) -> None:
-        monitor, result, persisted_statuses = self._run_no_overwrite_failure_scenario(
-            failures_before_offline=2, checked_at_offset_seconds=1
-        )
+        monitor, result, persisted_statuses = self._run_no_overwrite_failure_scenario(failures_before_offline=2, checked_at_offset_seconds=1)
 
         self.assertEqual(result.statuses, {})
         self.assertEqual(result.changed_tool_ids, set())

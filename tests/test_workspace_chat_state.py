@@ -142,9 +142,7 @@ class BuildWorkspaceChatStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_candidate_validation_reuses_get_conversation(self) -> None:
         candidate = _make_conversation(conversation_id="conv-2", workspace_id="ws-1")
 
-        state, get_conv_mock = await self._build_state_for_candidate(
-            candidate, include_selected_conversation=True
-        )
+        state, get_conv_mock = await self._build_state_for_candidate(candidate, include_selected_conversation=True)
 
         self.assertEqual(state.selected_conversation_id, "conv-2")
         self.assertEqual(len(state.conversations), 2)
@@ -160,9 +158,7 @@ class BuildWorkspaceChatStateTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        state, get_conv_mock = await self._build_state_for_candidate(
-            candidate, include_selected_conversation=False
-        )
+        state, get_conv_mock = await self._build_state_for_candidate(candidate, include_selected_conversation=False)
 
         self.assertEqual(state.selected_conversation_id, "conv-2")
         self.assertEqual([conversation.id for conversation in state.conversations], ["conv-1", "conv-2"])

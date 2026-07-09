@@ -50,6 +50,45 @@ class ConversationToolOptionTests(unittest.TestCase):
 
 
 class ConversationToolRuntimeOverrideTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ssh_tool_description_states_write_access_when_enabled(self) -> None:
+        rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
+
+        tool = await rag._create_ssh_tool(
+            {
+                "name": "Demo SSH",
+                "tool_type": "ssh_shell",
+                "allow_write": True,
+                "connection_config": {},
+            },
+            "demo_ssh",
+            "tool-1",
+        )
+
+        self.assertIsNotNone(tool)
+        self.assertIn("Write access is enabled for this request.", tool.description)
+
+    def test_request_tool_scope_prompt_includes_effective_write_status(self) -> None:
+        rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
+        rag._tool_configs = [
+            {
+                "id": "tool-1",
+                "name": "Demo SSH",
+                "tool_type": "ssh_shell",
+                "allow_write": False,
+            }
+        ]
+
+        prompt = rag._build_request_tool_scope_prompt(
+            [
+                SimpleNamespace(
+                    name="ssh_demo_ssh",
+                    description="Execute shell commands on Demo SSH via SSH. Write access is enabled for this request.",
+                )
+            ]
+        )
+
+        self.assertIn("Write access is enabled for this request.", prompt)
+
     async def test_override_rebuild_does_not_add_unselected_sibling_tool(self) -> None:
         rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
         rag._tool_configs = [

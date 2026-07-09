@@ -218,6 +218,7 @@ from ragtime.tools.datatable import (
     CreateLiveDataTableInput,
     create_datatable_tool,
 )
+from ragtime.tools.descriptions import extract_tool_write_access_sentence, format_tool_write_access_sentence
 from ragtime.tools.filesystem_indexer import search_filesystem_index
 from ragtime.tools.git_history import (
     _is_shallow_repository,
@@ -5583,7 +5584,8 @@ class RAGComponents:
         tool_description = f"Query the {config.get('name', 'PostgreSQL')} database using SQL."
         if description:
             tool_description += f" This database contains: {description}"
-        tool_description += " Include LIMIT clause to restrict results. SELECT queries only unless writes are enabled."
+        tool_description += f" {format_tool_write_access_sentence(allow_write)}"
+        tool_description += " Include LIMIT clause to restrict results."
 
         return StructuredTool.from_function(
             coroutine=execute_query,
@@ -5773,7 +5775,8 @@ class RAGComponents:
             tool_description = f"Query the {config.get('name', 'MySQL/MariaDB')} database using SQL."
             if description:
                 tool_description += f" This database contains: {description}"
-            tool_description += " Include LIMIT clause to restrict results. SELECT queries only unless writes are enabled."
+            tool_description += f" {format_tool_write_access_sentence(allow_write)}"
+            tool_description += " Include LIMIT clause to restrict results."
 
             return StructuredTool.from_function(
                 coroutine=execute_query,
@@ -6024,6 +6027,7 @@ class RAGComponents:
         tool_description = f"Query {config.get('name', 'Odoo')} ERP using Python ORM code ({mode_label} connection)."
         if description:
             tool_description += f" This system contains: {description}"
+        tool_description += f" {format_tool_write_access_sentence(allow_write)}"
         tool_description += " Use env['model'].search_read(domain, fields, limit=N) for data retrieval."
 
         return StructuredTool.from_function(
@@ -6211,8 +6215,7 @@ class RAGComponents:
         tool_description = f"Execute shell commands on {config.get('name', 'remote server')} via SSH."
         if description:
             tool_description += f" This server provides access to: {description}"
-        if not allow_write:
-            tool_description += " Read-only mode: write operations are blocked."
+        tool_description += f" {format_tool_write_access_sentence(allow_write)}"
 
         return StructuredTool.from_function(
             coroutine=execute_ssh,
@@ -8200,6 +8203,9 @@ class RAGComponents:
                 f"(id={connection_meta.get('tool_config_id')}, type={connection_meta.get('tool_type')}, "
                 f"max_timeout={timeout_max_str}s)"
             )
+            write_status = extract_tool_write_access_sentence(getattr(tool, "description", ""))
+            if write_status:
+                line += f" - {write_status}"
             lines.append(line)
 
         if not lines:

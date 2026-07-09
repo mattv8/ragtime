@@ -25,6 +25,7 @@ from ragtime.core.sql_utils import (
 )
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.tools.descriptions import format_tool_write_access_sentence
 
 logger = get_logger(__name__)
 
@@ -284,7 +285,8 @@ def create_influxdb_tool(
     tool_description = f"Query the {name} InfluxDB database using Flux."
     if description:
         tool_description += f" This database contains: {description}"
-    tool_description += " Include |> limit(n: ...) to restrict results. Read-only queries only unless writes are enabled."
+    tool_description += f" {format_tool_write_access_sentence(allow_write)}"
+    tool_description += " Include |> limit(n: ...) to restrict results."
 
     return StructuredTool.from_function(
         coroutine=execute_query,
