@@ -66,7 +66,7 @@ SCHEMA_INDEXER_CAPABLE_TYPES = frozenset({DB_TYPE_POSTGRES, DB_TYPE_MSSQL, DB_TY
 class SchemaIndexerService:
     """Service for creating and managing SQL database schema indexes with pgvector."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._active_jobs: Dict[str, SchemaIndexJob] = {}
         self._active_tasks: Dict[str, asyncio.Task] = {}  # prevent GC of fire-and-forget tasks
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel

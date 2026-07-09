@@ -25,7 +25,7 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Coroutine, Dict, List, Literal, Optional, cast
 
 import httpx
 from fastapi import (
@@ -10608,7 +10608,7 @@ async def _fetch_github_models_catalog(github_token: str) -> LLMModelsResponse:
 
 
 @router.get("/chat/available-models", response_model=AvailableModelsResponse, tags=["Chat"])
-async def get_available_chat_models():
+async def get_available_chat_models() -> AvailableModelsResponse:
     """
     Get all available models from configured LLM providers.
 
@@ -13739,7 +13739,7 @@ async def send_message_stream(
     request: SendMessageRequest,
     workspace_id: Optional[str] = None,
     user: User = Depends(get_current_user),
-):
+) -> StreamingResponse:
     """
     Send a message to a conversation and stream the response.
     Returns SSE stream of tokens.
@@ -13814,7 +13814,7 @@ async def send_message_stream(
     )
     current_time_context = _build_current_time_prompt_context(request)
 
-    async def stream_response():
+    async def stream_response() -> AsyncIterator[str]:
         """Generate streaming response tokens."""
         chunk_id = f"chatcmpl-{int(time.time())}"
         full_response = ""

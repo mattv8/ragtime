@@ -102,7 +102,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
 
             load_index.assert_awaited_once_with("hot-index")
 
-    async def test_git_job_hot_loads_before_completed_status_is_published(self):
+    async def test_git_job_hot_loads_before_completed_status_is_published(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             service = IndexerService(index_base_path=directory)
             order: list[str] = []

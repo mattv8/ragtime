@@ -69,7 +69,7 @@ def _build_pdm_extension_filter(file_extensions: list[str] | None, column_name: 
 class PdmIndexerService:
     """Service for creating and managing SolidWorks PDM indexes with pgvector."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._active_jobs: Dict[str, PdmIndexJob] = {}
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
         self._running_tasks: Dict[str, asyncio.Task] = {}  # job_id -> task

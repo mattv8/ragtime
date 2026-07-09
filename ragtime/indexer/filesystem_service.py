@@ -109,7 +109,7 @@ class MountInfo:
 class FilesystemIndexerService:
     """Service for creating and managing filesystem indexes with pgvector."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._active_jobs: Dict[str, FilesystemIndexJob] = {}
         self._cancellation_flags: Dict[str, bool] = {}  # job_id -> should_cancel
         self._running_tasks: Dict[str, asyncio.Task] = {}  # job_id -> task

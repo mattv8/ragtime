@@ -426,7 +426,7 @@ def compaction_system_content(summary: str) -> str:
 class BackgroundTaskService:
     """Service for managing background chat tasks."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._subagent_children_by_parent_task: Dict[str, set[str]] = {}
         self._shutdown = False
@@ -871,7 +871,7 @@ class BackgroundTaskService:
         """
         task_id = existing_task_id or ""
 
-        async def run():
+        async def run() -> None:
             nonlocal task_id
             full_response = ""
             events: list[dict[str, Any]] = []
@@ -884,8 +884,8 @@ class BackgroundTaskService:
                     task = await repository.create_chat_task(conversation_id, user_message)
                     task_id = task.id
                 else:
-                    task = await repository.get_chat_task(task_id)
-                    if not task:
+                    existing_task = await repository.get_chat_task(task_id)
+                    if not existing_task:
                         logger.error(f"Task {task_id} not found")
                         return
 

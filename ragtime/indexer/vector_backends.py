@@ -151,7 +151,7 @@ class VectorStoreBackend(ABC):
 class PgVectorBackend(VectorStoreBackend):
     """pgvector backend - stores embeddings in PostgreSQL."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._dimension_ensured: Dict[str, int] = {}
 
     async def _ensure_dimension(self, embedding_dim: int) -> None:
@@ -305,7 +305,7 @@ class PgVectorBackend(VectorStoreBackend):
 class FaissBackend(VectorStoreBackend):
     """FAISS backend - stores embeddings in memory and saves to disk."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # In-memory storage during indexing: {index_name: {"texts": [], "metadatas": [], "embeddings": []}}
         self._pending: Dict[str, Dict[str, List]] = {}
         # Loaded FAISS indexes: {index_name: FAISS vectorstore}

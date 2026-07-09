@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, AsyncIterator, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -2720,7 +2720,7 @@ async def stream_workspace_sqlite_database_events(
 ):
     is_admin = user.role == "admin"
 
-    async def event_stream():
+    async def event_stream() -> AsyncIterator[str]:
         last_payload: str | None = None
         while True:
             if await request.is_disconnected():

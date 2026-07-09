@@ -38,7 +38,7 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_attach_pdf_metadata_only_marks_likely_candidates(self):
+    async def test_attach_pdf_metadata_only_marks_likely_candidates(self) -> None:
         service = ChatRuntimeService()
         results: list[dict[str, Any]] = [
             {
@@ -64,7 +64,7 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("text", results[0]["pdf"])
         self.assertNotIn("pdf", results[1])
 
-    async def test_browse_url_retries_after_stale_runtime_session(self):
+    async def test_browse_url_retries_after_stale_runtime_session(self) -> None:
         service = ChatRuntimeService()
         service._sessions["conv"] = _ChatDiagSession(
             conversation_id="conv",
@@ -104,7 +104,7 @@ class ChatRuntimeWebSearchPdfTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service._sessions["conv"].provider_session_id, "new-session")
 
-    async def test_read_pdf_url_delegates_through_runtime_session_retry(self):
+    async def test_read_pdf_url_delegates_through_runtime_session_retry(self) -> None:
         service = ChatRuntimeService()
         service._sessions["conv"] = _ChatDiagSession(
             conversation_id="conv",

@@ -2302,7 +2302,7 @@ class RAGComponents:
     - agent_executor_ui: Agent with UI-only tools (charts) for chat UI requests
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.retrievers: dict[str, Any] = {}
         self.faiss_dbs: dict[str, Any] = {}  # Raw FAISS vectorstores for dynamic k searches
         self.agent_executor: Optional[AgentExecutor] = None
@@ -3747,7 +3747,7 @@ class RAGComponents:
             **openai_kwargs,
         )
 
-    async def _get_embedding_model(self):
+    async def _get_embedding_model(self) -> Optional[Any]:
         """Get embedding model based on database settings."""
         assert self._app_settings is not None  # Set by initialize()
         provider = normalize_provider_name(self._app_settings.get("embedding_provider", "ollama"))
@@ -4437,7 +4437,7 @@ class RAGComponents:
             compress the content of old tool_result messages.
             """
 
-            def windowed_format(intermediate_steps):
+            def windowed_format(intermediate_steps) -> list[BaseMessage]:
                 grouped_steps = self._group_intermediate_steps_by_message(intermediate_steps)
                 num_steps = len(intermediate_steps)
                 num_groups = len(grouped_steps)
@@ -4718,7 +4718,7 @@ class RAGComponents:
         logger.info(f"Created schema search tool: search_{tool_name}_schema")
         return schema_tool
 
-    def _create_knowledge_search_tool(self):
+    def _create_knowledge_search_tool(self) -> StructuredTool:
         """Create a tool for on-demand FAISS knowledge search.
 
         This allows the agent to search the indexed documentation at any point
