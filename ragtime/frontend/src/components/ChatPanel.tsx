@@ -18101,7 +18101,7 @@ export function ChatPanel({
                           disabled={false}
                           readOnly={false}
                           saving={effectiveSavingTools}
-                          title="Workspace Tools"
+                          title="Conversation Tools"
                           getToolMenuItems={getToolMenuItems}
                           getToolGroupMenuItems={getToolGroupMenuItems}
                           getToolStatusBadge={getToolStatusBadge}
@@ -18137,7 +18137,7 @@ export function ChatPanel({
                             disabled={false}
                             readOnly={false}
                             saving={effectiveSavingTools}
-                            title="Workspace Tools"
+                            title="Conversation Tools"
                             getToolMenuItems={getToolMenuItems}
                             getToolGroupMenuItems={getToolGroupMenuItems}
                             getToolStatusBadge={getToolStatusBadge}

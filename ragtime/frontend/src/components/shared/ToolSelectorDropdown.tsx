@@ -338,10 +338,32 @@ export function ToolSelectorDropdown({
     [filteredBuiltInTools],
   );
   const allVisibleCount = visibleSelectableToolIds.length + visibleBuiltInToolIds.length;
+  const visibleCustomCount = visibleSelectableToolIds.length;
+  const visibleBuiltInCount = visibleBuiltInToolIds.length;
+  const allVisibleCustomSelected =
+    visibleCustomCount > 0 &&
+    visibleSelectableToolIds.every((toolId) => effectiveToolIds.has(toolId));
+  const noVisibleCustomSelected = visibleSelectableToolIds.every(
+    (toolId) => !effectiveToolIds.has(toolId),
+  );
+  const allVisibleBuiltInSelected =
+    visibleBuiltInCount > 0 &&
+    visibleBuiltInToolIds.every((toolId) => builtInSelectedIds.has(toolId));
+  const anyVisibleBuiltInSelected = visibleBuiltInToolIds.some((toolId) =>
+    builtInSelectedIds.has(toolId),
+  );
   const allVisibleSelected =
     allVisibleCount > 0 &&
-    visibleSelectableToolIds.every((toolId) => effectiveToolIds.has(toolId)) &&
-    visibleBuiltInToolIds.every((toolId) => builtInSelectedIds.has(toolId));
+    (visibleCustomCount === 0 || allVisibleCustomSelected) &&
+    (visibleBuiltInCount === 0 || allVisibleBuiltInSelected);
+  const bulkAction: 'deselect_custom' | 'deselect_all' | 'select_all' =
+    allVisibleSelected && visibleCustomCount > 0
+      ? 'deselect_custom'
+      : noVisibleCustomSelected && anyVisibleBuiltInSelected
+        ? 'deselect_all'
+        : allVisibleSelected
+          ? 'deselect_all'
+          : 'select_all';
 
   // Group checkbox state
   const getGroupCheckState = (
@@ -360,14 +382,20 @@ export function ToolSelectorDropdown({
 
   const handleBulkToggle = () => {
     if (readOnly || disabled || allVisibleCount === 0) return;
-    const nextSelected = !allVisibleSelected;
+    const scopedToolIds = isSearching
+      ? visibleSelectableToolIds
+      : getSelectableUserSpaceToolIds(availableTools);
+
+    if (bulkAction === 'deselect_custom') {
+      onSelectionChange(
+        setUserSpaceToolSelectionForTools(selection, availableTools, scopedToolIds, false),
+      );
+      return;
+    }
+
+    const nextSelected = bulkAction === 'select_all';
     onSelectionChange(
-      setUserSpaceToolSelectionForTools(
-        selection,
-        availableTools,
-        isSearching ? visibleSelectableToolIds : getSelectableUserSpaceToolIds(availableTools),
-        nextSelected,
-      ),
+      setUserSpaceToolSelectionForTools(selection, availableTools, scopedToolIds, nextSelected),
     );
     if (onBulkBuiltInToggle) {
       onBulkBuiltInToggle(nextSelected);
@@ -479,7 +507,7 @@ export function ToolSelectorDropdown({
                   onClick={handleBulkToggle}
                   disabled={readOnly || disabled || allVisibleCount === 0}
                 >
-                  {allVisibleSelected
+                  {allVisibleSelected || bulkAction === 'deselect_all'
                     ? isSearching
                       ? 'Deselect visible'
                       : 'Deselect all'
