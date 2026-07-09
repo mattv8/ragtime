@@ -164,6 +164,7 @@ export interface LoginResponse {
 export interface MfaEnrollStartResponse {
   secret: string;
   otpauth_uri: string;
+  enrollment_token: string;
 }
 
 export interface MfaEnrollCompleteResponse {

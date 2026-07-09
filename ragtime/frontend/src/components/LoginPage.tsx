@@ -45,6 +45,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   const [rememberDevice, setRememberDevice] = useState(true);
   const [totpSecret, setTotpSecret] = useState('');
   const [otpauthUri, setOtpauthUri] = useState('');
+  const [totpEnrollmentToken, setTotpEnrollmentToken] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [enrolledUser, setEnrolledUser] = useState<User | null>(null);
 
@@ -73,6 +74,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
         setMfaChallengeToken(response.mfa_challenge_token);
         setTotpSecret(setup.secret);
         setOtpauthUri(setup.otpauth_uri);
+        setTotpEnrollmentToken(setup.enrollment_token);
         setMfaMode('enroll');
         setPassword('');
         return;
@@ -126,6 +128,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
     try {
       const response = await api.completeMfaEnrollment({
         mfa_challenge_token: mfaChallengeToken,
+        enrollment_token: totpEnrollmentToken,
         code: mfaCode,
         remember_device: rememberDevice,
       });

@@ -46,6 +46,8 @@ import {
   useUrlSearchFilterState,
 } from './shared/SearchFilterBar';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
+import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChecklist';
+import { getExportPasswordPolicy } from '@/utils/exportPasswordPolicy';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
 import {
@@ -2811,6 +2813,39 @@ export function SettingsPanel({
       toast.error(err instanceof Error ? err.message : 'Failed to save search settings');
     } finally {
       setSearchSaving(false);
+    }
+  };
+
+  // Save Security (tool config export password policy)
+  const [securitySaving, setSecuritySaving] = useState(false);
+  const [exportPolicyPreview, setExportPolicyPreview] = useState('');
+  const handleSaveSecurity = async () => {
+    setSecuritySaving(true);
+
+    try {
+      const dataToSave = {
+        export_password_min_length: formData.export_password_min_length,
+        export_password_require_uppercase: formData.export_password_require_uppercase,
+        export_password_require_lowercase: formData.export_password_require_lowercase,
+        export_password_require_number: formData.export_password_require_number,
+        export_password_require_special: formData.export_password_require_special,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      setSettings(updated);
+      setFormData((prev) => ({
+        ...prev,
+        export_password_min_length: updated.export_password_min_length,
+        export_password_require_uppercase: updated.export_password_require_uppercase,
+        export_password_require_lowercase: updated.export_password_require_lowercase,
+        export_password_require_number: updated.export_password_require_number,
+        export_password_require_special: updated.export_password_require_special,
+      }));
+      await onSettingsSaved?.();
+      toast.success('Security settings saved');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save security settings');
+    } finally {
+      setSecuritySaving(false);
     }
   };
 
@@ -8965,6 +9000,158 @@ export function SettingsPanel({
               disabled={staleBranchSaving}
             >
               {staleBranchSaving ? 'Saving...' : 'Save User Space Settings'}
+            </button>
+          </div>
+        </fieldset>
+
+        {/* Security */}
+        <fieldset id="setting-security">
+          <legend>Security</legend>
+          <p className="fieldset-help">
+            Set the minimum password strength required when exporting encrypted tool configurations.
+            These rules are enforced by the server; the export dialog also checks them live so users
+            get immediate feedback.
+          </p>
+
+          <div className="form-group">
+            <label>Minimum Password Length</label>
+            <input
+              type="number"
+              min={1}
+              max={128}
+              value={
+                formData.export_password_min_length ?? settings?.export_password_min_length ?? 12
+              }
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  export_password_min_length: Math.max(
+                    1,
+                    Math.min(128, parseInt(e.target.value, 10) || 1),
+                  ),
+                })
+              }
+            />
+            <p className="field-help">
+              Number of characters an export password must contain. Range: 1 to 128. Default: 12.
+            </p>
+          </div>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={
+                  formData.export_password_require_uppercase ??
+                  settings?.export_password_require_uppercase ??
+                  true
+                }
+                onChange={(e) =>
+                  setFormData({ ...formData, export_password_require_uppercase: e.target.checked })
+                }
+                style={{ marginRight: '0.5rem' }}
+              />
+              <span>Require an uppercase letter</span>
+            </label>
+          </div>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={
+                  formData.export_password_require_lowercase ??
+                  settings?.export_password_require_lowercase ??
+                  true
+                }
+                onChange={(e) =>
+                  setFormData({ ...formData, export_password_require_lowercase: e.target.checked })
+                }
+                style={{ marginRight: '0.5rem' }}
+              />
+              <span>Require a lowercase letter</span>
+            </label>
+          </div>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={
+                  formData.export_password_require_number ??
+                  settings?.export_password_require_number ??
+                  true
+                }
+                onChange={(e) =>
+                  setFormData({ ...formData, export_password_require_number: e.target.checked })
+                }
+                style={{ marginRight: '0.5rem' }}
+              />
+              <span>Require a number</span>
+            </label>
+          </div>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={
+                  formData.export_password_require_special ??
+                  settings?.export_password_require_special ??
+                  true
+                }
+                onChange={(e) =>
+                  setFormData({ ...formData, export_password_require_special: e.target.checked })
+                }
+                style={{ marginRight: '0.5rem' }}
+              />
+              <span>Require a special character</span>
+            </label>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="export-policy-preview">Test a password against this policy</label>
+            <input
+              id="export-policy-preview"
+              type="text"
+              value={exportPolicyPreview}
+              onChange={(e) => setExportPolicyPreview(e.target.value)}
+              placeholder="Type a sample password"
+              autoComplete="off"
+            />
+            <PasswordRequirementsChecklist
+              password={exportPolicyPreview}
+              policy={getExportPasswordPolicy({
+                export_password_min_length:
+                  formData.export_password_min_length ?? settings?.export_password_min_length ?? 12,
+                export_password_require_uppercase:
+                  formData.export_password_require_uppercase ??
+                  settings?.export_password_require_uppercase ??
+                  true,
+                export_password_require_lowercase:
+                  formData.export_password_require_lowercase ??
+                  settings?.export_password_require_lowercase ??
+                  true,
+                export_password_require_number:
+                  formData.export_password_require_number ??
+                  settings?.export_password_require_number ??
+                  true,
+                export_password_require_special:
+                  formData.export_password_require_special ??
+                  settings?.export_password_require_special ??
+                  true,
+              })}
+            />
+          </div>
+
+          <div className="form-group" style={{ marginTop: '1rem' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={handleSaveSecurity}
+              disabled={securitySaving}
+            >
+              {securitySaving ? 'Saving...' : 'Save Security Settings'}
             </button>
           </div>
         </fieldset>

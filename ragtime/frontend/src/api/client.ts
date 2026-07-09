@@ -508,6 +508,7 @@ export const api = {
 
   async completeMfaEnrollment(request: {
     code: string;
+    enrollment_token: string;
     mfa_challenge_token?: string | null;
     remember_device?: boolean;
   }): Promise<MfaEnrollCompleteResponse> {

@@ -47,6 +47,15 @@ class PendingMfaClaims:
     exp: datetime
 
 
+@dataclass(frozen=True)
+class TotpEnrollmentClaims:
+    user_id: str
+    username: str
+    role: str
+    secret: str
+    exp: datetime
+
+
 def _b64decode_padded(value: str) -> bytes:
     return base64.b32decode(value.upper() + "=" * (-len(value) % 8), casefold=True)
 
@@ -182,6 +191,46 @@ def decode_pending_mfa_token(
         return None
 
 
+def create_totp_enrollment_token(
+    *,
+    user_id: str,
+    username: str,
+    role: str,
+    secret: str,
+) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(seconds=PENDING_MFA_EXPIRY_SECONDS)
+    payload = {
+        "sub": user_id,
+        "username": username,
+        "role": role,
+        "secret": secret,
+        "purpose": "mfa:totp_enrollment",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
+
+
+def decode_totp_enrollment_token(token: str) -> TotpEnrollmentClaims | None:
+    try:
+        payload = jwt.decode(token, settings.encryption_key, algorithms=[settings.jwt_algorithm])
+    except JWTError as exc:
+        logger.debug("TOTP enrollment token decode failed: %s", exc)
+        return None
+
+    if payload.get("purpose") != "mfa:totp_enrollment":
+        return None
+    try:
+        return TotpEnrollmentClaims(
+            user_id=str(payload["sub"]),
+            username=str(payload["username"]),
+            role=str(payload["role"]),
+            secret=str(payload["secret"]),
+            exp=datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def build_otpauth_uri(*, issuer: str, username: str, secret: str) -> str:
     label = quote(f"{issuer}:{username}")
     return f"otpauth://totp/{label}?secret={quote(secret)}&issuer={quote(issuer)}&algorithm=SHA1&digits={TOTP_DIGITS}&period={TOTP_PERIOD_SECONDS}"
@@ -238,40 +287,30 @@ async def begin_totp_enrollment(user: Any) -> dict[str, str]:
     existing = await db.usermfafactor.find_unique(where={"userId_factorType": {"userId": user.id, "factorType": "totp"}})
     if existing and getattr(existing, "enabled", False):
         raise ValueError("TOTP is already enabled. Ask an administrator to reset MFA before re-enrolling.")
-    await db.usermfafactor.upsert(
-        where={"userId_factorType": {"userId": user.id, "factorType": "totp"}},
-        data={
-            "create": {
-                "userId": user.id,
-                "factorType": "totp",
-                "label": "Authenticator app",
-                "secretEncrypted": encrypt_secret(secret),
-                "enabled": False,
-            },
-            "update": {
-                "secretEncrypted": encrypt_secret(secret),
-                "enabled": False,
-                "confirmedAt": None,
-                "lastUsedStep": None,
-                "lastUsedAt": None,
-            },
-        },
-    )
     issuer = str(getattr(settings, "server_name", "") or "Ragtime").strip() or "Ragtime"
     return {
         "secret": secret,
         "otpauth_uri": build_otpauth_uri(issuer=issuer, username=user.username, secret=secret),
+        "enrollment_token": create_totp_enrollment_token(
+            user_id=user.id,
+            username=user.username,
+            role=str(getattr(user, "role", "user") or "user"),
+            secret=secret,
+        ),
     }
 
 
-async def confirm_totp_enrollment(user: Any, code: str) -> tuple[bool, list[str]]:
+async def confirm_totp_enrollment(user: Any, code: str, enrollment_token: str) -> tuple[bool, list[str]]:
     db = await get_db()
-    factor = await get_enabled_totp_factor(user.id)
-    if not factor or not getattr(factor, "secretEncrypted", None):
+    claims = decode_totp_enrollment_token(enrollment_token)
+    if not claims or claims.user_id != user.id:
         return False, []
 
-    secret = decrypt_secret(factor.secretEncrypted)
-    result = verify_totp_code(secret, code, last_used_step=None)
+    factor = await db.usermfafactor.find_unique(where={"userId_factorType": {"userId": user.id, "factorType": "totp"}})
+    if factor and getattr(factor, "enabled", False):
+        return False, []
+
+    result = verify_totp_code(claims.secret, code, last_used_step=None)
     if not result.valid or result.time_step is None:
         return False, []
 
@@ -284,13 +323,26 @@ async def confirm_totp_enrollment(user: Any, code: str) -> tuple[bool, list[str]
                 "codeHash": hash_recovery_code(recovery_code),
             }
         )
-    await db.usermfafactor.update(
-        where={"id": factor.id},
+    await db.usermfafactor.upsert(
+        where={"userId_factorType": {"userId": user.id, "factorType": "totp"}},
         data={
-            "enabled": True,
-            "confirmedAt": datetime.now(timezone.utc),
-            "lastUsedStep": result.time_step,
-            "lastUsedAt": datetime.now(timezone.utc),
+            "create": {
+                "userId": user.id,
+                "factorType": "totp",
+                "label": "Authenticator app",
+                "secretEncrypted": encrypt_secret(claims.secret),
+                "enabled": True,
+                "confirmedAt": datetime.now(timezone.utc),
+                "lastUsedStep": result.time_step,
+                "lastUsedAt": datetime.now(timezone.utc),
+            },
+            "update": {
+                "secretEncrypted": encrypt_secret(claims.secret),
+                "enabled": True,
+                "confirmedAt": datetime.now(timezone.utc),
+                "lastUsedStep": result.time_step,
+                "lastUsedAt": datetime.now(timezone.utc),
+            },
         },
     )
     return True, recovery_codes

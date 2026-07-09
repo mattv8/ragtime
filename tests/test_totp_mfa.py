@@ -89,6 +89,26 @@ class PendingMfaTokenTests(unittest.TestCase):
 
 
 class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_begin_enrollment_does_not_persist_unconfirmed_factor(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return None
+
+            async def upsert(self, data, where):
+                raise AssertionError("unconfirmed enrollment must not persist an MFA factor")
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            setup = await mfa.begin_totp_enrollment(SimpleNamespace(id="user-1", username="alice"))
+
+        self.assertIn("secret", setup)
+        self.assertIn("otpauth_uri", setup)
+        self.assertIn("enrollment_token", setup)
+
     async def test_begin_enrollment_rejects_existing_enabled_factor(self) -> None:
         class FactorDelegate:
             async def find_unique(self, where):
@@ -105,6 +125,140 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
             with self.assertRaises(ValueError):
                 await mfa.begin_totp_enrollment(SimpleNamespace(id="user-1", username="alice"))
+
+    async def test_complete_enrollment_persists_factor_after_valid_token_code(self) -> None:
+        created_factor: dict | None = None
+
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return None
+
+            async def upsert(self, where, data):
+                nonlocal created_factor
+                created_factor = data["create"]
+                return SimpleNamespace(id="factor-1")
+
+        class RecoveryCodeDelegate:
+            async def delete_many(self, where):
+                return None
+
+            async def create(self, data):
+                return SimpleNamespace(id="recovery-1")
+
+        db = SimpleNamespace(
+            usermfafactor=FactorDelegate(),
+            usermfarecoverycode=RecoveryCodeDelegate(),
+        )
+        user = SimpleNamespace(id="user-1", username="alice", role="user")
+        secret = mfa.generate_totp_secret()
+        enrollment_token = mfa.create_totp_enrollment_token(
+            user_id=user.id,
+            username=user.username,
+            role=user.role,
+            secret=secret,
+        )
+        code = mfa.generate_totp_code(secret)
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(
+                user,
+                code,
+                enrollment_token,
+            )
+
+        self.assertTrue(success)
+        self.assertEqual(len(recovery_codes), mfa.RECOVERY_CODE_COUNT)
+        self.assertIsNotNone(created_factor)
+        assert created_factor is not None
+        self.assertTrue(created_factor["enabled"])
+        self.assertEqual(created_factor["factorType"], "totp")
+
+    async def test_complete_enrollment_rejects_token_for_different_user(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                raise AssertionError("mismatched token must be rejected before factor lookup")
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+        secret = mfa.generate_totp_secret()
+        enrollment_token = mfa.create_totp_enrollment_token(
+            user_id="user-2",
+            username="bob",
+            role="user",
+            secret=secret,
+        )
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(
+                SimpleNamespace(id="user-1", username="alice"),
+                mfa.generate_totp_code(secret),
+                enrollment_token,
+            )
+
+        self.assertFalse(success)
+        self.assertEqual(recovery_codes, [])
+
+    async def test_complete_enrollment_rejects_invalid_token(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                raise AssertionError("invalid token must be rejected before factor lookup")
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(
+                SimpleNamespace(id="user-1", username="alice"),
+                "123456",
+                "not-a-valid-token",
+            )
+
+        self.assertFalse(success)
+        self.assertEqual(recovery_codes, [])
+
+    async def test_complete_enrollment_does_not_overwrite_enabled_factor(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(id="factor-1", enabled=True, secretEncrypted="enc::secret")
+
+            async def upsert(self, where, data):
+                raise AssertionError("enabled factor must not be overwritten")
+
+        class RecoveryCodeDelegate:
+            async def delete_many(self, where):
+                raise AssertionError("recovery codes must not be changed when factor is already enabled")
+
+        db = SimpleNamespace(
+            usermfafactor=FactorDelegate(),
+            usermfarecoverycode=RecoveryCodeDelegate(),
+        )
+        secret = mfa.generate_totp_secret()
+        enrollment_token = mfa.create_totp_enrollment_token(
+            user_id="user-1",
+            username="alice",
+            role="user",
+            secret=secret,
+        )
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(
+                SimpleNamespace(id="user-1", username="alice"),
+                mfa.generate_totp_code(secret),
+                enrollment_token,
+            )
+
+        self.assertFalse(success)
+        self.assertEqual(recovery_codes, [])
 
 
 if __name__ == "__main__":

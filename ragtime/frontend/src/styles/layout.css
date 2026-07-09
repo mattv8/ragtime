@@ -2232,6 +2232,11 @@ legend {
   width: 100%;
   max-width: 400px;
   box-shadow: var(--shadow-lg);
+  transition: max-width var(--transition-fast);
+}
+
+.login-card:has(.totp-enrollment-form) {
+  max-width: 560px;
 }
 
 .login-gradient-container .login-card {
@@ -2312,6 +2317,308 @@ legend {
 .login-info {
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
+  text-align: center;
+}
+
+.mfa-challenge-form {
+  gap: var(--space-md);
+}
+
+.mfa-challenge-intro {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: center;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.mfa-challenge-mark {
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-primary-border);
+  color: var(--color-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
+}
+
+.mfa-challenge-title {
+  margin: 0 0 var(--space-xs);
+  font-size: var(--text-lg);
+  color: var(--color-text-primary);
+}
+
+.mfa-challenge-help {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.mfa-code-group {
+  margin-top: var(--space-xs);
+}
+
+.mfa-code-input {
+  height: 52px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  letter-spacing: 0.18em;
+}
+
+.mfa-remember-device {
+  justify-content: center;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.totp-enrollment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.totp-enrollment-form {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(220px, 1fr);
+  gap: var(--space-md) var(--space-lg);
+  align-items: start;
+}
+
+.totp-enrollment-form > .login-info,
+.totp-enrollment-form > .login-error {
+  grid-column: 1 / -1;
+}
+
+.totp-enrollment-form > .totp-qr {
+  grid-row: span 3;
+  grid-column: 1;
+  justify-self: center;
+  align-self: center;
+}
+
+.totp-enrollment-form > .totp-enrollment-copy,
+.totp-enrollment-form > .totp-manual-setup {
+  grid-column: 1 / -1;
+}
+
+.totp-enrollment-form > .totp-enrollment-copy {
+  max-width: none;
+}
+
+.totp-enrollment-form > .totp-manual-setup {
+  margin-top: var(--space-xs);
+}
+
+.totp-enrollment-form > .form-group,
+.totp-enrollment-form > .checkbox-label,
+.totp-enrollment-form > .login-submit {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.totp-enrollment-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  align-items: center;
+  text-align: center;
+}
+
+.totp-enrollment-compact .totp-enrollment-card {
+  padding: var(--space-md);
+}
+
+.totp-qr-frame {
+  display: inline-grid;
+  place-items: center;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at center, rgba(20, 20, 19, 0.1) 1px, transparent 1.3px),
+    linear-gradient(145deg, #fffdf7 0%, #f4efe3 100%);
+  background-size: 8px 8px, auto;
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 0 0 6px rgba(255, 255, 255, 0.55);
+}
+
+.totp-qr-frame svg {
+  display: block;
+}
+
+.totp-enrollment-copy {
+  min-width: 0;
+  max-width: 280px;
+}
+
+.totp-enrollment-title {
+  margin: 0;
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+}
+
+.totp-enrollment-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-xs);
+}
+
+.totp-help-wrap {
+  display: inline-flex;
+}
+
+.totp-help-trigger {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: help;
+  transition:
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.totp-help-trigger:hover,
+.totp-help-trigger:focus-visible {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.totp-help-popover {
+  max-width: 280px;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.totp-help-popover p {
+  margin: 0 0 var(--space-sm);
+}
+
+.totp-help-popover ol {
+  margin: 0;
+  padding-left: var(--space-lg);
+}
+
+.totp-enrollment-help {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.totp-code-row {
+  display: block;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.totp-code-block {
+  display: inline;
+}
+
+.totp-inline-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  vertical-align: middle;
+  margin-left: var(--space-xs);
+  margin-top: -2px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+
+.totp-code-row:hover .totp-inline-copy,
+.totp-code-row:focus-within .totp-inline-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.totp-inline-copy:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.totp-manual-setup {
+  overflow: hidden;
+}
+
+.totp-manual-setup summary {
+  color: var(--color-accent);
+  font-size: var(--text-base);
+  cursor: pointer;
+  user-select: none;
+}
+
+.totp-manual-setup[open] {
+  padding-bottom: var(--space-md);
+}
+
+.totp-manual-setup[open] summary {
+  margin-bottom: var(--space-sm);
+}
+
+.totp-manual-setup .form-group {
+  padding: 0;
+}
+
+.totp-manual-setup .form-group + .form-group {
+  margin-top: var(--space-md);
+}
+
+@media (max-width: 640px) {
+  .totp-enrollment-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .totp-enrollment-form > .totp-qr,
+  .totp-enrollment-form > .form-group,
+  .totp-enrollment-form > .checkbox-label,
+  .totp-enrollment-form > .login-submit {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .totp-enrollment-form > .totp-qr {
+    justify-self: center;
+  }
+
+  .totp-enrollment-copy {
+    width: 100%;
+  }
 }
 
 .login-auth-method-list {

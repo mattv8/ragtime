@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { User, ChevronDown, LogOut, Moon, Sun, Monitor, Palette, Shield } from 'lucide-react';
 import type { User as UserType } from '@/types';
 import { api } from '@/api';
+import { TotpEnrollmentInstructions } from './TotpEnrollmentInstructions';
 import {
   THEME_PACKS,
   type ThemePackId,
@@ -51,6 +52,7 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
   const [mfaModalOpen, setMfaModalOpen] = useState(false);
   const [mfaSecret, setMfaSecret] = useState('');
   const [mfaUri, setMfaUri] = useState('');
+  const [mfaEnrollmentToken, setMfaEnrollmentToken] = useState('');
   const [mfaCode, setMfaCode] = useState('');
   const [mfaRecoveryCodes, setMfaRecoveryCodes] = useState<string[]>([]);
   const [mfaError, setMfaError] = useState<string | null>(null);
@@ -142,11 +144,13 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
     setMfaError(null);
     setMfaRecoveryCodes([]);
     setMfaCode('');
+    setMfaEnrollmentToken('');
     setMfaLoading(true);
     try {
       const setup = await api.startMfaEnrollment();
       setMfaSecret(setup.secret);
       setMfaUri(setup.otpauth_uri);
+      setMfaEnrollmentToken(setup.enrollment_token);
     } catch (err) {
       setMfaError(err instanceof Error ? err.message : 'Failed to start MFA setup');
     } finally {
@@ -158,7 +162,11 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
     setMfaError(null);
     setMfaLoading(true);
     try {
-      const result = await api.completeMfaEnrollment({ code: mfaCode, remember_device: true });
+      const result = await api.completeMfaEnrollment({
+        code: mfaCode,
+        enrollment_token: mfaEnrollmentToken,
+        remember_device: true,
+      });
       setMfaRecoveryCodes(result.recovery_codes);
     } catch (err) {
       setMfaError(err instanceof Error ? err.message : 'Failed to complete MFA setup');
@@ -255,15 +263,16 @@ export function UserMenu({ user, onLogout, defaultThemePack }: UserMenuProps) {
                   </button>
                 </div>
               ) : (
-                <div className="form-group">
+                <div className="modal-body">
                   <p className="field-help">
                     Add this account to your authenticator app, then enter a code.
                   </p>
                   {mfaLoading && !mfaSecret ? (
                     <p className="field-help">Preparing setup...</p>
                   ) : null}
-                  {mfaSecret && <code className="cloud-oauth-callback-code">{mfaSecret}</code>}
-                  {mfaUri && <code className="cloud-oauth-callback-code">{mfaUri}</code>}
+                  {mfaSecret && mfaUri ? (
+                    <TotpEnrollmentInstructions secret={mfaSecret} otpauthUri={mfaUri} compact />
+                  ) : null}
                   <input
                     className="form-input"
                     value={mfaCode}

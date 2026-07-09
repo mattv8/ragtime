@@ -1,5 +1,7 @@
 import type { FormEvent } from 'react';
 
+import { TotpInstructions, TotpManualSetup, TotpQrCard } from './TotpEnrollmentInstructions';
+
 export type AuthMfaMode = 'verify' | 'enroll' | 'recovery';
 
 interface AuthMfaPanelProps {
@@ -52,41 +54,49 @@ export function AuthMfaPanel({
   }
 
   const isEnrollment = mode === 'enroll';
+  const formClassName = isEnrollment
+    ? 'login-form totp-enrollment-form'
+    : 'login-form mfa-challenge-form';
   return (
-    <form onSubmit={isEnrollment ? onEnrollComplete : onVerify} className="login-form">
+    <form onSubmit={isEnrollment ? onEnrollComplete : onVerify} className={formClassName}>
       {error && <div className="login-error">{error}</div>}
-      <p className="login-info">
-        {isEnrollment
-          ? 'Set up an authenticator app before continuing.'
-          : 'Enter your authenticator code or a recovery code.'}
-      </p>
-      {isEnrollment && (
-        <>
-          <div className="form-group">
-            <label className="form-label">Manual setup key</label>
-            <code className="cloud-oauth-callback-code">{totpSecret}</code>
+      {isEnrollment ? (
+        <p className="login-info">Set up an authenticator app before continuing.</p>
+      ) : (
+        <div className="mfa-challenge-intro">
+          <div className="mfa-challenge-mark" aria-hidden="true">
+            6
           </div>
-          <div className="form-group">
-            <label className="form-label">Authenticator URI</label>
-            <code className="cloud-oauth-callback-code">{otpauthUri}</code>
+          <div>
+            <h2 className="mfa-challenge-title">Two-step verification</h2>
+            <p className="mfa-challenge-help">
+              Use a 6-digit code from your authenticator app, or enter one of your recovery codes.
+            </p>
           </div>
-        </>
+        </div>
       )}
-      <div className="form-group">
+      {isEnrollment && (
+        <div className="totp-qr">
+          <TotpQrCard otpauthUri={otpauthUri} />
+        </div>
+      )}
+      <div className={isEnrollment ? 'form-group' : 'form-group mfa-code-group'}>
         <label htmlFor="mfa-code" className="form-label">
-          {isEnrollment ? 'Verification code' : 'MFA code'}
+          {isEnrollment ? 'Verification code' : 'Authenticator or recovery code'}
         </label>
         <input
+          type="text"
           id="mfa-code"
-          className="form-input"
+          className={isEnrollment ? 'form-input' : 'form-input mfa-code-input'}
           value={code}
           onChange={(event) => onCodeChange(event.target.value)}
           autoComplete="one-time-code"
+          inputMode="numeric"
           autoFocus
           required
         />
       </div>
-      <label className="checkbox-label">
+      <label className={isEnrollment ? 'checkbox-label' : 'checkbox-label mfa-remember-device'}>
         <input
           type="checkbox"
           checked={rememberDevice}
@@ -103,6 +113,12 @@ export function AuthMfaPanel({
             ? 'Finish setup'
             : 'Verify'}
       </button>
+      {isEnrollment && (
+        <>
+          <TotpInstructions />
+          <TotpManualSetup secret={totpSecret} otpauthUri={otpauthUri} />
+        </>
+      )}
     </form>
   );
 }

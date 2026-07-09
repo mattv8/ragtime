@@ -422,10 +422,12 @@ class MfaEnrollStartRequest(BaseModel):
 class MfaEnrollStartResponse(BaseModel):
     secret: str
     otpauth_uri: str
+    enrollment_token: str
 
 
 class MfaEnrollCompleteRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=64)
+    enrollment_token: str = Field(..., description="Scoped TOTP enrollment token returned by /mfa/enroll/start")
     mfa_challenge_token: Optional[str] = None
     remember_device: bool = False
 
@@ -1550,7 +1552,7 @@ async def complete_mfa_enrollment(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
-    success, recovery_codes = await confirm_totp_enrollment(user, body.code)
+    success, recovery_codes = await confirm_totp_enrollment(user, body.code, body.enrollment_token)
     if not success:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
 

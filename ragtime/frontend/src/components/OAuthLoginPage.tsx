@@ -29,6 +29,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
   const [rememberDevice, setRememberDevice] = useState(true);
   const [totpSecret, setTotpSecret] = useState('');
   const [otpauthUri, setOtpauthUri] = useState('');
+  const [totpEnrollmentToken, setTotpEnrollmentToken] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   // Extract display name from client_id (often contains URL info)
@@ -115,6 +116,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
           setMfaChallengeToken(data.mfa_challenge_token);
           setTotpSecret(setup.secret);
           setOtpauthUri(setup.otpauth_uri);
+          setTotpEnrollmentToken(setup.enrollment_token);
           setMfaMode('enroll');
           setPassword('');
           return;
@@ -172,6 +174,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     try {
       const response = await api.completeMfaEnrollment({
         mfa_challenge_token: mfaChallengeToken,
+        enrollment_token: totpEnrollmentToken,
         code: mfaCode,
         remember_device: rememberDevice,
       });
