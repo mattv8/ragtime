@@ -881,9 +881,10 @@ class WorkspaceCodeIndexService:
         if not normalized_path:
             return 0, None
         files_root = self.userspace_service._workspace_files_dir(workspace_id)
-        file_path = (files_root / normalized_path).resolve()
+        resolved_root = files_root.resolve()
+        file_path = (resolved_root / normalized_path).resolve()
         try:
-            file_path.relative_to(files_root.resolve())
+            file_path.relative_to(resolved_root)
         except ValueError:
             return 0, None
         if not file_path.exists() or not file_path.is_file():
@@ -893,7 +894,7 @@ class WorkspaceCodeIndexService:
         if any(self._workspace_path_matches_mount_prefix(normalized_path, prefix) for prefix in mount_prefixes):
             await self.delete_file_from_index(workspace_id, normalized_path)
             return 0, None
-        if is_excluded_by_patterns(file_path, files_root, _INDEXABLE_EXCLUDE_PATTERNS):
+        if is_excluded_by_patterns(file_path, resolved_root, _INDEXABLE_EXCLUDE_PATTERNS):
             await self.delete_file_from_index(workspace_id, normalized_path)
             return 0, None
         if not should_index_file_type(file_path, matches_include_pattern=False, ocr_enabled=False):
@@ -907,7 +908,7 @@ class WorkspaceCodeIndexService:
         chunks = await self._filesystem_indexer._load_and_chunk_file(
             file_path,
             FilesystemConnectionConfig(
-                base_path=str(files_root),
+                base_path=str(resolved_root),
                 index_name=index_name,
                 recursive=True,
                 chunk_size=int(app_settings.get("chunk_size") or 1000),

@@ -100,6 +100,10 @@ legacy-constraints = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+filterwarnings = [
+    "ignore:tagMap is deprecated\\. Please use TAG_MAP instead\\.:DeprecationWarning:ldap3\\.utils\\.asn1",
+    "ignore:typeMap is deprecated\\. Please use TYPE_MAP instead\\.:DeprecationWarning:ldap3\\.utils\\.asn1",
+]
 
 [tool.pylint.main]
 py-version = "3.12"

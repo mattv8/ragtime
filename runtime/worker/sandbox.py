@@ -38,6 +38,7 @@ import signal
 import stat
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Sequence
@@ -174,7 +175,13 @@ _libc = ctypes.CDLL(_libc_name or "libc.so.6", use_errno=True)
 def _can_unshare_flags(flags: int) -> bool:
     """Probe whether unshare(flags) is permitted without perturbing this process."""
     try:
-        pid = os.fork()
+        # CPython 3.12+ warns that fork() in a multi-threaded process can lead
+        # to deadlocks. This probe is intentionally short-lived (immediate
+        # _exit) and touches no locks or shared state, so the warning is benign here.
+        # So we suppress it locally (but not globally).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
     except Exception:
         return False
     if pid == 0:

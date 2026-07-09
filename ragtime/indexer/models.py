@@ -73,6 +73,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_USERSPACE_DUPLICATE_COPY_MOUNTS,
     DEFAULT_USERSPACE_MOUNT_SYNC_INTERVAL_SECONDS,
 )
+from ragtime.core.datetimes import utc_now
 from ragtime.core.embedding_models import (
     get_embedding_models,
     get_model_dimensions_sync,
@@ -255,7 +256,7 @@ class IndexJob(BaseModel):
     clone_progress: Optional[float] = Field(default=None, exclude=True)
 
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
@@ -2062,7 +2063,7 @@ class FilesystemIndexJob(BaseModel):
     current_directory: Optional[str] = None  # Current directory being scanned
 
     # Timing
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
@@ -2083,7 +2084,7 @@ class FilesystemFileMetadata(BaseModel):
     file_size: int
     mime_type: Optional[str] = None
     chunk_count: int = 0
-    last_indexed: datetime = Field(default_factory=datetime.utcnow)
+    last_indexed: datetime = Field(default_factory=utc_now)
 
 
 class FilesystemIndexJobResponse(BaseModel):
@@ -2145,7 +2146,7 @@ class FilesystemAnalysisJob(BaseModel):
     error_message: Optional[str] = None
 
     # Timing
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     completed_at: Optional[datetime] = None
 
     @property
@@ -2627,7 +2628,7 @@ class ChatMessage(BaseModel):
 
     role: str = Field(description="Role: 'user', 'assistant', 'system', or 'compaction'")
     content: str = Field(description="Message content")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=utc_now)
     message_id: Optional[str] = Field(
         default=None,
         description="Stable per-message identifier (UUID); present on post-upgrade messages only",
@@ -2674,8 +2675,8 @@ class Conversation(BaseModel):
         default=None,
         description="ID of the currently active chat branch (null = main/original)",
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class ConversationBranch(BaseModel):
@@ -2698,8 +2699,8 @@ class ConversationBranch(BaseModel):
         description="UserSpace snapshot taken before this branch was created",
     )
     created_by_user_id: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class ConversationBranchSummary(BaseModel):
@@ -3214,10 +3215,10 @@ class ChatTask(BaseModel):
     streaming_state: Optional[ChatTaskStreamingState] = None
     response_content: Optional[str] = None
     error_message: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    last_update_at: datetime = Field(default_factory=datetime.utcnow)
+    last_update_at: datetime = Field(default_factory=utc_now)
 
 
 class ChatTaskResponse(BaseModel):
@@ -3361,7 +3362,7 @@ class SchemaIndexJob(BaseModel):
     status_detail: Optional[str] = None  # Runtime-only phase detail (not persisted)
 
     # Timing
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
@@ -3537,7 +3538,7 @@ class PdmIndexJob(BaseModel):
     cancel_requested: bool = False
 
     # Timing
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utc_now)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 

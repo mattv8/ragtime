@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ragtime.oauth_redirects import (
     DEFAULT_ALLOWED_ORIGINS,
@@ -292,9 +292,7 @@ class Settings(BaseSettings):
     # Note: LDAP configuration is stored in the database and managed via the Settings UI
     # LDAP is enabled when serverUrl is configured in the database
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()
