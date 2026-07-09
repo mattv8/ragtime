@@ -54,16 +54,8 @@ jobs:
       - name: Decide backend quality coverage
         id: quality_coverage
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "run_backend_quality=true" >> "$GITHUB_OUTPUT"
-            echo "reason=Running backend quality for a manual container build." >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "run_backend_quality=false" >> "$GITHUB_OUTPUT"
-            echo "reason=Skipping the aggregate Docker python-test target because the required CI workflow runs backend quality checks for this PR update." >> "$GITHUB_OUTPUT"
-          else
-            echo "run_backend_quality=false" >> "$GITHUB_OUTPUT"
-            echo "reason=Skipping the aggregate Docker python-test target because main/beta pushes are expected to come from PRs whose required CI already passed." >> "$GITHUB_OUTPUT"
-          fi
+          echo "run_backend_quality=true" >> "$GITHUB_OUTPUT"
+          echo "reason=Running backend quality before every container build." >> "$GITHUB_OUTPUT"
 
       - name: Checkout code
         if: steps.quality_coverage.outputs.run_backend_quality == 'true'
@@ -131,11 +123,7 @@ jobs:
             echo
             echo "${{ steps.quality_coverage.outputs.reason }}"
             echo
-            if [ "${{ steps.quality_coverage.outputs.run_backend_quality }}" = "true" ]; then
-              echo "The aggregate Docker \`python-test\` target ran in this workflow."
-            else
-              echo "The aggregate Docker \`python-test\` target was skipped to avoid repeating the required CI backend gate."
-            fi
+            echo "The aggregate Docker \`python-test\` target ran in this workflow."
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-main:
