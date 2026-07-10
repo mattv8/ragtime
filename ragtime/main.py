@@ -62,8 +62,11 @@ from ragtime.core.logging import get_logger, setup_logging
 from ragtime.core.mfa import (
     MFA_TRUST_COOKIE_NAME,
     create_pending_mfa_token,
+    get_allowed_mfa_methods,
     mfa_needed_for_user,
+    resolve_preferred_mfa_method,
     trusted_device_satisfies_mfa,
+    user_allowed_enrolled_methods,
     user_has_enabled_totp,
 )
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
@@ -684,13 +687,17 @@ async def authorize_post(
     auth_methods = ["password"]
     mfa_verified = False
     if await mfa_needed_for_user(user):
-        if await trusted_device_satisfies_mfa(user.id, request.cookies.get(MFA_TRUST_COOKIE_NAME)):
+        allowed_methods = await get_allowed_mfa_methods()
+        enrolled_allowed = await user_allowed_enrolled_methods(user.id)
+        if enrolled_allowed and await trusted_device_satisfies_mfa(user.id, request.cookies.get(MFA_TRUST_COOKIE_NAME)):
             auth_methods.append("mfa_trust")
             mfa_verified = True
-        elif await user_has_enabled_totp(user.id):
+        elif enrolled_allowed:
             return JSONResponse(
                 content={
                     "mfa_required": True,
+                    "mfa_methods": enrolled_allowed,
+                    "mfa_preferred_method": await resolve_preferred_mfa_method(user, enrolled_allowed),
                     "mfa_challenge_token": create_pending_mfa_token(
                         user_id=result.user_id,
                         username=result.username or result.user_id,
@@ -703,6 +710,7 @@ async def authorize_post(
             return JSONResponse(
                 content={
                     "mfa_enrollment_required": True,
+                    "mfa_enroll_methods": allowed_methods,
                     "mfa_challenge_token": create_pending_mfa_token(
                         user_id=result.user_id,
                         username=result.username or result.user_id,

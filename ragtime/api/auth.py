@@ -42,6 +42,7 @@ from ragtime.core.app_setting_defaults import (
 )
 from ragtime.core.app_settings import get_app_settings, invalidate_settings_cache
 from ragtime.core.auth import (
+    _UNSET,
     authenticate,
     create_or_update_local_managed_user,
     discover_ldap_structure,
@@ -70,14 +71,24 @@ from ragtime.core.mcp_accounting import (
 )
 from ragtime.core.mfa import (
     MFA_TRUST_COOKIE_NAME,
+    RECOVERY_CODE_COUNT,
+    WEBAUTHN_METHOD,
     begin_totp_enrollment,
     confirm_totp_enrollment,
     create_pending_mfa_token,
     create_trusted_device,
     decode_pending_mfa_token,
+    generate_recovery_code,
+    generate_totp_code,
+    get_allowed_mfa_methods,
+    get_enabled_totp_factor,
+    hash_recovery_code,
     mfa_needed_for_user,
+    regenerate_recovery_codes,
     reset_user_mfa,
+    resolve_preferred_mfa_method,
     trusted_device_satisfies_mfa,
+    user_allowed_enrolled_methods,
     user_has_enabled_totp,
     verify_user_mfa_code,
 )
@@ -95,6 +106,17 @@ from ragtime.core.usage_accounting import (
     get_usage_earliest_date,
     get_user_daily_usage_series,
     get_user_usage_summary,
+)
+from ragtime.core.webauthn_mfa import (
+    WebauthnError,
+    begin_webauthn_authentication,
+    begin_webauthn_registration,
+    complete_webauthn_authentication,
+    complete_webauthn_registration,
+    delete_webauthn_credential,
+    list_webauthn_credentials,
+    rename_webauthn_credential,
+    user_has_enabled_webauthn,
 )
 from ragtime.oauth_redirects import (
     DEFAULT_TRUSTED_REDIRECT_URIS,
@@ -323,6 +345,9 @@ class LoginResponse(BaseModel):
     mfa_required: bool = False
     mfa_enrollment_required: bool = False
     mfa_challenge_token: Optional[str] = None
+    mfa_methods: list[str] = Field(default_factory=list, description="Allowed MFA methods the user has enrolled, ordered webauthn-first")
+    mfa_enroll_methods: list[str] = Field(default_factory=list, description="MFA methods the user is allowed to enroll")
+    mfa_preferred_method: Optional[str] = Field(default=None, description="Resolved MFA method to present first in the challenge UI")
 
 
 class UserResponse(BaseModel):
@@ -401,6 +426,8 @@ class AuthProviderConfigResponse(BaseModel):
     totp_policy: Literal["optional", "required_all", "required_admins_groups"] = "optional"
     totp_required_group_ids: list[str] = Field(default_factory=list)
     totp_remember_device_days: int = 30
+    mfa_allowed_methods: list[str] = Field(default=["totp"], description="Allowed MFA methods for the instance")
+    mfa_default_method: Optional[str] = Field(None, description="Default MFA method for the instance when the user has no preference")
 
 
 class UpdateAuthProviderConfigRequest(BaseModel):
@@ -413,6 +440,8 @@ class UpdateAuthProviderConfigRequest(BaseModel):
     totp_policy: Optional[Literal["optional", "required_all", "required_admins_groups"]] = None
     totp_required_group_ids: Optional[list[str]] = None
     totp_remember_device_days: Optional[int] = Field(None, ge=1, le=365)
+    mfa_allowed_methods: Optional[list[str]] = Field(None, description="Allowed MFA methods; must be a non-empty subset of ['totp', 'webauthn']")
+    mfa_default_method: Optional[str] = Field(None, description="Default MFA method; must be null or one of the effective allowed methods")
 
 
 class MfaEnrollStartRequest(BaseModel):
@@ -444,10 +473,88 @@ class MfaVerifyRequest(BaseModel):
     remember_device: bool = False
 
 
+class MfaStepUpRequest(BaseModel):
+    verification_code: str = Field(..., min_length=1, max_length=64, description="Current TOTP code or a recovery code proving control of the account")
+
+
+class TotpRotateCompleteRequest(BaseModel):
+    enrollment_token: str = Field(..., description="Rotation enrollment token returned by /mfa/totp/rotate/start")
+    code: str = Field(..., min_length=1, max_length=64, description="Code from the newly configured authenticator app")
+
+
+class RecoveryCodesResponse(BaseModel):
+    recovery_codes: list[str] = Field(default_factory=list)
+
+
+class MfaPreferredMethodRequest(BaseModel):
+    method: Optional[str] = Field(None, description="Preferred MFA method, or null to inherit the instance default")
+
+
 class MfaStatusResponse(BaseModel):
     enabled: bool
     required: bool
     recovery_codes_remaining: int
+    methods_enrolled: list[str] = Field(default_factory=list, description="All MFA methods the user has enrolled, independent of current policy")
+    allowed_methods: list[str] = Field(default=["totp"], description="MFA methods currently allowed by the provider policy")
+    webauthn_credential_count: int = Field(default=0, description="Number of WebAuthn credentials registered for the user")
+    preferred_method: Optional[str] = Field(None, description="User's preferred MFA method if it is currently enrolled")
+    default_method: Optional[str] = Field(None, description="Instance default MFA method")
+
+
+class WebauthnRegisterStartRequest(BaseModel):
+    mfa_challenge_token: Optional[str] = Field(None, description="Pending MFA enrollment token from login")
+
+
+class WebauthnRegisterStartResponse(BaseModel):
+    options: dict[str, Any] = Field(default_factory=dict, description="WebAuthn PublicKeyCredentialCreationOptionsJSON")
+    registration_token: str = Field(..., description="Short-lived signed challenge token for this registration")
+
+
+class WebauthnRegisterCompleteRequest(BaseModel):
+    registration_token: str = Field(..., description="Signed challenge token from /auth/mfa/webauthn/register/start")
+    credential: dict[str, Any] = Field(..., description="WebAuthn credential response from the authenticator")
+    name: Optional[str] = Field(None, description="Human-readable name for the new passkey")
+    mfa_challenge_token: Optional[str] = Field(None, description="Pending MFA enrollment token from login")
+    remember_device: bool = Field(False, description="Trust this browser after enrollment")
+
+
+class WebauthnRegisterCompleteResponse(BaseModel):
+    success: bool
+    credential_id: str
+    name: str
+    recovery_codes: Optional[list[str]] = Field(None, description="One-time recovery codes when this was the user's first MFA factor")
+
+
+class WebauthnAuthenticateStartRequest(BaseModel):
+    mfa_challenge_token: str = Field(..., description="Pending MFA challenge token from primary authentication")
+
+
+class WebauthnAuthenticateStartResponse(BaseModel):
+    options: dict[str, Any] = Field(default_factory=dict, description="WebAuthn PublicKeyCredentialRequestOptionsJSON")
+    authentication_token: str = Field(..., description="Short-lived signed challenge token for this authentication")
+
+
+class WebauthnAuthenticateCompleteRequest(BaseModel):
+    mfa_challenge_token: str = Field(..., description="Pending MFA challenge token from primary authentication")
+    authentication_token: str = Field(..., description="Signed challenge token from /auth/mfa/webauthn/authenticate/start")
+    credential: dict[str, Any] = Field(..., description="WebAuthn assertion response from the authenticator")
+    remember_device: bool = Field(False, description="Trust this browser after authentication")
+
+
+class WebauthnCredentialResponse(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: Optional[str] = None
+    transports: list[str] = Field(default_factory=list)
+
+
+class WebauthnCredentialListResponse(BaseModel):
+    credentials: list[WebauthnCredentialResponse]
+
+
+class WebauthnCredentialRenameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="New display name for the credential")
 
 
 class LocalUserCreateRequest(BaseModel):
@@ -632,6 +739,7 @@ class AuthStatusResponse(BaseModel):
     debug_mode: bool = False
     debug_username: Optional[str] = None
     debug_password: Optional[str] = None
+    debug_totp_code: Optional[str] = None
     cookie_warning: Optional[str] = None  # Warning about cookie/protocol mismatch
     # Security status for UI banner
     api_key_configured: bool = False
@@ -717,6 +825,8 @@ def _auth_provider_config_response(config) -> AuthProviderConfigResponse:
         totp_policy=config.totp_policy,
         totp_required_group_ids=config.totp_required_group_ids,
         totp_remember_device_days=config.totp_remember_device_days,
+        mfa_allowed_methods=config.mfa_allowed_methods,
+        mfa_default_method=config.mfa_default_method,
     )
 
 
@@ -946,6 +1056,32 @@ async def _issue_login_session(
     )
 
 
+def _webauthn_credential_response(cred: Any) -> WebauthnCredentialResponse:
+    created_at = getattr(cred, "createdAt", None)
+    last_used_at = getattr(cred, "lastUsedAt", None)
+    return WebauthnCredentialResponse(
+        id=getattr(cred, "id", ""),
+        name=getattr(cred, "name", ""),
+        created_at=created_at.isoformat() if created_at else "",
+        last_used_at=last_used_at.isoformat() if last_used_at else None,
+        transports=list(getattr(cred, "transports", []) or []),
+    )
+
+
+async def _generate_and_store_recovery_codes(user_id: str) -> list[str]:
+    codes = [generate_recovery_code() for _ in range(RECOVERY_CODE_COUNT)]
+    db = await get_db()
+    await db.usermfarecoverycode.delete_many(where={"userId": user_id})
+    for code in codes:
+        await db.usermfarecoverycode.create(
+            data={
+                "userId": user_id,
+                "codeHash": hash_recovery_code(code),
+            }
+        )
+    return codes
+
+
 async def _login_response_for_authenticated_primary(
     *,
     request: Request,
@@ -965,7 +1101,10 @@ async def _login_response_for_authenticated_primary(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     if await mfa_needed_for_user(user):
-        if await trusted_device_satisfies_mfa(user.id, trusted_device_token):
+        allowed_methods = await get_allowed_mfa_methods()
+        enrolled_allowed = await user_allowed_enrolled_methods(user.id)
+
+        if enrolled_allowed and await trusted_device_satisfies_mfa(user.id, trusted_device_token):
             await _issue_login_session(
                 response,
                 request,
@@ -975,10 +1114,12 @@ async def _login_response_for_authenticated_primary(
                 mfa_verified=True,
                 auth_methods=["password", "mfa_trust"],
             )
-        elif await user_has_enabled_totp(user.id):
+        elif enrolled_allowed:
             return LoginResponse(
                 success=False,
                 mfa_required=True,
+                mfa_methods=enrolled_allowed,
+                mfa_preferred_method=await resolve_preferred_mfa_method(user, enrolled_allowed),
                 mfa_challenge_token=create_pending_mfa_token(
                     user_id=result.user_id,
                     username=result.username,
@@ -990,6 +1131,7 @@ async def _login_response_for_authenticated_primary(
             return LoginResponse(
                 success=False,
                 mfa_enrollment_required=True,
+                mfa_enroll_methods=allowed_methods,
                 mfa_challenge_token=create_pending_mfa_token(
                     user_id=result.user_id,
                     username=result.username,
@@ -1017,6 +1159,37 @@ async def _login_response_for_authenticated_primary(
         email=result.email,
         role=result.role,
     )
+
+
+async def _get_debug_totp_code() -> Optional[str]:
+    """Compute the local admin's current TOTP code when running in debug mode.
+
+    This is intentionally defensive: the auth status endpoint must never fail
+    because the development convenience helper cannot compute a code.
+    The TOTP secret itself is never returned; only the current 6-digit code.
+    """
+    if not settings.debug_mode:
+        return None
+    if not settings.local_admin_user or not settings.local_admin_password:
+        return None
+    try:
+        db = await get_db()
+        user = await db.user.find_unique(where={"username": f"local:{settings.local_admin_user}"})
+        if not user:
+            return None
+        factor = await get_enabled_totp_factor(user.id)
+        if not factor or not getattr(factor, "enabled", False):
+            return None
+        secret_encrypted = getattr(factor, "secretEncrypted", None) or getattr(factor, "secret_encrypted", None)
+        if not secret_encrypted:
+            return None
+        secret = decrypt_secret(secret_encrypted)
+        if not secret:
+            return None
+        return generate_totp_code(secret)
+    except Exception as exc:
+        logger.debug("Failed to compute debug TOTP code: %s", exc)
+        return None
 
 
 @router.get("/status", response_model=AuthStatusResponse)
@@ -1095,6 +1268,7 @@ async def get_auth_status(
         debug_username=settings.local_admin_user if settings.debug_mode else None,
         # Debug mode is development-only; frontend uses this for local login autofill.
         debug_password=settings.local_admin_password if settings.debug_mode else None,
+        debug_totp_code=await _get_debug_totp_code(),
         cookie_warning=cookie_warning,
         api_key_configured=bool(settings.api_key) if is_authenticated else False,
         session_cookie_secure=(settings.session_cookie_secure if is_authenticated else False),
@@ -1508,15 +1682,51 @@ async def update_current_user_preferences(
     return await _user_response(updated)
 
 
+async def _build_mfa_status(user: User) -> MfaStatusResponse:
+    db = await get_db()
+    methods_enrolled: list[str] = []
+    if await user_has_enabled_webauthn(user.id):
+        methods_enrolled.append("webauthn")
+    if await user_has_enabled_totp(user.id):
+        methods_enrolled.append("totp")
+    preferred_method = str(getattr(user, "mfaPreferredMethod", None) or "").lower().strip() or None
+    if preferred_method not in methods_enrolled:
+        preferred_method = None
+    auth_config = await get_auth_provider_config()
+    return MfaStatusResponse(
+        enabled=bool(methods_enrolled),
+        required=await mfa_needed_for_user(user),
+        recovery_codes_remaining=await db.usermfarecoverycode.count(where={"userId": user.id, "usedAt": None}),
+        methods_enrolled=methods_enrolled,
+        allowed_methods=await get_allowed_mfa_methods(),
+        webauthn_credential_count=await db.userwebauthncredential.count(where={"userId": user.id}),
+        preferred_method=preferred_method,
+        default_method=auth_config.mfa_default_method,
+    )
+
+
 @router.get("/mfa/status", response_model=MfaStatusResponse)
 async def get_mfa_status(user: User = Depends(get_current_user)):
     """Get the current user's MFA status."""
+    return await _build_mfa_status(user)
+
+
+@router.put("/mfa/preferred-method", response_model=MfaStatusResponse)
+async def set_preferred_mfa_method(
+    body: MfaPreferredMethodRequest,
+    user: User = Depends(get_current_user),
+):
+    """Set or clear the current user's preferred MFA method."""
+    if body.method is not None:
+        enrolled_allowed = await user_allowed_enrolled_methods(user.id)
+        if body.method not in enrolled_allowed:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Method is not enrolled")
+
     db = await get_db()
-    return MfaStatusResponse(
-        enabled=await user_has_enabled_totp(user.id),
-        required=await mfa_needed_for_user(user),
-        recovery_codes_remaining=await db.usermfarecoverycode.count(where={"userId": user.id, "usedAt": None}),
-    )
+    updated = await db.user.update(where={"id": user.id}, data={"mfaPreferredMethod": body.method})
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return await _build_mfa_status(updated)
 
 
 @router.post("/mfa/enroll/start", response_model=MfaEnrollStartResponse)
@@ -1530,6 +1740,9 @@ async def start_mfa_enrollment(
         user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="enroll")
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    allowed_methods = await get_allowed_mfa_methods()
+    if "totp" not in allowed_methods:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP enrollment is not allowed")
     try:
         setup = await begin_totp_enrollment(user)
     except ValueError as exc:
@@ -1581,6 +1794,68 @@ async def complete_mfa_enrollment(
     )
 
 
+@router.post("/mfa/totp/rotate/start", response_model=MfaEnrollStartResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def start_totp_rotation(
+    request: Request,
+    body: MfaStepUpRequest,
+    user: User = Depends(get_current_user),
+):
+    """Begin replacing an already-enrolled authenticator after step-up verification.
+
+    The old TOTP secret stays valid until the new one is confirmed via
+    /mfa/totp/rotate/complete, so the account never loses MFA during rotation.
+    """
+    if "totp" not in await get_allowed_mfa_methods():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP enrollment is not allowed")
+    if not await user_has_enabled_totp(user.id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No authenticator app is enrolled to replace")
+    verified, _ = await verify_user_mfa_code(user, body.verification_code)
+    if not verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Verification failed")
+    setup = await begin_totp_enrollment(user, allow_replace=True)
+    return MfaEnrollStartResponse(**setup)
+
+
+@router.post("/mfa/totp/rotate/complete", response_model=MfaEnrollCompleteResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def complete_totp_rotation(
+    request: Request,
+    body: TotpRotateCompleteRequest,
+    user: User = Depends(get_current_user),
+):
+    """Confirm a rotated authenticator, swapping the stored TOTP secret in place.
+
+    Unlike /mfa/enroll/complete this does not reissue or invalidate sessions; it is an
+    in-session secret swap. Recovery codes are preserved (not regenerated) on rotation.
+    """
+    success, recovery_codes = await confirm_totp_enrollment(user, body.code, body.enrollment_token)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
+    return MfaEnrollCompleteResponse(
+        success=True,
+        recovery_codes=recovery_codes,
+        user=await _user_response(user),
+    )
+
+
+@router.post("/mfa/recovery-codes/regenerate", response_model=RecoveryCodesResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def regenerate_recovery_codes_route(
+    request: Request,
+    body: MfaStepUpRequest,
+    user: User = Depends(get_current_user),
+):
+    """Issue a fresh set of recovery codes after step-up verification, invalidating old ones."""
+    if not (await user_has_enabled_totp(user.id) or await user_has_enabled_webauthn(user.id)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No MFA is enrolled")
+    verified, _ = await verify_user_mfa_code(user, body.verification_code)
+    if not verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Verification failed")
+    codes = await regenerate_recovery_codes(user.id)
+    return RecoveryCodesResponse(recovery_codes=codes)
+
+
 @router.post("/mfa/verify", response_model=LoginResponse)
 @limiter.limit(LOGIN_RATE_LIMIT)
 async def verify_mfa_challenge(
@@ -1616,6 +1891,200 @@ async def verify_mfa_challenge(
         email=user.email,
         role=str(user.role),
     )
+
+
+@router.post("/mfa/webauthn/register/start", response_model=WebauthnRegisterStartResponse)
+async def start_webauthn_registration(
+    request: Request,
+    body: WebauthnRegisterStartRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Begin registering a new WebAuthn credential for the current user or a pending enrollment."""
+    user = current_user
+    if body.mfa_challenge_token:
+        user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="enroll")
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    allowed_methods = await get_allowed_mfa_methods()
+    if WEBAUTHN_METHOD not in allowed_methods:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn enrollment is not allowed")
+
+    try:
+        options, registration_token = await begin_webauthn_registration(user, request)
+    except WebauthnError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    return WebauthnRegisterStartResponse(options=options, registration_token=registration_token)
+
+
+@router.post("/mfa/webauthn/register/complete", response_model=WebauthnRegisterCompleteResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def complete_webauthn_registration_route(
+    request: Request,
+    response: Response,
+    body: WebauthnRegisterCompleteRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Finish registering a WebAuthn credential and, when applicable, issue an MFA-complete session."""
+    user = current_user
+    if body.mfa_challenge_token:
+        user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="enroll")
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    allowed_methods = await get_allowed_mfa_methods()
+    if WEBAUTHN_METHOD not in allowed_methods:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn enrollment is not allowed")
+
+    is_first_factor = not await user_has_enabled_totp(user.id) and not await user_has_enabled_webauthn(user.id)
+
+    try:
+        cred = await complete_webauthn_registration(
+            user,
+            request,
+            body.registration_token,
+            body.credential,
+            body.name,
+        )
+    except WebauthnError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    recovery_codes: list[str] | None = None
+    if is_first_factor:
+        recovery_codes = await _generate_and_store_recovery_codes(user.id)
+
+    if body.mfa_challenge_token:
+        await invalidate_all_sessions(user.id)
+        await _set_trusted_device_if_requested(
+            response,
+            request,
+            user_id=user.id,
+            remember_device=body.remember_device,
+        )
+        await _issue_login_session(
+            response,
+            request,
+            user_id=user.id,
+            username=user.username,
+            role=str(user.role),
+            mfa_verified=True,
+            auth_methods=["password", "webauthn"],
+        )
+
+    return WebauthnRegisterCompleteResponse(
+        success=True,
+        credential_id=getattr(cred, "credentialId", ""),
+        name=getattr(cred, "name", ""),
+        recovery_codes=recovery_codes if recovery_codes else None,
+    )
+
+
+@router.post("/mfa/webauthn/authenticate/start", response_model=WebauthnAuthenticateStartResponse)
+async def start_webauthn_authentication(
+    request: Request,
+    body: WebauthnAuthenticateStartRequest,
+):
+    """Begin WebAuthn authentication for a pending MFA challenge."""
+    user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="challenge")
+
+    allowed_methods = await get_allowed_mfa_methods()
+    if WEBAUTHN_METHOD not in allowed_methods:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn authentication is not allowed")
+    if not await user_has_enabled_webauthn(user.id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No WebAuthn credentials found")
+
+    try:
+        options, authentication_token = await begin_webauthn_authentication(user, request)
+    except WebauthnError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    return WebauthnAuthenticateStartResponse(options=options, authentication_token=authentication_token)
+
+
+@router.post("/mfa/webauthn/authenticate/complete", response_model=LoginResponse)
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def complete_webauthn_authentication_route(
+    request: Request,
+    response: Response,
+    body: WebauthnAuthenticateCompleteRequest,
+):
+    """Verify a WebAuthn assertion and issue an authenticated app session."""
+    user = await _user_from_pending_mfa_token(body.mfa_challenge_token, purpose="challenge")
+
+    allowed_methods = await get_allowed_mfa_methods()
+    if WEBAUTHN_METHOD not in allowed_methods:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WebAuthn authentication is not allowed")
+
+    try:
+        await complete_webauthn_authentication(
+            user,
+            request,
+            body.authentication_token,
+            body.credential,
+        )
+    except WebauthnError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    await _set_trusted_device_if_requested(
+        response,
+        request,
+        user_id=user.id,
+        remember_device=body.remember_device,
+    )
+    await _issue_login_session(
+        response,
+        request,
+        user_id=user.id,
+        username=user.username,
+        role=str(user.role),
+        mfa_verified=True,
+        auth_methods=["password", "webauthn"],
+    )
+
+    return LoginResponse(
+        success=True,
+        user_id=user.id,
+        username=user.username,
+        display_name=user.displayName,
+        email=user.email,
+        role=str(user.role),
+    )
+
+
+@router.get("/mfa/webauthn/credentials", response_model=WebauthnCredentialListResponse)
+async def list_webauthn_credentials_route(user: User = Depends(get_current_user)):
+    """List the current user's WebAuthn credentials."""
+    creds = await list_webauthn_credentials(user.id)
+    return WebauthnCredentialListResponse(credentials=[_webauthn_credential_response(c) for c in creds])
+
+
+@router.patch("/mfa/webauthn/credentials/{credential_id}", response_model=WebauthnCredentialResponse)
+async def rename_webauthn_credential_route(
+    credential_id: str,
+    body: WebauthnCredentialRenameRequest,
+    user: User = Depends(get_current_user),
+):
+    """Rename a WebAuthn credential."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Credential name is required")
+    cred = await rename_webauthn_credential(user.id, credential_id, name)
+    if not cred:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
+    return _webauthn_credential_response(cred)
+
+
+@router.delete("/mfa/webauthn/credentials/{credential_id}")
+async def delete_webauthn_credential_route(
+    credential_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Delete a WebAuthn credential."""
+    deleted = await delete_webauthn_credential(user.id, credential_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
+    return {"success": True}
 
 
 # =============================================================================
@@ -1925,6 +2394,28 @@ async def update_provider_config(
     _user: User = Depends(require_admin),
 ):
     """Update provider-neutral authentication policy flags."""
+    current_config = await get_auth_provider_config()
+    mfa_methods = body.mfa_allowed_methods
+    if mfa_methods is not None:
+        normalized = {str(m).lower().strip() for m in mfa_methods}
+        valid = {"totp", "webauthn"}
+        if not normalized or not normalized.issubset(valid):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="mfa_allowed_methods must be a non-empty subset of ['totp', 'webauthn']",
+            )
+        mfa_methods = sorted(normalized & valid)
+
+    effective_allowed = set(mfa_methods if mfa_methods is not None else current_config.mfa_allowed_methods)
+    mfa_default_method: Any = _UNSET
+    if "mfa_default_method" in body.model_fields_set:
+        if body.mfa_default_method is not None and body.mfa_default_method not in effective_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="mfa_default_method must be null or one of the effective allowed methods",
+            )
+        mfa_default_method = body.mfa_default_method
+
     updated = await update_auth_provider_config(
         local_users_enabled=body.local_users_enabled,
         ldap_lazy_sync_enabled=body.ldap_lazy_sync_enabled,
@@ -1933,6 +2424,8 @@ async def update_provider_config(
         totp_policy=body.totp_policy,
         totp_required_group_ids=body.totp_required_group_ids,
         totp_remember_device_days=body.totp_remember_device_days,
+        mfa_allowed_methods=mfa_methods,
+        mfa_default_method=mfa_default_method,
     )
     return _auth_provider_config_response(updated)
 

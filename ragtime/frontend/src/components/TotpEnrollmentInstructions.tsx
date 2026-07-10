@@ -5,7 +5,6 @@ import { Popover } from './Popover';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 
 interface TotpEnrollmentInstructionsProps {
-  secret: string;
   otpauthUri: string;
   compact?: boolean;
 }
@@ -40,10 +39,10 @@ export function TotpQrCard({
       <QRCodeSVG
         value={otpauthUri}
         size={compact ? 132 : 168}
-        marginSize={3}
-        level="Q"
-        bgColor="transparent"
-        fgColor="#141413"
+        marginSize={4}
+        level="M"
+        bgColor="#ffffff"
+        fgColor="#000000"
         aria-hidden="true"
         focusable={false}
       />
@@ -71,10 +70,6 @@ export function TotpInstructions() {
           </button>
         </Popover>
       </div>
-      <p className="totp-enrollment-help">
-        Scan with Duo Mobile, 1Password, Google Authenticator, or Microsoft Authenticator. Then
-        enter the 6-digit code from the app to finish setup.
-      </p>
     </div>
   );
 }
@@ -83,34 +78,36 @@ export function TotpManualSetup({ secret, otpauthUri }: { secret: string; otpaut
   return (
     <details className="totp-manual-setup">
       <summary>Manual setup</summary>
-      <div className="form-group">
-        <label className="form-label">Manual setup key</label>
-        <div className="totp-code-row">
-          <code className="cloud-oauth-callback-code totp-code-block">{secret}</code>
-          <InlineCopyButton
-            copyText={secret}
-            className="totp-inline-copy"
-            title="Copy manual setup key"
-            ariaLabel="Copy manual setup key"
-            copiedTitle="Key copied"
-            copiedAriaLabel="Key copied"
-            iconSize={14}
-          />
+      <div className="totp-manual-setup-grid">
+        <div className="form-group">
+          <label className="form-label">Manual setup key</label>
+          <div className="totp-code-row">
+            <code className="cloud-oauth-callback-code totp-code-block">{secret}</code>
+            <InlineCopyButton
+              copyText={secret}
+              className="totp-inline-copy"
+              title="Copy manual setup key"
+              ariaLabel="Copy manual setup key"
+              copiedTitle="Key copied"
+              copiedAriaLabel="Key copied"
+              iconSize={14}
+            />
+          </div>
         </div>
-      </div>
-      <div className="form-group">
-        <label className="form-label">Authenticator URI</label>
-        <div className="totp-code-row">
-          <code className="cloud-oauth-callback-code totp-code-block">{otpauthUri}</code>
-          <InlineCopyButton
-            copyText={otpauthUri}
-            className="totp-inline-copy"
-            title="Copy authenticator URI"
-            ariaLabel="Copy authenticator URI"
-            copiedTitle="URI copied"
-            copiedAriaLabel="URI copied"
-            iconSize={14}
-          />
+        <div className="form-group">
+          <label className="form-label">Authenticator URI</label>
+          <div className="totp-code-row">
+            <code className="cloud-oauth-callback-code totp-code-block">{otpauthUri}</code>
+            <InlineCopyButton
+              copyText={otpauthUri}
+              className="totp-inline-copy"
+              title="Copy authenticator URI"
+              ariaLabel="Copy authenticator URI"
+              copiedTitle="URI copied"
+              copiedAriaLabel="URI copied"
+              iconSize={14}
+            />
+          </div>
         </div>
       </div>
     </details>
@@ -118,7 +115,6 @@ export function TotpManualSetup({ secret, otpauthUri }: { secret: string; otpaut
 }
 
 export function TotpEnrollmentInstructions({
-  secret,
   otpauthUri,
   compact = false,
 }: TotpEnrollmentInstructionsProps) {
@@ -128,7 +124,6 @@ export function TotpEnrollmentInstructions({
         <TotpQrCard otpauthUri={otpauthUri} compact={compact} />
         <TotpInstructions />
       </div>
-      <TotpManualSetup secret={secret} otpauthUri={otpauthUri} />
     </div>
   );
 }

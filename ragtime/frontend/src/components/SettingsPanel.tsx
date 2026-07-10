@@ -15,6 +15,7 @@ import type {
   AuthStatus,
   AuthProviderConfig,
   AuthGroup,
+  MfaMethod,
   LdapUserProfile,
   CopilotAuthStatusResponse,
   OpenAICodexAuthStatusResponse,
@@ -6914,11 +6915,91 @@ export function SettingsPanel({
 
           {authProviderConfig && (
             <div className="form-group" id="setting-authentication_totp_policy">
-              <h4>Authenticator MFA</h4>
+              <h4>Two-Factor Authentication</h4>
               <p className="fieldset-help auth-provider-help-tight">
-                TOTP uses authenticator apps and encrypted server-side secrets. Required users are
-                forced to enroll after password or LDAP verification before app access is granted.
+                TOTP uses authenticator apps and encrypted server-side secrets. Passkeys use
+                WebAuthn credentials stored on the user's device. Required users are forced to
+                enroll after password or LDAP verification before app access is granted.
               </p>
+
+              <div className="form-group">
+                <label>Allowed methods</label>
+                <div className="form-row" style={{ alignItems: 'center' }}>
+                  {(['totp', 'webauthn'] as MfaMethod[]).map((method) => {
+                    const allowed = (authProviderConfig.mfa_allowed_methods ?? ['totp']).includes(
+                      method,
+                    );
+                    const isLast =
+                      allowed && (authProviderConfig.mfa_allowed_methods ?? []).length === 1;
+                    return (
+                      <label
+                        key={method}
+                        className="checkbox-label"
+                        style={{ marginRight: '1rem' }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={allowed}
+                          disabled={isLast}
+                          onChange={() => {
+                            const current = new Set(authProviderConfig.mfa_allowed_methods ?? []);
+                            if (current.has(method)) {
+                              if (current.size > 1) {
+                                current.delete(method);
+                              }
+                            } else {
+                              current.add(method);
+                            }
+                            const nextAllowedMethods = Array.from(current);
+                            const currentDefault = authProviderConfig.mfa_default_method;
+                            const nextDefault =
+                              currentDefault && nextAllowedMethods.includes(currentDefault)
+                                ? currentDefault
+                                : null;
+                            setAuthProviderConfig({
+                              ...authProviderConfig,
+                              mfa_allowed_methods: nextAllowedMethods,
+                              mfa_default_method: nextDefault,
+                            });
+                          }}
+                        />
+                        <span>
+                          {method === 'totp' ? 'Authenticator app (TOTP)' : 'Passkeys (WebAuthn)'}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {(authProviderConfig.mfa_allowed_methods ?? []).length === 1 && (
+                  <p className="field-help">At least one method must remain enabled.</p>
+                )}
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="mfa-default-method">Default method</label>
+                <select
+                  id="mfa-default-method"
+                  value={authProviderConfig.mfa_default_method ?? ''}
+                  onChange={(e) =>
+                    setAuthProviderConfig({
+                      ...authProviderConfig,
+                      mfa_default_method: (e.target.value as MfaMethod) || null,
+                    })
+                  }
+                >
+                  <option value="">No default (let users choose)</option>
+                  {(authProviderConfig.mfa_allowed_methods ?? []).map((method) => (
+                    <option key={method} value={method}>
+                      {method === 'totp' ? 'Authenticator app (TOTP)' : 'Passkeys (WebAuthn)'}
+                    </option>
+                  ))}
+                </select>
+                <p className="field-help">
+                  When set, users without their own preferred method see this option first at sign
+                  in.
+                </p>
+              </div>
+
               <div className="form-row">
                 <div className="form-group">
                   <label>TOTP Policy</label>
@@ -9013,135 +9094,156 @@ export function SettingsPanel({
             get immediate feedback.
           </p>
 
-          <div className="form-group">
-            <label>Minimum Password Length</label>
-            <input
-              type="number"
-              min={1}
-              max={128}
-              value={
-                formData.export_password_min_length ?? settings?.export_password_min_length ?? 12
-              }
-              onChange={(e) =>
-                setFormData({
-                  ...formData,
-                  export_password_min_length: Math.max(
-                    1,
-                    Math.min(128, parseInt(e.target.value, 10) || 1),
-                  ),
-                })
-              }
-            />
-            <p className="field-help">
-              Number of characters an export password must contain. Range: 1 to 128. Default: 12.
-            </p>
-          </div>
+          <div className="form-row">
+            <div>
+              <div className="form-group">
+                <label>Minimum Password Length</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={128}
+                  value={
+                    formData.export_password_min_length ??
+                    settings?.export_password_min_length ??
+                    12
+                  }
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      export_password_min_length: Math.max(
+                        1,
+                        Math.min(128, parseInt(e.target.value, 10) || 1),
+                      ),
+                    })
+                  }
+                />
+                <p className="field-help">
+                  Number of characters an export password must contain. Range: 1 to 128. Default:
+                  12.
+                </p>
+              </div>
 
-          <div className="form-group">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={
-                  formData.export_password_require_uppercase ??
-                  settings?.export_password_require_uppercase ??
-                  true
-                }
-                onChange={(e) =>
-                  setFormData({ ...formData, export_password_require_uppercase: e.target.checked })
-                }
-                style={{ marginRight: '0.5rem' }}
-              />
-              <span>Require an uppercase letter</span>
-            </label>
-          </div>
+              <div className="form-group">
+                <label htmlFor="export-policy-preview">Test a password against this policy</label>
+                <input
+                  id="export-policy-preview"
+                  type="text"
+                  value={exportPolicyPreview}
+                  onChange={(e) => setExportPolicyPreview(e.target.value)}
+                  placeholder="Type a sample password"
+                  autoComplete="off"
+                />
+                <PasswordRequirementsChecklist
+                  password={exportPolicyPreview}
+                  policy={getExportPasswordPolicy({
+                    export_password_min_length:
+                      formData.export_password_min_length ??
+                      settings?.export_password_min_length ??
+                      12,
+                    export_password_require_uppercase:
+                      formData.export_password_require_uppercase ??
+                      settings?.export_password_require_uppercase ??
+                      true,
+                    export_password_require_lowercase:
+                      formData.export_password_require_lowercase ??
+                      settings?.export_password_require_lowercase ??
+                      true,
+                    export_password_require_number:
+                      formData.export_password_require_number ??
+                      settings?.export_password_require_number ??
+                      true,
+                    export_password_require_special:
+                      formData.export_password_require_special ??
+                      settings?.export_password_require_special ??
+                      true,
+                  })}
+                />
+              </div>
+            </div>
 
-          <div className="form-group">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={
-                  formData.export_password_require_lowercase ??
-                  settings?.export_password_require_lowercase ??
-                  true
-                }
-                onChange={(e) =>
-                  setFormData({ ...formData, export_password_require_lowercase: e.target.checked })
-                }
-                style={{ marginRight: '0.5rem' }}
-              />
-              <span>Require a lowercase letter</span>
-            </label>
-          </div>
+            <div>
+              <div className="form-group">
+                <label>Complexity requirements</label>
+              </div>
 
-          <div className="form-group">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={
-                  formData.export_password_require_number ??
-                  settings?.export_password_require_number ??
-                  true
-                }
-                onChange={(e) =>
-                  setFormData({ ...formData, export_password_require_number: e.target.checked })
-                }
-                style={{ marginRight: '0.5rem' }}
-              />
-              <span>Require a number</span>
-            </label>
-          </div>
+              <div className="form-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={
+                      formData.export_password_require_uppercase ??
+                      settings?.export_password_require_uppercase ??
+                      true
+                    }
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        export_password_require_uppercase: e.target.checked,
+                      })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Require an uppercase letter</span>
+                </label>
+              </div>
 
-          <div className="form-group">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={
-                  formData.export_password_require_special ??
-                  settings?.export_password_require_special ??
-                  true
-                }
-                onChange={(e) =>
-                  setFormData({ ...formData, export_password_require_special: e.target.checked })
-                }
-                style={{ marginRight: '0.5rem' }}
-              />
-              <span>Require a special character</span>
-            </label>
-          </div>
+              <div className="form-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={
+                      formData.export_password_require_lowercase ??
+                      settings?.export_password_require_lowercase ??
+                      true
+                    }
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        export_password_require_lowercase: e.target.checked,
+                      })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Require a lowercase letter</span>
+                </label>
+              </div>
 
-          <div className="form-group">
-            <label htmlFor="export-policy-preview">Test a password against this policy</label>
-            <input
-              id="export-policy-preview"
-              type="text"
-              value={exportPolicyPreview}
-              onChange={(e) => setExportPolicyPreview(e.target.value)}
-              placeholder="Type a sample password"
-              autoComplete="off"
-            />
-            <PasswordRequirementsChecklist
-              password={exportPolicyPreview}
-              policy={getExportPasswordPolicy({
-                export_password_min_length:
-                  formData.export_password_min_length ?? settings?.export_password_min_length ?? 12,
-                export_password_require_uppercase:
-                  formData.export_password_require_uppercase ??
-                  settings?.export_password_require_uppercase ??
-                  true,
-                export_password_require_lowercase:
-                  formData.export_password_require_lowercase ??
-                  settings?.export_password_require_lowercase ??
-                  true,
-                export_password_require_number:
-                  formData.export_password_require_number ??
-                  settings?.export_password_require_number ??
-                  true,
-                export_password_require_special:
-                  formData.export_password_require_special ??
-                  settings?.export_password_require_special ??
-                  true,
-              })}
-            />
+              <div className="form-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={
+                      formData.export_password_require_number ??
+                      settings?.export_password_require_number ??
+                      true
+                    }
+                    onChange={(e) =>
+                      setFormData({ ...formData, export_password_require_number: e.target.checked })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Require a number</span>
+                </label>
+              </div>
+
+              <div className="form-group">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={
+                      formData.export_password_require_special ??
+                      settings?.export_password_require_special ??
+                      true
+                    }
+                    onChange={(e) =>
+                      setFormData({ ...formData, export_password_require_special: e.target.checked })
+                    }
+                    style={{ marginRight: '0.5rem' }}
+                  />
+                  <span>Require a special character</span>
+                </label>
+              </div>
+            </div>
           </div>
 
           <div className="form-group" style={{ marginTop: '1rem' }}>

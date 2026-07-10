@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '@/api';
-import type { User, AuthStatus, AuthMethodStatus } from '@/types';
+import type { User, AuthStatus, AuthMethodStatus, MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
 import { AuthMfaPanel } from './AuthMfaPanel';
@@ -41,13 +41,10 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
   const [isLoading, setIsLoading] = useState(false);
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
   const [mfaMode, setMfaMode] = useState<'none' | 'verify' | 'enroll' | 'recovery'>('none');
-  const [mfaCode, setMfaCode] = useState('');
+  const [mfaMethods, setMfaMethods] = useState<MfaMethod[]>(['totp']);
+  const [mfaPreferredMethod, setMfaPreferredMethod] = useState<MfaMethod | null>(null);
+  const [mfaCode, setMfaCode] = useState(authStatus.debug_totp_code || '');
   const [rememberDevice, setRememberDevice] = useState(true);
-  const [totpSecret, setTotpSecret] = useState('');
-  const [otpauthUri, setOtpauthUri] = useState('');
-  const [totpEnrollmentToken, setTotpEnrollmentToken] = useState('');
-  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
-  const [enrolledUser, setEnrolledUser] = useState<User | null>(null);
 
   const finishLogin = async (userOverride?: User | null) => {
     const user = userOverride || (await api.getCurrentUser());
@@ -64,17 +61,17 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
 
       if (response.mfa_required && response.mfa_challenge_token) {
         setMfaChallengeToken(response.mfa_challenge_token);
+        setMfaMethods(response.mfa_methods ?? ['totp']);
+        setMfaPreferredMethod(response.mfa_preferred_method ?? null);
         setMfaMode('verify');
         setPassword('');
         return;
       }
 
       if (response.mfa_enrollment_required && response.mfa_challenge_token) {
-        const setup = await api.startMfaEnrollment(response.mfa_challenge_token);
         setMfaChallengeToken(response.mfa_challenge_token);
-        setTotpSecret(setup.secret);
-        setOtpauthUri(setup.otpauth_uri);
-        setTotpEnrollmentToken(setup.enrollment_token);
+        setMfaMethods(response.mfa_enroll_methods ?? ['totp']);
+        setMfaPreferredMethod(response.mfa_preferred_method ?? null);
         setMfaMode('enroll');
         setPassword('');
         return;
@@ -97,8 +94,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
     }
   };
 
-  const handleMfaVerify = async (event: FormEvent) => {
-    event.preventDefault();
+  const handleMfaVerify = async () => {
     if (!mfaChallengeToken) return;
     setError(null);
     setIsLoading(true);
@@ -120,25 +116,15 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
     }
   };
 
-  const handleMfaEnrollComplete = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!mfaChallengeToken) return;
+  // Shared by passkey verification and MFA enrollment: in both cases the
+  // backend has already issued the session cookie; we only need to load the
+  // user and finish the login.
+  const handleMfaSessionEstablished = async () => {
     setError(null);
-    setIsLoading(true);
     try {
-      const response = await api.completeMfaEnrollment({
-        mfa_challenge_token: mfaChallengeToken,
-        enrollment_token: totpEnrollmentToken,
-        code: mfaCode,
-        remember_device: rememberDevice,
-      });
-      setRecoveryCodes(response.recovery_codes);
-      setEnrolledUser(response.user ?? null);
-      setMfaMode('recovery');
+      await finishLogin();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'MFA enrollment failed');
-    } finally {
-      setIsLoading(false);
+      setError(err instanceof Error ? err.message : 'Sign-in could not be completed');
     }
   };
 
@@ -176,14 +162,17 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
           isLoading={isLoading}
           code={mfaCode}
           rememberDevice={rememberDevice}
-          totpSecret={totpSecret}
-          otpauthUri={otpauthUri}
-          recoveryCodes={recoveryCodes}
+          recoveryCodes={[]}
+          methods={mfaMethods}
+          preferredMethod={mfaPreferredMethod}
+          mfaChallengeToken={mfaChallengeToken ?? undefined}
+          serverName={serverName}
           onCodeChange={setMfaCode}
           onRememberDeviceChange={setRememberDevice}
           onVerify={handleMfaVerify}
-          onEnrollComplete={handleMfaEnrollComplete}
-          onRecoveryContinue={() => void finishLogin(enrolledUser)}
+          onVerified={handleMfaSessionEstablished}
+          onEnrollComplete={handleMfaSessionEstablished}
+          onRecoveryContinue={() => void finishLogin()}
         />
       )}
 

@@ -221,8 +221,14 @@ import type {
   LdapUserTypeaheadResponse,
   MfaEnrollCompleteResponse,
   MfaEnrollStartResponse,
+  MfaMethod,
   MfaStatusResponse,
+  RecoveryCodesResponse,
   UserDirectoryEntry,
+  WebauthnAuthenticateStartResponse,
+  WebauthnCredentialSummary,
+  WebauthnRegisterCompleteResponse,
+  WebauthnRegisterStartResponse,
 } from '@/types';
 import type {
   ClaudeCodeAuthCompleteResponse,
@@ -497,6 +503,15 @@ export const api = {
     return handleResponse<MfaStatusResponse>(response);
   },
 
+  async setPreferredMfaMethod(method: MfaMethod | null): Promise<MfaStatusResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/preferred-method`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method }),
+    });
+    return handleResponse<MfaStatusResponse>(response);
+  },
+
   async startMfaEnrollment(mfaChallengeToken?: string): Promise<MfaEnrollStartResponse> {
     const response = await apiFetch(`${AUTH_BASE}/mfa/enroll/start`, {
       method: 'POST',
@@ -522,6 +537,36 @@ export const api = {
     return result;
   },
 
+  async startTotpRotation(verificationCode: string): Promise<MfaEnrollStartResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/totp/rotate/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verification_code: verificationCode }),
+    });
+    return handleResponse<MfaEnrollStartResponse>(response);
+  },
+
+  async completeTotpRotation(request: {
+    enrollment_token: string;
+    code: string;
+  }): Promise<MfaEnrollCompleteResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/totp/rotate/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<MfaEnrollCompleteResponse>(response);
+  },
+
+  async regenerateRecoveryCodes(verificationCode: string): Promise<RecoveryCodesResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/recovery-codes/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verification_code: verificationCode }),
+    });
+    return handleResponse<RecoveryCodesResponse>(response);
+  },
+
   async verifyMfaChallenge(request: {
     mfa_challenge_token: string;
     code: string;
@@ -535,6 +580,86 @@ export const api = {
     const result = await handleResponse<LoginResponse>(response);
     resetAuthExpiredNotification();
     return result;
+  },
+
+  async startWebauthnRegistration(
+    mfaChallengeToken?: string,
+  ): Promise<WebauthnRegisterStartResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/register/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken ?? null }),
+    });
+    return handleResponse<WebauthnRegisterStartResponse>(response);
+  },
+
+  async completeWebauthnRegistration(request: {
+    registration_token: string;
+    credential: Record<string, unknown>;
+    name?: string;
+    mfa_challenge_token?: string;
+    remember_device?: boolean;
+  }): Promise<WebauthnRegisterCompleteResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/register/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const result = await handleResponse<WebauthnRegisterCompleteResponse>(response);
+    resetAuthExpiredNotification();
+    return result;
+  },
+
+  async startWebauthnAuthentication(
+    mfaChallengeToken: string,
+  ): Promise<WebauthnAuthenticateStartResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/authenticate/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_challenge_token: mfaChallengeToken }),
+    });
+    return handleResponse<WebauthnAuthenticateStartResponse>(response);
+  },
+
+  async completeWebauthnAuthentication(request: {
+    mfa_challenge_token: string;
+    authentication_token: string;
+    credential: Record<string, unknown>;
+    remember_device?: boolean;
+  }): Promise<LoginResponse> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/authenticate/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    const result = await handleResponse<LoginResponse>(response);
+    resetAuthExpiredNotification();
+    return result;
+  },
+
+  async listWebauthnCredentials(): Promise<{ credentials: WebauthnCredentialSummary[] }> {
+    const response = await apiFetch(`${AUTH_BASE}/mfa/webauthn/credentials`, {});
+    return handleResponse<{ credentials: WebauthnCredentialSummary[] }>(response);
+  },
+
+  async renameWebauthnCredential(id: string, name: string): Promise<WebauthnCredentialSummary> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/webauthn/credentials/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      },
+    );
+    return handleResponse<WebauthnCredentialSummary>(response);
+  },
+
+  async deleteWebauthnCredential(id: string): Promise<void> {
+    const response = await apiFetch(
+      `${AUTH_BASE}/mfa/webauthn/credentials/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+    await handleResponse<{ success: boolean }>(response);
   },
 
   async resetUserMfa(userId: string): Promise<void> {

@@ -10,6 +10,10 @@ interface InlineCopyButtonProps {
   ariaLabel: string;
   copiedTitle?: string;
   copiedAriaLabel?: string;
+  /** Optional visible text rendered next to the icon. */
+  label?: string;
+  /** Visible text shown briefly after a successful copy. Defaults to `label`. */
+  copiedLabel?: string;
   disabled?: boolean;
   iconSize?: number;
   feedbackMs?: number;
@@ -48,6 +52,8 @@ export function InlineCopyButton({
   ariaLabel,
   copiedTitle,
   copiedAriaLabel,
+  label,
+  copiedLabel,
   disabled = false,
   iconSize = 14,
   feedbackMs = 1500,
@@ -103,6 +109,7 @@ export function InlineCopyButton({
       aria-label={copied ? (copiedAriaLabel ?? ariaLabel) : ariaLabel}
     >
       {copied ? <Check size={iconSize} /> : <Copy size={iconSize} />}
+      {label && <span>{copied ? (copiedLabel ?? label) : label}</span>}
     </button>
   );
 }

@@ -1035,10 +1035,10 @@ export function ToolsPanel({
     }
   };
 
-  const handleEditTool = (tool: ToolConfig) => {
+  const handleEditTool = useCallback((tool: ToolConfig) => {
     setEditingTool(tool);
     setShowWizard(true);
-  };
+  }, []);
 
   const handleWizardClose = () => {
     setShowWizard(false);

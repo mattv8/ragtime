@@ -46,10 +46,29 @@ vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
 
 type MockPopoverProps = {
   children: ReactNode;
+  content?: ReactNode;
+  position?: string;
+  show?: boolean;
+  trigger?: string;
+  disabled?: boolean;
+  openDelayMs?: number;
+  followCursor?: boolean;
+  ignoreSelector?: string;
 } & HTMLAttributes<HTMLDivElement>;
 
 vi.mock('./Popover', () => ({
-  Popover: ({ children, ...rest }: MockPopoverProps) => <div {...rest}>{children}</div>,
+  Popover: ({
+    children,
+    content: _content,
+    position: _position,
+    show: _show,
+    trigger: _trigger,
+    disabled: _disabled,
+    openDelayMs: _openDelayMs,
+    followCursor: _followCursor,
+    ignoreSelector: _ignoreSelector,
+    ...rest
+  }: MockPopoverProps) => <div {...rest}>{children}</div>,
 }));
 vi.mock('./AnimatedCreateButton', () => ({
   AnimatedCreateButton: ({ onClick, label }: { onClick: () => void; label: string }) => (

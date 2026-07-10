@@ -883,6 +883,7 @@ model User {
   role            UserRole      @default(user)
   roleManuallySet Boolean       @default(false) @map("role_manually_set") // True when admin manually changed role; cleared on LDAP login
   themePack       String?       @map("theme_pack") // Per-user app theme pack; null means inherit the global default
+  mfaPreferredMethod String?    @map("mfa_preferred_method") // Preferred 2FA method presented first at login; null means inherit the global default
   lastLoginAt     DateTime?     @map("last_login_at")
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -912,6 +913,7 @@ model User {
   mfaFactors                           UserMfaFactor[]
   mfaRecoveryCodes                     UserMfaRecoveryCode[]
   mfaTrustedDevices                    UserMfaTrustedDevice[]
+  webauthnCredentials                  UserWebauthnCredential[]
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
@@ -929,6 +931,8 @@ model AuthProviderConfig {
   totpPolicy             TotpPolicy @default(optional) @map("totp_policy")
   totpRequiredGroupIds   String[] @default([]) @map("totp_required_group_ids")
   totpRememberDeviceDays Int      @default(30) @map("totp_remember_device_days")
+  mfaAllowedMethods      String[] @default(["totp"]) @map("mfa_allowed_methods")
+  mfaDefaultMethod       String?  @map("mfa_default_method") // Global default 2FA method presented first at login; null means no forced default
   updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@map("auth_provider_config")
@@ -985,6 +989,24 @@ model UserMfaTrustedDevice {
   @@index([userId, expiresAt])
   @@index([expiresAt])
   @@map("user_mfa_trusted_devices")
+}
+
+/// WebAuthn passkey credentials. Public keys are not encrypted.
+model UserWebauthnCredential {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  credentialId String    @unique @map("credential_id")
+  publicKey    String    @map("public_key")
+  signCount    Int       @default(0) @map("sign_count")
+  transports   String[]  @default([])
+  aaguid       String?
+  name         String
+  createdAt    DateTime  @default(now()) @map("created_at")
+  lastUsedAt   DateTime? @map("last_used_at")
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_webauthn_credentials")
 }
 
 /// Provider-neutral auth group. Local groups can contain internal and LDAP-synced users.

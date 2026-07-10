@@ -844,6 +844,49 @@ function canEditUserSpaceWorkspace(workspace: UserSpaceWorkspace, user: User): b
   return role === 'owner' || role === 'editor';
 }
 
+const BINARY_USER_SPACE_FILE_EXTENSIONS = [
+  '.sqlite',
+  '.sqlite3',
+  '.db',
+  '.db-wal',
+  '.db-shm',
+  '.sqlite-wal',
+  '.sqlite-shm',
+  // images
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.tiff',
+  '.ico',
+  // fonts
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.otf',
+  '.eot',
+  // archives
+  '.zip',
+  '.tar',
+  '.gz',
+  '.bz2',
+  '.7z',
+  '.rar',
+  // other common binaries
+  '.pdf',
+];
+
+function isLikelyBinaryUserSpaceFilePath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return BINARY_USER_SPACE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+// Warm-cache prefetch skips large files (e.g. package-lock.json, generated
+// bundles); they still load on demand when the user opens them.
+const WARM_CACHE_MAX_FILE_BYTES = 512 * 1024;
+
 export function UserSpacePanel({
   currentUser,
   debugMode = false,
@@ -2669,49 +2712,6 @@ export function UserSpacePanel({
     },
     [previewEntryPath],
   );
-
-  const BINARY_USER_SPACE_FILE_EXTENSIONS = [
-    '.sqlite',
-    '.sqlite3',
-    '.db',
-    '.db-wal',
-    '.db-shm',
-    '.sqlite-wal',
-    '.sqlite-shm',
-    // images
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.webp',
-    '.bmp',
-    '.tiff',
-    '.ico',
-    // fonts
-    '.woff',
-    '.woff2',
-    '.ttf',
-    '.otf',
-    '.eot',
-    // archives
-    '.zip',
-    '.tar',
-    '.gz',
-    '.bz2',
-    '.7z',
-    '.rar',
-    // other common binaries
-    '.pdf',
-  ];
-
-  function isLikelyBinaryUserSpaceFilePath(path: string): boolean {
-    const lower = path.toLowerCase();
-    return BINARY_USER_SPACE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
-  }
-
-  // Warm-cache prefetch skips large files (e.g. package-lock.json, generated
-  // bundles); they still load on demand when the user opens them.
-  const WARM_CACHE_MAX_FILE_BYTES = 512 * 1024;
 
   const warmWorkspaceFileCache = useCallback(
     async (

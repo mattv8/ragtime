@@ -97,6 +97,11 @@ class AuthProviderConfigData(BaseModel):
     totp_policy: str = "optional"
     totp_required_group_ids: list[str] = []
     totp_remember_device_days: int = 30
+    mfa_allowed_methods: list[str] = ["totp"]
+    mfa_default_method: str | None = None
+
+
+_UNSET = object()
 
 
 class AuthUserProfile(BaseModel):
@@ -359,6 +364,18 @@ async def get_auth_provider_config() -> AuthProviderConfigData:
     config = await db.authproviderconfig.find_unique(where={"id": "default"})
     if not config:
         config = await db.authproviderconfig.create(data={"id": "default"})
+
+    raw_methods = getattr(config, "mfaAllowedMethods", getattr(config, "mfa_allowed_methods", None)) if config else None
+    valid_methods = {"totp", "webauthn"}
+    mfa_allowed_methods = [str(v).lower().strip() for v in (raw_methods or []) if str(v).lower().strip() in valid_methods]
+    if not mfa_allowed_methods:
+        mfa_allowed_methods = ["totp"]
+
+    raw_default = getattr(config, "mfaDefaultMethod", getattr(config, "mfa_default_method", None)) if config else None
+    mfa_default_method = str(raw_default).lower().strip() if raw_default else None
+    if mfa_default_method not in mfa_allowed_methods:
+        mfa_default_method = None
+
     return AuthProviderConfigData(
         local_users_enabled=bool(config.localUsersEnabled),
         ldap_lazy_sync_enabled=bool(config.ldapLazySyncEnabled),
@@ -367,6 +384,8 @@ async def get_auth_provider_config() -> AuthProviderConfigData:
         totp_policy=str(getattr(config, "totpPolicy", "optional") or "optional"),
         totp_required_group_ids=list(getattr(config, "totpRequiredGroupIds", []) or []),
         totp_remember_device_days=max(int(getattr(config, "totpRememberDeviceDays", 30) or 30), 1),
+        mfa_allowed_methods=mfa_allowed_methods,
+        mfa_default_method=mfa_default_method,
     )
 
 
@@ -379,6 +398,8 @@ async def update_auth_provider_config(
     totp_policy: str | None = None,
     totp_required_group_ids: list[str] | None = None,
     totp_remember_device_days: int | None = None,
+    mfa_allowed_methods: list[str] | None = None,
+    mfa_default_method: Any = _UNSET,
 ) -> AuthProviderConfigData:
     """Update provider-neutral authentication policy flags."""
     data: types.AuthProviderConfigUpdateInput = {}
@@ -397,6 +418,10 @@ async def update_auth_provider_config(
         data["totpRequiredGroupIds"] = totp_required_group_ids
     if totp_remember_device_days is not None:
         data["totpRememberDeviceDays"] = max(int(totp_remember_device_days), 1)
+    if mfa_allowed_methods is not None:
+        data["mfaAllowedMethods"] = mfa_allowed_methods
+    if mfa_default_method is not _UNSET:
+        data["mfaDefaultMethod"] = mfa_default_method
 
     db = await get_db()
     create_data: types.AuthProviderConfigCreateInput = {"id": "default"}
@@ -414,6 +439,10 @@ async def update_auth_provider_config(
         create_data["totpRequiredGroupIds"] = totp_required_group_ids
     if totp_remember_device_days is not None:
         create_data["totpRememberDeviceDays"] = max(int(totp_remember_device_days), 1)
+    if mfa_allowed_methods is not None:
+        create_data["mfaAllowedMethods"] = mfa_allowed_methods
+    if mfa_default_method is not _UNSET:
+        create_data["mfaDefaultMethod"] = mfa_default_method
     await db.authproviderconfig.upsert(
         where={"id": "default"},
         data={"create": create_data, "update": data},

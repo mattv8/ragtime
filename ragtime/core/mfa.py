@@ -18,8 +18,13 @@ from ragtime.config.settings import settings
 from ragtime.core.database import get_db
 from ragtime.core.encryption import decrypt_secret, encrypt_secret
 from ragtime.core.logging import get_logger
+from ragtime.core.webauthn_mfa import user_has_enabled_webauthn
 
 logger = get_logger(__name__)
+
+TOTP_METHOD = "totp"
+WEBAUTHN_METHOD = "webauthn"
+VALID_MFA_METHODS = (TOTP_METHOD, WEBAUTHN_METHOD)
 
 TOTP_PERIOD_SECONDS = 30
 TOTP_DIGITS = 6
@@ -54,6 +59,7 @@ class TotpEnrollmentClaims:
     role: str
     secret: str
     exp: datetime
+    rotation: bool = False
 
 
 def _b64decode_padded(value: str) -> bytes:
@@ -197,6 +203,7 @@ def create_totp_enrollment_token(
     username: str,
     role: str,
     secret: str,
+    rotation: bool = False,
 ) -> str:
     expire = datetime.now(timezone.utc) + timedelta(seconds=PENDING_MFA_EXPIRY_SECONDS)
     payload = {
@@ -205,6 +212,7 @@ def create_totp_enrollment_token(
         "role": role,
         "secret": secret,
         "purpose": "mfa:totp_enrollment",
+        "rotation": bool(rotation),
         "exp": expire,
     }
     return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
@@ -226,6 +234,7 @@ def decode_totp_enrollment_token(token: str) -> TotpEnrollmentClaims | None:
             role=str(payload["role"]),
             secret=str(payload["secret"]),
             exp=datetime.fromtimestamp(int(payload["exp"]), tz=timezone.utc),
+            rotation=bool(payload.get("rotation", False)),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -277,15 +286,79 @@ async def user_has_enabled_totp(user_id: str) -> bool:
     return bool(factor and getattr(factor, "enabled", False) and getattr(factor, "secretEncrypted", None))
 
 
+async def get_allowed_mfa_methods() -> list[str]:
+    """From AuthProviderConfig.mfaAllowedMethods; defaults to [\"totp\"] when unset/empty/invalid."""
+    db = await get_db()
+    config = await db.authproviderconfig.find_unique(where={"id": "default"})
+    raw = getattr(config, "mfaAllowedMethods", getattr(config, "mfa_allowed_methods", None)) if config else None
+    methods = [str(v).lower().strip() for v in (raw or []) if str(v).lower().strip() in VALID_MFA_METHODS]
+    return methods if methods else [TOTP_METHOD]
+
+
+async def user_allowed_enrolled_methods(user_id: str) -> list[str]:
+    """Intersection of allowed methods and the user's enrolled factors.
+
+    Order is ["webauthn", "totp"] when both are present.
+    """
+    allowed = await get_allowed_mfa_methods()
+    enrolled: list[str] = []
+    if WEBAUTHN_METHOD in allowed and await user_has_enabled_webauthn(user_id):
+        enrolled.append(WEBAUTHN_METHOD)
+    if TOTP_METHOD in allowed and await user_has_enabled_totp(user_id):
+        enrolled.append(TOTP_METHOD)
+    return enrolled
+
+
+async def resolve_preferred_mfa_method(
+    user,
+    enrolled_allowed: list[str],
+    *,
+    config=None,
+) -> str | None:
+    """Resolve the MFA method to present first in a challenge.
+
+    Priority: user preference -> provider default -> None.
+    Only returns a method that is both enrolled and currently allowed.
+    """
+    pref = str(getattr(user, "mfaPreferredMethod", None) or "").lower().strip()
+    if pref in enrolled_allowed:
+        return pref
+
+    if config is None:
+        db = await get_db()
+        config = await db.authproviderconfig.find_unique(where={"id": "default"})
+
+    default = str(getattr(config, "mfaDefaultMethod", getattr(config, "mfa_default_method", None)) or "").lower().strip()
+    if default in enrolled_allowed:
+        return default
+
+    return None
+
+
 async def mfa_needed_for_user(user: Any, *, config: Any | None = None) -> bool:
-    return await user_requires_totp(user, config=config) or await user_has_enabled_totp(user.id)
+    return await user_requires_totp(user, config=config) or await user_has_enabled_totp(user.id) or await user_has_enabled_webauthn(user.id)
 
 
-async def begin_totp_enrollment(user: Any) -> dict[str, str]:
+async def regenerate_recovery_codes(user_id: str) -> list[str]:
+    """Replace all of a user's recovery codes with a fresh set, returning the plaintext codes."""
+    db = await get_db()
+    recovery_codes = [generate_recovery_code() for _ in range(RECOVERY_CODE_COUNT)]
+    await db.usermfarecoverycode.delete_many(where={"userId": user_id})
+    for recovery_code in recovery_codes:
+        await db.usermfarecoverycode.create(
+            data={
+                "userId": user_id,
+                "codeHash": hash_recovery_code(recovery_code),
+            }
+        )
+    return recovery_codes
+
+
+async def begin_totp_enrollment(user: Any, *, allow_replace: bool = False) -> dict[str, str]:
     secret = generate_totp_secret()
     db = await get_db()
     existing = await db.usermfafactor.find_unique(where={"userId_factorType": {"userId": user.id, "factorType": "totp"}})
-    if existing and getattr(existing, "enabled", False):
+    if existing and getattr(existing, "enabled", False) and not allow_replace:
         raise ValueError("TOTP is already enabled. Ask an administrator to reset MFA before re-enrolling.")
     issuer = str(getattr(settings, "server_name", "") or "Ragtime").strip() or "Ragtime"
     return {
@@ -296,6 +369,7 @@ async def begin_totp_enrollment(user: Any) -> dict[str, str]:
             username=user.username,
             role=str(getattr(user, "role", "user") or "user"),
             secret=secret,
+            rotation=allow_replace,
         ),
     }
 
@@ -307,22 +381,17 @@ async def confirm_totp_enrollment(user: Any, code: str, enrollment_token: str) -
         return False, []
 
     factor = await db.usermfafactor.find_unique(where={"userId_factorType": {"userId": user.id, "factorType": "totp"}})
-    if factor and getattr(factor, "enabled", False):
+    if factor and getattr(factor, "enabled", False) and not claims.rotation:
         return False, []
 
     result = verify_totp_code(claims.secret, code, last_used_step=None)
     if not result.valid or result.time_step is None:
         return False, []
 
-    recovery_codes = [generate_recovery_code() for _ in range(RECOVERY_CODE_COUNT)]
-    await db.usermfarecoverycode.delete_many(where={"userId": user.id})
-    for recovery_code in recovery_codes:
-        await db.usermfarecoverycode.create(
-            data={
-                "userId": user.id,
-                "codeHash": hash_recovery_code(recovery_code),
-            }
-        )
+    is_first_factor = not await user_has_enabled_totp(user.id) and not await user_has_enabled_webauthn(user.id)
+    recovery_codes: list[str] = []
+    if is_first_factor:
+        recovery_codes = await regenerate_recovery_codes(user.id)
     await db.usermfafactor.upsert(
         where={"userId_factorType": {"userId": user.id, "factorType": "totp"}},
         data={
@@ -350,20 +419,23 @@ async def confirm_totp_enrollment(user: Any, code: str, enrollment_token: str) -
 
 async def verify_user_mfa_code(user: Any, code: str) -> tuple[bool, str | None]:
     db = await get_db()
-    factor = await get_enabled_totp_factor(user.id)
-    if factor and getattr(factor, "enabled", False) and getattr(factor, "secretEncrypted", None):
-        secret = decrypt_secret(factor.secretEncrypted)
-        result = verify_totp_code(
-            secret,
-            code,
-            last_used_step=getattr(factor, "lastUsedStep", None),
-        )
-        if result.valid and result.time_step is not None:
-            await db.usermfafactor.update(
-                where={"id": factor.id},
-                data={"lastUsedStep": result.time_step, "lastUsedAt": datetime.now(timezone.utc)},
+    allowed_methods = await get_allowed_mfa_methods()
+
+    if TOTP_METHOD in allowed_methods:
+        factor = await get_enabled_totp_factor(user.id)
+        if factor and getattr(factor, "enabled", False) and getattr(factor, "secretEncrypted", None):
+            secret = decrypt_secret(factor.secretEncrypted)
+            result = verify_totp_code(
+                secret,
+                code,
+                last_used_step=getattr(factor, "lastUsedStep", None),
             )
-            return True, "totp"
+            if result.valid and result.time_step is not None:
+                await db.usermfafactor.update(
+                    where={"id": factor.id},
+                    data={"lastUsedStep": result.time_step, "lastUsedAt": datetime.now(timezone.utc)},
+                )
+                return True, "totp"
 
     recovery_codes = await db.usermfarecoverycode.find_many(where={"userId": user.id, "usedAt": None})
     for recovery_code in recovery_codes:
@@ -424,3 +496,4 @@ async def reset_user_mfa(user_id: str) -> None:
     await db.usermfafactor.delete_many(where={"userId": user_id})
     await db.usermfarecoverycode.delete_many(where={"userId": user_id})
     await db.usermfatrusteddevice.delete_many(where={"userId": user_id})
+    await db.userwebauthncredential.delete_many(where={"userId": user_id})

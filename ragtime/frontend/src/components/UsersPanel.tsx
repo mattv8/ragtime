@@ -342,8 +342,11 @@ interface UserEditModalProps {
   onRoleChange: (userId: string, role: 'admin' | 'user') => Promise<void>;
   onResetRoleOverride: (userId: string) => Promise<void>;
   onLocalGroupsChange: (userId: string, groupIds: string[]) => Promise<void>;
+  onResetMfa: (userId: string) => Promise<void>;
   onClose: () => void;
 }
+
+type UserEditTab = 'overrides' | 'mfa';
 
 function UserEditModal({
   user,
@@ -352,8 +355,10 @@ function UserEditModal({
   onRoleChange,
   onResetRoleOverride,
   onLocalGroupsChange,
+  onResetMfa,
   onClose,
 }: UserEditModalProps) {
+  const [tab, setTab] = useState<UserEditTab>('overrides');
   const internalAuthGroups = authGroups.filter(isInternalAuthGroup);
   const manualGroupIds = getUserManualGroupIds(user);
   const ldapGroupIds = new Set(user.ldap_group_ids ?? []);
@@ -394,65 +399,134 @@ function UserEditModal({
       })),
   ];
 
+  const mfaEnabled = Boolean(user.mfa_enabled);
+  const mfaRequired = Boolean(user.mfa_required);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content modal-small" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>Override - {user.display_name || user.username}</h3>
+          <h3>{user.display_name || user.username}</h3>
           <button className="modal-close" onClick={onClose}>
             &times;
           </button>
         </div>
         <div className="modal-body">
-          <div className="form-group">
-            <label>Role</label>
-            <select
-              value={user.role}
-              disabled={actionLoading === user.id}
-              onChange={(e) => void onRoleChange(user.id, e.target.value as 'admin' | 'user')}
+          <div
+            className="wizard-tabs"
+            role="tablist"
+            aria-label="Edit user"
+            style={{ display: 'flex', marginBottom: 'var(--space-lg)' }}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'overrides'}
+              className={`wizard-tab ${tab === 'overrides' ? 'active' : ''}`}
+              style={{ flex: 1 }}
+              onClick={() => setTab('overrides')}
             >
-              <option value="user">user</option>
-              <option value="admin">admin</option>
-            </select>
-            {user.role_manually_set && (
-              <div className="users-role-override-row" style={{ marginTop: 6 }}>
-                <span className="users-role-override-badge">Role overridden.</span>
-                <button
-                  type="button"
-                  className="users-role-reset-btn"
-                  disabled={actionLoading === user.id}
-                  onClick={() => void onResetRoleOverride(user.id)}
-                >
-                  Reset to default
-                </button>
-              </div>
-            )}
+              Overrides
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'mfa'}
+              className={`wizard-tab ${tab === 'mfa' ? 'active' : ''}`}
+              style={{ flex: 1 }}
+              onClick={() => setTab('mfa')}
+            >
+              Two-factor
+            </button>
           </div>
-          {groupOptions.length > 0 ? (
-            <div className="form-group">
-              <label>Group Memberships</label>
-              <CheckboxDropdown
-                options={groupOptions}
-                selectedIds={manualGroupIds}
-                onChange={(ids) => void onLocalGroupsChange(user.id, ids)}
-                placeholder="No manual groups assigned"
-                searchPlaceholder="Search Group Memberships..."
-                disabled={actionLoading === user.id}
-              />
-              <p className="field-help">
-                Internal groups can be assigned manually. LDAP groups are read-only here and stay
-                controlled by directory sync.
-              </p>
-            </div>
-          ) : (
-            user.auth_provider === 'ldap' && (
+
+          {tab === 'overrides' ? (
+            <>
               <div className="form-group">
-                <label>Group Memberships</label>
-                <p className="field-help">
-                  No LDAP group memberships are currently cached for this user.
-                </p>
+                <label>Role</label>
+                <select
+                  value={user.role}
+                  disabled={actionLoading === user.id}
+                  onChange={(e) => void onRoleChange(user.id, e.target.value as 'admin' | 'user')}
+                >
+                  <option value="user">user</option>
+                  <option value="admin">admin</option>
+                </select>
+                {user.role_manually_set && (
+                  <div className="users-role-override-row" style={{ marginTop: 6 }}>
+                    <span className="users-role-override-badge">Role overridden.</span>
+                    <button
+                      type="button"
+                      className="users-role-reset-btn"
+                      disabled={actionLoading === user.id}
+                      onClick={() => void onResetRoleOverride(user.id)}
+                    >
+                      Reset to default
+                    </button>
+                  </div>
+                )}
               </div>
-            )
+              {groupOptions.length > 0 ? (
+                <div className="form-group">
+                  <label>Group Memberships</label>
+                  <CheckboxDropdown
+                    options={groupOptions}
+                    selectedIds={manualGroupIds}
+                    onChange={(ids) => void onLocalGroupsChange(user.id, ids)}
+                    placeholder="No manual groups assigned"
+                    searchPlaceholder="Search Group Memberships..."
+                    disabled={actionLoading === user.id}
+                  />
+                  <p className="field-help">
+                    Internal groups can be assigned manually. LDAP groups are read-only here and
+                    stay controlled by directory sync.
+                  </p>
+                </div>
+              ) : (
+                user.auth_provider === 'ldap' && (
+                  <div className="form-group">
+                    <label>Group Memberships</label>
+                    <p className="field-help">
+                      No LDAP group memberships are currently cached for this user.
+                    </p>
+                  </div>
+                )
+              )}
+            </>
+          ) : (
+            <div className="form-group">
+              <label>Two-factor authentication</label>
+              {mfaEnabled ? (
+                <>
+                  <p className="field-help" style={{ marginTop: 0 }}>
+                    Enabled · {user.recovery_codes_remaining ?? 0} recovery code
+                    {(user.recovery_codes_remaining ?? 0) === 1 ? '' : 's'} remaining.
+                    {mfaRequired ? ' Required by policy.' : ''}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger"
+                    disabled={actionLoading === user.id}
+                    onClick={() => void onResetMfa(user.id)}
+                  >
+                    {actionLoading === user.id ? 'Resetting...' : 'Reset MFA'}
+                  </button>
+                  <p className="field-help">
+                    Resetting removes this user's authenticator apps, passkeys, and recovery codes.
+                    They must enroll again{mfaRequired ? ' on next login' : ''}.
+                  </p>
+                </>
+              ) : mfaRequired ? (
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Not enrolled. Two-factor is required by policy, so this user must enroll on next
+                  login.
+                </p>
+              ) : (
+                <p className="field-help" style={{ marginTop: 0 }}>
+                  Two-factor authentication is not enabled for this user.
+                </p>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -3127,6 +3201,7 @@ export function UsersPanel({ currentUser, onOpenWorkspace, onOpenChat }: UsersPa
               onRoleChange={handleRoleChange}
               onResetRoleOverride={handleResetRoleOverride}
               onLocalGroupsChange={handleLocalGroupsChange}
+              onResetMfa={handleResetMfa}
               onClose={() => setEditingUserId(null)}
             />
           );

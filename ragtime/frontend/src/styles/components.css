@@ -6081,6 +6081,61 @@ textarea {
   max-width: 900px;
 }
 
+/* Manage 2FA modal — compact status bar + tabbed layout */
+.mfa-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-md);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.mfa-status-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-md);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.mfa-status-facts strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.mfa-preferred-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.mfa-preferred-inline .form-input {
+  width: auto;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--text-sm);
+}
+
+/* Two-column layout for the authenticator replace flow (QR + verification) */
+.mfa-tab-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-lg);
+}
+
+.mfa-tab-grid > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
 /* Model Filter Styles */
 .model-filter-search {
   margin-bottom: var(--space-md);

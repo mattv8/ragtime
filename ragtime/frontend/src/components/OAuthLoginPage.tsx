@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { api } from '@/api';
+import type { MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
 import { AuthMfaPanel } from './AuthMfaPanel';
@@ -25,12 +26,10 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
   const [isLoading, setIsLoading] = useState(false);
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
   const [mfaMode, setMfaMode] = useState<'none' | 'verify' | 'enroll' | 'recovery'>('none');
+  const [mfaMethods, setMfaMethods] = useState<MfaMethod[]>(['totp']);
+  const [mfaPreferredMethod, setMfaPreferredMethod] = useState<MfaMethod | null>(null);
   const [mfaCode, setMfaCode] = useState('');
   const [rememberDevice, setRememberDevice] = useState(true);
-  const [totpSecret, setTotpSecret] = useState('');
-  const [otpauthUri, setOtpauthUri] = useState('');
-  const [totpEnrollmentToken, setTotpEnrollmentToken] = useState('');
-  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   // Extract display name from client_id (often contains URL info)
   const getClientDisplay = () => {
@@ -107,16 +106,16 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
       if (response.ok) {
         if (data && data.mfa_required && data.mfa_challenge_token) {
           setMfaChallengeToken(data.mfa_challenge_token);
+          setMfaMethods(data.mfa_methods ?? ['totp']);
+          setMfaPreferredMethod(data.mfa_preferred_method ?? null);
           setMfaMode('verify');
           setPassword('');
           return;
         }
         if (data && data.mfa_enrollment_required && data.mfa_challenge_token) {
-          const setup = await api.startMfaEnrollment(data.mfa_challenge_token);
           setMfaChallengeToken(data.mfa_challenge_token);
-          setTotpSecret(setup.secret);
-          setOtpauthUri(setup.otpauth_uri);
-          setTotpEnrollmentToken(setup.enrollment_token);
+          setMfaMethods(data.mfa_enroll_methods ?? ['totp']);
+          setMfaPreferredMethod(data.mfa_preferred_method ?? null);
           setMfaMode('enroll');
           setPassword('');
           return;
@@ -147,8 +146,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     }
   };
 
-  const handleMfaVerify = async (event: FormEvent) => {
-    event.preventDefault();
+  const handleMfaVerify = async () => {
     if (!mfaChallengeToken) return;
     setError(null);
     setIsLoading(true);
@@ -166,24 +164,14 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
     }
   };
 
-  const handleMfaEnrollComplete = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!mfaChallengeToken) return;
+  // Shared by passkey verification and MFA enrollment: the session cookie is
+  // already set, so we only need to complete the OAuth authorization.
+  const handleMfaSessionEstablished = async () => {
     setError(null);
-    setIsLoading(true);
     try {
-      const response = await api.completeMfaEnrollment({
-        mfa_challenge_token: mfaChallengeToken,
-        enrollment_token: totpEnrollmentToken,
-        code: mfaCode,
-        remember_device: rememberDevice,
-      });
-      setRecoveryCodes(response.recovery_codes);
-      setMfaMode('recovery');
+      await completeOAuthFromSession();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'MFA enrollment failed');
-    } finally {
-      setIsLoading(false);
+      setError(err instanceof Error ? err.message : 'OAuth authorization failed');
     }
   };
 
@@ -220,14 +208,17 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
             isLoading={isLoading}
             code={mfaCode}
             rememberDevice={rememberDevice}
-            totpSecret={totpSecret}
-            otpauthUri={otpauthUri}
-            recoveryCodes={recoveryCodes}
+            recoveryCodes={[]}
             recoveryContinueLabel="Continue authorization"
+            methods={mfaMethods}
+            preferredMethod={mfaPreferredMethod}
+            mfaChallengeToken={mfaChallengeToken ?? undefined}
+            serverName={serverName}
             onCodeChange={setMfaCode}
             onRememberDeviceChange={setRememberDevice}
             onVerify={handleMfaVerify}
-            onEnrollComplete={handleMfaEnrollComplete}
+            onVerified={handleMfaSessionEstablished}
+            onEnrollComplete={handleMfaSessionEstablished}
             onRecoveryContinue={() => void completeOAuthFromSession()}
           />
         )}

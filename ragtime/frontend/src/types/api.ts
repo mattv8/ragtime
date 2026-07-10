@@ -35,6 +35,33 @@ export interface User {
 
 export type TotpPolicy = 'optional' | 'required_all' | 'required_admins_groups';
 
+export type MfaMethod = 'totp' | 'webauthn';
+
+export interface WebauthnCredentialSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+  transports: string[];
+}
+
+export interface WebauthnRegisterStartResponse {
+  options: Record<string, unknown>;
+  registration_token: string;
+}
+
+export interface WebauthnRegisterCompleteResponse {
+  success: boolean;
+  credential_id: string;
+  name: string;
+  recovery_codes?: string[];
+}
+
+export interface WebauthnAuthenticateStartResponse {
+  options: Record<string, unknown>;
+  authentication_token: string;
+}
+
 /** Minimal user info available to all authenticated users for member-picker purposes. */
 export interface UserDirectoryEntry {
   id: string;
@@ -50,6 +77,8 @@ export interface AuthProviderConfig {
   totp_policy: TotpPolicy;
   totp_required_group_ids: string[];
   totp_remember_device_days: number;
+  mfa_allowed_methods: MfaMethod[];
+  mfa_default_method?: MfaMethod | null;
 }
 
 export interface UpdateAuthProviderConfigRequest {
@@ -60,6 +89,8 @@ export interface UpdateAuthProviderConfigRequest {
   totp_policy?: TotpPolicy;
   totp_required_group_ids?: string[];
   totp_remember_device_days?: number;
+  mfa_allowed_methods?: MfaMethod[];
+  mfa_default_method?: MfaMethod | null;
 }
 
 export interface LocalUserCreateRequest {
@@ -159,6 +190,9 @@ export interface LoginResponse {
   mfa_required?: boolean;
   mfa_enrollment_required?: boolean;
   mfa_challenge_token?: string | null;
+  mfa_methods?: MfaMethod[];
+  mfa_enroll_methods?: MfaMethod[];
+  mfa_preferred_method?: MfaMethod | null;
 }
 
 export interface MfaEnrollStartResponse {
@@ -173,10 +207,19 @@ export interface MfaEnrollCompleteResponse {
   user?: User | null;
 }
 
+export interface RecoveryCodesResponse {
+  recovery_codes: string[];
+}
+
 export interface MfaStatusResponse {
   enabled: boolean;
   required: boolean;
   recovery_codes_remaining: number;
+  methods_enrolled?: MfaMethod[];
+  allowed_methods?: MfaMethod[];
+  webauthn_credential_count?: number;
+  preferred_method?: MfaMethod | null;
+  default_method?: MfaMethod | null;
 }
 
 export type AuthMethodAvailability = 'available' | 'unavailable' | 'not_configured';
@@ -197,6 +240,7 @@ export interface AuthStatus {
   debug_mode: boolean;
   debug_username?: string;
   debug_password?: string;
+  debug_totp_code?: string | null;
   cookie_warning?: string;
   // Security status for UI banner
   api_key_configured: boolean;

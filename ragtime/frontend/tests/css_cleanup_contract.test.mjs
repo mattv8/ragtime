@@ -1,7 +1,6 @@
-import assert from 'node:assert/strict';
+import { expect, test } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import test from 'node:test';
 
 const stylesDir = path.resolve(import.meta.dirname, '../src/styles');
 
@@ -30,11 +29,7 @@ test('live attachment and modal selectors remain defined', () => {
   ];
 
   for (const selector of requiredSelectors) {
-    assert.match(
-      attachmentsCss,
-      new RegExp(`${selector.replace('.', '\\.')}(?=[\\s:{.[#,>+~])`),
-      `${selector} should stay defined in attachments.css`,
-    );
+    expect(attachmentsCss).toMatch(new RegExp(`${selector.replace('.', '\\.')}(?=[\\s:{.[,#>+~])`));
   }
 });
 
@@ -49,30 +44,18 @@ test('unused legacy attachment selectors are removed', () => {
   ];
 
   for (const pattern of retiredPatterns) {
-    assert.doesNotMatch(
-      attachmentsCss,
-      pattern,
-      `${pattern} should be removed from attachments.css`,
-    );
+    expect(attachmentsCss).not.toMatch(pattern);
   }
 });
 
 test('fullscreen chrome is consolidated without changing surface-specific backgrounds', () => {
-  assert.match(
-    componentsCss,
+  expect(componentsCss).toMatch(
     /\.chat-panel-fullscreen,\s*\.userspace-layout\.userspace-fullscreen\s*\{/s,
-    'fullscreen shell chrome should be defined once in components.css',
   );
 
-  assert.match(
-    chatCss,
-    /\.chat-panel-fullscreen\s*\{[^}]*background: var\(--color-surface\);/s,
-    'chat fullscreen background should stay on the chat surface token',
-  );
+  expect(chatCss).toMatch(/\.chat-panel-fullscreen\s*\{[^}]*background: var\(--color-surface\);/s);
 
-  assert.match(
-    componentsCss,
+  expect(componentsCss).toMatch(
     /\.userspace-layout\.userspace-fullscreen\s*\{[^}]*background: var\(--color-bg-primary\);/s,
-    'userspace fullscreen background should stay on the userspace background token',
   );
 });

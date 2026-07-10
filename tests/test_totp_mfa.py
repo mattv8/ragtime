@@ -3,6 +3,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from starlette.requests import Request
+
+import ragtime.api.auth
+from ragtime.api.auth import get_auth_status
 from ragtime.core import mfa
 
 
@@ -162,7 +166,11 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
         async def fake_get_db():
             return db
 
-        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+        with (
+            mock.patch("ragtime.core.mfa.get_db", new=fake_get_db),
+            mock.patch("ragtime.core.mfa.user_has_enabled_totp", return_value=False),
+            mock.patch("ragtime.core.mfa.user_has_enabled_webauthn", return_value=False),
+        ):
             success, recovery_codes = await mfa.confirm_totp_enrollment(
                 user,
                 code,
@@ -259,6 +267,327 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(success)
         self.assertEqual(recovery_codes, [])
+
+
+class TotpRotationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_enrollment_token_carries_rotation_claim(self) -> None:
+        secret = mfa.generate_totp_secret()
+
+        rotating = mfa.create_totp_enrollment_token(user_id="user-1", username="alice", role="user", secret=secret, rotation=True)
+        normal = mfa.create_totp_enrollment_token(user_id="user-1", username="alice", role="user", secret=secret)
+
+        rotating_claims = mfa.decode_totp_enrollment_token(rotating)
+        normal_claims = mfa.decode_totp_enrollment_token(normal)
+        assert rotating_claims is not None and normal_claims is not None
+        self.assertTrue(rotating_claims.rotation)
+        self.assertFalse(normal_claims.rotation)
+
+    async def test_begin_enrollment_allow_replace_permits_enabled_factor(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(id="factor-1", enabled=True, secretEncrypted="enc::secret")
+
+            async def upsert(self, where, data):
+                raise AssertionError("begin must not persist a factor")
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            setup = await mfa.begin_totp_enrollment(SimpleNamespace(id="user-1", username="alice"), allow_replace=True)
+
+        claims = mfa.decode_totp_enrollment_token(setup["enrollment_token"])
+        assert claims is not None
+        self.assertTrue(claims.rotation)
+
+    async def test_rotation_replaces_secret_without_regenerating_recovery_codes(self) -> None:
+        updated_secret_holder: dict = {}
+
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(id="factor-1", enabled=True, secretEncrypted="enc::old")
+
+            async def upsert(self, where, data):
+                updated_secret_holder["update"] = data["update"]
+                return SimpleNamespace(id="factor-1")
+
+        class RecoveryCodeDelegate:
+            async def delete_many(self, where):
+                raise AssertionError("recovery codes must not be regenerated during rotation")
+
+            async def create(self, data):
+                raise AssertionError("recovery codes must not be regenerated during rotation")
+
+        db = SimpleNamespace(
+            usermfafactor=FactorDelegate(),
+            usermfarecoverycode=RecoveryCodeDelegate(),
+        )
+        user = SimpleNamespace(id="user-1", username="alice", role="user")
+        new_secret = mfa.generate_totp_secret()
+        rotation_token = mfa.create_totp_enrollment_token(user_id=user.id, username=user.username, role=user.role, secret=new_secret, rotation=True)
+        code = mfa.generate_totp_code(new_secret)
+
+        async def fake_get_db():
+            return db
+
+        with (
+            mock.patch("ragtime.core.mfa.get_db", new=fake_get_db),
+            mock.patch("ragtime.core.mfa.user_has_enabled_totp", return_value=True),
+            mock.patch("ragtime.core.mfa.user_has_enabled_webauthn", return_value=False),
+        ):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(user, code, rotation_token)
+
+        self.assertTrue(success)
+        self.assertEqual(recovery_codes, [])
+        self.assertTrue(updated_secret_holder["update"]["enabled"])
+
+    async def test_non_rotation_token_still_blocked_on_enabled_factor(self) -> None:
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(id="factor-1", enabled=True, secretEncrypted="enc::secret")
+
+            async def upsert(self, where, data):
+                raise AssertionError("enabled factor must not be overwritten without rotation claim")
+
+        db = SimpleNamespace(usermfafactor=FactorDelegate())
+        user = SimpleNamespace(id="user-1", username="alice", role="user")
+        secret = mfa.generate_totp_secret()
+        normal_token = mfa.create_totp_enrollment_token(user_id=user.id, username=user.username, role=user.role, secret=secret)
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            success, recovery_codes = await mfa.confirm_totp_enrollment(user, mfa.generate_totp_code(secret), normal_token)
+
+        self.assertFalse(success)
+        self.assertEqual(recovery_codes, [])
+
+    async def test_regenerate_recovery_codes_replaces_all_codes(self) -> None:
+        created: list[dict] = []
+        deleted: list[dict] = []
+
+        class RecoveryCodeDelegate:
+            async def delete_many(self, where):
+                deleted.append(where)
+
+            async def create(self, data):
+                created.append(data)
+                return SimpleNamespace(id=f"recovery-{len(created)}")
+
+        db = SimpleNamespace(usermfarecoverycode=RecoveryCodeDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            codes = await mfa.regenerate_recovery_codes("user-1")
+
+        self.assertEqual(len(codes), mfa.RECOVERY_CODE_COUNT)
+        self.assertEqual(len(created), mfa.RECOVERY_CODE_COUNT)
+        self.assertEqual(deleted, [{"userId": "user-1"}])
+        for entry in created:
+            self.assertEqual(entry["userId"], "user-1")
+            self.assertNotIn(entry["codeHash"], codes)  # stored hashed, not plaintext
+
+
+class ResolvePreferredMfaMethodTests(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_user_preference_when_enrolled(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod="totp")
+
+        result = await mfa.resolve_preferred_mfa_method(user, ["webauthn", "totp"])
+
+        self.assertEqual(result, "totp")
+
+    async def test_user_preference_is_case_normalized(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod="WEBAUTHN")
+
+        result = await mfa.resolve_preferred_mfa_method(user, ["webauthn", "totp"])
+
+        self.assertEqual(result, "webauthn")
+
+    async def test_ignores_user_preference_that_is_not_enrolled(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod="webauthn")
+
+        class ConfigDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(mfaDefaultMethod=None)
+
+        db = SimpleNamespace(authproviderconfig=ConfigDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            result = await mfa.resolve_preferred_mfa_method(user, ["totp"])
+
+        self.assertIsNone(result)
+
+    async def test_falls_back_to_config_default(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod=None)
+        config = SimpleNamespace(mfaDefaultMethod="totp")
+
+        result = await mfa.resolve_preferred_mfa_method(user, ["totp"], config=config)
+
+        self.assertEqual(result, "totp")
+
+    async def test_config_default_is_case_normalized(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod=None)
+        config = SimpleNamespace(mfaDefaultMethod="WEBAUTHN")
+
+        result = await mfa.resolve_preferred_mfa_method(user, ["webauthn", "totp"], config=config)
+
+        self.assertEqual(result, "webauthn")
+
+    async def test_user_preference_wins_over_config_default(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod="webauthn")
+        config = SimpleNamespace(mfaDefaultMethod="totp")
+
+        result = await mfa.resolve_preferred_mfa_method(user, ["webauthn", "totp"], config=config)
+
+        self.assertEqual(result, "webauthn")
+
+    async def test_ignores_config_default_that_is_not_enrolled(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod=None)
+        config = SimpleNamespace(mfaDefaultMethod="webauthn")
+
+        result = await mfa.resolve_preferred_mfa_method(user, ["totp"], config=config)
+
+        self.assertIsNone(result)
+
+    async def test_loads_config_when_not_provided(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod=None)
+
+        class ConfigDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(mfaDefaultMethod="totp")
+
+        db = SimpleNamespace(authproviderconfig=ConfigDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            result = await mfa.resolve_preferred_mfa_method(user, ["totp"])
+
+        self.assertEqual(result, "totp")
+
+    async def test_returns_none_when_no_preference_or_default(self) -> None:
+        user = SimpleNamespace(id="user-1", mfaPreferredMethod=None)
+
+        class ConfigDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(mfaDefaultMethod=None)
+
+        db = SimpleNamespace(authproviderconfig=ConfigDelegate())
+
+        async def fake_get_db():
+            return db
+
+        with mock.patch("ragtime.core.mfa.get_db", new=fake_get_db):
+            result = await mfa.resolve_preferred_mfa_method(user, ["totp"])
+
+        self.assertIsNone(result)
+
+
+class DebugTotpPrefillTests(unittest.IsolatedAsyncioTestCase):
+    async def test_debug_mode_exposes_local_admin_totp_code(self) -> None:
+        secret = mfa.generate_totp_secret()
+        expected_code = mfa.generate_totp_code(secret)
+
+        admin_user = SimpleNamespace(id="local-admin-user-id")
+
+        class UserDelegate:
+            async def find_unique(self, where):
+                if where.get("username") == "local:debugadmin":
+                    return admin_user
+                return None
+
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(
+                    id="factor-1",
+                    enabled=True,
+                    secretEncrypted=secret,
+                )
+
+        db = SimpleNamespace(
+            user=UserDelegate(),
+            usermfafactor=FactorDelegate(),
+        )
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/auth/status",
+                "headers": [(b"host", b"ragtime.dev")],
+                "scheme": "https",
+            }
+        )
+
+        with (
+            mock.patch("ragtime.api.auth.get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch("ragtime.core.mfa.get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch("ragtime.api.auth.build_auth_method_statuses", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ragtime.api.auth.get_app_settings", new=mock.AsyncMock(return_value={})),
+            mock.patch.object(ragtime.api.auth.settings, "debug_mode", True),
+            mock.patch.object(ragtime.api.auth.settings, "local_admin_user", "debugadmin"),
+            mock.patch.object(ragtime.api.auth.settings, "local_admin_password", "debugpassword"),
+        ):
+            status = await get_auth_status(request, None)
+
+        self.assertEqual(status.debug_totp_code, expected_code)
+        self.assertRegex(status.debug_totp_code or "", r"^\d{6}$")
+
+    async def test_non_debug_mode_hides_totp_code(self) -> None:
+        secret = mfa.generate_totp_secret()
+
+        admin_user = SimpleNamespace(id="local-admin-user-id")
+
+        class UserDelegate:
+            async def find_unique(self, where):
+                if where.get("username") == "local:debugadmin":
+                    return admin_user
+                return None
+
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return SimpleNamespace(
+                    id="factor-1",
+                    enabled=True,
+                    secretEncrypted=secret,
+                )
+
+        db = SimpleNamespace(
+            user=UserDelegate(),
+            usermfafactor=FactorDelegate(),
+        )
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/auth/status",
+                "headers": [(b"host", b"ragtime.dev")],
+                "scheme": "https",
+            }
+        )
+
+        with (
+            mock.patch("ragtime.api.auth.get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch("ragtime.core.mfa.get_db", new=mock.AsyncMock(return_value=db)),
+            mock.patch("ragtime.api.auth.build_auth_method_statuses", new=mock.AsyncMock(return_value=[])),
+            mock.patch("ragtime.api.auth.get_app_settings", new=mock.AsyncMock(return_value={})),
+            mock.patch.object(ragtime.api.auth.settings, "debug_mode", False),
+            mock.patch.object(ragtime.api.auth.settings, "local_admin_user", "debugadmin"),
+            mock.patch.object(ragtime.api.auth.settings, "local_admin_password", "debugpassword"),
+        ):
+            status = await get_auth_status(request, None)
+
+        self.assertIsNone(status.debug_totp_code)
 
 
 if __name__ == "__main__":

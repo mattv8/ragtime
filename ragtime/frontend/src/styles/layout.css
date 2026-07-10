@@ -1789,6 +1789,11 @@ legend {
   border-top: 1px solid var(--color-border);
 }
 
+.wizard-actions-borderless {
+  padding-top: 0;
+  border-top: none;
+}
+
 .recommended-badge {
   font-size: 0.65rem;
   padding: 2px 6px;
@@ -1879,6 +1884,24 @@ legend {
   min-width: 0;
   font-size: 0.78rem;
   word-break: break-all;
+}
+
+.recovery-codes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.recovery-codes-list {
+  width: 100%;
+  text-align: center;
+}
+
+.recovery-codes-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
 }
 
 .cloud-oauth-callback-copy {
@@ -2315,39 +2338,13 @@ legend {
 }
 
 .login-info {
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-size: var(--text-md);
   text-align: center;
 }
 
 .mfa-challenge-form {
   gap: var(--space-md);
-}
-
-.mfa-challenge-intro {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--space-md);
-  align-items: center;
-  padding: var(--space-md);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-}
-
-.mfa-challenge-mark {
-  width: 48px;
-  height: 48px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-full);
-  background: var(--color-primary-soft);
-  border: 1px solid var(--color-primary-border);
-  color: var(--color-primary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xl);
-  font-weight: 700;
-  box-shadow: var(--shadow-sm);
 }
 
 .mfa-challenge-title {
@@ -2356,11 +2353,8 @@ legend {
   color: var(--color-text-primary);
 }
 
-.mfa-challenge-help {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  line-height: var(--leading-relaxed);
+.mfa-challenge-title-borderless {
+  text-align: center;
 }
 
 .mfa-code-group {
@@ -2378,7 +2372,6 @@ legend {
 .mfa-remember-device {
   justify-content: center;
   padding: var(--space-sm) var(--space-md);
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
 }
 
@@ -2388,11 +2381,20 @@ legend {
   gap: var(--space-sm);
 }
 
+.webauthn-enrollment-form > .form-group,
+.webauthn-enrollment-form > .checkbox-label,
+.webauthn-enrollment-form > .login-submit {
+  width: 100%;
+  max-width: 340px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .totp-enrollment-form {
   display: grid;
-  grid-template-columns: minmax(0, auto) minmax(220px, 1fr);
+  grid-template-columns: minmax(0, 260px) minmax(200px, 1fr);
   gap: var(--space-md) var(--space-lg);
-  align-items: start;
+  align-items: stretch;
 }
 
 .totp-enrollment-form > .login-info,
@@ -2401,30 +2403,29 @@ legend {
 }
 
 .totp-enrollment-form > .totp-qr {
-  grid-row: span 3;
   grid-column: 1;
-  justify-self: center;
-  align-self: center;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
 }
 
-.totp-enrollment-form > .totp-enrollment-copy,
-.totp-enrollment-form > .totp-manual-setup {
-  grid-column: 1 / -1;
-}
-
-.totp-enrollment-form > .totp-enrollment-copy {
-  max-width: none;
-}
-
-.totp-enrollment-form > .totp-manual-setup {
-  margin-top: var(--space-xs);
-}
-
-.totp-enrollment-form > .form-group,
-.totp-enrollment-form > .checkbox-label,
-.totp-enrollment-form > .login-submit {
+.totp-enrollment-form > .totp-enrollment-fields {
   grid-column: 2;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.totp-enrollment-fields > .login-submit {
+  margin-top: 0;
+}
+
+.totp-enrollment-form > .totp-manual-setup {
+  grid-column: 1 / -1;
+  margin-top: var(--space-xs);
 }
 
 .totp-enrollment-card {
@@ -2466,14 +2467,14 @@ legend {
 .totp-enrollment-title {
   margin: 0;
   font-size: var(--text-base);
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
 }
 
 .totp-enrollment-title-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-xs);
-  margin-bottom: var(--space-xs);
 }
 
 .totp-help-wrap {
@@ -2517,13 +2518,6 @@ legend {
 .totp-help-popover ol {
   margin: 0;
   padding-left: var(--space-lg);
-}
-
-.totp-enrollment-help {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-  line-height: var(--leading-relaxed);
 }
 
 .totp-code-row {
@@ -2591,10 +2585,13 @@ legend {
 
 .totp-manual-setup .form-group {
   padding: 0;
+  min-width: 0;
 }
 
-.totp-manual-setup .form-group + .form-group {
-  margin-top: var(--space-md);
+.totp-manual-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
 }
 
 @media (max-width: 640px) {
@@ -2604,16 +2601,8 @@ legend {
     gap: var(--space-md);
   }
 
-  .totp-enrollment-form > .totp-qr,
-  .totp-enrollment-form > .form-group,
-  .totp-enrollment-form > .checkbox-label,
-  .totp-enrollment-form > .login-submit {
-    grid-column: auto;
-    grid-row: auto;
-  }
-
   .totp-enrollment-form > .totp-qr {
-    justify-self: center;
+    align-items: center;
   }
 
   .totp-enrollment-copy {
@@ -3200,6 +3189,46 @@ legend {
 .users-btn-inline {
   padding-left: 8px;
   padding-right: 8px;
+}
+
+.passkey-name-edit-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.passkey-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.passkey-name-edit-icon {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.passkey-name-edit-trigger:hover .passkey-name-edit-icon,
+.passkey-name-edit-trigger:focus-visible .passkey-name-edit-icon {
+  opacity: 1;
+}
+
+.passkey-name-edit-trigger:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
 }
 
 .users-confirm-group .btn {
