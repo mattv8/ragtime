@@ -2084,6 +2084,7 @@ async def delete_webauthn_credential_route(
     deleted = await delete_webauthn_credential(user.id, credential_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
+    await invalidate_all_sessions(user.id)
     return {"success": True}
 
 
@@ -2482,6 +2483,8 @@ async def update_local_user(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if body.password is not None:
+        await invalidate_all_sessions(user_id)
     return await _user_response(user)
 
 

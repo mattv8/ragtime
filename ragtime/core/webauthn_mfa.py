@@ -33,6 +33,11 @@ from ragtime.config.settings import settings
 from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
+try:
+    from prisma.errors import UniqueViolationError
+except ImportError:  # pragma: no cover - defensive fallback for older Prisma client stubs
+    UniqueViolationError = None  # type: ignore[assignment]
+
 logger = get_logger(__name__)
 
 WEBAUTHN_REGISTER_PURPOSE = "webauthn_register"
@@ -64,7 +69,28 @@ def _prune_consumed_jtis(now: float | None = None) -> None:
         _consumed_jtis.pop(jti, None)
 
 
-def _consume_jti(jti: str, exp: float) -> None:
+async def _consume_jti(jti: str, exp: float) -> None:
+    db = await get_db()
+    challenge_table = getattr(db, "userwebauthnchallenge", None)
+    if challenge_table is not None:
+        now = datetime.now(timezone.utc)
+        await challenge_table.delete_many(where={"expiresAt": {"lte": now}})
+        try:
+            await challenge_table.create(
+                data={
+                    "id": str(uuid4()),
+                    "jti": jti,
+                    "expiresAt": datetime.fromtimestamp(exp, tz=timezone.utc),
+                }
+            )
+        except Exception as exc:
+            if UniqueViolationError is not None and isinstance(exc, UniqueViolationError):
+                raise WebauthnError("This WebAuthn challenge has already been used.") from exc
+            if "duplicate jti" in str(exc).casefold():
+                raise WebauthnError("This WebAuthn challenge has already been used.") from exc
+            raise
+        return
+
     _prune_consumed_jtis()
     if jti in _consumed_jtis:
         raise WebauthnError("This WebAuthn challenge has already been used.")
@@ -243,7 +269,7 @@ async def complete_webauthn_registration(
     if not claims or claims.user_id != user.id:
         raise WebauthnError("Invalid or expired WebAuthn registration token.")
 
-    _consume_jti(claims.jti, claims.exp.timestamp())
+    await _consume_jti(claims.jti, claims.exp.timestamp())
 
     rp_id, expected_origins = resolve_rp(request)
     try:
@@ -326,7 +352,7 @@ async def complete_webauthn_authentication(
     if not claims or claims.user_id != user.id:
         raise WebauthnError("Invalid or expired WebAuthn authentication token.")
 
-    _consume_jti(claims.jti, claims.exp.timestamp())
+    await _consume_jti(claims.jti, claims.exp.timestamp())
 
     credential_id_b64 = credential.get("id") if isinstance(credential, dict) else None
     if not credential_id_b64:

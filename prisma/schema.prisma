@@ -1009,6 +1009,16 @@ model UserWebauthnCredential {
   @@map("user_webauthn_credentials")
 }
 
+/// Consumed WebAuthn challenge JTIs for replay protection across process restarts.
+model UserWebauthnChallenge {
+  id        String   @id @default(uuid())
+  jti       String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("user_webauthn_challenges")
+}
+
 /// Provider-neutral auth group. Local groups can contain internal and LDAP-synced users.
 model AuthGroup {
   id           String       @id @default(uuid())

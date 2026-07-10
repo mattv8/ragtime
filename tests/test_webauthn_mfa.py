@@ -126,6 +126,25 @@ class WebauthnTestCase(unittest.IsolatedAsyncioTestCase):
 
         return WebauthnCredentialDelegate(rows or [])
 
+    def _challenge_delegate(self):
+        class WebauthnChallengeDelegate:
+            def __init__(self):
+                self._jtis: set[str] = set()
+                self.deleted_where: list[dict] = []
+
+            async def delete_many(self, where: dict) -> SimpleNamespace:
+                self.deleted_where.append(where)
+                return SimpleNamespace(count=0)
+
+            async def create(self, data: dict) -> SimpleNamespace:
+                jti = str(data.get("jti", ""))
+                if jti in self._jtis:
+                    raise Exception("duplicate jti")
+                self._jtis.add(jti)
+                return SimpleNamespace(**data)
+
+        return WebauthnChallengeDelegate()
+
     def _factor_delegate(self, factor: SimpleNamespace | None):
         class MfaFactorDelegate:
             async def find_unique(self, where: dict) -> SimpleNamespace | None:
@@ -267,9 +286,11 @@ class ChallengeTokenTests(WebauthnTestCase):
                 )
 
     async def test_registration_token_jti_replay_is_rejected(self) -> None:
+        challenge_delegate = self._challenge_delegate()
         db = SimpleNamespace(
             authproviderconfig=self._config_delegate(methods=["webauthn"]),
             userwebauthncredential=self._credential_delegate([]),
+            userwebauthnchallenge=challenge_delegate,
         )
         token = webauthn_mfa._create_challenge_token(
             user_id="user-1",
@@ -310,6 +331,75 @@ class ChallengeTokenTests(WebauthnTestCase):
                     "My Passkey",
                 )
             self.assertIn("already been used", str(ctx.exception))
+
+    async def test_registration_token_jti_replay_is_rejected_after_memory_reset(self) -> None:
+        challenge_delegate = self._challenge_delegate()
+        db = SimpleNamespace(
+            authproviderconfig=self._config_delegate(methods=["webauthn"]),
+            userwebauthncredential=self._credential_delegate([]),
+            userwebauthnchallenge=challenge_delegate,
+        )
+        token = webauthn_mfa._create_challenge_token(
+            user_id="user-1",
+            purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE,
+            challenge=b"challenge-bytes",
+        )
+        verification = SimpleNamespace(
+            credential_id=b"cred-id",
+            credential_public_key=b"pub-key",
+            sign_count=0,
+            aaguid=None,
+        )
+        with (
+            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
+            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
+            mock.patch(
+                "ragtime.core.webauthn_mfa.verify_registration_response",
+                return_value=verification,
+            ),
+        ):
+            user = SimpleNamespace(id="user-1", username="alice")
+            credential = {"response": {"transports": ["internal"]}}
+            await webauthn_mfa.complete_webauthn_registration(
+                user,
+                self._request(origin="https://ragtime.dev"),
+                token,
+                credential,
+                "My Passkey",
+            )
+
+            webauthn_mfa._consumed_jtis.clear()
+
+            with self.assertRaises(webauthn_mfa.WebauthnError) as ctx:
+                await webauthn_mfa.complete_webauthn_registration(
+                    user,
+                    self._request(origin="https://ragtime.dev"),
+                    token,
+                    credential,
+                    "My Passkey",
+                )
+            self.assertIn("already been used", str(ctx.exception))
+
+    async def test_consume_jti_translates_prisma_unique_violation(self) -> None:
+        class DuplicateJtiError(Exception):
+            pass
+
+        class ChallengeDelegate:
+            async def delete_many(self, where: dict) -> SimpleNamespace:
+                return SimpleNamespace(count=0)
+
+            async def create(self, data: dict) -> SimpleNamespace:
+                raise DuplicateJtiError("unique constraint failed")
+
+        db = SimpleNamespace(userwebauthnchallenge=ChallengeDelegate())
+        with (
+            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
+            mock.patch.object(webauthn_mfa, "UniqueViolationError", DuplicateJtiError),
+        ):
+            with self.assertRaises(webauthn_mfa.WebauthnError) as ctx:
+                await webauthn_mfa._consume_jti("jti-1", (datetime.now(timezone.utc) + timedelta(minutes=1)).timestamp())
+
+        self.assertIn("already been used", str(ctx.exception))
 
 
 class AllowedMethodsTests(WebauthnTestCase):
