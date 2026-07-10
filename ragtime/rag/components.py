@@ -6146,7 +6146,8 @@ class RAGComponents:
                             indent=2,
                         )
 
-            # Validate command for dangerous patterns
+            # Validate only the user/LLM-supplied command. The prefix is trusted
+            # admin configuration used for setup wrappers like cd/source/sudo.
             is_safe, validation_reason = validate_ssh_command(
                 command,
                 allow_write=allow_write,

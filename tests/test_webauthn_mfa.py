@@ -128,7 +128,7 @@ class WebauthnTestCase(unittest.IsolatedAsyncioTestCase):
 
     def _challenge_delegate(self):
         class WebauthnChallengeDelegate:
-            def __init__(self):
+            def __init__(self) -> None:
                 self._jtis: set[str] = set()
                 self.deleted_where: list[dict] = []
 

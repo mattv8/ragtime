@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import secrets
 import time
@@ -34,9 +35,9 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
 try:
-    from prisma.errors import UniqueViolationError
+    UniqueViolationError: Any = getattr(importlib.import_module("prisma.errors"), "UniqueViolationError")
 except ImportError:  # pragma: no cover - defensive fallback for older Prisma client stubs
-    UniqueViolationError = None  # type: ignore[assignment]
+    UniqueViolationError = None
 
 logger = get_logger(__name__)
 
@@ -84,7 +85,7 @@ async def _consume_jti(jti: str, exp: float) -> None:
                 }
             )
         except Exception as exc:
-            if UniqueViolationError is not None and isinstance(exc, UniqueViolationError):
+            if isinstance(UniqueViolationError, type) and isinstance(exc, UniqueViolationError):
                 raise WebauthnError("This WebAuthn challenge has already been used.") from exc
             if "duplicate jti" in str(exc).casefold():
                 raise WebauthnError("This WebAuthn challenge has already been used.") from exc

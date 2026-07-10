@@ -9,7 +9,7 @@ Tests for scoped auth hardening:
 import json
 import time
 import unittest
-from typing import Optional
+from typing import Optional, cast
 from unittest import mock
 
 from asgi_test_utils import basic_auth_header, capture_response, form_receive
@@ -126,6 +126,121 @@ class ModelsEndpointAuthTests(unittest.TestCase):
             mock_settings.api_key = ""
             # Should not raise even without an Authorization header
             asyncio.run(verify_api_key(authorization=None))
+
+
+class CredentialSessionInvalidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_password_update_invalidates_existing_sessions(self) -> None:
+        class UserDelegate:
+            async def find_unique(self, where: dict):
+                return type(
+                    "User",
+                    (),
+                    {
+                        "id": where["id"],
+                        "username": "local:alice",
+                        "authProvider": "local_managed",
+                        "displayName": "Alice",
+                        "email": "alice@example.com",
+                        "role": "user",
+                    },
+                )()
+
+        db = type("Db", (), {"user": UserDelegate()})()
+
+        async def fake_get_db():
+            return db
+
+        updated_user = type(
+            "User",
+            (),
+            {
+                "id": "user-1",
+                "username": "local:alice",
+                "authProvider": "local_managed",
+                "displayName": "Alice",
+                "email": "alice@example.com",
+                "role": "user",
+                "roleManuallySet": False,
+                "themePack": None,
+                "mfaPreferredMethod": None,
+                "lastLoginAt": None,
+            },
+        )()
+
+        with (
+            mock.patch.object(api_auth, "get_db", new=fake_get_db),
+            mock.patch.object(api_auth, "create_or_update_local_managed_user", new=mock.AsyncMock(return_value=updated_user)),
+            mock.patch.object(api_auth, "invalidate_all_sessions", new=mock.AsyncMock()) as invalidate,
+            mock.patch.object(api_auth, "_user_response", new=mock.AsyncMock(return_value=updated_user)),
+        ):
+            await api_auth.update_local_user(
+                "user-1",
+                api_auth.LocalUserUpdateRequest(password="new-password"),
+            )
+
+        invalidate.assert_awaited_once_with("user-1")
+
+    async def test_local_profile_update_does_not_invalidate_existing_sessions(self) -> None:
+        class UserDelegate:
+            async def find_unique(self, where: dict):
+                return type(
+                    "User",
+                    (),
+                    {
+                        "id": where["id"],
+                        "username": "local:alice",
+                        "authProvider": "local_managed",
+                        "displayName": "Alice",
+                        "email": "alice@example.com",
+                        "role": "user",
+                    },
+                )()
+
+        db = type("Db", (), {"user": UserDelegate()})()
+
+        async def fake_get_db():
+            return db
+
+        updated_user = type(
+            "User",
+            (),
+            {
+                "id": "user-1",
+                "username": "local:alice",
+                "authProvider": "local_managed",
+                "displayName": "Alice Renamed",
+                "email": "alice@example.com",
+                "role": "user",
+                "roleManuallySet": False,
+                "themePack": None,
+                "mfaPreferredMethod": None,
+                "lastLoginAt": None,
+            },
+        )()
+
+        with (
+            mock.patch.object(api_auth, "get_db", new=fake_get_db),
+            mock.patch.object(api_auth, "create_or_update_local_managed_user", new=mock.AsyncMock(return_value=updated_user)),
+            mock.patch.object(api_auth, "invalidate_all_sessions", new=mock.AsyncMock()) as invalidate,
+            mock.patch.object(api_auth, "_user_response", new=mock.AsyncMock(return_value=updated_user)),
+        ):
+            await api_auth.update_local_user(
+                "user-1",
+                api_auth.LocalUserUpdateRequest(display_name="Alice Renamed"),
+            )
+
+        invalidate.assert_not_awaited()
+
+    async def test_webauthn_credential_delete_invalidates_existing_sessions(self) -> None:
+        user = cast(api_auth.User, type("User", (), {"id": "user-1"})())
+        with (
+            mock.patch.object(api_auth, "delete_webauthn_credential", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(api_auth, "invalidate_all_sessions", new=mock.AsyncMock()) as invalidate,
+        ):
+            result = await api_auth.delete_webauthn_credential_route("cred-1", user=user)
+
+        self.assertEqual(result, {"success": True})
+        invalidate.assert_awaited_once_with("user-1")
 
 
 # ---------------------------------------------------------------------------

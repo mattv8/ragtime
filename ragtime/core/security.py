@@ -163,6 +163,7 @@ _DANGEROUS_SQL_PATTERN_STRINGS = [
     r"\bGRANT\s+.*\s+TO\b",
     r"\bREVOKE\s+.*\s+FROM\b",
     r";\s*--",  # Comment injection
+    r"\bSELECT\b[^;]*\bINTO\b[^;]*\bFROM\b",  # SELECT ... INTO ... FROM creates objects/schema
     r"INTO\s+OUTFILE",
     r"LOAD_FILE",
     r"pg_read_file",
@@ -295,6 +296,9 @@ _SSH_DANGEROUS_SHELL_PATTERN_STRINGS = [
     r"\brm\s+-[rf]*\s+\*",  # rm with wildcards
     r"\brmdir\b",
     r"\bmkdir\b",
+    r"\b(?:tar|gtar|bsdtar)\s+(?:[^\n]*\s)?-[A-Za-z]*(?-i:[xcru])[A-Za-z]*\b",  # tar write modes
+    r"\b(?:tar|gtar|bsdtar)\s+[A-Za-z]*(?-i:[xcru])[A-Za-z]*\b",  # traditional tar syntax: tar xf/cf/rf/uf
+    r"\b(?:tar|gtar|bsdtar)\s+[^\n]*--(?:extract|create|get|append|update|delete)\b",
     r"\bmv\s+",
     r"\bcp\s+",
     r"\bchmod\b",
@@ -323,8 +327,9 @@ _SSH_DANGEROUS_SHELL_PATTERN_STRINGS = [
     r"\bgroupadd\b",
     r"\bpasswd\b",
     # Dangerous redirections
-    r">\s*/(?!dev/null\b)",  # Redirect to absolute path (allow /dev/null)
-    r">>\s*/(?!dev/null\b)",  # Append to absolute path (allow /dev/null)
+    r"(?<!\d)>&\s*(?!\d\b|/dev/null\b)",  # Bash combined stdout/stderr redirect to file
+    r"(?<!>)>(?!>)\s*(?!\s*(?:&|/dev/null\b))",  # Redirect to any path except descriptor dupes and /dev/null
+    r">>\s*(?!\s*(?:&|/dev/null\b))",  # Append to any path except descriptor dupes and /dev/null
     r"\btee\s+/(?!dev/null\b)",  # tee to absolute path (allow /dev/null)
     # Dangerous system commands
     r"\bshutdown\b",
@@ -373,6 +378,9 @@ _SSH_DANGEROUS_SHELL_PATTERN_STRINGS = [
     # Database CLI write detection (psql, mysql, etc.)
     r"\bpsql\b.*-c\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
     r"\bmysql\b.*-e\s*['\"].*\b(UPDATE|INSERT|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b",
+    # Interpreter eval modes are too broad to treat as read-only shell commands.
+    r"\b(?:python(?:2|3(?:\.\d+)?)?|node|perl|ruby|php|bash|sh|zsh)\s+(?:-[^\s]*[ce]|--command)\b",
+    r"\bphp\s+-[^\s]*r\b",
 ]
 SSH_DANGEROUS_SHELL_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _SSH_DANGEROUS_SHELL_PATTERN_STRINGS]
 
@@ -500,6 +508,62 @@ _SQL_SYSTEM_PATTERNS = [
     re.compile(r"\b(DROP|TRUNCATE|ALTER|CREATE)\b", re.IGNORECASE),
     re.compile(r"\b(GRANT|REVOKE)\b", re.IGNORECASE),
 ]
+
+# Write-oriented Python methods that inside a ``python -c`` one-liner amount to
+# filesystem writes. Kept as a narrow secondary check if interpreter eval patterns
+# are ever relaxed for a specific deployment.
+_WRITE_PYTHON_METHODS = frozenset({"write_text", "write_bytes", "writelines", "write"})
+
+
+def _ssh_command_has_python_interpreter_write(command: str) -> bool:
+    """Detect ``python -c`` one-liners that perform filesystem writes."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+
+    binary_re = re.compile(r"python(?:3(?:\.\d+)?)?$")
+    for idx, token in enumerate(tokens):
+        binary = token.split("/")[-1].lower()
+        if not binary_re.fullmatch(binary):
+            continue
+
+        # Locate the -c argument, skipping benign interpreter flags
+        j = idx + 1
+        while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "-c":
+            j += 1
+
+        if j < len(tokens) and tokens[j] == "-c":
+            if j + 1 >= len(tokens):
+                return False
+
+            snippet = tokens[j + 1]
+            try:
+                tree = ast.parse(snippet, mode="exec")
+            except SyntaxError:
+                # Unparseable Python is not a write bypass by itself.
+                return False
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if isinstance(func, ast.Attribute) and func.attr in _WRITE_PYTHON_METHODS:
+                        return True
+                    if isinstance(func, ast.Name) and func.id == "open":
+                        mode_node: Optional[ast.AST] = None
+                        if len(node.args) > 1:
+                            mode_node = node.args[1]
+                        else:
+                            for keyword in node.keywords:
+                                if keyword.arg == "mode":
+                                    mode_node = keyword.value
+                                    break
+                        if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str) and any(ch in mode_node.value for ch in "wWx+a"):
+                            return True
+            # Only the first python invocation matters for our purposes
+            return False
+
+    return False
 
 
 def validate_sql_query(
@@ -785,14 +849,13 @@ def validate_ssh_command(
         logger.debug(f"SSH command allowed (write mode enabled): {command[:100]}...")
         return True, "Command allowed (write mode enabled)"
 
-    # Check for embedded SQL write operations (using precompiled patterns)
-    for pattern in DANGEROUS_SQL_PATTERNS:
-        if pattern.search(command):
-            logger.warning(f"SSH command blocked - SQL write pattern detected: {pattern.pattern}")
-            return (
-                False,
-                "Command contains SQL write operation. Enable 'Allow Write Operations' to permit this.",
-            )
+    # Interpreter-based writes can bypass shell-level pattern checks
+    if _ssh_command_has_python_interpreter_write(command):
+        logger.warning("SSH command blocked - Python interpreter write detected: %s", command)
+        return (
+            False,
+            "Command contains Python write operation. Enable 'Allow Write Operations' to permit this.",
+        )
 
     # Check for dangerous shell patterns (using precompiled patterns)
     for pattern in SSH_DANGEROUS_SHELL_PATTERNS:
@@ -979,6 +1042,19 @@ _CHAT_DIAG_DENY_PATTERN_STRINGS: list[str] = [
     r"\bcurl\b[^\n]*\s(?:-d|--data|--data-binary|--data-raw|-F|--form)\b",
     r"\bwget\b[^\n]*\s--method=(?:POST|PUT|PATCH|DELETE)\b",
     r"\bwget\b[^\n]*\s--post-(?:data|file)\b",
+    # File-output downloads / archive mutations in otherwise-read-only diagnostics
+    r"\bcurl\b[^\n]*\s-o\b",
+    r"\bcurl\b[^\n]*\s--output\b",
+    r"\bwget\b[^\n]*\s-O\b",
+    r"\bwget\b[^\n]*\s--output-document\b",
+    r"\bfind\b[^\n]*\s-(?-i:delete|exec|execdir)\b",
+    r"\btar\b[^\n]*\s-(?:[A-Za-z]*(?-i:[xc])[A-Za-z]*)\b",
+    r"\btar\b\s+[A-Za-z]*(?-i:[xc])[A-Za-z]*\b",
+    r"\btar\b[^\n]*\s--(?:extract|create)\b",
+    r"\bunzip\b(?![^\n|;&]*\s-[A-Za-z]*(?-i:l)[A-Za-z]*\b)",
+    # Network tools that spawn shells or run awk system()
+    r"\b(?:nc|ncat)\b[^\n]*\s-(?-i:[ec])\b",
+    r"\b[gm]?awk\b[^\n]*\bsystem\s*\(",
     # Process substitution / file redirection writes (allow only /dev/null)
     r">\s*(?!/dev/null\b)",
     r">>\s*(?!/dev/null\b)",
@@ -986,6 +1062,8 @@ _CHAT_DIAG_DENY_PATTERN_STRINGS: list[str] = [
     # Backtick / $() command substitution and eval -- we keep policy simple
     r"\beval\b",
     r"\bexec\b",
+    r"\$\(",
+    r"[`]",
     # Background jobs and nohup (encourage synchronous diagnostics only)
     r"&\s*$",
     r"\bnohup\b",

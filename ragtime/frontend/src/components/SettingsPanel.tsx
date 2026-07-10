@@ -9236,7 +9236,10 @@ export function SettingsPanel({
                       true
                     }
                     onChange={(e) =>
-                      setFormData({ ...formData, export_password_require_special: e.target.checked })
+                      setFormData({
+                        ...formData,
+                        export_password_require_special: e.target.checked,
+                      })
                     }
                     style={{ marginRight: '0.5rem' }}
                   />

@@ -570,9 +570,9 @@ class LocalUserCreateRequest(BaseModel):
 class LocalUserUpdateRequest(BaseModel):
     """Update an internal managed user."""
 
-    password: Optional[str] = Field(None, min_length=8, max_length=1024)
-    display_name: Optional[str] = Field(None, max_length=255)
-    email: Optional[str] = Field(None, max_length=255)
+    password: Optional[str] = Field(default=None, min_length=8, max_length=1024)
+    display_name: Optional[str] = Field(default=None, max_length=255)
+    email: Optional[str] = Field(default=None, max_length=255)
     role: Optional[Literal["user", "admin"]] = None
 
 
