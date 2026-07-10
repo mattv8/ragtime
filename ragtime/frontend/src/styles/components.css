@@ -1905,11 +1905,14 @@ textarea:focus {
    .description-wrapper geometry (same negative margins, padding, and
    transparent border) so switching to edit mode never shifts the text. It
    fills the same flex space and scrolls internally, so typing never changes
-   the card height either. */
+   the card height either. A min-height floor keeps the box comfortably
+   editable (roughly 4 lines) even when the static description was short
+   enough to leave little flex space in the card (e.g. a lone/short card in
+   its grid row). */
 .tools-panel .description-edit {
   display: flex;
   flex: 1;
-  min-height: 0;
+  min-height: 5.5rem;
   /* width:auto (not the inherited 100%) lets the negative margins widen the
      box so the textarea scrollbar reaches close to the card border. */
   width: auto;
