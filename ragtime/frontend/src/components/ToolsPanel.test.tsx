@@ -18,6 +18,7 @@ const apiMock = vi.hoisted(() => ({
   createToolConfig: vi.fn(),
   reorderTools: vi.fn(),
   clearToolUndecryptableCredentials: vi.fn(),
+  getPdmIndexStats: vi.fn(),
 }));
 
 const toastMock = {
@@ -144,6 +145,33 @@ const ungroupedTool: ToolConfig = {
   updated_at: '2026-01-01T00:00:00Z',
 };
 
+const pdmTool: ToolConfig = {
+  id: 'tool-pdm',
+  name: 'PDM Tool',
+  tool_type: 'solidworks_pdm',
+  enabled: true,
+  description: 'SolidWorks PDM database',
+  connection_config: {
+    host: '192.168.10.12',
+    port: 1433,
+    user: 'pdm-user',
+    password: 'secret',
+    database: 'PDM',
+  },
+  max_results: 10,
+  timeout_max_seconds: 30,
+  allow_write: false,
+  sort_order: 300,
+  group_id: null,
+  group_name: null,
+  undecryptable_fields: [],
+  last_test_at: null,
+  last_test_result: null,
+  last_test_error: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
 const toolGroup: ToolGroup = {
   id: 'group-1',
   name: 'Alpha Group',
@@ -183,6 +211,11 @@ describe('ToolsPanel', () => {
       sort_order: 300,
     });
     apiMock.reorderTools.mockResolvedValue(undefined);
+    apiMock.getPdmIndexStats.mockResolvedValue({
+      document_count: 0,
+      embedding_count: 0,
+      last_indexed_at: null,
+    });
   });
 
   afterEach(() => {
@@ -347,6 +380,23 @@ describe('ToolsPanel', () => {
 
     await screen.findByText('Write Tool');
     expect(screen.getByText('Write')).toBeTruthy();
+  });
+
+  it('shows PDM index document stats on SolidWorks PDM cards', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([pdmTool]);
+    apiMock.getPdmIndexStats.mockResolvedValue({
+      document_count: 1160,
+      embedding_count: 3480,
+      last_indexed_at: '2026-01-02T00:00:00Z',
+    });
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('PDM Tool');
+
+    expect(apiMock.getPdmIndexStats).toHaveBeenCalledWith('tool-pdm');
+    expect(await screen.findByText('PDM Index:')).toBeTruthy();
+    expect(screen.getByText('1160 documents')).toBeTruthy();
   });
 
   it('shows / in the working directory badge when unset', async () => {

@@ -35,7 +35,7 @@ from ragtime.core.database import get_db
 from ragtime.core.logging import get_logger
 
 try:
-    UniqueViolationError: Any = getattr(importlib.import_module("prisma.errors"), "UniqueViolationError")
+    UniqueViolationError: Any = getattr(importlib.import_module("prisma.errors"), "UniqueViolationError", None)
 except ImportError:  # pragma: no cover - defensive fallback for older Prisma client stubs
     UniqueViolationError = None
 

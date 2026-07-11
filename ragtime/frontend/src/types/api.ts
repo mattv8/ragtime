@@ -2158,7 +2158,7 @@ export interface PdmIndexStatusResponse {
 export interface PdmIndexStats {
   document_count: number;
   embedding_count: number;
-  last_indexed: string | null;
+  last_indexed_at: string | null;
 }
 
 // =============================================================================

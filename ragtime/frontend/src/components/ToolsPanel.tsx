@@ -6,6 +6,7 @@ import type {
   HeartbeatStatus,
   SchemaIndexStats,
   SchemaIndexJob,
+  PdmIndexStats,
   UserspaceMountSource,
   MountSourceAffectedWorkspacesResponse,
   UserCloudOAuthAccount,
@@ -221,6 +222,7 @@ interface ToolCardProps {
   testing: boolean;
   onPdmReindex?: (toolId: string, fullReindex: boolean) => void;
   pdmIndexing?: boolean;
+  pdmStats?: PdmIndexStats | null;
   onSchemaReindex?: (toolId: string, fullReindex: boolean) => void;
   schemaIndexing?: boolean;
   activeSchemaJob?: SchemaIndexJob | null;
@@ -241,6 +243,7 @@ function ToolCard({
   testing,
   onPdmReindex,
   pdmIndexing,
+  pdmStats,
   onSchemaReindex,
   schemaIndexing,
   activeSchemaJob,
@@ -559,6 +562,14 @@ function ToolCard({
         </div>
       )}
 
+      {/* PDM index stats */}
+      {tool.tool_type === 'solidworks_pdm' && pdmStats && pdmStats.document_count > 0 && (
+        <div className="tool-card-schema-stats">
+          <span className="schema-stats-label">PDM Index:</span>
+          <span className="schema-stats-value">{pdmStats.document_count} documents</span>
+        </div>
+      )}
+
       {showFooterActions && (
         <div className="tool-card-footer">
           <div className="tool-card-actions">
@@ -642,6 +653,7 @@ export function ToolsPanel({
   const [schemaIndexingToolId, setSchemaIndexingToolId] = useState<string | null>(null);
   const [heartbeats, setHeartbeats] = useState<Record<string, HeartbeatStatus>>({});
   const [schemaStats, setSchemaStats] = useState<Record<string, SchemaIndexStats>>({});
+  const [pdmStats, setPdmStats] = useState<Record<string, PdmIndexStats>>({});
   const [showFooterActions, setShowFooterActions] = useState(false);
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -873,6 +885,26 @@ export function ToolsPanel({
     setSchemaStats(statsMap);
   }, []);
 
+  // Load PDM stats for SolidWorks PDM tools
+  const loadPdmStats = useCallback(async (toolList: ToolConfig[]) => {
+    const pdmTools = toolList.filter((tool) => tool.tool_type === 'solidworks_pdm');
+
+    if (pdmTools.length === 0) return;
+
+    const statsMap: Record<string, PdmIndexStats> = {};
+    await Promise.all(
+      pdmTools.map(async (tool) => {
+        try {
+          const stats = await api.getPdmIndexStats(tool.id);
+          statsMap[tool.id] = stats;
+        } catch (err) {
+          console.warn(`Failed to load PDM stats for ${tool.name}:`, err);
+        }
+      }),
+    );
+    setPdmStats(statsMap);
+  }, []);
+
   // Fetch cached heartbeat status for all enabled tools
   const fetchHeartbeats = useCallback(async () => {
     try {
@@ -909,8 +941,9 @@ export function ToolsPanel({
   useEffect(() => {
     if (tools.length > 0) {
       loadSchemaStats(tools);
+      loadPdmStats(tools);
     }
-  }, [tools, loadSchemaStats]);
+  }, [tools, loadSchemaStats, loadPdmStats]);
 
   // Cached heartbeat snapshot + passive updates. Fresh checks happen in the
   // backend monitor; this panel should not add remote SSH/Docker probe load.
@@ -1240,6 +1273,7 @@ export function ToolsPanel({
       toast.success(fullReindex ? 'Starting full PDM re-index...' : 'Starting PDM index update...');
       await api.triggerPdmIndex(toolId, fullReindex);
       toast.success(fullReindex ? 'Full PDM re-index started' : 'PDM index update started');
+      setTimeout(() => loadPdmStats(tools), 2000);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to trigger PDM index');
     } finally {
@@ -2127,6 +2161,7 @@ export function ToolsPanel({
           testing={testingToolId === tool.id}
           onPdmReindex={handlePdmReindex}
           pdmIndexing={pdmIndexingToolId === tool.id}
+          pdmStats={pdmStats[tool.id] || null}
           onSchemaReindex={handleSchemaReindex}
           schemaIndexing={schemaIndexingToolId === tool.id}
           activeSchemaJob={activeSchemaJobsByToolId[tool.id] || null}
