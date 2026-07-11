@@ -156,6 +156,11 @@ import { formatMountSyncInterval, MOUNT_SYNC_DEFAULT_SECONDS } from '@/utils/mou
 import { useAvailableModels } from '@/contexts/AvailableModelsContext';
 import { useDiffHoverTimers } from '@/utils/useDiffHoverTimers';
 import { useWorkspaceChatSearch } from '@/utils/useWorkspaceChatSearch';
+import {
+  getWarmCacheCandidateFiles,
+  runWithConcurrencyLimit,
+  WARM_CACHE_PREFETCH_CONCURRENCY,
+} from '@/utils/userspacePrefetch';
 import { ChatPanel, type WorkspaceBuiltInToolControls } from './ChatPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { UserSpaceArtifactPreview } from './UserSpaceArtifactPreview';
@@ -843,49 +848,6 @@ function canEditUserSpaceWorkspace(workspace: UserSpaceWorkspace, user: User): b
   const role = getWorkspaceRoleForUser(workspace, user);
   return role === 'owner' || role === 'editor';
 }
-
-const BINARY_USER_SPACE_FILE_EXTENSIONS = [
-  '.sqlite',
-  '.sqlite3',
-  '.db',
-  '.db-wal',
-  '.db-shm',
-  '.sqlite-wal',
-  '.sqlite-shm',
-  // images
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.webp',
-  '.bmp',
-  '.tiff',
-  '.ico',
-  // fonts
-  '.woff',
-  '.woff2',
-  '.ttf',
-  '.otf',
-  '.eot',
-  // archives
-  '.zip',
-  '.tar',
-  '.gz',
-  '.bz2',
-  '.7z',
-  '.rar',
-  // other common binaries
-  '.pdf',
-];
-
-function isLikelyBinaryUserSpaceFilePath(path: string): boolean {
-  const lower = path.toLowerCase();
-  return BINARY_USER_SPACE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
-}
-
-// Warm-cache prefetch skips large files (e.g. package-lock.json, generated
-// bundles); they still load on demand when the user opens them.
-const WARM_CACHE_MAX_FILE_BYTES = 512 * 1024;
 
 export function UserSpacePanel({
   currentUser,
@@ -2721,27 +2683,20 @@ export function UserSpacePanel({
         excludePaths?: string[];
       },
     ) => {
-      const excludedPaths = new Set(options?.excludePaths ?? []);
-      const staleFiles = nextFiles.filter((file) => {
-        if (excludedPaths.has(file.path)) {
-          return false;
-        }
-        if (isLikelyBinaryUserSpaceFilePath(file.path)) {
-          return false;
-        }
-        if ((file.size_bytes ?? 0) > WARM_CACHE_MAX_FILE_BYTES) {
-          return false;
-        }
-        const cached = fileContentCacheRef.current[file.path];
-        return !cached || cached.updatedAt !== (file.updated_at ?? '');
-      });
+      const staleFiles = getWarmCacheCandidateFiles(
+        nextFiles,
+        fileContentCacheRef.current,
+        options,
+      );
 
       if (staleFiles.length === 0) {
         return;
       }
 
-      const fetched = await Promise.all(
-        staleFiles.map(async (file) => {
+      const fetched = await runWithConcurrencyLimit(
+        staleFiles,
+        WARM_CACHE_PREFETCH_CONCURRENCY,
+        async (file) => {
           try {
             const loaded = await api.getUserSpaceFile(workspaceId, file.path);
             return {
@@ -2763,7 +2718,7 @@ export function UserSpacePanel({
             }
             throw err;
           }
-        }),
+        },
       );
 
       setFileContentCache((current) => {
