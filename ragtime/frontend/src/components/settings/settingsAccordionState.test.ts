@@ -1,0 +1,121 @@
+import { describe, expect, it } from 'vitest';
+import {
+  DEFAULT_OPEN_SETTINGS_SECTIONS,
+  getDefaultSettingsAccordionState,
+  openSettingsAccordionSections,
+  restoreSettingsAccordionState,
+  SETTINGS_ACCORDION_SECTION_IDS,
+  type SettingsAccordionSectionId,
+  type SettingsAccordionState,
+} from './settingsAccordionState';
+
+describe('settingsAccordionState', () => {
+  describe('SETTINGS_ACCORDION_SECTION_IDS', () => {
+    it('lists all accordion section ids in order', () => {
+      expect(SETTINGS_ACCORDION_SECTION_IDS).toEqual([
+        'chat-models',
+        'mcp',
+        'userspace',
+        'llm-providers',
+        'embedding',
+        'authentication',
+        'search',
+        'appearance',
+        'security',
+      ]);
+    });
+  });
+
+  describe('DEFAULT_OPEN_SETTINGS_SECTIONS', () => {
+    it('defaults to chat-models, mcp, and userspace', () => {
+      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).toEqual(['chat-models', 'mcp', 'userspace']);
+    });
+  });
+
+  describe('getDefaultSettingsAccordionState', () => {
+    it('opens the default sections and closes all others', () => {
+      const state = getDefaultSettingsAccordionState();
+      for (const id of SETTINGS_ACCORDION_SECTION_IDS) {
+        expect(state[id]).toBe(
+          DEFAULT_OPEN_SETTINGS_SECTIONS.includes(id as SettingsAccordionSectionId),
+        );
+      }
+    });
+
+    it('returns a new object on each call', () => {
+      const a = getDefaultSettingsAccordionState();
+      const b = getDefaultSettingsAccordionState();
+      expect(a).not.toBe(b);
+      expect(a).toEqual(b);
+    });
+  });
+
+  describe('openSettingsAccordionSections', () => {
+    it('opens the requested sections while preserving the rest', () => {
+      const current: SettingsAccordionState = {
+        'chat-models': false,
+        mcp: true,
+        userspace: false,
+        'llm-providers': true,
+        embedding: false,
+        authentication: false,
+        search: false,
+        appearance: false,
+        security: false,
+      };
+      const next = openSettingsAccordionSections(current, ['chat-models', 'userspace']);
+      expect(next).toEqual({
+        'chat-models': true,
+        mcp: true,
+        userspace: true,
+        'llm-providers': true,
+        embedding: false,
+        authentication: false,
+        search: false,
+        appearance: false,
+        security: false,
+      });
+    });
+
+    it('does not mutate the current state', () => {
+      const current = getDefaultSettingsAccordionState();
+      const copy = { ...current };
+      const next = openSettingsAccordionSections(current, ['appearance']);
+      expect(current).toEqual(copy);
+      expect(next).not.toBe(current);
+    });
+
+    it('accepts any iterable of section ids', () => {
+      const current = getDefaultSettingsAccordionState();
+      const next = openSettingsAccordionSections(current, new Set(['security']));
+      expect(next.security).toBe(true);
+    });
+  });
+
+  describe('restoreSettingsAccordionState', () => {
+    it('returns a copy of the provided snapshot when present', () => {
+      const snapshot: SettingsAccordionState = {
+        'chat-models': false,
+        mcp: false,
+        userspace: false,
+        'llm-providers': true,
+        embedding: true,
+        authentication: true,
+        search: true,
+        appearance: true,
+        security: true,
+      };
+      const restored = restoreSettingsAccordionState(snapshot);
+      expect(restored).toEqual(snapshot);
+      expect(restored).not.toBe(snapshot);
+    });
+
+    it('returns the default state when given null', () => {
+      expect(restoreSettingsAccordionState(null)).toEqual(getDefaultSettingsAccordionState());
+    });
+
+    it('returns the default state when given undefined', () => {
+      expect(restoreSettingsAccordionState(undefined)).toEqual(getDefaultSettingsAccordionState());
+    });
+  });
+});

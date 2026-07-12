@@ -1873,6 +1873,31 @@ legend {
   line-height: 1.3;
 }
 
+.cloud-oauth-setup-popover {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-xs);
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.cloud-oauth-setup-popover-title {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+}
+
+.cloud-oauth-setup-popover code {
+  overflow-wrap: anywhere;
+}
+
+.cloud-oauth-setup-popover-links {
+  display: flex;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
 .cloud-oauth-callback-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

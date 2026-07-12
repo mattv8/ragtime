@@ -1,6 +1,5 @@
-import { LdapGroupSelect } from './LdapGroupSelect';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Lock, LockOpen, Info, ExternalLink, Eye, EyeOff, Pencil, Check } from 'lucide-react';
+import { Lock, LockOpen, Info, ExternalLink, Pencil } from 'lucide-react';
 import { api } from '@/api';
 import type {
   AppSettings,
@@ -27,10 +26,10 @@ import type {
   User,
   OcrMode,
   OcrProvider,
+  CloudOAuthProviderStatus,
 } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
-import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
 import { Popover } from './Popover';
 import { InlineCopyButton } from './shared/InlineCopyButton';
 import { UserSpaceCodeIndexesModal } from './shared/UserSpaceCodeIndexesModal';
@@ -38,7 +37,6 @@ import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { UserSpaceRuntimeRestartPanel } from './shared/UserSpaceRuntimeRestartPanel';
 import { AuthAdminModalHost } from './shared/AuthAdminModals';
 import { ModelFilterModal } from './ModelFilterModal';
-import { ModelSelector } from './ModelSelector';
 import { CheckboxDropdown } from './shared/CheckboxDropdown';
 import {
   SearchFilterBar,
@@ -47,8 +45,6 @@ import {
   useUrlSearchFilterState,
 } from './shared/SearchFilterBar';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
-import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChecklist';
-import { getExportPasswordPolicy } from '@/utils/exportPasswordPolicy';
 import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
 import {
@@ -82,7 +78,21 @@ import {
   providersSame,
   type ProviderConnectionDescriptor,
 } from '@/utils/modelProviders';
-import { THEME_PACKS, type ThemePackId, resolveThemePackId, applyThemePack } from '@/theme';
+import { type ThemePackId, resolveThemePackId, applyThemePack } from '@/theme';
+import { SettingsAccordionSection } from './settings/SettingsAccordionSection';
+import { SearchSettingsSection } from './settings/SearchSettingsSection';
+import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
+import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
+import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
+import { McpSettingsSection } from './settings/McpSettingsSection';
+import {
+  getDefaultSettingsAccordionState,
+  openSettingsAccordionSections,
+  restoreSettingsAccordionState,
+  type SettingsAccordionSectionId,
+  type SettingsAccordionState,
+} from './settings/settingsAccordionState';
+import { getUnconfiguredCloudOAuthProviders } from './settings/cloudOAuthSetupHelp';
 
 /**
  * Format a DN for display like Active Directory tree view.
@@ -148,11 +158,9 @@ function getCloudOAuthCallbackUrl(): string {
 
 function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
   return (
-    <div style={{ display: 'grid', gap: 8, maxWidth: 360 }}>
-      <strong style={{ fontSize: '0.85rem' }}>Cloud drive OAuth setup</strong>
-      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
-        Register provider OAuth apps with this redirect URI:
-      </span>
+    <div className="cloud-oauth-setup-popover">
+      <strong className="cloud-oauth-setup-popover-title">Cloud drive OAuth setup</strong>
+      <span>Register provider OAuth apps with this redirect URI:</span>
       <div className="cloud-oauth-callback-row">
         <code className="cloud-oauth-callback-code">{callbackUrl}</code>
         <InlineCopyButton
@@ -165,25 +173,24 @@ function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
           iconSize={12}
         />
       </div>
-      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+      <span>
         <strong>Google Drive:</strong> enable the Google Drive API (
         <code>drive.googleapis.com</code>) for the OAuth client project and add scopes{' '}
         <code>https://www.googleapis.com/auth/drive</code> and{' '}
         <code>https://www.googleapis.com/auth/userinfo.email</code>.
       </span>
-      <span style={{ fontSize: '0.8rem', lineHeight: 1.4 }}>
+      <span>
         <strong>OneDrive/SharePoint:</strong> set <code>CLOUD_MOUNT_MICROSOFT_TENANT_ID</code> to
         your Azure Directory tenant ID or primary tenant domain for single-tenant apps, then add
         Microsoft Graph delegated permissions <code>offline_access</code>, <code>User.Read</code>,{' '}
         <code>Files.ReadWrite.All</code>, and <code>Sites.ReadWrite.All</code>. Tenant policy may
         require admin consent.
       </span>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <div className="cloud-oauth-setup-popover-links">
         <a
           href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
           target="_blank"
           rel="noreferrer"
-          style={{ fontSize: '0.8rem' }}
         >
           Microsoft apps
         </a>
@@ -191,7 +198,6 @@ function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
           href="https://console.cloud.google.com/apis/credentials"
           target="_blank"
           rel="noreferrer"
-          style={{ fontSize: '0.8rem' }}
         >
           Google credentials
         </a>
@@ -199,7 +205,6 @@ function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
           href="https://console.cloud.google.com/apis/library/drive.googleapis.com"
           target="_blank"
           rel="noreferrer"
-          style={{ fontSize: '0.8rem' }}
         >
           Google Drive API
         </a>
@@ -566,6 +571,10 @@ export function SettingsPanel({
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [userspacePreviewSettings, setUserspacePreviewSettings] =
     useState<UserSpacePreviewSettingsResponse | null>(null);
+  const [cloudOAuthProviderStatuses, setCloudOAuthProviderStatuses] = useState<
+    CloudOAuthProviderStatus[]
+  >([]);
+  const [cloudOAuthProvidersLoaded, setCloudOAuthProvidersLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [defaultThemePack, setDefaultThemePack] = useState<ThemePackId>('default');
   const [toasts, toast] = useToast();
@@ -575,7 +584,20 @@ export function SettingsPanel({
   const [activeAuthProviderValue, setActiveAuthProviderValue] =
     useState<(typeof AUTH_PROVIDER_OPTIONS)[number]['value']>('local_managed');
 
+  const [openAccordionSections, setOpenAccordionSections] = useState<SettingsAccordionState>(
+    getDefaultSettingsAccordionState,
+  );
+  const accordionFilterSnapshotRef = useRef<SettingsAccordionState | null>(null);
+
+  const handleToggleAccordionSection = useCallback((id: SettingsAccordionSectionId) => {
+    setOpenAccordionSections((current) => ({ ...current, [id]: !current[id] }));
+  }, []);
+
   const savedThemePackRef = useRef<ThemePackId>('default');
+  const unconfiguredCloudOAuthProviders = useMemo(
+    () => getUnconfiguredCloudOAuthProviders(cloudOAuthProviderStatuses),
+    [cloudOAuthProviderStatuses],
+  );
 
   useEffect(() => {
     savedThemePackRef.current = resolveThemePackId(
@@ -619,20 +641,39 @@ export function SettingsPanel({
     if (highlightSetting && !loading) {
       const element = document.getElementById(`setting-${highlightSetting}`);
       if (element) {
-        // If it's a details element, open it first
-        if (element.tagName === 'DETAILS') {
-          (element as HTMLDetailsElement).open = true;
+        const sectionWrapper = element.closest<HTMLElement>('[data-settings-accordion-section]');
+
+        // Open any ancestor details elements so nested highlighted settings are visible.
+        let ancestor: HTMLElement | null = element;
+        while (sectionWrapper && ancestor && ancestor !== sectionWrapper) {
+          if (ancestor.tagName === 'DETAILS') {
+            (ancestor as HTMLDetailsElement).open = true;
+          }
+          ancestor = ancestor.parentElement;
         }
-        // Add highlight class
-        element.classList.add('highlight-setting');
-        // Scroll into view with some padding
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Clear the highlight after animation
+
+        // If the highlighted setting sits inside a collapsed accordion section, open it.
+        if (sectionWrapper) {
+          const sectionId = sectionWrapper.dataset
+            .settingsAccordionSection as SettingsAccordionSectionId;
+          setOpenAccordionSections((current) =>
+            openSettingsAccordionSections(current, [sectionId]),
+          );
+        }
+
+        // Add highlight class and scroll after the accordion body has had a frame to expand.
         const timer = setTimeout(() => {
           element.classList.remove('highlight-setting');
           onHighlightComplete?.();
         }, 2000);
-        return () => clearTimeout(timer);
+        const frame = window.requestAnimationFrame(() => {
+          element.classList.add('highlight-setting');
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return () => {
+          clearTimeout(timer);
+          window.cancelAnimationFrame(frame);
+        };
       }
     }
   }, [highlightSetting, loading, onHighlightComplete]);
@@ -2174,6 +2215,14 @@ export function SettingsPanel({
         .then((routesRes) => setMcpRoutes(routesRes.routes))
         .catch(() => setMcpRoutes([]));
 
+      // Cloud Drive OAuth provider setup state
+      setCloudOAuthProvidersLoaded(false);
+      api
+        .listCloudOAuthProviders()
+        .then((providerStatuses) => setCloudOAuthProviderStatuses(providerStatuses))
+        .catch(() => setCloudOAuthProviderStatuses([]))
+        .finally(() => setCloudOAuthProvidersLoaded(true));
+
       // LDAP configuration
       api
         .getLdapConfig()
@@ -3376,12 +3425,19 @@ export function SettingsPanel({
     }
 
     const queries = settingsFilter.queries;
+    const accordionWrappers = Array.from(
+      form.querySelectorAll<HTMLElement>('[data-settings-accordion-section]'),
+    );
     const infoCards =
       form.parentElement?.querySelectorAll<HTMLElement>('[data-settings-filter-card="true"]') || [];
 
     if (queries.length === 0) {
       infoCards.forEach((card) => {
         card.style.display = '';
+      });
+
+      accordionWrappers.forEach((wrapper) => {
+        wrapper.style.display = '';
       });
 
       const fieldsets = form.querySelectorAll<HTMLElement>('fieldset');
@@ -3401,8 +3457,17 @@ export function SettingsPanel({
           });
       });
 
+      if (accordionFilterSnapshotRef.current) {
+        setOpenAccordionSections(restoreSettingsAccordionState(accordionFilterSnapshotRef.current));
+        accordionFilterSnapshotRef.current = null;
+      }
+
       setSettingsFilterHasMatches(true);
       return;
+    }
+
+    if (!accordionFilterSnapshotRef.current) {
+      accordionFilterSnapshotRef.current = { ...openAccordionSections };
     }
 
     let hasAnyMatches = false;
@@ -3415,6 +3480,8 @@ export function SettingsPanel({
         hasAnyMatches = true;
       }
     });
+
+    const matchingAccordionIds = new Set<SettingsAccordionSectionId>();
 
     const fieldsets = form.querySelectorAll<HTMLElement>('fieldset');
     fieldsets.forEach((fieldset) => {
@@ -3486,10 +3553,31 @@ export function SettingsPanel({
       fieldset.style.display = showFieldset ? '' : 'none';
       if (showFieldset) {
         hasAnyMatches = true;
+        const sectionWrapper = fieldset.closest<HTMLElement>('[data-settings-accordion-section]');
+        const sectionId = sectionWrapper?.dataset.settingsAccordionSection as
+          | SettingsAccordionSectionId
+          | undefined;
+        if (sectionId) {
+          matchingAccordionIds.add(sectionId);
+        }
       }
     });
 
+    accordionWrappers.forEach((wrapper) => {
+      const wrapperId = wrapper.dataset.settingsAccordionSection as
+        | SettingsAccordionSectionId
+        | undefined;
+      wrapper.style.display = wrapperId && matchingAccordionIds.has(wrapperId) ? '' : 'none';
+    });
+
+    if (matchingAccordionIds.size > 0) {
+      setOpenAccordionSections((current) =>
+        openSettingsAccordionSections(current, matchingAccordionIds),
+      );
+    }
+
     setSettingsFilterHasMatches(hasAnyMatches);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsFilter.queries, loading]);
 
   if (loading) {
@@ -3756,6 +3844,247 @@ export function SettingsPanel({
     return null;
   })();
 
+  const llmProviderStatus = (
+    <span className="llm-provider-status-inline" aria-label="LLM provider configuration status">
+      <span
+        className="llm-provider-status-item"
+        title={openAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${openAiConfigured ? 'configured' : ''}`}
+          aria-label={openAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
+        />
+        <span className="llm-provider-status-label">OpenAI</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={claudeConfigured ? 'Anthropic configured' : 'Anthropic not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${claudeConfigured ? 'configured' : ''}`}
+          aria-label={claudeConfigured ? 'Anthropic configured' : 'Anthropic not configured'}
+        />
+        <span className="llm-provider-status-label">Anthropic</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${openRouterConfigured ? 'configured' : ''}`}
+          aria-label={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}
+        />
+        <span className="llm-provider-status-label">OpenRouter</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${ollamaConfigured ? 'configured' : ''}`}
+          aria-label={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
+        />
+        <span className="llm-provider-status-label">Ollama</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={llamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${llamaCppConfigured ? 'configured' : ''}`}
+          aria-label={llamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}
+        />
+        <span className="llm-provider-status-label">llama.cpp</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={lmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${lmstudioConfigured ? 'configured' : ''}`}
+          aria-label={lmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}
+        />
+        <span className="llm-provider-status-label">LM Studio</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={omlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${omlxConfigured ? 'configured' : ''}`}
+          aria-label={omlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
+        />
+        <span className="llm-provider-status-label">oMLX</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={
+          copilotConfigured || copilotPatConfigured
+            ? 'GitHub Copilot configured'
+            : 'GitHub Copilot not configured'
+        }
+      >
+        <span
+          className={`llm-provider-status-dot ${copilotConfigured || copilotPatConfigured ? 'configured' : ''}`}
+          aria-label={
+            copilotConfigured || copilotPatConfigured
+              ? 'GitHub Copilot configured'
+              : 'GitHub Copilot not configured'
+          }
+        />
+        <span className="llm-provider-status-label">Copilot</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={openAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${openAiCodexConfigured ? 'configured' : ''}`}
+          aria-label={
+            openAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'
+          }
+        />
+        <span className="llm-provider-status-label">Codex</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={claudeCodeConfigured ? 'Claude Code configured' : 'Claude Code not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${claudeCodeConfigured ? 'configured' : ''}`}
+          aria-label={
+            claudeCodeConfigured ? 'Claude Code configured' : 'Claude Code not configured'
+          }
+        />
+        <span className="llm-provider-status-label">Claude Code</span>
+      </span>
+    </span>
+  );
+
+  const embeddingProviderStatus = (
+    <span
+      className="llm-provider-status-inline"
+      aria-label="Embedding provider configuration status"
+    >
+      <span
+        className="llm-provider-status-item"
+        title={embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingOpenAiConfigured ? 'configured' : ''}`}
+          aria-label={embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
+        />
+        <span className="llm-provider-status-label">OpenAI</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={
+          embeddingOpenAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'
+        }
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingOpenAiCodexConfigured ? 'configured' : ''}`}
+          aria-label={
+            embeddingOpenAiCodexConfigured
+              ? 'OpenAI Codex configured'
+              : 'OpenAI Codex not configured'
+          }
+        />
+        <span className="llm-provider-status-label">Codex</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={
+          embeddingOpenRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'
+        }
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingOpenRouterConfigured ? 'configured' : ''}`}
+          aria-label={
+            embeddingOpenRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'
+          }
+        />
+        <span className="llm-provider-status-label">OpenRouter</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingOllamaConfigured ? 'configured' : ''}`}
+          aria-label={embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
+        />
+        <span className="llm-provider-status-label">Ollama</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={embeddingLlamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingLlamaCppConfigured ? 'configured' : ''}`}
+          aria-label={
+            embeddingLlamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'
+          }
+        />
+        <span className="llm-provider-status-label">llama.cpp</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={embeddingLmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingLmstudioConfigured ? 'configured' : ''}`}
+          aria-label={
+            embeddingLmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'
+          }
+        />
+        <span className="llm-provider-status-label">LM Studio</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${embeddingOmlxConfigured ? 'configured' : ''}`}
+          aria-label={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
+        />
+        <span className="llm-provider-status-label">oMLX</span>
+      </span>
+    </span>
+  );
+
+  const authenticationProviderStatus = (
+    <span
+      className="llm-provider-status-inline"
+      aria-label="Authentication provider configuration status"
+    >
+      <span
+        className="llm-provider-status-item"
+        title={
+          (authProviderConfig?.local_users_enabled ?? true)
+            ? 'Internal users enabled'
+            : 'Internal users disabled'
+        }
+      >
+        <span
+          className={`llm-provider-status-dot ${(authProviderConfig?.local_users_enabled ?? true) ? 'configured' : ''}`}
+          aria-hidden="true"
+        />
+        <span className="llm-provider-status-label">INTERNAL</span>
+      </span>
+      <span
+        className="llm-provider-status-item"
+        title={ldapConfigured ? 'LDAP configured' : 'LDAP not configured'}
+      >
+        <span
+          className={`llm-provider-status-dot ${ldapConfigured ? 'configured' : ''}`}
+          aria-hidden="true"
+        />
+        <span className="llm-provider-status-label">LDAP</span>
+      </span>
+    </span>
+  );
+
   return (
     <div className="card">
       <h2>Settings</h2>
@@ -3790,16 +4119,7 @@ export function SettingsPanel({
           .
         </p>
         {(!authStatus?.api_key_configured || window.location.protocol === 'http:') && (
-          <div
-            className="field-warning"
-            style={{
-              marginTop: '0.75rem',
-              padding: '0.75rem',
-              backgroundColor: 'rgba(255, 193, 7, 0.15)',
-              borderLeft: '3px solid #ffc107',
-              borderRadius: '4px',
-            }}
-          >
+          <div className="field-warning">
             <strong>Security:</strong>
             {!authStatus?.api_key_configured && <span> {renderApiKeySecurityWarning()}</span>}
             {window.location.protocol === 'http:' && (
@@ -3826,10 +4146,9 @@ export function SettingsPanel({
           >
             <button
               type="button"
-              className="btn btn-sm"
+              className="cloud-oauth-info-trigger"
               aria-label="Cloud drive OAuth setup"
               title="Cloud drive OAuth setup"
-              style={{ padding: '4px 7px' }}
             >
               <Info size={14} />
             </button>
@@ -3839,6 +4158,28 @@ export function SettingsPanel({
           OneDrive, SharePoint, and Google Drive userspace mounts require provider OAuth apps
           configured through environment variables.
         </p>
+        {cloudOAuthProvidersLoaded && unconfiguredCloudOAuthProviders.length > 0 && (
+          <div className="field-warning cloud-oauth-setup-warning">
+            <strong>Setup required before users can connect cloud drives.</strong>
+            <p>
+              Create the missing provider OAuth app(s), add the redirect URI shown in the info
+              popover, then set these environment variables and restart Ragtime:
+            </p>
+            <ul>
+              {unconfiguredCloudOAuthProviders.map((providerHelp) => (
+                <li key={providerHelp.provider}>
+                  <strong>{providerHelp.label}:</strong>{' '}
+                  {providerHelp.envVars.map((envVar, index) => (
+                    <span key={envVar}>
+                      {index > 0 ? ', ' : ''}
+                      <code>{envVar}</code>
+                    </span>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* MCP Routes Summary */}
@@ -3949,5317 +4290,4042 @@ export function SettingsPanel({
         data-lpignore="true"
         data-1p-ignore="true"
       >
-        {/* Appearance */}
-        <fieldset
-          id="setting-appearance"
-          className={highlightSetting === 'appearance' ? 'highlight-setting' : ''}
-        >
-          <legend>Appearance</legend>
-          <p className="fieldset-help">
-            Choose the instance-wide default theme and customize server branding. The default theme
-            applies app-wide for users who have not picked their own theme from the user menu. Each
-            theme has matching light and dark modes.
-          </p>
+        <div className="settings-accordion">
+          <ChatModelsSettingsSection
+            open={openAccordionSections['chat-models']}
+            onToggle={handleToggleAccordionSection}
+            formData={formData}
+            setFormData={setFormData}
+            filteredChatModels={filteredChatModels}
+            manualDefaultChatModel={manualDefaultChatModel}
+            automaticDefaultChatModel={automaticDefaultChatModel}
+            chatModelsLoading={chatModelsLoading}
+            toScopedModelIdentifier={toScopedModelIdentifier}
+            openModelFilterModal={openModelFilterModal}
+            openOpenapiModelModal={openOpenapiModelModal}
+            handleSaveLlm={handleSaveLlm}
+            llmSaving={llmSaving}
+          />
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-              gap: '1.5rem',
-              alignItems: 'start',
-            }}
+          <McpSettingsSection
+            open={openAccordionSections.mcp}
+            onToggle={handleToggleAccordionSection}
+            formData={formData}
+            settings={settings}
+            setFormData={setFormData}
+            ldapConfigured={ldapConfigured}
+            ldapDiscoveredGroups={ldapDiscoveredGroups}
+            showMcpPassword={showMcpPassword}
+            setShowMcpPassword={setShowMcpPassword}
+            mcpError={mcpError}
+            setMcpError={setMcpError}
+            mcpSaving={mcpSaving}
+            handleSaveMcp={handleSaveMcp}
+            setShowMcpRoutesPanel={setShowMcpRoutesPanel}
+            toast={toast}
+            generateMcpClientId={generateMcpClientId}
+            generateMcpSecret={generateMcpSecret}
+          />
+
+          {/* User Space */}
+          <SettingsAccordionSection
+            id="userspace"
+            title="User Space"
+            open={openAccordionSections.userspace}
+            onToggle={handleToggleAccordionSection}
           >
-            <div className="form-group">
-              <label>Default theme</label>
-              <div className="appearance-theme-grid">
-                {THEME_PACKS.map((pack) => {
-                  const selected = pack.id === defaultThemePack;
-                  return (
-                    <button
-                      type="button"
-                      key={pack.id}
-                      className="appearance-theme-card"
-                      aria-pressed={selected}
-                      disabled={!isAdmin}
-                      onClick={() => setDefaultThemePack(pack.id)}
-                    >
-                      <span className="appearance-theme-card-header">
-                        <span className="appearance-theme-card-name">{pack.label}</span>
-                        {selected && (
-                          <span className="appearance-theme-card-check">
-                            <Check size={18} />
-                          </span>
-                        )}
-                      </span>
-                      <span className="appearance-swatches" aria-hidden="true">
-                        <span
-                          className="appearance-swatch"
-                          style={{ background: pack.swatches.background }}
-                        />
-                        <span
-                          className="appearance-swatch"
-                          style={{ background: pack.swatches.surface }}
-                        />
-                        <span
-                          className="appearance-swatch"
-                          style={{ background: pack.swatches.primary }}
-                        />
-                        <span
-                          className="appearance-swatch appearance-swatch-sample"
-                          style={{
-                            background: pack.swatches.surface,
-                            color: pack.swatches.text,
-                            fontFamily: pack.headingFontPreview,
-                          }}
-                        >
-                          Aa
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="field-help">
-                Set your own theme from the user menu in the top-right corner; that personal choice
-                overrides this default.
+            <fieldset id="setting-userspace">
+              <legend>User Space</legend>
+              <p className="fieldset-help">
+                Configure shared User Space runtime behavior, workspace support settings, and code
+                index maintenance.
               </p>
-            </div>
 
-            <div
-              id="setting-server_branding"
-              className={highlightSetting === 'server_branding' ? 'highlight-setting' : ''}
-            >
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
                   gap: '1rem',
                   alignItems: 'start',
                 }}
               >
-                <div className="form-group">
-                  <label>Server Name</label>
-                  <input
-                    type="text"
-                    value={formData.server_name ?? settings?.server_name ?? 'Ragtime'}
-                    onChange={(e) => setFormData({ ...formData, server_name: e.target.value })}
-                    placeholder="Ragtime"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label
-                    className="chat-toggle-control"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-                  >
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={
-                          formData.authenticated_webgl_background_enabled ??
-                          settings?.authenticated_webgl_background_enabled ??
-                          true
-                        }
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            authenticated_webgl_background_enabled: e.target.checked,
-                          })
-                        }
-                      />
-                      <span className="toggle-slider"></span>
-                    </label>
-                    <span>Animated Background After Login</span>
-                  </label>
+                <div>
+                  <h4 style={{ margin: '0 0 8px' }}>Global Environment Variables</h4>
                   <p className="field-help">
-                    Show the WebGL gradient behind authenticated app pages. Disable this to use the
-                    static theme background after login.
+                    Define admin-managed environment variables that are inherited by every
+                    workspace.
                   </p>
-                </div>
-
-                <div className="form-group">
-                  <label
-                    className="chat-toggle-control"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-                  >
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={
-                          formData.openapi_model_prefix_enabled ??
-                          settings?.openapi_model_prefix_enabled ??
-                          true
-                        }
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            openapi_model_prefix_enabled: e.target.checked,
-                          })
-                        }
-                      />
-                      <span className="toggle-slider"></span>
-                    </label>
-                    <span>Prefix API Model Names</span>
-                  </label>
-                  <p className="field-help">
-                    Add the server name before models listed by the OpenAI-compatible API.
-                  </p>
-                </div>
-
-                <div className="form-group">
-                  <label
-                    className="chat-toggle-control"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-                  >
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={
-                          formData.show_tool_card_footer_actions ??
-                          settings?.show_tool_card_footer_actions ??
-                          false
-                        }
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            show_tool_card_footer_actions: e.target.checked,
-                          })
-                        }
-                      />
-                      <span className="toggle-slider"></span>
-                    </label>
-                    <span>Show Tool Card Action Buttons</span>
-                  </label>
-                  <p className="field-help">
-                    Display action buttons directly on tool cards. When disabled, actions stay in
-                    the right-click menu.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div
-            className="form-actions"
-            style={{ borderTop: 'none', paddingTop: 0, marginTop: 'var(--space-md)' }}
-          >
-            {isAdmin && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={brandingSaving}
-                onClick={handleSaveBranding}
-              >
-                {brandingSaving ? 'Saving...' : 'Save Appearance'}
-              </button>
-            )}
-          </div>
-        </fieldset>
-
-        {/* LLM Configuration */}
-        <fieldset>
-          <legend className="legend-with-status">
-            <span>LLM Configuration (Chat/RAG)</span>
-            <span className="legend-divider" aria-hidden="true" />
-            <span
-              className="llm-provider-status-inline"
-              aria-label="LLM provider configuration status"
-            >
-              <span
-                className="llm-provider-status-item"
-                title={openAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${openAiConfigured ? 'configured' : ''}`}
-                  aria-label={openAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
-                />
-                <span className="llm-provider-status-label">OpenAI</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={claudeConfigured ? 'Anthropic configured' : 'Anthropic not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${claudeConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    claudeConfigured ? 'Anthropic configured' : 'Anthropic not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">Anthropic</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${openRouterConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    openRouterConfigured ? 'OpenRouter configured' : 'OpenRouter not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">OpenRouter</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${ollamaConfigured ? 'configured' : ''}`}
-                  aria-label={ollamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
-                />
-                <span className="llm-provider-status-label">Ollama</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={llamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${llamaCppConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    llamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">llama.cpp</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={lmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${lmstudioConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    lmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">LM Studio</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={omlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${omlxConfigured ? 'configured' : ''}`}
-                  aria-label={omlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
-                />
-                <span className="llm-provider-status-label">oMLX</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  copilotConfigured || copilotPatConfigured
-                    ? 'GitHub Copilot configured'
-                    : 'GitHub Copilot not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${copilotConfigured || copilotPatConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    copilotConfigured || copilotPatConfigured
-                      ? 'GitHub Copilot configured'
-                      : 'GitHub Copilot not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">Copilot</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  openAiCodexConfigured ? 'OpenAI Codex configured' : 'OpenAI Codex not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${openAiCodexConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    openAiCodexConfigured
-                      ? 'OpenAI Codex configured'
-                      : 'OpenAI Codex not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">Codex</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  claudeCodeConfigured ? 'Claude Code configured' : 'Claude Code not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${claudeCodeConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    claudeCodeConfigured ? 'Claude Code configured' : 'Claude Code not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">Claude Code</span>
-              </span>
-            </span>
-          </legend>
-          <p className="fieldset-help">
-            Configure the language model used for answering questions and tool calls.
-          </p>
-
-          <div className="form-group">
-            <label>Provider</label>
-            <div className="input-with-button input-with-actions">
-              <select
-                value={formData.llm_provider || 'openai'}
-                onChange={(e) => {
-                  const newProvider = e.target.value as
-                    | 'openai'
-                    | 'anthropic'
-                    | 'openrouter'
-                    | 'ollama'
-                    | 'llama_cpp'
-                    | 'lmstudio'
-                    | 'omlx'
-                    | 'github_copilot'
-                    | 'openai_codex'
-                    | 'claude_code';
-                  setFormData({
-                    ...formData,
-                    llm_provider: newProvider,
-                    llm_model:
-                      newProvider === 'anthropic' ? '' : newProvider === 'ollama' ? '' : '',
-                  });
-                  // Reset LLM models when switching providers
-                  resetLlmModelsState();
-                  if (newProvider !== 'ollama') {
-                    resetLlmOllamaState();
-                  }
-
-                  if (
-                    newProvider === 'github_copilot' &&
-                    ((copilotAuthMode === 'oauth' &&
-                      (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) ||
-                      (copilotAuthMode === 'pat' && hasCopilotPatToken))
-                  ) {
-                    fetchCopilotModels();
-                  }
-                  if (
-                    newProvider === 'openai_codex' &&
-                    (openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth)
-                  ) {
-                    fetchOpenAiCodexModels();
-                  }
-                  if (newProvider === 'claude_code' && claudeCodeConfigured) {
-                    fetchClaudeCodeModels();
-                  }
-                }}
-              >
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="openrouter">OpenRouter</option>
-                <option value="ollama">Ollama</option>
-                <option value="llama_cpp">llama.cpp</option>
-                <option value="lmstudio">LM Studio</option>
-                <option value="omlx">oMLX</option>
-                <option value="github_copilot">GitHub Copilot</option>
-                <option value="openai_codex">OpenAI Codex</option>
-                <option value="claude_code">Claude Code (Pro/Max)</option>
-              </select>
-              {embeddingProviderForLlmCopy && (
-                <button
-                  type="button"
-                  className="btn btn-test"
-                  onClick={() => copyEmbeddingProviderToLlm(embeddingProviderForLlmCopy)}
-                >
-                  Use Embedding Provider
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Ollama LLM Server Connection - only show when Ollama is selected */}
-          {formData.llm_provider === 'ollama' && (
-            <>
-              <OllamaConnectionForm
-                protocol={formData.llm_ollama_protocol || 'http'}
-                host={formData.llm_ollama_host || ''}
-                port={formData.llm_ollama_port || DEFAULT_OLLAMA_PORT}
-                model={formData.llm_model || ''}
-                connected={llmOllamaConnected}
-                connecting={llmOllamaConnecting}
-                error={llmOllamaError}
-                models={llmOllamaModels}
-                modelLabel="Model"
-                modelPlaceholder=""
-                connectedHelpText="Select an LLM from your Ollama server."
-                disconnectedHelpText='Click "Fetch Models" to see available models, or enter manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, llm_ollama_protocol: protocol });
-                  resetLlmOllamaState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, llm_ollama_host: host });
-                  resetLlmOllamaState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, llm_ollama_port: port });
-                  resetLlmOllamaState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
-                onFetchModels={() =>
-                  testLlmOllamaConnection(
-                    formData.llm_ollama_protocol || 'http',
-                    formData.llm_ollama_host || 'localhost',
-                    formData.llm_ollama_port || DEFAULT_OLLAMA_PORT,
-                  )
-                }
-              />
-            </>
-          )}
-
-          {formData.llm_provider === 'llama_cpp' && (
-            <>
-              <OllamaConnectionForm
-                protocol={formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
-                host={formData.llm_llama_cpp_host || ''}
-                port={formData.llm_llama_cpp_port ?? ''}
-                model={formData.llm_model || ''}
-                connected={llmModelsLoaded && formData.llm_provider === 'llama_cpp'}
-                connecting={llmModelsFetching}
-                error={formData.llm_provider === 'llama_cpp' ? llmModelsError : null}
-                models={llmModels.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  context_limit: m.context_limit,
-                }))}
-                providerLabel="llama.cpp"
-                defaultPort={DEFAULT_LLAMA_CPP_CHAT_PORT}
-                hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
-                modelLabel="Model"
-                modelPlaceholder="my-chat-model"
-                connectedHelpText="Select a model from your llama.cpp server."
-                disconnectedHelpText='Click "Fetch Models" to discover the active llama.cpp model, or enter its alias manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, llm_llama_cpp_protocol: protocol });
-                  resetLlmModelsState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, llm_llama_cpp_host: host });
-                  resetLlmModelsState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, llm_llama_cpp_port: port });
-                  resetLlmModelsState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
-                onFetchModels={fetchLlamaCppLlmModels}
-              />
-              <p className="field-help">
-                llama.cpp does not support load/unload over its HTTP API. Start the llama.cpp server
-                with the desired model already loaded (for example,{' '}
-                <code>llama-server -m model.gguf</code>); Ragtime will use whichever model the
-                server is currently serving.
-              </p>
-            </>
-          )}
-
-          {formData.llm_provider === 'lmstudio' && (
-            <>
-              <div className="form-group">
-                <label>LM Studio API Key</label>
-                <input
-                  type="password"
-                  value={formData.lmstudio_api_key || ''}
-                  onChange={(e) => setFormData({ ...formData, lmstudio_api_key: e.target.value })}
-                  placeholder="sk-lm-... (optional)"
-                  autoComplete="off"
-                />
-                <p className="form-help">
-                  Optional. Leave blank if LM Studio is running without authentication.
-                </p>
-              </div>
-              <OllamaConnectionForm
-                protocol={formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
-                host={formData.llm_lmstudio_host || ''}
-                port={formData.llm_lmstudio_port ?? ''}
-                model={formData.llm_model || ''}
-                connected={llmModelsLoaded && formData.llm_provider === 'lmstudio'}
-                connecting={llmModelsFetching}
-                error={formData.llm_provider === 'lmstudio' ? llmModelsError : null}
-                models={llmModels.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  context_limit: m.context_limit,
-                  loaded: m.loaded,
-                }))}
-                providerLabel="LM Studio"
-                defaultPort={DEFAULT_LMSTUDIO_PORT}
-                hostPlaceholder={DEFAULT_LMSTUDIO_HOST}
-                modelLabel="Model"
-                modelPlaceholder="gemma-4-31b-it-mlx"
-                connectedHelpText="Select a chat-capable model from LM Studio."
-                disconnectedHelpText='Click "Fetch Models" to discover LM Studio models, or enter a model key manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, llm_lmstudio_protocol: protocol });
-                  resetLlmModelsState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, llm_lmstudio_host: host });
-                  resetLlmModelsState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, llm_lmstudio_port: port });
-                  resetLlmModelsState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
-                onFetchModels={fetchLmstudioLlmModels}
-                modelAction={(() => {
-                  const selected = llmModels.find((m) => m.id === formData.llm_model);
-                  const isLoaded = !!(
-                    selected?.loaded ||
-                    (selected?.loaded_instances && selected.loaded_instances.length > 0)
-                  );
-                  if (!formData.llm_model) {
-                    return (
-                      <button type="button" className="btn btn-test" disabled>
-                        Load Selected
-                      </button>
-                    );
-                  }
-                  return isLoaded ? (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => unloadSelectedLmstudioModel('llm')}
-                      disabled={lmstudioModelActionLoading}
-                    >
-                      Unload Selected
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => loadSelectedLmstudioModel('llm')}
-                      disabled={lmstudioModelActionLoading}
-                    >
-                      Load Selected
-                    </button>
-                  );
-                })()}
-              />
-            </>
-          )}
-
-          {formData.llm_provider === 'omlx' && (
-            <>
-              <div className="form-group">
-                <label>oMLX API Key</label>
-                <input
-                  type="password"
-                  value={formData.omlx_api_key || ''}
-                  onChange={(e) => setFormData({ ...formData, omlx_api_key: e.target.value })}
-                  placeholder="optional"
-                  autoComplete="off"
-                />
-                <p className="form-help">
-                  Optional. Leave blank if oMLX is running without authentication.
-                </p>
-              </div>
-              <OllamaConnectionForm
-                protocol={formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL}
-                host={formData.llm_omlx_host || ''}
-                port={formData.llm_omlx_port ?? ''}
-                model={formData.llm_model || ''}
-                connected={llmModelsLoaded && formData.llm_provider === 'omlx'}
-                connecting={llmModelsFetching}
-                error={formData.llm_provider === 'omlx' ? llmModelsError : null}
-                models={llmModels.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  context_limit: m.context_limit,
-                }))}
-                providerLabel="oMLX"
-                defaultPort={DEFAULT_OMLX_PORT}
-                hostPlaceholder={DEFAULT_OMLX_HOST}
-                modelLabel="Model"
-                modelPlaceholder="qwen3-coder-next-8bit"
-                connectedHelpText="Select a model from oMLX."
-                disconnectedHelpText='Click "Fetch Models" to discover oMLX models, or enter a model id manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, llm_omlx_protocol: protocol });
-                  resetLlmModelsState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, llm_omlx_host: host });
-                  resetLlmModelsState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, llm_omlx_port: port });
-                  resetLlmModelsState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
-                onFetchModels={fetchOmlxLlmModels}
-              />
-              <p className="field-help">
-                oMLX manages model loading in its own admin UI and serves selected models through
-                its OpenAI-compatible API.
-              </p>
-            </>
-          )}
-
-          {/* API Key - show appropriate one based on provider */}
-          {formData.llm_provider === 'openai' || !formData.llm_provider ? (
-            <div className="form-group">
-              <label>OpenAI API Key</label>
-              <div className="input-with-button">
-                <input
-                  type="password"
-                  value={formData.openai_api_key || ''}
-                  onChange={(e) => {
-                    setFormData({ ...formData, openai_api_key: e.target.value });
-                    // Reset models when API key changes
-                    resetLlmModelsState();
-                    // Also reset embedding models since they use the same key
-                    resetEmbeddingModelsState();
-                  }}
-                  placeholder="sk-..."
-                />
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('openai', formData.openai_api_key || '')}
-                  disabled={llmModelsFetching || !formData.openai_api_key}
-                >
-                  {llmModelsFetching
-                    ? 'Fetching...'
-                    : llmModelsLoaded && formData.llm_provider === 'openai'
-                      ? 'Loaded'
-                      : 'Fetch Models'}
-                </button>
-              </div>
-              {llmModelsError && formData.llm_provider === 'openai' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              <p className="field-help">
-                Required for OpenAI LLM and optionally for OpenAI embeddings.
-                {window.location.protocol === 'http:' && (
-                  <span style={{ color: 'var(--color-warning)' }}>
-                    {' '}
-                    Warning: API keys are transmitted in plaintext over HTTP.
-                  </span>
-                )}
-              </p>
-            </div>
-          ) : formData.llm_provider === 'anthropic' ? (
-            <div className="form-group">
-              <label>Anthropic API Key</label>
-              <div className="input-with-button">
-                <input
-                  type="password"
-                  value={formData.anthropic_api_key || ''}
-                  onChange={(e) => {
-                    setFormData({ ...formData, anthropic_api_key: e.target.value });
-                    // Reset models when API key changes
-                    resetLlmModelsState();
-                  }}
-                  placeholder="sk-ant-..."
-                />
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'anthropic' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('anthropic', formData.anthropic_api_key || '')}
-                  disabled={llmModelsFetching || !formData.anthropic_api_key}
-                >
-                  {llmModelsFetching
-                    ? 'Fetching...'
-                    : llmModelsLoaded && formData.llm_provider === 'anthropic'
-                      ? 'Loaded'
-                      : 'Fetch Models'}
-                </button>
-              </div>
-              {llmModelsError && formData.llm_provider === 'anthropic' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              {window.location.protocol === 'http:' && (
-                <p className="field-help" style={{ color: 'var(--color-warning)' }}>
-                  Warning: API keys are transmitted in plaintext over HTTP.
-                </p>
-              )}
-            </div>
-          ) : formData.llm_provider === 'openrouter' ? (
-            <div className="form-group">
-              <label>OpenRouter API Key</label>
-              <div className="input-with-button">
-                <input
-                  type="password"
-                  value={formData.openrouter_api_key || ''}
-                  onChange={(e) => {
-                    setFormData({ ...formData, openrouter_api_key: e.target.value });
-                    resetLlmModelsState();
-                  }}
-                  placeholder="sk-or-..."
-                />
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openrouter' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchLlmModels('openrouter', formData.openrouter_api_key || '')}
-                  disabled={llmModelsFetching || !formData.openrouter_api_key}
-                >
-                  {llmModelsFetching
-                    ? 'Fetching...'
-                    : llmModelsLoaded && formData.llm_provider === 'openrouter'
-                      ? 'Loaded'
-                      : 'Fetch Models'}
-                </button>
-              </div>
-              {llmModelsError && formData.llm_provider === 'openrouter' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              {window.location.protocol === 'http:' && (
-                <p className="field-help" style={{ color: 'var(--color-warning)' }}>
-                  Warning: API keys are transmitted in plaintext over HTTP.
-                </p>
-              )}
-            </div>
-          ) : formData.llm_provider === 'github_copilot' ? (
-            <div className="form-group">
-              <label>GitHub Copilot Connection</label>
-              <div className="form-row" style={{ marginBottom: '0.75rem' }}>
-                <div
-                  style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}
-                >
-                  <label
-                    style={{
-                      display: 'inline-flex',
-                      gap: '0.35rem',
-                      alignItems: 'center',
-                      marginBottom: 0,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="copilot-auth-mode"
-                      checked={copilotAuthMode === 'oauth'}
-                      onChange={() => {
-                        setCopilotAuthMode('oauth');
-                        setFormData((prev) => ({ ...prev, github_models_api_token: '' }));
-                        resetLlmModelsState();
-                      }}
-                    />
-                    OAuth (GitHub device login)
-                  </label>
-                  <label
-                    style={{
-                      display: 'inline-flex',
-                      gap: '0.35rem',
-                      alignItems: 'center',
-                      marginBottom: 0,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="copilot-auth-mode"
-                      checked={copilotAuthMode === 'pat'}
-                      onChange={() => {
-                        setCopilotAuthMode('pat');
-                        clearCopilotPollTimer();
-                        setCopilotConnecting(false);
-                        setCopilotRequestId(null);
-                        setCopilotWizardVisible(false);
-                        setCopilotWizardStep(1);
-                        resetLlmModelsState();
-                      }}
-                    />
-                    PAT (Copilot models)
-                  </label>
-                </div>
-              </div>
-              {copilotAuthMode === 'pat' && (
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <input
-                    type="password"
-                    value={formData.github_models_api_token || ''}
-                    onChange={(e) => {
-                      setFormData({ ...formData, github_models_api_token: e.target.value });
-                      resetLlmModelsState();
-                    }}
-                    placeholder="github_pat_..."
-                  />
-                  <p className="field-help">
-                    Use a fine-grained GitHub token with the `Models:read` permission. Stored
-                    encrypted in backend settings.
-                  </p>
-                </div>
-              )}
-              <div
-                className="input-with-button input-with-actions"
-                style={{ gap: '0.5rem', flexWrap: 'wrap' }}
-              >
-                {copilotAuthMode === 'oauth' && (
-                  <button
-                    type="button"
-                    className={`btn btn-test ${copilotConfigured ? 'btn-connected' : ''}`}
-                    onClick={startCopilotDeviceFlow}
-                    disabled={copilotConnecting}
-                  >
-                    {copilotConnecting
-                      ? 'Preparing...'
-                      : copilotConfigured
-                        ? 'Reauthorize'
-                        : 'Authorize'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchCopilotModels()}
-                  disabled={
-                    llmModelsFetching ||
-                    (copilotAuthMode === 'oauth' ? !copilotConfigured : !hasCopilotPatToken)
-                  }
-                >
-                  {llmModelsFetching
-                    ? 'Fetching...'
-                    : llmModelsLoaded && formData.llm_provider === 'github_copilot'
-                      ? 'Loaded'
-                      : 'Fetch Models'}
-                </button>
-                {copilotAuthMode === 'oauth' && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={clearCopilotAuth}
-                    disabled={copilotConnecting || !copilotConfigured}
-                  >
-                    Disconnect
-                  </button>
-                )}
-              </div>
-              {copilotAuthMode === 'oauth' &&
-                copilotWizardVisible &&
-                copilotRequestId &&
-                copilotDeviceCode &&
-                copilotVerificationUri && (
-                  <div
-                    className="field-help"
-                    style={{
-                      marginTop: '0.75rem',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '8px',
-                      padding: '0.75rem',
-                      background: 'var(--color-bg-secondary)',
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
-                      GitHub Authorization
-                    </div>
-                    {copilotWizardStep === 1 && (
-                      <div>
-                        <div>
-                          <strong>Step 1: Copy your device code</strong>
-                        </div>
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.5rem',
-                            marginTop: '0.45rem',
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <code
-                            style={{
-                              fontSize: '1.1rem',
-                              fontWeight: 700,
-                              letterSpacing: '0.08em',
-                              padding: '0.35rem 0.55rem',
-                            }}
-                          >
-                            {copilotDeviceCode}
-                          </code>
-                          <InlineCopyButton
-                            copyText={copilotDeviceCode}
-                            className="copilot-device-copy-btn"
-                            title="Copy device code"
-                            ariaLabel="Copy device code"
-                            copiedTitle="Device code copied"
-                            copiedAriaLabel="Device code copied"
-                            iconSize={16}
-                            feedbackMs={2000}
-                            onCopySuccess={handleCopilotDeviceCodeCopied}
-                            onCopyError={handleCopilotDeviceCodeCopyError}
-                          />
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            onClick={() => setCopilotWizardStep(2)}
-                            disabled={!copilotCodeCopied}
-                            style={{ marginLeft: '0.25rem' }}
-                          >
-                            Continue
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {copilotWizardStep === 2 && (
-                      <div>
-                        <div>
-                          <strong>Step 2: Open the authorization page</strong>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={openCopilotAuthorizationPage}
-                          style={{
-                            marginTop: '0.45rem',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.4rem',
-                            fontSize: '1.05rem',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Open GitHub Authorization
-                          <ExternalLink size={16} />
-                        </button>
-                        <div className="muted" style={{ marginTop: '0.45rem' }}>
-                          {copilotVerificationUri}
-                        </div>
-                        <div style={{ marginTop: '0.65rem' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={() => setCopilotWizardStep(1)}
-                          >
-                            Back
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {copilotWizardStep === 3 && (
-                      <div>
-                        <div>
-                          <strong>Step 3: Complete authorization in GitHub</strong>
-                        </div>
-                        <div className="muted" style={{ marginTop: '0.45rem' }}>
-                          After you approve access in GitHub, Ragtime will connect automatically.
-                        </div>
-                        <div style={{ marginTop: '0.65rem' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={openCopilotAuthorizationPage}
-                          >
-                            Reopen Authorization Page
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              {llmModelsError && formData.llm_provider === 'github_copilot' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              <p className="field-help">
-                {copilotAuthMode === 'oauth'
-                  ? 'OAuth uses GitHub device authorization and is required to access models included with your GitHub Copilot subscription.'
-                  : 'PAT mode uses your personal GitHub token (Models:read) with the GitHub Models API. PAT mode does not grant Copilot subscription model access.'}
-              </p>
-            </div>
-          ) : formData.llm_provider === 'openai_codex' ? (
-            <div className="form-group">
-              <label>OpenAI Codex Connection</label>
-              <div
-                className="input-with-button input-with-actions"
-                style={{ gap: '0.5rem', flexWrap: 'wrap' }}
-              >
-                <button
-                  type="button"
-                  className={`btn btn-test ${openAiCodexConfigured ? 'btn-connected' : ''}`}
-                  onClick={startOpenAiCodexDeviceFlow}
-                  disabled={openAiCodexConnecting}
-                >
-                  {openAiCodexConnecting
-                    ? 'Preparing...'
-                    : openAiCodexConfigured
-                      ? 'Reauthorize'
-                      : 'Authorize'}
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai_codex' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchOpenAiCodexModels()}
-                  disabled={llmModelsFetching || !openAiCodexConfigured}
-                >
-                  {llmModelsFetching
-                    ? 'Fetching...'
-                    : llmModelsLoaded && formData.llm_provider === 'openai_codex'
-                      ? 'Loaded'
-                      : 'Fetch Models'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={clearOpenAiCodexAuth}
-                  disabled={openAiCodexConnecting || !openAiCodexConfigured}
-                >
-                  Disconnect
-                </button>
-              </div>
-              {openAiCodexWizardVisible &&
-                openAiCodexRequestId &&
-                openAiCodexDeviceCode &&
-                openAiCodexVerificationUri && (
-                  <div
-                    className="field-help"
-                    style={{
-                      marginTop: '0.75rem',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '8px',
-                      padding: '0.75rem',
-                      background: 'var(--color-bg-secondary)',
-                    }}
-                  >
-                    <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
-                      OpenAI Codex Authorization
-                    </div>
-                    {openAiCodexWizardStep === 1 && (
-                      <div>
-                        <div>
-                          <strong>Step 1: Copy your device code</strong>
-                        </div>
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.5rem',
-                            marginTop: '0.45rem',
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <code
-                            style={{
-                              fontSize: '1.1rem',
-                              fontWeight: 700,
-                              letterSpacing: '0.08em',
-                              padding: '0.35rem 0.55rem',
-                            }}
-                          >
-                            {openAiCodexDeviceCode}
-                          </code>
-                          <InlineCopyButton
-                            copyText={openAiCodexDeviceCode}
-                            className="copilot-device-copy-btn"
-                            title="Copy device code"
-                            ariaLabel="Copy device code"
-                            copiedTitle="Device code copied"
-                            copiedAriaLabel="Device code copied"
-                            iconSize={16}
-                            feedbackMs={2000}
-                            onCopySuccess={handleOpenAiCodexDeviceCodeCopied}
-                            onCopyError={handleOpenAiCodexDeviceCodeCopyError}
-                          />
-                          <button
-                            type="button"
-                            className="btn btn-sm"
-                            onClick={() => setOpenAiCodexWizardStep(2)}
-                            disabled={!openAiCodexCodeCopied}
-                            style={{ marginLeft: '0.25rem' }}
-                          >
-                            Continue
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {openAiCodexWizardStep === 2 && (
-                      <div>
-                        <div>
-                          <strong>Step 2: Open the authorization page</strong>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={openOpenAiCodexAuthorizationPage}
-                          style={{
-                            marginTop: '0.45rem',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.4rem',
-                            fontSize: '1.05rem',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Open OpenAI Authorization
-                          <ExternalLink size={16} />
-                        </button>
-                        <div className="muted" style={{ marginTop: '0.45rem' }}>
-                          {openAiCodexVerificationUri}
-                        </div>
-                        <div style={{ marginTop: '0.65rem' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={() => setOpenAiCodexWizardStep(1)}
-                          >
-                            Back
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {openAiCodexWizardStep === 3 && (
-                      <div>
-                        <div>
-                          <strong>Step 3: Complete authorization in OpenAI</strong>
-                        </div>
-                        <div className="muted" style={{ marginTop: '0.45rem' }}>
-                          After you approve access in OpenAI, Ragtime will connect automatically.
-                        </div>
-                        <div style={{ marginTop: '0.65rem' }}>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            onClick={openOpenAiCodexAuthorizationPage}
-                          >
-                            Reopen Authorization Page
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              {llmModelsError && formData.llm_provider === 'openai_codex' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              <p className="field-help">
-                OAuth uses OpenAI device authorization to access Codex models. Stored credentials
-                can be removed with Disconnect.
-              </p>
-            </div>
-          ) : formData.llm_provider === 'claude_code' ? (
-            <div className="form-group">
-              <label>Claude Code Connection</label>
-              <div
-                className="input-with-button input-with-actions"
-                style={{ gap: '0.5rem', flexWrap: 'wrap' }}
-              >
-                <button
-                  type="button"
-                  className={`btn btn-test ${claudeCodeConfigured ? 'btn-connected' : ''}`}
-                  onClick={startClaudeCodeAuth}
-                  disabled={claudeCodeConnecting}
-                >
-                  {claudeCodeConnecting
-                    ? 'Authorizing...'
-                    : claudeCodeConfigured
-                      ? 'Reauthorize'
-                      : 'Authorize'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-test"
-                  onClick={refreshClaudeCodeStatus}
-                  disabled={claudeCodeConnecting}
-                >
-                  Check Status
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'claude_code' ? 'btn-connected' : ''}`}
-                  onClick={() => fetchClaudeCodeModels()}
-                  disabled={llmModelsFetching || !claudeCodeConfigured}
-                >
-                  {llmModelsFetching
-                    ? 'Fetching...'
-                    : llmModelsLoaded && formData.llm_provider === 'claude_code'
-                      ? 'Loaded'
-                      : 'Fetch Models'}
-                </button>
-              </div>
-              {claudeCodeWizardVisible && claudeCodeRequestId && claudeCodeAuthorizationUrl && (
-                <div className="settings-auth-wizard" style={{ marginTop: '0.75rem' }}>
-                  <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
-                    Claude Code Authorization
-                  </div>
-                  <div className="muted" style={{ marginBottom: '0.65rem' }}>
-                    Complete sign-in in the Claude browser tab. After you authorize, Claude will
-                    display an authorization code. Copy that code and paste it here.
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary"
-                    onClick={openClaudeCodeAuthorizationPage}
-                  >
-                    Reopen Claude Authorization
-                    <ExternalLink size={14} />
-                  </button>
-                  <input
-                    type="text"
-                    value={claudeCodeCallbackCode}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setClaudeCodeCallbackCode(value);
-                      // Auto-complete when a valid-looking code is pasted (format: base64#base64, ~88 chars with #)
-                      const trimmed = value.trim();
-                      if (trimmed.length >= 80 && trimmed.includes('#') && !claudeCodeConnecting) {
-                        completeClaudeCodeAuth(trimmed);
-                      }
-                    }}
-                    placeholder="Paste authorization code (e.g. SBYLRk...#OlMEg...)"
-                    style={{ marginTop: '0.65rem' }}
-                    disabled={claudeCodeConnecting}
-                  />
-                  <div
-                    style={{
-                      marginTop: '0.65rem',
-                      display: 'flex',
-                      gap: '0.5rem',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-secondary"
-                      onClick={cancelClaudeCodeAuth}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-              {claudeCodeAuthStatus &&
-                (() => {
-                  const cliLabel =
-                    claudeCodeAuthStatus.version || claudeCodeAuthStatus.command || 'installed';
-                  if (!claudeCodeAuthStatus.installed) {
-                    return (
-                      <p className="field-error">
-                        Claude Code CLI is not installed in the container.
-                        {claudeCodeAuthStatus.error ? ` ${claudeCodeAuthStatus.error}` : ''}
-                      </p>
-                    );
-                  }
-                  if (claudeCodeAuthStatus.connected) {
-                    const planDetails = [
-                      claudeCodeAuthStatus.auth_method ? claudeCodeAuthStatus.auth_method : null,
-                      claudeCodeAuthStatus.subscription_type
-                        ? `${claudeCodeAuthStatus.subscription_type} plan`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(', ');
-                    const authPath = claudeCodeAuthStatus.has_cli_auth
-                      ? `CLI subscription${planDetails ? ` (${planDetails})` : ''}`
-                      : 'CLAUDE_CODE_OAUTH_TOKEN';
-                    return (
-                      <p className="field-help" style={{ color: 'var(--color-success)' }}>
-                        Connected via {authPath}. CLI {cliLabel}.
-                      </p>
-                    );
-                  }
-                  return (
-                    <p className="field-error">
-                      Not connected. CLI {cliLabel} is installed but not authenticated.{' '}
-                      {claudeCodeAuthStatus.error ||
-                        'Click Authorize to sign in, or set CLAUDE_CODE_OAUTH_TOKEN.'}
-                    </p>
-                  );
-                })()}
-              {llmModelsError && formData.llm_provider === 'claude_code' && (
-                <p className="field-error">{llmModelsError}</p>
-              )}
-              <p className="field-help">
-                Claude Code uses Claude Code CLI subscription auth, not an Anthropic API key. Click
-                Authorize, sign in at Claude, then paste the authorization code shown after
-                approval.
-              </p>
-            </div>
-          ) : null}
-
-          <div className="form-row-3">
-            {/* Chat Model Filter */}
-            <div className="form-group">
-              <label>Chat Models</label>
-              <button
-                type="button"
-                className="btn btn-secondary settings-control-height"
-                onClick={openModelFilterModal}
-              >
-                Configure Chat Models
-              </button>
-              <p className="field-help">
-                Limit which models appear in the Chat view dropdown. Includes all configured
-                providers (OpenAI, Anthropic, OpenRouter, Ollama, llama.cpp, GitHub Copilot, OpenAI
-                Codex).
-              </p>
-            </div>
-
-            {/* Default Chat Model configuration */}
-            <div className="form-group">
-              <label>
-                Default Chat Model
-                {chatModelsLoading && (
-                  <>
-                    {' '}
-                    <MiniLoadingSpinner variant="icon" size={12} title="Loading models..." />
-                  </>
-                )}
-              </label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <div style={{ flex: 1 }}>
-                  <ModelSelector
-                    models={filteredChatModels}
-                    selectedModelId={manualDefaultChatModel ?? automaticDefaultChatModel ?? ''}
-                    onModelChange={(selectedValue) =>
-                      setFormData({
-                        ...formData,
-                        default_chat_model: selectedValue || null,
-                      })
-                    }
-                    getModelSelectionKey={toScopedModelIdentifier}
-                    disabled={chatModelsLoading || filteredChatModels.length === 0}
-                    loading={chatModelsLoading}
-                    placeholder="Select default chat model"
-                    variant="full"
-                    triggerClassName="settings-control-height"
-                  />
-                </div>
-                {manualDefaultChatModel && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary settings-control-height"
-                    style={{ padding: '0 0.5rem', fontSize: '0.85em', whiteSpace: 'nowrap' }}
-                    title="Reset to default model"
-                    onClick={() => setFormData({ ...formData, default_chat_model: null })}
-                  >
-                    Reset
-                  </button>
-                )}
-              </div>
-              <p className="field-help">
-                {manualDefaultChatModel
-                  ? 'Manually selected. Click Reset to use the default.'
-                  : 'Using the default model. Select a different model to override.'}
-              </p>
-            </div>
-
-            {/* OpenAPI Models configuration */}
-            <div className="form-group">
-              <label>OpenAPI Models</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <label
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
-                    cursor: 'pointer',
-                    fontSize: '0.9em',
-                    margin: 0,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={formData.openapi_sync_chat_models !== false}
-                    onChange={(e) =>
-                      setFormData({ ...formData, openapi_sync_chat_models: e.target.checked })
-                    }
-                  />
-                  Mirror Chat Models
-                </label>
-                {formData.openapi_sync_chat_models === false && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary settings-control-height"
-                    onClick={openOpenapiModelModal}
-                  >
-                    Configure OpenAPI Models
-                  </button>
-                )}
-              </div>
-              <p className="field-help">
-                {formData.openapi_sync_chat_models !== false
-                  ? 'The /v1/models endpoint returns the same models as Chat Models above.'
-                  : 'Configure a separate list of models exposed via the /v1/models endpoint for external clients.'}
-              </p>
-            </div>
-          </div>
-
-          {/* Show OpenAI key field for embeddings when the LLM uses another provider */}
-          {(formData.llm_provider === 'anthropic' ||
-            formData.llm_provider === 'openrouter' ||
-            formData.llm_provider === 'ollama' ||
-            formData.llm_provider === 'llama_cpp' ||
-            formData.llm_provider === 'lmstudio' ||
-            formData.llm_provider === 'github_copilot' ||
-            formData.llm_provider === 'openai_codex') &&
-            formData.embedding_provider === 'openai' && (
-              <div className="form-group">
-                <label>OpenAI API Key (for embeddings)</label>
-                <input
-                  type="password"
-                  value={formData.openai_api_key || ''}
-                  onChange={(e) => {
-                    setFormData({ ...formData, openai_api_key: e.target.value });
-                    // Reset embedding models when key changes
-                    setEmbeddingModels([]);
-                    setEmbeddingModelsError(null);
-                    setEmbeddingModelsLoaded(false);
-                  }}
-                  placeholder="sk-..."
-                />
-                <p className="field-help">
-                  Required for OpenAI embeddings when using a different LLM provider.
-                </p>
-              </div>
-            )}
-
-          {/* Advanced Context & Token Settings */}
-          <details style={{ marginBottom: '16px' }} id="setting-llm_advanced">
-            <summary
-              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
-            >
-              Advanced Settings
-            </summary>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Max Output Tokens</label>
-                {(() => {
-                  const selectedLlmModel = llmModels.find((m) => m.id === formData.llm_model);
-                  const selectedAvailableModel = allAvailableModels.find(
-                    (m) => m.id === formData.llm_model,
-                  );
-                  const modelMax =
-                    selectedLlmModel?.max_output_tokens ||
-                    selectedAvailableModel?.max_output_tokens ||
-                    100000;
-                  const sliderMax = modelMax;
-                  const sliderMin = 500;
-                  const hasModelInfo = !!(
-                    selectedLlmModel?.max_output_tokens || selectedAvailableModel?.max_output_tokens
-                  );
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={(() => {
-                            const val = formData.llm_max_tokens || 4096;
-                            if (val >= sliderMax) return 100;
-                            const scale = Math.log(sliderMax / sliderMin);
-                            return Math.max(
-                              0,
-                              Math.min(100, (Math.log(val / sliderMin) / scale) * 100),
-                            );
-                          })()}
-                          onChange={(e) => {
-                            const slider = parseInt(e.target.value, 10);
-                            let val;
-                            if (slider === 100) {
-                              val = sliderMax;
-                            } else {
-                              const scale = Math.log(sliderMax / sliderMin);
-                              val = Math.round(sliderMin * Math.exp((slider / 100) * scale));
-                            }
-                            setFormData({ ...formData, llm_max_tokens: val });
-                          }}
-                        />
-                        <span
-                          style={{
-                            minWidth: '80px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {formData.llm_max_tokens && formData.llm_max_tokens >= sliderMax
-                            ? 'LLM Max'
-                            : (formData.llm_max_tokens || 4096).toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Limit the length of the model's response.
-                        {hasModelInfo ? ` (Model max: ${modelMax.toLocaleString()})` : ''}
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Max Tool Iterations</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="1"
-                    max="100"
-                    step="1"
-                    style={{ flex: 1 }}
-                    value={formData.max_iterations ?? 30}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        max_iterations: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '30px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {formData.max_iterations ?? 30}
-                  </span>
-                </div>
-                <p className="field-help">Maximum number of agent tool-calling steps.</p>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                    gap: '1rem',
-                  }}
-                >
-                  <div>
-                    <label
-                      style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}
-                    >
-                      Compact Button Threshold
-                    </label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <input
-                        type="range"
-                        min="1"
-                        max="100"
-                        step="1"
-                        style={{ flex: 1 }}
-                        value={formData.chat_compaction_threshold_percent ?? 80}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            chat_compaction_threshold_percent: parseInt(e.target.value, 10),
-                          })
-                        }
-                      />
-                      <span
-                        style={{
-                          minWidth: '44px',
-                          textAlign: 'right',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      >
-                        {formData.chat_compaction_threshold_percent ?? 80}%
-                      </span>
-                    </div>
-                    <p className="field-help">
-                      Show the compact button once effective conversation context reaches this
-                      percentage.
-                    </p>
-                  </div>
-                  <div>
-                    <label
-                      style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}
-                    >
-                      Auto-Compact Threshold
-                    </label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <input
-                        type="range"
-                        min="1"
-                        max="100"
-                        step="1"
-                        style={{ flex: 1 }}
-                        value={formData.chat_auto_compaction_threshold_percent ?? 99}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            chat_auto_compaction_threshold_percent: parseInt(e.target.value, 10),
-                          })
-                        }
-                      />
-                      <span
-                        style={{
-                          minWidth: '44px',
-                          textAlign: 'right',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      >
-                        {(formData.chat_auto_compaction_threshold_percent ?? 99) >= 100
-                          ? 'Never'
-                          : `${formData.chat_auto_compaction_threshold_percent ?? 99}%`}
-                      </span>
-                    </div>
-                    <p className="field-help">
-                      Automatically compact once effective context reaches this percentage. Set to
-                      Never to disable it.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Image Max Width (px)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="320"
-                    max="4096"
-                    step="16"
-                    style={{ flex: 1 }}
-                    value={formData.image_payload_max_width ?? 1024}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        image_payload_max_width: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '56px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.image_payload_max_width ?? 1024).toLocaleString()}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Maximum width for inline image attachments before downsampling.
-                </p>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Image Max Height (px)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="240"
-                    max="4096"
-                    step="16"
-                    style={{ flex: 1 }}
-                    value={formData.image_payload_max_height ?? 1024}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        image_payload_max_height: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '56px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.image_payload_max_height ?? 1024).toLocaleString()}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Maximum height for inline image attachments before downsampling.
-                </p>
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Image Max Pixels</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="76800"
-                    max="8000000"
-                    step="25600"
-                    style={{ flex: 1 }}
-                    value={formData.image_payload_max_pixels ?? 786432}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        image_payload_max_pixels: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '72px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.image_payload_max_pixels ?? 786432).toLocaleString()}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Total pixel budget (width x height). Images exceeding this are scaled down
-                  proportionally.
-                </p>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Image Max Bytes</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="50000"
-                    max="5000000"
-                    step="10000"
-                    style={{ flex: 1 }}
-                    value={formData.image_payload_max_bytes ?? 350000}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        image_payload_max_bytes: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '72px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.image_payload_max_bytes ?? 350000).toLocaleString()}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Max encoded size of each image. Larger images are re-compressed with lower JPEG
-                  quality.
-                </p>
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Max Tool Output (chars)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="50000"
-                    step="1000"
-                    style={{ flex: 1 }}
-                    value={formData.max_tool_output_chars ?? 5000}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        max_tool_output_chars: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.max_tool_output_chars ?? 5000) === 0
-                      ? 'Off'
-                      : `${((formData.max_tool_output_chars ?? 5000) / 1000).toFixed(0)}K`}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Cap on each tool response before truncation (0 = no limit). Lower values curb
-                  token growth during multi-step tool loops.
-                </p>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Context Window (steps)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="30"
-                    step="1"
-                    style={{ flex: 1 }}
-                    value={formData.scratchpad_window_size ?? 6}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        scratchpad_window_size: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '40px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.scratchpad_window_size ?? 6) === 0
-                      ? 'All'
-                      : (formData.scratchpad_window_size ?? 6)}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Number of recent tool steps kept in full detail; older steps are compressed (0 =
-                  keep all). Smaller windows reduce input tokens in long conversations.
-                </p>
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Context Token Budget</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="32000"
-                    step="500"
-                    style={{ flex: 1 }}
-                    value={formData.context_token_budget ?? settings?.context_token_budget ?? 4000}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        context_token_budget: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '60px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {(formData.context_token_budget ?? settings?.context_token_budget ?? 4000) === 0
-                      ? 'Off'
-                      : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Cap on retrieved context tokens fed to the LLM per request (0 = unlimited). Lower
-                  values reduce input token usage; higher values give the model more knowledge to
-                  draw from.
-                </p>
-              </div>
-            </div>
-
-            {/* API Output Configuration */}
-            <div style={{ marginTop: '1rem' }}>
-              <h4 style={{ margin: '0 0 4px' }}>API Output</h4>
-              <p className="field-help" style={{ marginBottom: '12px' }}>
-                Configure how tool call output is handled in OpenAI-compatible API responses (e.g.,
-                when using OpenWebUI or other clients). This does not affect MCP or the built-in
-                chat interface.
-              </p>
-
-              <div className="form-row">
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>Tool Output Visibility</label>
-                  <select
-                    value={
-                      (formData.tool_output_mode ?? settings?.tool_output_mode) === 'default'
-                        ? 'show'
-                        : (formData.tool_output_mode ?? settings?.tool_output_mode ?? 'show')
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        tool_output_mode: e.target.value as typeof formData.tool_output_mode,
-                      })
-                    }
-                  >
-                    <option value="show">Show (Always include output)</option>
-                    <option value="hide">Hide (Suppress output)</option>
-                    <option value="auto">Auto (AI decides)</option>
-                  </select>
-                  <p className="field-help">
-                    Controls whether tool execution details (inputs/outputs) are included in the
-                    streaming response.
-                    <strong>Hide</strong> is useful for cleaner output in clients that don't support
-                    tool visualization.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </details>
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <button type="button" className="btn" onClick={handleSaveLlm} disabled={llmSaving}>
-              {llmSaving ? 'Saving...' : 'Save LLM Configuration'}
-            </button>
-          </div>
-        </fieldset>
-
-        {/* Embedding Configuration */}
-        <fieldset id="setting-embedding_config">
-          <legend className="legend-with-status">
-            <span>Embedding Configuration</span>
-            <span className="legend-divider" aria-hidden="true" />
-            <span
-              className="llm-provider-status-inline"
-              aria-label="Embedding provider configuration status"
-            >
-              <span
-                className="llm-provider-status-item"
-                title={embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingOpenAiConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    embeddingOpenAiConfigured ? 'OpenAI configured' : 'OpenAI not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">OpenAI</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  embeddingOpenAiCodexConfigured
-                    ? 'OpenAI Codex configured'
-                    : 'OpenAI Codex not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingOpenAiCodexConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    embeddingOpenAiCodexConfigured
-                      ? 'OpenAI Codex configured'
-                      : 'OpenAI Codex not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">Codex</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  embeddingOpenRouterConfigured
-                    ? 'OpenRouter configured'
-                    : 'OpenRouter not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingOpenRouterConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    embeddingOpenRouterConfigured
-                      ? 'OpenRouter configured'
-                      : 'OpenRouter not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">OpenRouter</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingOllamaConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    embeddingOllamaConfigured ? 'Ollama configured' : 'Ollama not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">Ollama</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  embeddingLlamaCppConfigured ? 'llama.cpp configured' : 'llama.cpp not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingLlamaCppConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    embeddingLlamaCppConfigured
-                      ? 'llama.cpp configured'
-                      : 'llama.cpp not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">llama.cpp</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={
-                  embeddingLmstudioConfigured ? 'LM Studio configured' : 'LM Studio not configured'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingLmstudioConfigured ? 'configured' : ''}`}
-                  aria-label={
-                    embeddingLmstudioConfigured
-                      ? 'LM Studio configured'
-                      : 'LM Studio not configured'
-                  }
-                />
-                <span className="llm-provider-status-label">LM Studio</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${embeddingOmlxConfigured ? 'configured' : ''}`}
-                  aria-label={embeddingOmlxConfigured ? 'oMLX configured' : 'oMLX not configured'}
-                />
-                <span className="llm-provider-status-label">oMLX</span>
-              </span>
-            </span>
-          </legend>
-          <p className="fieldset-help">
-            Configure how document embeddings are generated for FAISS indexes.
-          </p>
-
-          <div className="form-row">
-            <div className="form-group" id="setting-embedding_provider">
-              <label>Provider</label>
-              <div className="input-with-button input-with-actions">
-                <select
-                  value={formData.embedding_provider || 'ollama'}
-                  onChange={(e) => {
-                    const newProvider = e.target.value as
-                      | 'ollama'
-                      | 'openai'
-                      | 'openai_codex'
-                      | 'openrouter'
-                      | 'llama_cpp'
-                      | 'lmstudio'
-                      | 'omlx';
-                    setFormData({
-                      ...formData,
-                      embedding_provider: newProvider,
-                      // Set sensible default model when switching providers
-                      embedding_model:
-                        newProvider === 'ollama'
-                          ? 'nomic-embed-text'
-                          : newProvider === 'llama_cpp'
-                            ? ''
-                            : newProvider === 'lmstudio'
-                              ? ''
-                              : newProvider === 'omlx'
-                                ? ''
-                                : newProvider === 'openrouter'
-                                  ? ''
-                                  : 'text-embedding-3-small',
-                    });
-                    // Reset Ollama connection state when switching providers
-                    if (newProvider !== 'ollama') {
-                      resetEmbeddingOllamaState();
-                    }
-                    resetEmbeddingModelsState();
-                  }}
-                >
-                  <option value="ollama">Ollama</option>
-                  <option value="llama_cpp">llama.cpp</option>
-                  <option value="lmstudio">LM Studio</option>
-                  <option value="omlx">oMLX</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="openai_codex">OpenAI Codex</option>
-                  <option value="openrouter">OpenRouter</option>
-                </select>
-                {llmProviderForEmbeddingCopy && (
-                  <button
-                    type="button"
-                    className="btn btn-test"
-                    onClick={() => copyLlmProviderToEmbeddings(llmProviderForEmbeddingCopy)}
-                  >
-                    Use LLM Provider
-                  </button>
-                )}
-              </div>
-              <p className="field-help">
-                Model capability filtering comes from the shared model metadata. Providers with no
-                embedding-capable models will return an empty model list.
-              </p>
-            </div>
-            {/* Show embedding dimension info */}
-            {(() => {
-              // Get the dimension from the selected model if available
-              const selectedOllamaModel = ollamaModels.find(
-                (m) => m.name === formData.embedding_model,
-              );
-              const selectedOpenAIModel = embeddingModels.find(
-                (m) => m.id === formData.embedding_model,
-              );
-              const selectedLlamaCppModel = embeddingModels.find(
-                (m) => m.id === formData.embedding_model,
-              );
-              const selectedLmstudioModel = embeddingModels.find(
-                (m) => m.id === formData.embedding_model,
-              );
-              const selectedModelDimension =
-                selectedOllamaModel?.dimensions ||
-                selectedOpenAIModel?.dimensions ||
-                selectedLlamaCppModel?.dimensions ||
-                selectedLmstudioModel?.dimensions;
-              const storedDimension = settings?.embedding_dimension;
-
-              // Determine if there's a mismatch between stored and selected
-              const hasMismatch =
-                storedDimension &&
-                selectedModelDimension &&
-                storedDimension !== selectedModelDimension;
-              // Use selected model dimension if available, otherwise fall back to stored
-              const displayDimension = selectedModelDimension || storedDimension;
-
-              return (
-                <div className="form-group" style={{ flex: '0 0 auto', minWidth: '180px' }}>
-                  <label>
-                    {selectedModelDimension ? 'Model Dimensions' : 'Current Dimensions'}
-                  </label>
-                  <div
-                    style={{
-                      padding: '0.5rem 1rem',
-                      backgroundColor: hasMismatch
-                        ? 'var(--color-warning-light)'
-                        : 'var(--color-bg-secondary)',
-                      borderRadius: '4px',
-                      border: `1px solid ${hasMismatch ? 'var(--color-warning)' : 'var(--color-border)'}`,
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '1.1rem',
-                      textAlign: 'center',
-                    }}
-                  >
-                    {displayDimension ? (
-                      <>
-                        {displayDimension.toLocaleString()}
-                        {hasMismatch && (
-                          <span
-                            style={{
-                              color: 'var(--color-warning)',
-                              fontSize: '0.75rem',
-                              marginLeft: '0.25rem',
-                            }}
-                          >
-                            (change)
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>—</span>
-                    )}
-                  </div>
-                  <p className="field-help">
-                    {hasMismatch
-                      ? `Indexes use ${storedDimension?.toLocaleString()} dims. Re-index required.`
-                      : storedDimension
-                        ? 'Matches existing indexes.'
-                        : 'Will be set on first index.'}
-                  </p>
-                </div>
-              );
-            })()}
-          </div>
-
-          {formData.embedding_provider === 'ollama' && (
-            <OllamaConnectionForm
-              protocol={formData.ollama_protocol || 'http'}
-              host={formData.ollama_host || ''}
-              port={formData.ollama_port || DEFAULT_OLLAMA_PORT}
-              model={formData.embedding_model || ''}
-              connected={ollamaConnected}
-              connecting={ollamaConnecting}
-              error={ollamaError}
-              models={ollamaModels}
-              modelLabel="Embedding Model"
-              modelPlaceholder="nomic-embed-text"
-              connectedHelpText="Select an embedding model from your Ollama server."
-              disconnectedHelpText='Click "Fetch Models" to see available models, or enter manually.'
-              onProtocolChange={(protocol) => {
-                setFormData({ ...formData, ollama_protocol: protocol });
-                resetEmbeddingOllamaState();
-              }}
-              onHostChange={(host) => {
-                setFormData({ ...formData, ollama_host: host });
-                resetEmbeddingOllamaState();
-              }}
-              onPortChange={(port) => {
-                setFormData({ ...formData, ollama_port: port });
-                resetEmbeddingOllamaState();
-              }}
-              onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
-              onFetchModels={handleTestOllamaConnection}
-            />
-          )}
-
-          {formData.embedding_provider === 'llama_cpp' && (
-            <>
-              <OllamaConnectionForm
-                protocol={formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
-                host={formData.llama_cpp_host || ''}
-                port={formData.llama_cpp_port ?? ''}
-                model={formData.embedding_model || ''}
-                connected={embeddingModelsLoaded && formData.embedding_provider === 'llama_cpp'}
-                connecting={embeddingModelsFetching}
-                error={formData.embedding_provider === 'llama_cpp' ? embeddingModelsError : null}
-                models={embeddingModels.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  dimensions: m.dimensions,
-                }))}
-                providerLabel="llama.cpp"
-                defaultPort={DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
-                hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
-                modelLabel="Embedding Model"
-                modelPlaceholder="my-embed-model"
-                connectedHelpText="Select an embedding model from your llama.cpp server."
-                disconnectedHelpText='Click "Fetch Models" to probe the llama.cpp embedding server, or enter the model alias manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, llama_cpp_protocol: protocol });
-                  resetEmbeddingModelsState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, llama_cpp_host: host });
-                  resetEmbeddingModelsState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, llama_cpp_port: port });
-                  resetEmbeddingModelsState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
-                onFetchModels={fetchLlamaCppEmbeddingModels}
-              />
-              <p className="field-help">
-                llama.cpp does not support load/unload over its HTTP API. Start the embedding server
-                with <code>--embedding</code> and the desired model already loaded (for example,{' '}
-                <code>llama-server --embedding -m embed-model.gguf</code>).
-              </p>
-            </>
-          )}
-
-          {formData.embedding_provider === 'lmstudio' && (
-            <>
-              <div className="form-group">
-                <label>LM Studio API Key</label>
-                <input
-                  type="password"
-                  value={formData.lmstudio_api_key || ''}
-                  onChange={(e) => setFormData({ ...formData, lmstudio_api_key: e.target.value })}
-                  placeholder="sk-lm-... (optional)"
-                  autoComplete="off"
-                />
-                <p className="form-help">
-                  Optional. Leave blank if LM Studio is running without authentication.
-                </p>
-              </div>
-              <OllamaConnectionForm
-                protocol={formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
-                host={formData.lmstudio_host || ''}
-                port={formData.lmstudio_port ?? ''}
-                model={formData.embedding_model || ''}
-                connected={embeddingModelsLoaded && formData.embedding_provider === 'lmstudio'}
-                connecting={embeddingModelsFetching}
-                error={formData.embedding_provider === 'lmstudio' ? embeddingModelsError : null}
-                models={embeddingModels.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  dimensions: m.dimensions,
-                  context_limit: m.context_limit,
-                  loaded: m.loaded,
-                }))}
-                providerLabel="LM Studio"
-                defaultPort={DEFAULT_LMSTUDIO_PORT}
-                hostPlaceholder={DEFAULT_LMSTUDIO_HOST}
-                modelLabel="Embedding Model"
-                modelPlaceholder="text-embedding-nomic-embed-text-v1.5"
-                connectedHelpText="Select an embedding model from LM Studio."
-                disconnectedHelpText='Click "Fetch Models" to discover LM Studio embedding models, or enter a model key manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, lmstudio_protocol: protocol });
-                  resetEmbeddingModelsState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, lmstudio_host: host });
-                  resetEmbeddingModelsState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, lmstudio_port: port });
-                  resetEmbeddingModelsState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
-                onFetchModels={fetchLmstudioEmbeddingModels}
-                modelAction={(() => {
-                  const selected = embeddingModels.find((m) => m.id === formData.embedding_model);
-                  const isLoaded = !!(
-                    selected?.loaded ||
-                    (selected?.loaded_instances && selected.loaded_instances.length > 0)
-                  );
-                  if (!formData.embedding_model) {
-                    return (
-                      <button type="button" className="btn btn-test" disabled>
-                        Load Selected
-                      </button>
-                    );
-                  }
-                  return isLoaded ? (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => unloadSelectedLmstudioModel('embedding')}
-                      disabled={lmstudioModelActionLoading}
-                    >
-                      Unload Selected
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-test"
-                      onClick={() => loadSelectedLmstudioModel('embedding')}
-                      disabled={lmstudioModelActionLoading}
-                    >
-                      Load Selected
-                    </button>
-                  );
-                })()}
-              />
-            </>
-          )}
-
-          {formData.embedding_provider === 'omlx' && (
-            <>
-              <div className="form-group">
-                <label>oMLX API Key</label>
-                <input
-                  type="password"
-                  value={formData.omlx_api_key || ''}
-                  onChange={(e) => setFormData({ ...formData, omlx_api_key: e.target.value })}
-                  placeholder="optional"
-                  autoComplete="off"
-                />
-                <p className="form-help">
-                  Optional. Leave blank if oMLX is running without authentication.
-                </p>
-              </div>
-              <OllamaConnectionForm
-                protocol={formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL}
-                host={formData.omlx_host || ''}
-                port={formData.omlx_port ?? ''}
-                model={formData.embedding_model || ''}
-                connected={embeddingModelsLoaded && formData.embedding_provider === 'omlx'}
-                connecting={embeddingModelsFetching}
-                error={formData.embedding_provider === 'omlx' ? embeddingModelsError : null}
-                models={embeddingModels.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  dimensions: m.dimensions,
-                  context_limit: m.context_limit,
-                }))}
-                providerLabel="oMLX"
-                defaultPort={DEFAULT_OMLX_PORT}
-                hostPlaceholder={DEFAULT_OMLX_HOST}
-                modelLabel="Embedding Model"
-                modelPlaceholder="bge-m3"
-                connectedHelpText="Select an embedding model from oMLX."
-                disconnectedHelpText='Click "Fetch Models" to discover oMLX models, or enter a model id manually.'
-                onProtocolChange={(protocol) => {
-                  setFormData({ ...formData, omlx_protocol: protocol });
-                  resetEmbeddingModelsState();
-                }}
-                onHostChange={(host) => {
-                  setFormData({ ...formData, omlx_host: host });
-                  resetEmbeddingModelsState();
-                }}
-                onPortChange={(port) => {
-                  setFormData({ ...formData, omlx_port: port });
-                  resetEmbeddingModelsState();
-                }}
-                onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
-                onFetchModels={fetchOmlxEmbeddingModels}
-              />
-              <p className="field-help">
-                oMLX uses its OpenAI-compatible embeddings endpoint; non-embedding models may appear
-                but fail dimension probing.
-              </p>
-            </>
-          )}
-
-          {hostedEmbeddingProviderConfig && (
-            <>
-              {hostedEmbeddingProviderConfig.apiKeyField && (
-                <div className="form-group">
-                  <label>{hostedEmbeddingProviderConfig.label} API Key</label>
-                  <input
-                    type="password"
-                    value={hostedEmbeddingProviderConfig.apiKeyField.value}
-                    onChange={(e) => {
-                      setFormData({ ...formData, openrouter_api_key: e.target.value });
-                      resetEmbeddingModelsState();
-                    }}
-                    placeholder={hostedEmbeddingProviderConfig.apiKeyField.placeholder}
-                    autoComplete="off"
-                  />
-                </div>
-              )}
-              <div className="form-group">
-                <label>Embedding Model</label>
-                <div className="input-with-button">
-                  {embeddingModelsLoaded && embeddingModels.length > 0 ? (
-                    <select
-                      value={formData.embedding_model || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, embedding_model: e.target.value })
-                      }
-                    >
-                      <option value="">Select a model...</option>
-                      {embeddingModels.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.name}
-                          {model.dimensions ? ` (${model.dimensions} dims)` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={formData.embedding_model || ''}
-                      onChange={(e) =>
-                        setFormData({ ...formData, embedding_model: e.target.value })
-                      }
-                      placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    className={`btn btn-test ${embeddingModelsLoaded ? 'btn-connected' : ''}`}
-                    onClick={() =>
-                      fetchEmbeddingModels(
-                        hostedEmbeddingProviderConfig.provider,
-                        hostedEmbeddingProviderConfig.apiKey,
-                      )
-                    }
-                    disabled={embeddingModelsFetching || !hostedEmbeddingProviderConfig.apiKey}
-                  >
-                    {embeddingModelsFetching
-                      ? 'Fetching...'
-                      : embeddingModelsLoaded
-                        ? 'Loaded'
-                        : 'Fetch Models'}
-                  </button>
-                </div>
-                {embeddingModelsError && <p className="field-error">{embeddingModelsError}</p>}
-                <p className="field-help">
-                  {embeddingModelsLoaded
-                    ? hostedEmbeddingProviderConfig.loadedHelp()
-                    : hostedEmbeddingProviderConfig.unloadedHelp}
-                </p>
-              </div>
-
-              {/* Embedding Dimensions (only for text-embedding-3-* models) */}
-              {(hostedEmbeddingProviderConfig.provider === 'openai' ||
-                hostedEmbeddingProviderConfig.provider === 'openai_codex') &&
-                formData.embedding_model?.startsWith('text-embedding-3') && (
                   <div className="form-group">
-                    <label>Embedding Dimensions</label>
-                    <input
-                      type="number"
-                      min="256"
-                      max="3072"
-                      step="1"
-                      value={formData.embedding_dimensions ?? ''}
-                      onChange={(e) => {
-                        const val = e.target.value ? parseInt(e.target.value, 10) : null;
-                        setFormData({ ...formData, embedding_dimensions: val });
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        void handleOpenGlobalEnvVarsModal();
                       }}
-                      placeholder="Default (model max)"
-                    />
-                    <p className="field-help">
-                      Controls the output size of embeddings. Lower values = faster search and less
-                      storage, but slightly reduced accuracy. <strong>Recommended: 1536</strong> for
-                      best balance. Values over 2000 disable fast indexed search (pgvector limit).
-                      Changing this requires a full re-index of all filesystem indexes.
-                    </p>
+                    >
+                      Manage Global Env Vars
+                    </button>
                   </div>
-                )}
-            </>
-          )}
-
-          {/* Advanced Embedding Settings */}
-          <details style={{ marginBottom: '16px' }} id="setting-embedding_advanced">
-            <summary
-              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
-            >
-              Advanced Settings
-            </summary>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Embedding Timeout (seconds)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <input
-                    type="range"
-                    min="30"
-                    max="600"
-                    step="10"
-                    style={{ flex: 1 }}
-                    value={
-                      formData.ollama_embedding_timeout_seconds ??
-                      settings?.ollama_embedding_timeout_seconds ??
-                      180
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        ollama_embedding_timeout_seconds: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {formData.ollama_embedding_timeout_seconds ??
-                      settings?.ollama_embedding_timeout_seconds ??
-                      180}
-                    s
-                  </span>
                 </div>
-                <p className="field-help">
-                  Maximum time allowed per embedding sub-batch for any embedding provider. If a
-                  batch times out, it is automatically retried with a smaller batch size. Increase
-                  for slow hardware or large embedding models.
-                </p>
+
+                <div>
+                  <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
+                  <p className="field-help">
+                    Control which HTML iframe sandbox flags are granted to User Space previews.
+                  </p>
+                  <div className="form-group">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowSandboxModal(true)}
+                    >
+                      Configure Sandbox Flags
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 style={{ margin: '0 0 8px' }}>Workspace Code Indexes</h4>
+                  <p className="field-help">
+                    Inspect and manage per-workspace code indexes used by User Space agents.
+                  </p>
+                  <div className="form-group">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowCodeIndexesModal(true)}
+                    >
+                      Manage Code Indexes
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div className="form-group" style={{ flex: 1 }} id="setting-sequential_index_loading">
-                <label
-                  className="chat-toggle-control"
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-                >
-                  <label className="toggle-switch">
+              <details style={{ marginBottom: '16px' }} id="setting-userspace_advanced">
+                <summary className="settings-advanced-summary">Advanced Settings</summary>
+
+                <div className="form-group">
+                  <label>Workspace Duplication Defaults</label>
+                  <p className="field-help" style={{ marginTop: 0 }}>
+                    Control what the hover-duplicate action copies into the new workspace when no
+                    per-duplicate override is provided.
+                  </p>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      marginBottom: '0.5rem',
+                    }}
+                  >
                     <input
                       type="checkbox"
                       checked={
-                        formData.sequential_index_loading ??
-                        settings?.sequential_index_loading ??
-                        false
+                        formData.userspace_duplicate_copy_files_default ??
+                        settings?.userspace_duplicate_copy_files_default ??
+                        true
                       }
-                      onChange={(e) =>
-                        setFormData({ ...formData, sequential_index_loading: e.target.checked })
+                      onChange={(event) =>
+                        setFormData({
+                          ...formData,
+                          userspace_duplicate_copy_files_default: event.target.checked,
+                        })
                       }
                     />
-                    <span className="toggle-slider"></span>
+                    Copy workspace files by default
                   </label>
-                  <span>
-                    {(formData.sequential_index_loading ??
-                    settings?.sequential_index_loading ??
-                    false)
-                      ? 'Sequential Index Loading'
-                      : 'Parallel Index Loading'}
-                  </span>
-                </label>
-                <p className="field-help">
-                  <strong>Parallel (default):</strong> All indexes load simultaneously for faster
-                  startup, but peak RAM is ~1.8x total index size during deserialization.
-                </p>
-                <p className="field-help">
-                  <strong>Sequential:</strong> Indexes load one at a time (smallest first), reducing
-                  peak memory to ~1.8x the largest index. Useful when RAM is limited or OOM errors
-                  occur on startup.
-                </p>
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }} id="setting-chunking_max_workers">
-                <label>Chunking Pool Workers</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <input
-                    type="range"
-                    min={1}
-                    max={16}
-                    step={1}
-                    style={{ flex: 1 }}
-                    value={formData.chunking_max_workers ?? settings?.chunking_max_workers ?? 4}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        chunking_max_workers: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {formData.chunking_max_workers ?? settings?.chunking_max_workers ?? 4}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Maximum parallel processes used by the chunking pool during indexing. Lower this
-                  (e.g. 2) if indexing causes OOMs or starves the API/UI; raise on high-memory
-                  hosts. Default 4. Changing this restarts the pool on next use.
-                </p>
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }} id="setting-chunking_max_batch_size">
-                <label>Chunking Batch Size</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <input
-                    type="range"
-                    min={10}
-                    max={500}
-                    step={10}
-                    style={{ flex: 1 }}
-                    value={
-                      formData.chunking_max_batch_size ?? settings?.chunking_max_batch_size ?? 100
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        chunking_max_batch_size: parseInt(e.target.value, 10),
-                      })
-                    }
-                  />
-                  <span
-                    style={{ minWidth: '48px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}
-                  >
-                    {formData.chunking_max_batch_size ?? settings?.chunking_max_batch_size ?? 100}
-                  </span>
-                </div>
-                <p className="field-help">
-                  Maximum documents submitted to each chunking worker batch. Smaller batches reduce
-                  per-worker memory spikes at the cost of throughput. Default 100.
-                </p>
-              </div>
-            </div>
-
-            {/* OCR Settings */}
-            <div id="setting-ocr" style={{ marginTop: '1rem' }}>
-              <h4 style={{ margin: '0 0 4px' }}>OCR Settings</h4>
-              <p className="field-help" style={{ marginBottom: '12px' }}>
-                Configure default OCR (Optical Character Recognition) mode for extracting text from
-                images during indexing.
-              </p>
-
-              <div
-                className="form-row"
-                style={
-                  formData.default_ocr_mode === 'vision'
-                    ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' }
-                    : undefined
-                }
-              >
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label>Default OCR Mode</label>
-                  <select
-                    value={formData.default_ocr_mode || 'disabled'}
-                    onChange={(e) => {
-                      const newMode = e.target.value as OcrMode;
-                      setFormData({
-                        ...formData,
-                        default_ocr_mode: newMode,
-                        default_ocr_provider: formData.default_ocr_provider || 'ollama',
-                      });
-                      if (newMode !== 'vision') {
-                        setVisionModelsError(null);
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={
+                        formData.userspace_duplicate_copy_metadata_default ??
+                        settings?.userspace_duplicate_copy_metadata_default ??
+                        true
                       }
+                      onChange={(event) =>
+                        setFormData({
+                          ...formData,
+                          userspace_duplicate_copy_metadata_default: event.target.checked,
+                        })
+                      }
+                    />
+                    Copy metadata by default (description, SQLite mode, tool selections, env vars
+                    when accessible)
+                  </label>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      marginTop: '0.5rem',
                     }}
                   >
-                    <option value="disabled">Disabled (skip images)</option>
-                    <option value="tesseract">Tesseract (fast, traditional OCR)</option>
-                    <option value="vision">Vision Model (semantic OCR with AI)</option>
-                  </select>
+                    <input
+                      type="checkbox"
+                      checked={
+                        formData.userspace_duplicate_copy_chats_default ??
+                        settings?.userspace_duplicate_copy_chats_default ??
+                        false
+                      }
+                      onChange={(event) =>
+                        setFormData({
+                          ...formData,
+                          userspace_duplicate_copy_chats_default: event.target.checked,
+                        })
+                      }
+                    />
+                    Copy chats by default
+                  </label>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      marginTop: '0.5rem',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={
+                        formData.userspace_duplicate_copy_mounts_default ??
+                        settings?.userspace_duplicate_copy_mounts_default ??
+                        false
+                      }
+                      onChange={(event) =>
+                        setFormData({
+                          ...formData,
+                          userspace_duplicate_copy_mounts_default: event.target.checked,
+                        })
+                      }
+                    />
+                    Copy mounts by default
+                  </label>
                   <p className="field-help">
-                    {formData.default_ocr_mode === 'disabled' && (
-                      <>Image files will be skipped during indexing.</>
-                    )}
-                    {formData.default_ocr_mode === 'tesseract' && (
-                      <>
-                        Fast traditional OCR using Tesseract. Good for screenshots and scanned
-                        documents with clear text.
-                      </>
-                    )}
-                    {formData.default_ocr_mode === 'vision' && (
-                      <>
-                        Semantic OCR using a vision-capable model. Better at understanding complex
-                        layouts, handwriting, and context.
-                      </>
-                    )}
+                    Disable metadata copy to create a copy with the source files but fresh workspace
+                    settings. Chat and mount defaults are off by default.
                   </p>
                 </div>
 
-                {formData.default_ocr_mode === 'vision' && (
+                <div className="form-row">
                   <div className="form-group" style={{ flex: 1 }}>
-                    <label>Vision OCR Provider</label>
-                    <select
-                      value={selectedOcrProvider}
+                    <label>Mount Auto-Sync Interval</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Global default used by SSH, OneDrive, and Google Drive workspace mounts when
+                      no mount source or workspace mount override is set.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_mount_sync_interval_seconds ??
+                        settings?.userspace_mount_sync_interval_seconds ??
+                        MOUNT_SYNC_DEFAULT_SECONDS;
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={mountSyncIntervalToSlider(currentVal)}
+                              onChange={(e) => {
+                                const slider = parseInt(e.target.value, 10);
+                                setFormData({
+                                  ...formData,
+                                  userspace_mount_sync_interval_seconds:
+                                    sliderToMountSyncInterval(slider),
+                                });
+                              }}
+                            />
+                            <span
+                              style={{
+                                minWidth: '64px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {formatMountSyncInterval(currentVal)}
+                            </span>
+                          </div>
+                          <ScheduleStartTimeInput
+                            enabled={currentVal > 0}
+                            startMinute={
+                              formData.userspace_mount_sync_start_minute ??
+                              settings?.userspace_mount_sync_start_minute ??
+                              null
+                            }
+                            timezone={
+                              formData.userspace_mount_sync_timezone ??
+                              settings?.userspace_mount_sync_timezone ??
+                              null
+                            }
+                            onStartMinuteChange={(value) =>
+                              setFormData({ ...formData, userspace_mount_sync_start_minute: value })
+                            }
+                            onTimezoneChange={(value) =>
+                              setFormData({ ...formData, userspace_mount_sync_timezone: value })
+                            }
+                            label="Start Time"
+                            style={{ marginTop: 10 }}
+                          />
+                          <p className="field-help">
+                            Range: 1 second to 30 days. Local workspace file changes still wake
+                            eligible mounts immediately.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Stale Branch Threshold</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Branches that fall behind the active head by this many snapshots are hidden
+                      from the timeline.
+                    </p>
+                    {(() => {
+                      const sliderMin = 10;
+                      const sliderMax = 500;
+                      const currentVal = formData.snapshot_stale_branch_threshold ?? 50;
+                      const isAll = currentVal === 0;
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={(() => {
+                                if (isAll) return 100;
+                                const scale = Math.log(sliderMax / sliderMin);
+                                return Math.max(
+                                  0,
+                                  Math.min(
+                                    99,
+                                    Math.round((Math.log(currentVal / sliderMin) / scale) * 99),
+                                  ),
+                                );
+                              })()}
+                              onChange={(e) => {
+                                const slider = parseInt(e.target.value, 10);
+                                let val: number;
+                                if (slider >= 100) {
+                                  val = 0; // "All" sentinel
+                                } else {
+                                  const scale = Math.log(sliderMax / sliderMin);
+                                  val = Math.max(
+                                    sliderMin,
+                                    Math.round(sliderMin * Math.exp((slider / 99) * scale)),
+                                  );
+                                }
+                                setFormData({ ...formData, snapshot_stale_branch_threshold: val });
+                              }}
+                            />
+                            <span
+                              style={{
+                                minWidth: '48px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {isAll ? 'All' : currentVal}
+                            </span>
+                          </div>
+                          <p className="field-help">
+                            Default: 50. Set to "All" to show every branch regardless of age.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>SQLite Import Size Limit</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Maximum SQL dump upload accepted by the User Space SQLite import wizard.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_sqlite_import_max_bytes ??
+                        settings?.userspace_sqlite_import_max_bytes ??
+                        SQLITE_IMPORT_DEFAULT_MAX_BYTES;
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={sqliteImportBytesToSlider(currentVal)}
+                              onChange={(e) => {
+                                const slider = parseInt(e.target.value, 10);
+                                setFormData({
+                                  ...formData,
+                                  userspace_sqlite_import_max_bytes:
+                                    sliderToSqliteImportBytes(slider),
+                                });
+                              }}
+                            />
+                            <span
+                              style={{
+                                minWidth: '84px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {formatBytes(currentVal)}
+                            </span>
+                          </div>
+                          <p className="field-help">
+                            Range: 100 MB to 100 GB. Large imports are memory and disk intensive;
+                            use higher caps only for trusted dumps on hosts with enough headroom.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>HTTP Request Timeout</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Cap synchronous User Space live-data and retry-tool requests before a reverse
+                      proxy returns an unhelpful 504/524.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.http_proxy_safe_timeout_seconds ??
+                        settings?.http_proxy_safe_timeout_seconds ??
+                        90;
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="10"
+                              max="300"
+                              step="5"
+                              style={{ flex: 1 }}
+                              value={currentVal}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  http_proxy_safe_timeout_seconds: parseInt(e.target.value, 10),
+                                })
+                              }
+                            />
+                            <span
+                              style={{
+                                minWidth: '52px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {currentVal}s
+                            </span>
+                          </div>
+                          <p className="field-help">
+                            Default: 90 seconds. Keep this below your load balancer, CDN, or
+                            reverse-proxy upstream timeout so Ragtime can return structured timeout
+                            guidance to the agent.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Primitive Upload Size Limit</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Maximum upload accepted by same-origin User Space primitives for files,
+                      objects, document previews, and archive extraction.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_primitive_upload_max_bytes ??
+                        settings?.userspace_primitive_upload_max_bytes ??
+                        104857600;
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="1048576"
+                              max="1073741824"
+                              step="1048576"
+                              style={{ flex: 1 }}
+                              value={currentVal}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  userspace_primitive_upload_max_bytes: parseInt(
+                                    e.target.value,
+                                    10,
+                                  ),
+                                })
+                              }
+                            />
+                            <span
+                              style={{
+                                minWidth: '84px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {formatBytes(currentVal)}
+                            </span>
+                          </div>
+                          <p className="field-help">
+                            Range: 1 MB to 1 GB. This is a platform resource cap; workspace editors
+                            still choose their own app upload UI and storage pattern.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Primitive Archive File Limit</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Maximum number of files extracted from one User Space archive primitive
+                      request.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_primitive_archive_max_entries ??
+                        settings?.userspace_primitive_archive_max_entries ??
+                        500;
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="1"
+                              max="10000"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={currentVal}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  userspace_primitive_archive_max_entries: parseInt(
+                                    e.target.value,
+                                    10,
+                                  ),
+                                })
+                              }
+                            />
+                            <span
+                              style={{
+                                minWidth: '72px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {currentVal.toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="field-help">
+                            Default: 500. Higher values are useful for bulk support packages but can
+                            create many workspace file-change events.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>User Space Code Index Debounce</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Delay after workspace file writes before scheduling a hidden code-index
+                      update.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_code_index_debounce_seconds ??
+                        settings?.userspace_code_index_debounce_seconds ??
+                        2;
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={valueToZeroableLogSlider(currentVal, 1, 3600)}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  userspace_code_index_debounce_seconds: zeroableLogSliderToValue(
+                                    parseInt(e.target.value, 10),
+                                    1,
+                                    3600,
+                                  ),
+                                })
+                              }
+                            />
+                            <input
+                              type="number"
+                              min="0"
+                              max="3600"
+                              step="1"
+                              aria-label="User Space Code Index Debounce seconds"
+                              value={currentVal}
+                              onChange={(e) => {
+                                const value = parseInt(e.target.value, 10);
+                                if (Number.isFinite(value)) {
+                                  setFormData({
+                                    ...formData,
+                                    userspace_code_index_debounce_seconds: value,
+                                  });
+                                }
+                              }}
+                              style={{
+                                width: '96px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            />
+                          </div>
+                          <p className="field-help">
+                            Range: 0 to 3600 seconds. Default: 2 seconds.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>User Space Code Index Reconcile Interval</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Background interval for recovering persisted dirty workspace code-index rows.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_code_index_reconcile_interval_seconds ??
+                        settings?.userspace_code_index_reconcile_interval_seconds ??
+                        300;
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={valueToLogSlider(currentVal, 10, 86400)}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  userspace_code_index_reconcile_interval_seconds: logSliderToValue(
+                                    parseInt(e.target.value, 10),
+                                    10,
+                                    86400,
+                                  ),
+                                })
+                              }
+                            />
+                            <input
+                              type="number"
+                              min="10"
+                              max="86400"
+                              step="1"
+                              aria-label="User Space Code Index Reconcile Interval seconds"
+                              value={currentVal}
+                              onChange={(e) => {
+                                const value = parseInt(e.target.value, 10);
+                                if (Number.isFinite(value)) {
+                                  setFormData({
+                                    ...formData,
+                                    userspace_code_index_reconcile_interval_seconds: value,
+                                  });
+                                }
+                              }}
+                              style={{
+                                width: '96px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            />
+                          </div>
+                          <p className="field-help">
+                            Range: 10 to 86400 seconds. Default: 300 seconds.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>User Space Code Index Max Attempts</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Retry cap for a dirty path before leaving its last error visible to admins.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_code_index_max_attempts ??
+                        settings?.userspace_code_index_max_attempts ??
+                        3;
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="1"
+                              max="20"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={currentVal}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  userspace_code_index_max_attempts: parseInt(e.target.value, 10),
+                                })
+                              }
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              max="20"
+                              step="1"
+                              aria-label="User Space Code Index Max Attempts"
+                              value={currentVal}
+                              onChange={(e) => {
+                                const value = parseInt(e.target.value, 10);
+                                if (Number.isFinite(value)) {
+                                  setFormData({
+                                    ...formData,
+                                    userspace_code_index_max_attempts: value,
+                                  });
+                                }
+                              }}
+                              style={{
+                                width: '72px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            />
+                          </div>
+                          <p className="field-help">
+                            Range: 1 to 20 attempts. Default: 3 attempts.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>User Space Code Index Max Concurrency</label>
+                    <p className="field-help" style={{ marginTop: 0 }}>
+                      Maximum number of User Space code index jobs that may run at the same time.
+                    </p>
+                    {(() => {
+                      const currentVal =
+                        formData.userspace_code_index_max_concurrency ??
+                        settings?.userspace_code_index_max_concurrency ??
+                        1;
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="1"
+                              max="8"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={currentVal}
+                              onChange={(e) =>
+                                setFormData({
+                                  ...formData,
+                                  userspace_code_index_max_concurrency: parseInt(
+                                    e.target.value,
+                                    10,
+                                  ),
+                                })
+                              }
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              max="8"
+                              step="1"
+                              aria-label="User Space Code Index Max Concurrency"
+                              value={currentVal}
+                              onChange={(e) => {
+                                const value = parseInt(e.target.value, 10);
+                                if (Number.isFinite(value)) {
+                                  setFormData({
+                                    ...formData,
+                                    userspace_code_index_max_concurrency: value,
+                                  });
+                                }
+                              }}
+                              style={{
+                                width: '72px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            />
+                          </div>
+                          <p className="field-help">Range: 1 to 8. Default: 1.</p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </details>
+
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleSaveStaleBranchThreshold}
+                  disabled={staleBranchSaving}
+                >
+                  {staleBranchSaving ? 'Saving...' : 'Save User Space Settings'}
+                </button>
+              </div>
+            </fieldset>
+          </SettingsAccordionSection>
+
+          {/* LLM Providers */}
+          <SettingsAccordionSection
+            id="llm-providers"
+            title="LLM Providers"
+            open={openAccordionSections['llm-providers']}
+            onToggle={handleToggleAccordionSection}
+            status={llmProviderStatus}
+          >
+            <fieldset>
+              <legend>LLM Providers</legend>
+              <p className="fieldset-help">
+                Configure the language model used for answering questions and tool calls.
+              </p>
+
+              <div className="form-group">
+                <label>Provider</label>
+                <div className="input-with-button input-with-actions">
+                  <select
+                    value={formData.llm_provider || 'openai'}
+                    onChange={(e) => {
+                      const newProvider = e.target.value as
+                        | 'openai'
+                        | 'anthropic'
+                        | 'openrouter'
+                        | 'ollama'
+                        | 'llama_cpp'
+                        | 'lmstudio'
+                        | 'omlx'
+                        | 'github_copilot'
+                        | 'openai_codex'
+                        | 'claude_code';
+                      setFormData({
+                        ...formData,
+                        llm_provider: newProvider,
+                        llm_model:
+                          newProvider === 'anthropic' ? '' : newProvider === 'ollama' ? '' : '',
+                      });
+                      // Reset LLM models when switching providers
+                      resetLlmModelsState();
+                      if (newProvider !== 'ollama') {
+                        resetLlmOllamaState();
+                      }
+
+                      if (
+                        newProvider === 'github_copilot' &&
+                        ((copilotAuthMode === 'oauth' &&
+                          (copilotAuthStatus?.connected || settings?.has_github_copilot_auth)) ||
+                          (copilotAuthMode === 'pat' && hasCopilotPatToken))
+                      ) {
+                        fetchCopilotModels();
+                      }
+                      if (
+                        newProvider === 'openai_codex' &&
+                        (openAiCodexAuthStatus?.connected || settings?.has_openai_codex_auth)
+                      ) {
+                        fetchOpenAiCodexModels();
+                      }
+                      if (newProvider === 'claude_code' && claudeCodeConfigured) {
+                        fetchClaudeCodeModels();
+                      }
+                    }}
+                  >
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="llama_cpp">llama.cpp</option>
+                    <option value="lmstudio">LM Studio</option>
+                    <option value="omlx">oMLX</option>
+                    <option value="github_copilot">GitHub Copilot</option>
+                    <option value="openai_codex">OpenAI Codex</option>
+                    <option value="claude_code">Claude Code (Pro/Max)</option>
+                  </select>
+                  {embeddingProviderForLlmCopy && (
+                    <button
+                      type="button"
+                      className="btn btn-test"
+                      onClick={() => copyEmbeddingProviderToLlm(embeddingProviderForLlmCopy)}
+                    >
+                      Use Embedding Provider
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Ollama LLM Server Connection - only show when Ollama is selected */}
+              {formData.llm_provider === 'ollama' && (
+                <>
+                  <OllamaConnectionForm
+                    protocol={formData.llm_ollama_protocol || 'http'}
+                    host={formData.llm_ollama_host || ''}
+                    port={formData.llm_ollama_port || DEFAULT_OLLAMA_PORT}
+                    model={formData.llm_model || ''}
+                    connected={llmOllamaConnected}
+                    connecting={llmOllamaConnecting}
+                    error={llmOllamaError}
+                    models={llmOllamaModels}
+                    modelLabel="Model"
+                    modelPlaceholder=""
+                    connectedHelpText="Select an LLM from your Ollama server."
+                    disconnectedHelpText='Click "Fetch Models" to see available models, or enter manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, llm_ollama_protocol: protocol });
+                      resetLlmOllamaState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, llm_ollama_host: host });
+                      resetLlmOllamaState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, llm_ollama_port: port });
+                      resetLlmOllamaState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                    onFetchModels={() =>
+                      testLlmOllamaConnection(
+                        formData.llm_ollama_protocol || 'http',
+                        formData.llm_ollama_host || 'localhost',
+                        formData.llm_ollama_port || DEFAULT_OLLAMA_PORT,
+                      )
+                    }
+                  />
+                </>
+              )}
+
+              {formData.llm_provider === 'llama_cpp' && (
+                <>
+                  <OllamaConnectionForm
+                    protocol={formData.llm_llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
+                    host={formData.llm_llama_cpp_host || ''}
+                    port={formData.llm_llama_cpp_port ?? ''}
+                    model={formData.llm_model || ''}
+                    connected={llmModelsLoaded && formData.llm_provider === 'llama_cpp'}
+                    connecting={llmModelsFetching}
+                    error={formData.llm_provider === 'llama_cpp' ? llmModelsError : null}
+                    models={llmModels.map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      context_limit: m.context_limit,
+                    }))}
+                    providerLabel="llama.cpp"
+                    defaultPort={DEFAULT_LLAMA_CPP_CHAT_PORT}
+                    hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
+                    modelLabel="Model"
+                    modelPlaceholder="my-chat-model"
+                    connectedHelpText="Select a model from your llama.cpp server."
+                    disconnectedHelpText='Click "Fetch Models" to discover the active llama.cpp model, or enter its alias manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, llm_llama_cpp_protocol: protocol });
+                      resetLlmModelsState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, llm_llama_cpp_host: host });
+                      resetLlmModelsState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, llm_llama_cpp_port: port });
+                      resetLlmModelsState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                    onFetchModels={fetchLlamaCppLlmModels}
+                  />
+                  <p className="field-help">
+                    llama.cpp does not support load/unload over its HTTP API. Start the llama.cpp
+                    server with the desired model already loaded (for example,{' '}
+                    <code>llama-server -m model.gguf</code>); Ragtime will use whichever model the
+                    server is currently serving.
+                  </p>
+                </>
+              )}
+
+              {formData.llm_provider === 'lmstudio' && (
+                <>
+                  <div className="form-group">
+                    <label>LM Studio API Key</label>
+                    <input
+                      type="password"
+                      value={formData.lmstudio_api_key || ''}
+                      onChange={(e) =>
+                        setFormData({ ...formData, lmstudio_api_key: e.target.value })
+                      }
+                      placeholder="sk-lm-... (optional)"
+                      autoComplete="off"
+                    />
+                    <p className="form-help">
+                      Optional. Leave blank if LM Studio is running without authentication.
+                    </p>
+                  </div>
+                  <OllamaConnectionForm
+                    protocol={formData.llm_lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
+                    host={formData.llm_lmstudio_host || ''}
+                    port={formData.llm_lmstudio_port ?? ''}
+                    model={formData.llm_model || ''}
+                    connected={llmModelsLoaded && formData.llm_provider === 'lmstudio'}
+                    connecting={llmModelsFetching}
+                    error={formData.llm_provider === 'lmstudio' ? llmModelsError : null}
+                    models={llmModels.map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      context_limit: m.context_limit,
+                      loaded: m.loaded,
+                    }))}
+                    providerLabel="LM Studio"
+                    defaultPort={DEFAULT_LMSTUDIO_PORT}
+                    hostPlaceholder={DEFAULT_LMSTUDIO_HOST}
+                    modelLabel="Model"
+                    modelPlaceholder="gemma-4-31b-it-mlx"
+                    connectedHelpText="Select a chat-capable model from LM Studio."
+                    disconnectedHelpText='Click "Fetch Models" to discover LM Studio models, or enter a model key manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, llm_lmstudio_protocol: protocol });
+                      resetLlmModelsState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, llm_lmstudio_host: host });
+                      resetLlmModelsState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, llm_lmstudio_port: port });
+                      resetLlmModelsState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                    onFetchModels={fetchLmstudioLlmModels}
+                    modelAction={(() => {
+                      const selected = llmModels.find((m) => m.id === formData.llm_model);
+                      const isLoaded = !!(
+                        selected?.loaded ||
+                        (selected?.loaded_instances && selected.loaded_instances.length > 0)
+                      );
+                      if (!formData.llm_model) {
+                        return (
+                          <button type="button" className="btn btn-test" disabled>
+                            Load Selected
+                          </button>
+                        );
+                      }
+                      return isLoaded ? (
+                        <button
+                          type="button"
+                          className="btn btn-test"
+                          onClick={() => unloadSelectedLmstudioModel('llm')}
+                          disabled={lmstudioModelActionLoading}
+                        >
+                          Unload Selected
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-test"
+                          onClick={() => loadSelectedLmstudioModel('llm')}
+                          disabled={lmstudioModelActionLoading}
+                        >
+                          Load Selected
+                        </button>
+                      );
+                    })()}
+                  />
+                </>
+              )}
+
+              {formData.llm_provider === 'omlx' && (
+                <>
+                  <div className="form-group">
+                    <label>oMLX API Key</label>
+                    <input
+                      type="password"
+                      value={formData.omlx_api_key || ''}
+                      onChange={(e) => setFormData({ ...formData, omlx_api_key: e.target.value })}
+                      placeholder="optional"
+                      autoComplete="off"
+                    />
+                    <p className="form-help">
+                      Optional. Leave blank if oMLX is running without authentication.
+                    </p>
+                  </div>
+                  <OllamaConnectionForm
+                    protocol={formData.llm_omlx_protocol || DEFAULT_OMLX_PROTOCOL}
+                    host={formData.llm_omlx_host || ''}
+                    port={formData.llm_omlx_port ?? ''}
+                    model={formData.llm_model || ''}
+                    connected={llmModelsLoaded && formData.llm_provider === 'omlx'}
+                    connecting={llmModelsFetching}
+                    error={formData.llm_provider === 'omlx' ? llmModelsError : null}
+                    models={llmModels.map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      context_limit: m.context_limit,
+                    }))}
+                    providerLabel="oMLX"
+                    defaultPort={DEFAULT_OMLX_PORT}
+                    hostPlaceholder={DEFAULT_OMLX_HOST}
+                    modelLabel="Model"
+                    modelPlaceholder="qwen3-coder-next-8bit"
+                    connectedHelpText="Select a model from oMLX."
+                    disconnectedHelpText='Click "Fetch Models" to discover oMLX models, or enter a model id manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, llm_omlx_protocol: protocol });
+                      resetLlmModelsState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, llm_omlx_host: host });
+                      resetLlmModelsState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, llm_omlx_port: port });
+                      resetLlmModelsState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, llm_model: model })}
+                    onFetchModels={fetchOmlxLlmModels}
+                  />
+                  <p className="field-help">
+                    oMLX manages model loading in its own admin UI and serves selected models
+                    through its OpenAI-compatible API.
+                  </p>
+                </>
+              )}
+
+              {/* API Key - show appropriate one based on provider */}
+              {formData.llm_provider === 'openai' || !formData.llm_provider ? (
+                <div className="form-group">
+                  <label>OpenAI API Key</label>
+                  <div className="input-with-button">
+                    <input
+                      type="password"
+                      value={formData.openai_api_key || ''}
                       onChange={(e) => {
-                        const provider = e.target.value as OcrProvider;
-                        setFormData({
-                          ...formData,
-                          default_ocr_mode: 'vision',
-                          default_ocr_provider: provider,
-                          default_ocr_vision_model: null,
-                        });
-                        setVisionModels([]);
-                        setVisionModelsError(null);
+                        setFormData({ ...formData, openai_api_key: e.target.value });
+                        // Reset models when API key changes
+                        resetLlmModelsState();
+                        // Also reset embedding models since they use the same key
+                        resetEmbeddingModelsState();
+                      }}
+                      placeholder="sk-..."
+                    />
+                    <button
+                      type="button"
+                      className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai' ? 'btn-connected' : ''}`}
+                      onClick={() => fetchLlmModels('openai', formData.openai_api_key || '')}
+                      disabled={llmModelsFetching || !formData.openai_api_key}
+                    >
+                      {llmModelsFetching
+                        ? 'Fetching...'
+                        : llmModelsLoaded && formData.llm_provider === 'openai'
+                          ? 'Loaded'
+                          : 'Fetch Models'}
+                    </button>
+                  </div>
+                  {llmModelsError && formData.llm_provider === 'openai' && (
+                    <p className="field-error">{llmModelsError}</p>
+                  )}
+                  <p className="field-help">
+                    Required for OpenAI LLM and optionally for OpenAI embeddings.
+                    {window.location.protocol === 'http:' && (
+                      <span style={{ color: 'var(--color-warning)' }}>
+                        {' '}
+                        Warning: API keys are transmitted in plaintext over HTTP.
+                      </span>
+                    )}
+                  </p>
+                </div>
+              ) : formData.llm_provider === 'anthropic' ? (
+                <div className="form-group">
+                  <label>Anthropic API Key</label>
+                  <div className="input-with-button">
+                    <input
+                      type="password"
+                      value={formData.anthropic_api_key || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, anthropic_api_key: e.target.value });
+                        // Reset models when API key changes
+                        resetLlmModelsState();
+                      }}
+                      placeholder="sk-ant-..."
+                    />
+                    <button
+                      type="button"
+                      className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'anthropic' ? 'btn-connected' : ''}`}
+                      onClick={() => fetchLlmModels('anthropic', formData.anthropic_api_key || '')}
+                      disabled={llmModelsFetching || !formData.anthropic_api_key}
+                    >
+                      {llmModelsFetching
+                        ? 'Fetching...'
+                        : llmModelsLoaded && formData.llm_provider === 'anthropic'
+                          ? 'Loaded'
+                          : 'Fetch Models'}
+                    </button>
+                  </div>
+                  {llmModelsError && formData.llm_provider === 'anthropic' && (
+                    <p className="field-error">{llmModelsError}</p>
+                  )}
+                  {window.location.protocol === 'http:' && (
+                    <p className="field-help" style={{ color: 'var(--color-warning)' }}>
+                      Warning: API keys are transmitted in plaintext over HTTP.
+                    </p>
+                  )}
+                </div>
+              ) : formData.llm_provider === 'openrouter' ? (
+                <div className="form-group">
+                  <label>OpenRouter API Key</label>
+                  <div className="input-with-button">
+                    <input
+                      type="password"
+                      value={formData.openrouter_api_key || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, openrouter_api_key: e.target.value });
+                        resetLlmModelsState();
+                      }}
+                      placeholder="sk-or-..."
+                    />
+                    <button
+                      type="button"
+                      className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openrouter' ? 'btn-connected' : ''}`}
+                      onClick={() =>
+                        fetchLlmModels('openrouter', formData.openrouter_api_key || '')
+                      }
+                      disabled={llmModelsFetching || !formData.openrouter_api_key}
+                    >
+                      {llmModelsFetching
+                        ? 'Fetching...'
+                        : llmModelsLoaded && formData.llm_provider === 'openrouter'
+                          ? 'Loaded'
+                          : 'Fetch Models'}
+                    </button>
+                  </div>
+                  {llmModelsError && formData.llm_provider === 'openrouter' && (
+                    <p className="field-error">{llmModelsError}</p>
+                  )}
+                  {window.location.protocol === 'http:' && (
+                    <p className="field-help" style={{ color: 'var(--color-warning)' }}>
+                      Warning: API keys are transmitted in plaintext over HTTP.
+                    </p>
+                  )}
+                </div>
+              ) : formData.llm_provider === 'github_copilot' ? (
+                <div className="form-group">
+                  <label>GitHub Copilot Connection</label>
+                  <div className="form-row" style={{ marginBottom: '0.75rem' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '1rem',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
                       }}
                     >
-                      {Object.entries(OCR_PROVIDER_LABELS).map(([provider, label]) => (
-                        <option key={provider} value={provider}>
-                          {label}
+                      <label
+                        style={{
+                          display: 'inline-flex',
+                          gap: '0.35rem',
+                          alignItems: 'center',
+                          marginBottom: 0,
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="copilot-auth-mode"
+                          checked={copilotAuthMode === 'oauth'}
+                          onChange={() => {
+                            setCopilotAuthMode('oauth');
+                            setFormData((prev) => ({ ...prev, github_models_api_token: '' }));
+                            resetLlmModelsState();
+                          }}
+                        />
+                        OAuth (GitHub device login)
+                      </label>
+                      <label
+                        style={{
+                          display: 'inline-flex',
+                          gap: '0.35rem',
+                          alignItems: 'center',
+                          marginBottom: 0,
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="copilot-auth-mode"
+                          checked={copilotAuthMode === 'pat'}
+                          onChange={() => {
+                            setCopilotAuthMode('pat');
+                            clearCopilotPollTimer();
+                            setCopilotConnecting(false);
+                            setCopilotRequestId(null);
+                            setCopilotWizardVisible(false);
+                            setCopilotWizardStep(1);
+                            resetLlmModelsState();
+                          }}
+                        />
+                        PAT (Copilot models)
+                      </label>
+                    </div>
+                  </div>
+                  {copilotAuthMode === 'pat' && (
+                    <div style={{ marginBottom: '0.75rem' }}>
+                      <input
+                        type="password"
+                        value={formData.github_models_api_token || ''}
+                        onChange={(e) => {
+                          setFormData({ ...formData, github_models_api_token: e.target.value });
+                          resetLlmModelsState();
+                        }}
+                        placeholder="github_pat_..."
+                      />
+                      <p className="field-help">
+                        Use a fine-grained GitHub token with the `Models:read` permission. Stored
+                        encrypted in backend settings.
+                      </p>
+                    </div>
+                  )}
+                  <div
+                    className="input-with-button input-with-actions"
+                    style={{ gap: '0.5rem', flexWrap: 'wrap' }}
+                  >
+                    {copilotAuthMode === 'oauth' && (
+                      <button
+                        type="button"
+                        className={`btn btn-test ${copilotConfigured ? 'btn-connected' : ''}`}
+                        onClick={startCopilotDeviceFlow}
+                        disabled={copilotConnecting}
+                      >
+                        {copilotConnecting
+                          ? 'Preparing...'
+                          : copilotConfigured
+                            ? 'Reauthorize'
+                            : 'Authorize'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'github_copilot' ? 'btn-connected' : ''}`}
+                      onClick={() => fetchCopilotModels()}
+                      disabled={
+                        llmModelsFetching ||
+                        (copilotAuthMode === 'oauth' ? !copilotConfigured : !hasCopilotPatToken)
+                      }
+                    >
+                      {llmModelsFetching
+                        ? 'Fetching...'
+                        : llmModelsLoaded && formData.llm_provider === 'github_copilot'
+                          ? 'Loaded'
+                          : 'Fetch Models'}
+                    </button>
+                    {copilotAuthMode === 'oauth' && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={clearCopilotAuth}
+                        disabled={copilotConnecting || !copilotConfigured}
+                      >
+                        Disconnect
+                      </button>
+                    )}
+                  </div>
+                  {copilotAuthMode === 'oauth' &&
+                    copilotWizardVisible &&
+                    copilotRequestId &&
+                    copilotDeviceCode &&
+                    copilotVerificationUri && (
+                      <div
+                        className="field-help"
+                        style={{
+                          marginTop: '0.75rem',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: '8px',
+                          padding: '0.75rem',
+                          background: 'var(--color-bg-secondary)',
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
+                          GitHub Authorization
+                        </div>
+                        {copilotWizardStep === 1 && (
+                          <div>
+                            <div>
+                              <strong>Step 1: Copy your device code</strong>
+                            </div>
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                                marginTop: '0.45rem',
+                                flexWrap: 'wrap',
+                              }}
+                            >
+                              <code
+                                style={{
+                                  fontSize: '1.1rem',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.08em',
+                                  padding: '0.35rem 0.55rem',
+                                }}
+                              >
+                                {copilotDeviceCode}
+                              </code>
+                              <InlineCopyButton
+                                copyText={copilotDeviceCode}
+                                className="copilot-device-copy-btn"
+                                title="Copy device code"
+                                ariaLabel="Copy device code"
+                                copiedTitle="Device code copied"
+                                copiedAriaLabel="Device code copied"
+                                iconSize={16}
+                                feedbackMs={2000}
+                                onCopySuccess={handleCopilotDeviceCodeCopied}
+                                onCopyError={handleCopilotDeviceCodeCopyError}
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => setCopilotWizardStep(2)}
+                                disabled={!copilotCodeCopied}
+                                style={{ marginLeft: '0.25rem' }}
+                              >
+                                Continue
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {copilotWizardStep === 2 && (
+                          <div>
+                            <div>
+                              <strong>Step 2: Open the authorization page</strong>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={openCopilotAuthorizationPage}
+                              style={{
+                                marginTop: '0.45rem',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.4rem',
+                                fontSize: '1.05rem',
+                                fontWeight: 700,
+                              }}
+                            >
+                              Open GitHub Authorization
+                              <ExternalLink size={16} />
+                            </button>
+                            <div className="muted" style={{ marginTop: '0.45rem' }}>
+                              {copilotVerificationUri}
+                            </div>
+                            <div style={{ marginTop: '0.65rem' }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => setCopilotWizardStep(1)}
+                              >
+                                Back
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {copilotWizardStep === 3 && (
+                          <div>
+                            <div>
+                              <strong>Step 3: Complete authorization in GitHub</strong>
+                            </div>
+                            <div className="muted" style={{ marginTop: '0.45rem' }}>
+                              After you approve access in GitHub, Ragtime will connect
+                              automatically.
+                            </div>
+                            <div style={{ marginTop: '0.65rem' }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={openCopilotAuthorizationPage}
+                              >
+                                Reopen Authorization Page
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  {llmModelsError && formData.llm_provider === 'github_copilot' && (
+                    <p className="field-error">{llmModelsError}</p>
+                  )}
+                  <p className="field-help">
+                    {copilotAuthMode === 'oauth'
+                      ? 'OAuth uses GitHub device authorization and is required to access models included with your GitHub Copilot subscription.'
+                      : 'PAT mode uses your personal GitHub token (Models:read) with the GitHub Models API. PAT mode does not grant Copilot subscription model access.'}
+                  </p>
+                </div>
+              ) : formData.llm_provider === 'openai_codex' ? (
+                <div className="form-group">
+                  <label>OpenAI Codex Connection</label>
+                  <div
+                    className="input-with-button input-with-actions"
+                    style={{ gap: '0.5rem', flexWrap: 'wrap' }}
+                  >
+                    <button
+                      type="button"
+                      className={`btn btn-test ${openAiCodexConfigured ? 'btn-connected' : ''}`}
+                      onClick={startOpenAiCodexDeviceFlow}
+                      disabled={openAiCodexConnecting}
+                    >
+                      {openAiCodexConnecting
+                        ? 'Preparing...'
+                        : openAiCodexConfigured
+                          ? 'Reauthorize'
+                          : 'Authorize'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'openai_codex' ? 'btn-connected' : ''}`}
+                      onClick={() => fetchOpenAiCodexModels()}
+                      disabled={llmModelsFetching || !openAiCodexConfigured}
+                    >
+                      {llmModelsFetching
+                        ? 'Fetching...'
+                        : llmModelsLoaded && formData.llm_provider === 'openai_codex'
+                          ? 'Loaded'
+                          : 'Fetch Models'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={clearOpenAiCodexAuth}
+                      disabled={openAiCodexConnecting || !openAiCodexConfigured}
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                  {openAiCodexWizardVisible &&
+                    openAiCodexRequestId &&
+                    openAiCodexDeviceCode &&
+                    openAiCodexVerificationUri && (
+                      <div
+                        className="field-help"
+                        style={{
+                          marginTop: '0.75rem',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: '8px',
+                          padding: '0.75rem',
+                          background: 'var(--color-bg-secondary)',
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
+                          OpenAI Codex Authorization
+                        </div>
+                        {openAiCodexWizardStep === 1 && (
+                          <div>
+                            <div>
+                              <strong>Step 1: Copy your device code</strong>
+                            </div>
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                                marginTop: '0.45rem',
+                                flexWrap: 'wrap',
+                              }}
+                            >
+                              <code
+                                style={{
+                                  fontSize: '1.1rem',
+                                  fontWeight: 700,
+                                  letterSpacing: '0.08em',
+                                  padding: '0.35rem 0.55rem',
+                                }}
+                              >
+                                {openAiCodexDeviceCode}
+                              </code>
+                              <InlineCopyButton
+                                copyText={openAiCodexDeviceCode}
+                                className="copilot-device-copy-btn"
+                                title="Copy device code"
+                                ariaLabel="Copy device code"
+                                copiedTitle="Device code copied"
+                                copiedAriaLabel="Device code copied"
+                                iconSize={16}
+                                feedbackMs={2000}
+                                onCopySuccess={handleOpenAiCodexDeviceCodeCopied}
+                                onCopyError={handleOpenAiCodexDeviceCodeCopyError}
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                onClick={() => setOpenAiCodexWizardStep(2)}
+                                disabled={!openAiCodexCodeCopied}
+                                style={{ marginLeft: '0.25rem' }}
+                              >
+                                Continue
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {openAiCodexWizardStep === 2 && (
+                          <div>
+                            <div>
+                              <strong>Step 2: Open the authorization page</strong>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={openOpenAiCodexAuthorizationPage}
+                              style={{
+                                marginTop: '0.45rem',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.4rem',
+                                fontSize: '1.05rem',
+                                fontWeight: 700,
+                              }}
+                            >
+                              Open OpenAI Authorization
+                              <ExternalLink size={16} />
+                            </button>
+                            <div className="muted" style={{ marginTop: '0.45rem' }}>
+                              {openAiCodexVerificationUri}
+                            </div>
+                            <div style={{ marginTop: '0.65rem' }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => setOpenAiCodexWizardStep(1)}
+                              >
+                                Back
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {openAiCodexWizardStep === 3 && (
+                          <div>
+                            <div>
+                              <strong>Step 3: Complete authorization in OpenAI</strong>
+                            </div>
+                            <div className="muted" style={{ marginTop: '0.45rem' }}>
+                              After you approve access in OpenAI, Ragtime will connect
+                              automatically.
+                            </div>
+                            <div style={{ marginTop: '0.65rem' }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-secondary"
+                                onClick={openOpenAiCodexAuthorizationPage}
+                              >
+                                Reopen Authorization Page
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  {llmModelsError && formData.llm_provider === 'openai_codex' && (
+                    <p className="field-error">{llmModelsError}</p>
+                  )}
+                  <p className="field-help">
+                    OAuth uses OpenAI device authorization to access Codex models. Stored
+                    credentials can be removed with Disconnect.
+                  </p>
+                </div>
+              ) : formData.llm_provider === 'claude_code' ? (
+                <div className="form-group">
+                  <label>Claude Code Connection</label>
+                  <div
+                    className="input-with-button input-with-actions"
+                    style={{ gap: '0.5rem', flexWrap: 'wrap' }}
+                  >
+                    <button
+                      type="button"
+                      className={`btn btn-test ${claudeCodeConfigured ? 'btn-connected' : ''}`}
+                      onClick={startClaudeCodeAuth}
+                      disabled={claudeCodeConnecting}
+                    >
+                      {claudeCodeConnecting
+                        ? 'Authorizing...'
+                        : claudeCodeConfigured
+                          ? 'Reauthorize'
+                          : 'Authorize'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-test"
+                      onClick={refreshClaudeCodeStatus}
+                      disabled={claudeCodeConnecting}
+                    >
+                      Check Status
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn btn-test ${llmModelsLoaded && formData.llm_provider === 'claude_code' ? 'btn-connected' : ''}`}
+                      onClick={() => fetchClaudeCodeModels()}
+                      disabled={llmModelsFetching || !claudeCodeConfigured}
+                    >
+                      {llmModelsFetching
+                        ? 'Fetching...'
+                        : llmModelsLoaded && formData.llm_provider === 'claude_code'
+                          ? 'Loaded'
+                          : 'Fetch Models'}
+                    </button>
+                  </div>
+                  {claudeCodeWizardVisible && claudeCodeRequestId && claudeCodeAuthorizationUrl && (
+                    <div className="settings-auth-wizard" style={{ marginTop: '0.75rem' }}>
+                      <div style={{ fontWeight: 700, marginBottom: '0.5rem' }}>
+                        Claude Code Authorization
+                      </div>
+                      <div className="muted" style={{ marginBottom: '0.65rem' }}>
+                        Complete sign-in in the Claude browser tab. After you authorize, Claude will
+                        display an authorization code. Copy that code and paste it here.
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={openClaudeCodeAuthorizationPage}
+                      >
+                        Reopen Claude Authorization
+                        <ExternalLink size={14} />
+                      </button>
+                      <input
+                        type="text"
+                        value={claudeCodeCallbackCode}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setClaudeCodeCallbackCode(value);
+                          // Auto-complete when a valid-looking code is pasted (format: base64#base64, ~88 chars with #)
+                          const trimmed = value.trim();
+                          if (
+                            trimmed.length >= 80 &&
+                            trimmed.includes('#') &&
+                            !claudeCodeConnecting
+                          ) {
+                            completeClaudeCodeAuth(trimmed);
+                          }
+                        }}
+                        placeholder="Paste authorization code (e.g. SBYLRk...#OlMEg...)"
+                        style={{ marginTop: '0.65rem' }}
+                        disabled={claudeCodeConnecting}
+                      />
+                      <div
+                        style={{
+                          marginTop: '0.65rem',
+                          display: 'flex',
+                          gap: '0.5rem',
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          onClick={cancelClaudeCodeAuth}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {claudeCodeAuthStatus &&
+                    (() => {
+                      const cliLabel =
+                        claudeCodeAuthStatus.version || claudeCodeAuthStatus.command || 'installed';
+                      if (!claudeCodeAuthStatus.installed) {
+                        return (
+                          <p className="field-error">
+                            Claude Code CLI is not installed in the container.
+                            {claudeCodeAuthStatus.error ? ` ${claudeCodeAuthStatus.error}` : ''}
+                          </p>
+                        );
+                      }
+                      if (claudeCodeAuthStatus.connected) {
+                        const planDetails = [
+                          claudeCodeAuthStatus.auth_method
+                            ? claudeCodeAuthStatus.auth_method
+                            : null,
+                          claudeCodeAuthStatus.subscription_type
+                            ? `${claudeCodeAuthStatus.subscription_type} plan`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(', ');
+                        const authPath = claudeCodeAuthStatus.has_cli_auth
+                          ? `CLI subscription${planDetails ? ` (${planDetails})` : ''}`
+                          : 'CLAUDE_CODE_OAUTH_TOKEN';
+                        return (
+                          <p className="field-help" style={{ color: 'var(--color-success)' }}>
+                            Connected via {authPath}. CLI {cliLabel}.
+                          </p>
+                        );
+                      }
+                      return (
+                        <p className="field-error">
+                          Not connected. CLI {cliLabel} is installed but not authenticated.{' '}
+                          {claudeCodeAuthStatus.error ||
+                            'Click Authorize to sign in, or set CLAUDE_CODE_OAUTH_TOKEN.'}
+                        </p>
+                      );
+                    })()}
+                  {llmModelsError && formData.llm_provider === 'claude_code' && (
+                    <p className="field-error">{llmModelsError}</p>
+                  )}
+                  <p className="field-help">
+                    Claude Code uses Claude Code CLI subscription auth, not an Anthropic API key.
+                    Click Authorize, sign in at Claude, then paste the authorization code shown
+                    after approval.
+                  </p>
+                </div>
+              ) : null}
+
+              {/* Show OpenAI key field for embeddings when the LLM uses another provider */}
+              {(formData.llm_provider === 'anthropic' ||
+                formData.llm_provider === 'openrouter' ||
+                formData.llm_provider === 'ollama' ||
+                formData.llm_provider === 'llama_cpp' ||
+                formData.llm_provider === 'lmstudio' ||
+                formData.llm_provider === 'github_copilot' ||
+                formData.llm_provider === 'openai_codex') &&
+                formData.embedding_provider === 'openai' && (
+                  <div className="form-group">
+                    <label>OpenAI API Key (for embeddings)</label>
+                    <input
+                      type="password"
+                      value={formData.openai_api_key || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, openai_api_key: e.target.value });
+                        // Reset embedding models when key changes
+                        setEmbeddingModels([]);
+                        setEmbeddingModelsError(null);
+                        setEmbeddingModelsLoaded(false);
+                      }}
+                      placeholder="sk-..."
+                    />
+                    <p className="field-help">
+                      Required for OpenAI embeddings when using a different LLM provider.
+                    </p>
+                  </div>
+                )}
+
+              {/* Advanced Context & Token Settings */}
+              <details style={{ marginBottom: '16px' }} id="setting-llm_advanced">
+                <summary className="settings-advanced-summary">Advanced Settings</summary>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Max Output Tokens</label>
+                    {(() => {
+                      const selectedLlmModel = llmModels.find((m) => m.id === formData.llm_model);
+                      const selectedAvailableModel = allAvailableModels.find(
+                        (m) => m.id === formData.llm_model,
+                      );
+                      const modelMax =
+                        selectedLlmModel?.max_output_tokens ||
+                        selectedAvailableModel?.max_output_tokens ||
+                        100000;
+                      const sliderMax = modelMax;
+                      const sliderMin = 500;
+                      const hasModelInfo = !!(
+                        selectedLlmModel?.max_output_tokens ||
+                        selectedAvailableModel?.max_output_tokens
+                      );
+
+                      return (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              step="1"
+                              style={{ flex: 1 }}
+                              value={(() => {
+                                const val = formData.llm_max_tokens || 4096;
+                                if (val >= sliderMax) return 100;
+                                const scale = Math.log(sliderMax / sliderMin);
+                                return Math.max(
+                                  0,
+                                  Math.min(100, (Math.log(val / sliderMin) / scale) * 100),
+                                );
+                              })()}
+                              onChange={(e) => {
+                                const slider = parseInt(e.target.value, 10);
+                                let val;
+                                if (slider === 100) {
+                                  val = sliderMax;
+                                } else {
+                                  const scale = Math.log(sliderMax / sliderMin);
+                                  val = Math.round(sliderMin * Math.exp((slider / 100) * scale));
+                                }
+                                setFormData({ ...formData, llm_max_tokens: val });
+                              }}
+                            />
+                            <span
+                              style={{
+                                minWidth: '80px',
+                                textAlign: 'right',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              {formData.llm_max_tokens && formData.llm_max_tokens >= sliderMax
+                                ? 'LLM Max'
+                                : (formData.llm_max_tokens || 4096).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="field-help">
+                            Limit the length of the model's response.
+                            {hasModelInfo ? ` (Model max: ${modelMax.toLocaleString()})` : ''}
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Max Tool Iterations</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="1"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={formData.max_iterations ?? 30}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            max_iterations: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '30px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {formData.max_iterations ?? 30}
+                      </span>
+                    </div>
+                    <p className="field-help">Maximum number of agent tool-calling steps.</p>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                        gap: '1rem',
+                      }}
+                    >
+                      <div>
+                        <label
+                          style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}
+                        >
+                          Compact Button Threshold
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <input
+                            type="range"
+                            min="1"
+                            max="100"
+                            step="1"
+                            style={{ flex: 1 }}
+                            value={formData.chat_compaction_threshold_percent ?? 80}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                chat_compaction_threshold_percent: parseInt(e.target.value, 10),
+                              })
+                            }
+                          />
+                          <span
+                            style={{
+                              minWidth: '44px',
+                              textAlign: 'right',
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                          >
+                            {formData.chat_compaction_threshold_percent ?? 80}%
+                          </span>
+                        </div>
+                        <p className="field-help">
+                          Show the compact button once effective conversation context reaches this
+                          percentage.
+                        </p>
+                      </div>
+                      <div>
+                        <label
+                          style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.9rem' }}
+                        >
+                          Auto-Compact Threshold
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <input
+                            type="range"
+                            min="1"
+                            max="100"
+                            step="1"
+                            style={{ flex: 1 }}
+                            value={formData.chat_auto_compaction_threshold_percent ?? 99}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                chat_auto_compaction_threshold_percent: parseInt(
+                                  e.target.value,
+                                  10,
+                                ),
+                              })
+                            }
+                          />
+                          <span
+                            style={{
+                              minWidth: '44px',
+                              textAlign: 'right',
+                              fontFamily: 'var(--font-mono)',
+                            }}
+                          >
+                            {(formData.chat_auto_compaction_threshold_percent ?? 99) >= 100
+                              ? 'Never'
+                              : `${formData.chat_auto_compaction_threshold_percent ?? 99}%`}
+                          </span>
+                        </div>
+                        <p className="field-help">
+                          Automatically compact once effective context reaches this percentage. Set
+                          to Never to disable it.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Image Max Width (px)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="320"
+                        max="4096"
+                        step="16"
+                        style={{ flex: 1 }}
+                        value={formData.image_payload_max_width ?? 1024}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            image_payload_max_width: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '56px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.image_payload_max_width ?? 1024).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Maximum width for inline image attachments before downsampling.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Image Max Height (px)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="240"
+                        max="4096"
+                        step="16"
+                        style={{ flex: 1 }}
+                        value={formData.image_payload_max_height ?? 1024}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            image_payload_max_height: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '56px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.image_payload_max_height ?? 1024).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Maximum height for inline image attachments before downsampling.
+                    </p>
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Image Max Pixels</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="76800"
+                        max="8000000"
+                        step="25600"
+                        style={{ flex: 1 }}
+                        value={formData.image_payload_max_pixels ?? 786432}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            image_payload_max_pixels: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '72px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.image_payload_max_pixels ?? 786432).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Total pixel budget (width x height). Images exceeding this are scaled down
+                      proportionally.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Image Max Bytes</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="50000"
+                        max="5000000"
+                        step="10000"
+                        style={{ flex: 1 }}
+                        value={formData.image_payload_max_bytes ?? 350000}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            image_payload_max_bytes: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '72px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.image_payload_max_bytes ?? 350000).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Max encoded size of each image. Larger images are re-compressed with lower
+                      JPEG quality.
+                    </p>
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Max Tool Output (chars)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="50000"
+                        step="1000"
+                        style={{ flex: 1 }}
+                        value={formData.max_tool_output_chars ?? 5000}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            max_tool_output_chars: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '60px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.max_tool_output_chars ?? 5000) === 0
+                          ? 'Off'
+                          : `${((formData.max_tool_output_chars ?? 5000) / 1000).toFixed(0)}K`}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Cap on each tool response before truncation (0 = no limit). Lower values curb
+                      token growth during multi-step tool loops.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Context Window (steps)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="30"
+                        step="1"
+                        style={{ flex: 1 }}
+                        value={formData.scratchpad_window_size ?? 6}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            scratchpad_window_size: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '40px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.scratchpad_window_size ?? 6) === 0
+                          ? 'All'
+                          : (formData.scratchpad_window_size ?? 6)}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Number of recent tool steps kept in full detail; older steps are compressed (0
+                      = keep all). Smaller windows reduce input tokens in long conversations.
+                    </p>
+                  </div>
+
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Context Token Budget</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="32000"
+                        step="500"
+                        style={{ flex: 1 }}
+                        value={
+                          formData.context_token_budget ?? settings?.context_token_budget ?? 4000
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            context_token_budget: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '60px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {(formData.context_token_budget ??
+                          settings?.context_token_budget ??
+                          4000) === 0
+                          ? 'Off'
+                          : `${((formData.context_token_budget ?? settings?.context_token_budget ?? 4000) / 1000).toFixed(1)}K`}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Cap on retrieved context tokens fed to the LLM per request (0 = unlimited).
+                      Lower values reduce input token usage; higher values give the model more
+                      knowledge to draw from.
+                    </p>
+                  </div>
+                </div>
+
+                {/* API Output Configuration */}
+                <div style={{ marginTop: '1rem' }}>
+                  <h4 style={{ margin: '0 0 4px' }}>API Output</h4>
+                  <p className="field-help" style={{ marginBottom: '12px' }}>
+                    Configure how tool call output is handled in OpenAI-compatible API responses
+                    (e.g., when using OpenWebUI or other clients). This does not affect MCP or the
+                    built-in chat interface.
+                  </p>
+
+                  <div className="form-row">
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label>Tool Output Visibility</label>
+                      <select
+                        value={
+                          (formData.tool_output_mode ?? settings?.tool_output_mode) === 'default'
+                            ? 'show'
+                            : (formData.tool_output_mode ?? settings?.tool_output_mode ?? 'show')
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            tool_output_mode: e.target.value as typeof formData.tool_output_mode,
+                          })
+                        }
+                      >
+                        <option value="show">Show (Always include output)</option>
+                        <option value="hide">Hide (Suppress output)</option>
+                        <option value="auto">Auto (AI decides)</option>
+                      </select>
+                      <p className="field-help">
+                        Controls whether tool execution details (inputs/outputs) are included in the
+                        streaming response.
+                        <strong>Hide</strong> is useful for cleaner output in clients that don't
+                        support tool visualization.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <div className="form-actions">
+                <button type="button" className="btn" onClick={handleSaveLlm} disabled={llmSaving}>
+                  {llmSaving ? 'Saving...' : 'Save LLM Configuration'}
+                </button>
+              </div>
+            </fieldset>
+          </SettingsAccordionSection>
+
+          {/* Embedding Configuration */}
+          <SettingsAccordionSection
+            id="embedding"
+            title="Embedding Configuration"
+            open={openAccordionSections.embedding}
+            onToggle={handleToggleAccordionSection}
+            status={embeddingProviderStatus}
+          >
+            <fieldset id="setting-embedding_config">
+              <legend>Embedding Configuration</legend>
+              <p className="fieldset-help">
+                Configure how document embeddings are generated for FAISS indexes.
+              </p>
+
+              <div className="form-row">
+                <div className="form-group" id="setting-embedding_provider">
+                  <label>Provider</label>
+                  <div className="input-with-button input-with-actions">
+                    <select
+                      value={formData.embedding_provider || 'ollama'}
+                      onChange={(e) => {
+                        const newProvider = e.target.value as
+                          | 'ollama'
+                          | 'openai'
+                          | 'openai_codex'
+                          | 'openrouter'
+                          | 'llama_cpp'
+                          | 'lmstudio'
+                          | 'omlx';
+                        setFormData({
+                          ...formData,
+                          embedding_provider: newProvider,
+                          // Set sensible default model when switching providers
+                          embedding_model:
+                            newProvider === 'ollama'
+                              ? 'nomic-embed-text'
+                              : newProvider === 'llama_cpp'
+                                ? ''
+                                : newProvider === 'lmstudio'
+                                  ? ''
+                                  : newProvider === 'omlx'
+                                    ? ''
+                                    : newProvider === 'openrouter'
+                                      ? ''
+                                      : 'text-embedding-3-small',
+                        });
+                        // Reset Ollama connection state when switching providers
+                        if (newProvider !== 'ollama') {
+                          resetEmbeddingOllamaState();
+                        }
+                        resetEmbeddingModelsState();
+                      }}
+                    >
+                      <option value="ollama">Ollama</option>
+                      <option value="llama_cpp">llama.cpp</option>
+                      <option value="lmstudio">LM Studio</option>
+                      <option value="omlx">oMLX</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="openai_codex">OpenAI Codex</option>
+                      <option value="openrouter">OpenRouter</option>
+                    </select>
+                    {llmProviderForEmbeddingCopy && (
+                      <button
+                        type="button"
+                        className="btn btn-test"
+                        onClick={() => copyLlmProviderToEmbeddings(llmProviderForEmbeddingCopy)}
+                      >
+                        Use LLM Provider
+                      </button>
+                    )}
+                  </div>
+                  <p className="field-help">
+                    Model capability filtering comes from the shared model metadata. Providers with
+                    no embedding-capable models will return an empty model list.
+                  </p>
+                </div>
+                {/* Show embedding dimension info */}
+                {(() => {
+                  // Get the dimension from the selected model if available
+                  const selectedOllamaModel = ollamaModels.find(
+                    (m) => m.name === formData.embedding_model,
+                  );
+                  const selectedOpenAIModel = embeddingModels.find(
+                    (m) => m.id === formData.embedding_model,
+                  );
+                  const selectedLlamaCppModel = embeddingModels.find(
+                    (m) => m.id === formData.embedding_model,
+                  );
+                  const selectedLmstudioModel = embeddingModels.find(
+                    (m) => m.id === formData.embedding_model,
+                  );
+                  const selectedModelDimension =
+                    selectedOllamaModel?.dimensions ||
+                    selectedOpenAIModel?.dimensions ||
+                    selectedLlamaCppModel?.dimensions ||
+                    selectedLmstudioModel?.dimensions;
+                  const storedDimension = settings?.embedding_dimension;
+
+                  // Determine if there's a mismatch between stored and selected
+                  const hasMismatch =
+                    storedDimension &&
+                    selectedModelDimension &&
+                    storedDimension !== selectedModelDimension;
+                  // Use selected model dimension if available, otherwise fall back to stored
+                  const displayDimension = selectedModelDimension || storedDimension;
+
+                  return (
+                    <div className="form-group" style={{ flex: '0 0 auto', minWidth: '180px' }}>
+                      <label>
+                        {selectedModelDimension ? 'Model Dimensions' : 'Current Dimensions'}
+                      </label>
+                      <div
+                        style={{
+                          padding: '0.5rem 1rem',
+                          backgroundColor: hasMismatch
+                            ? 'var(--color-warning-light)'
+                            : 'var(--color-bg-secondary)',
+                          borderRadius: '4px',
+                          border: `1px solid ${hasMismatch ? 'var(--color-warning)' : 'var(--color-border)'}`,
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '1.1rem',
+                          textAlign: 'center',
+                        }}
+                      >
+                        {displayDimension ? (
+                          <>
+                            {displayDimension.toLocaleString()}
+                            {hasMismatch && (
+                              <span
+                                style={{
+                                  color: 'var(--color-warning)',
+                                  fontSize: '0.75rem',
+                                  marginLeft: '0.25rem',
+                                }}
+                              >
+                                (change)
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
+                            —
+                          </span>
+                        )}
+                      </div>
+                      <p className="field-help">
+                        {hasMismatch
+                          ? `Indexes use ${storedDimension?.toLocaleString()} dims. Re-index required.`
+                          : storedDimension
+                            ? 'Matches existing indexes.'
+                            : 'Will be set on first index.'}
+                      </p>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {formData.embedding_provider === 'ollama' && (
+                <OllamaConnectionForm
+                  protocol={formData.ollama_protocol || 'http'}
+                  host={formData.ollama_host || ''}
+                  port={formData.ollama_port || DEFAULT_OLLAMA_PORT}
+                  model={formData.embedding_model || ''}
+                  connected={ollamaConnected}
+                  connecting={ollamaConnecting}
+                  error={ollamaError}
+                  models={ollamaModels}
+                  modelLabel="Embedding Model"
+                  modelPlaceholder="nomic-embed-text"
+                  connectedHelpText="Select an embedding model from your Ollama server."
+                  disconnectedHelpText='Click "Fetch Models" to see available models, or enter manually.'
+                  onProtocolChange={(protocol) => {
+                    setFormData({ ...formData, ollama_protocol: protocol });
+                    resetEmbeddingOllamaState();
+                  }}
+                  onHostChange={(host) => {
+                    setFormData({ ...formData, ollama_host: host });
+                    resetEmbeddingOllamaState();
+                  }}
+                  onPortChange={(port) => {
+                    setFormData({ ...formData, ollama_port: port });
+                    resetEmbeddingOllamaState();
+                  }}
+                  onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                  onFetchModels={handleTestOllamaConnection}
+                />
+              )}
+
+              {formData.embedding_provider === 'llama_cpp' && (
+                <>
+                  <OllamaConnectionForm
+                    protocol={formData.llama_cpp_protocol || DEFAULT_LLAMA_CPP_PROTOCOL}
+                    host={formData.llama_cpp_host || ''}
+                    port={formData.llama_cpp_port ?? ''}
+                    model={formData.embedding_model || ''}
+                    connected={embeddingModelsLoaded && formData.embedding_provider === 'llama_cpp'}
+                    connecting={embeddingModelsFetching}
+                    error={
+                      formData.embedding_provider === 'llama_cpp' ? embeddingModelsError : null
+                    }
+                    models={embeddingModels.map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      dimensions: m.dimensions,
+                    }))}
+                    providerLabel="llama.cpp"
+                    defaultPort={DEFAULT_LLAMA_CPP_EMBEDDING_PORT}
+                    hostPlaceholder={DEFAULT_LLAMA_CPP_HOST}
+                    modelLabel="Embedding Model"
+                    modelPlaceholder="my-embed-model"
+                    connectedHelpText="Select an embedding model from your llama.cpp server."
+                    disconnectedHelpText='Click "Fetch Models" to probe the llama.cpp embedding server, or enter the model alias manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, llama_cpp_protocol: protocol });
+                      resetEmbeddingModelsState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, llama_cpp_host: host });
+                      resetEmbeddingModelsState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, llama_cpp_port: port });
+                      resetEmbeddingModelsState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                    onFetchModels={fetchLlamaCppEmbeddingModels}
+                  />
+                  <p className="field-help">
+                    llama.cpp does not support load/unload over its HTTP API. Start the embedding
+                    server with <code>--embedding</code> and the desired model already loaded (for
+                    example, <code>llama-server --embedding -m embed-model.gguf</code>).
+                  </p>
+                </>
+              )}
+
+              {formData.embedding_provider === 'lmstudio' && (
+                <>
+                  <div className="form-group">
+                    <label>LM Studio API Key</label>
+                    <input
+                      type="password"
+                      value={formData.lmstudio_api_key || ''}
+                      onChange={(e) =>
+                        setFormData({ ...formData, lmstudio_api_key: e.target.value })
+                      }
+                      placeholder="sk-lm-... (optional)"
+                      autoComplete="off"
+                    />
+                    <p className="form-help">
+                      Optional. Leave blank if LM Studio is running without authentication.
+                    </p>
+                  </div>
+                  <OllamaConnectionForm
+                    protocol={formData.lmstudio_protocol || DEFAULT_LMSTUDIO_PROTOCOL}
+                    host={formData.lmstudio_host || ''}
+                    port={formData.lmstudio_port ?? ''}
+                    model={formData.embedding_model || ''}
+                    connected={embeddingModelsLoaded && formData.embedding_provider === 'lmstudio'}
+                    connecting={embeddingModelsFetching}
+                    error={formData.embedding_provider === 'lmstudio' ? embeddingModelsError : null}
+                    models={embeddingModels.map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      dimensions: m.dimensions,
+                      context_limit: m.context_limit,
+                      loaded: m.loaded,
+                    }))}
+                    providerLabel="LM Studio"
+                    defaultPort={DEFAULT_LMSTUDIO_PORT}
+                    hostPlaceholder={DEFAULT_LMSTUDIO_HOST}
+                    modelLabel="Embedding Model"
+                    modelPlaceholder="text-embedding-nomic-embed-text-v1.5"
+                    connectedHelpText="Select an embedding model from LM Studio."
+                    disconnectedHelpText='Click "Fetch Models" to discover LM Studio embedding models, or enter a model key manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, lmstudio_protocol: protocol });
+                      resetEmbeddingModelsState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, lmstudio_host: host });
+                      resetEmbeddingModelsState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, lmstudio_port: port });
+                      resetEmbeddingModelsState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                    onFetchModels={fetchLmstudioEmbeddingModels}
+                    modelAction={(() => {
+                      const selected = embeddingModels.find(
+                        (m) => m.id === formData.embedding_model,
+                      );
+                      const isLoaded = !!(
+                        selected?.loaded ||
+                        (selected?.loaded_instances && selected.loaded_instances.length > 0)
+                      );
+                      if (!formData.embedding_model) {
+                        return (
+                          <button type="button" className="btn btn-test" disabled>
+                            Load Selected
+                          </button>
+                        );
+                      }
+                      return isLoaded ? (
+                        <button
+                          type="button"
+                          className="btn btn-test"
+                          onClick={() => unloadSelectedLmstudioModel('embedding')}
+                          disabled={lmstudioModelActionLoading}
+                        >
+                          Unload Selected
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-test"
+                          onClick={() => loadSelectedLmstudioModel('embedding')}
+                          disabled={lmstudioModelActionLoading}
+                        >
+                          Load Selected
+                        </button>
+                      );
+                    })()}
+                  />
+                </>
+              )}
+
+              {formData.embedding_provider === 'omlx' && (
+                <>
+                  <div className="form-group">
+                    <label>oMLX API Key</label>
+                    <input
+                      type="password"
+                      value={formData.omlx_api_key || ''}
+                      onChange={(e) => setFormData({ ...formData, omlx_api_key: e.target.value })}
+                      placeholder="optional"
+                      autoComplete="off"
+                    />
+                    <p className="form-help">
+                      Optional. Leave blank if oMLX is running without authentication.
+                    </p>
+                  </div>
+                  <OllamaConnectionForm
+                    protocol={formData.omlx_protocol || DEFAULT_OMLX_PROTOCOL}
+                    host={formData.omlx_host || ''}
+                    port={formData.omlx_port ?? ''}
+                    model={formData.embedding_model || ''}
+                    connected={embeddingModelsLoaded && formData.embedding_provider === 'omlx'}
+                    connecting={embeddingModelsFetching}
+                    error={formData.embedding_provider === 'omlx' ? embeddingModelsError : null}
+                    models={embeddingModels.map((m) => ({
+                      id: m.id,
+                      name: m.name,
+                      dimensions: m.dimensions,
+                      context_limit: m.context_limit,
+                    }))}
+                    providerLabel="oMLX"
+                    defaultPort={DEFAULT_OMLX_PORT}
+                    hostPlaceholder={DEFAULT_OMLX_HOST}
+                    modelLabel="Embedding Model"
+                    modelPlaceholder="bge-m3"
+                    connectedHelpText="Select an embedding model from oMLX."
+                    disconnectedHelpText='Click "Fetch Models" to discover oMLX models, or enter a model id manually.'
+                    onProtocolChange={(protocol) => {
+                      setFormData({ ...formData, omlx_protocol: protocol });
+                      resetEmbeddingModelsState();
+                    }}
+                    onHostChange={(host) => {
+                      setFormData({ ...formData, omlx_host: host });
+                      resetEmbeddingModelsState();
+                    }}
+                    onPortChange={(port) => {
+                      setFormData({ ...formData, omlx_port: port });
+                      resetEmbeddingModelsState();
+                    }}
+                    onModelChange={(model) => setFormData({ ...formData, embedding_model: model })}
+                    onFetchModels={fetchOmlxEmbeddingModels}
+                  />
+                  <p className="field-help">
+                    oMLX uses its OpenAI-compatible embeddings endpoint; non-embedding models may
+                    appear but fail dimension probing.
+                  </p>
+                </>
+              )}
+
+              {hostedEmbeddingProviderConfig && (
+                <>
+                  {hostedEmbeddingProviderConfig.apiKeyField && (
+                    <div className="form-group">
+                      <label>{hostedEmbeddingProviderConfig.label} API Key</label>
+                      <input
+                        type="password"
+                        value={hostedEmbeddingProviderConfig.apiKeyField.value}
+                        onChange={(e) => {
+                          setFormData({ ...formData, openrouter_api_key: e.target.value });
+                          resetEmbeddingModelsState();
+                        }}
+                        placeholder={hostedEmbeddingProviderConfig.apiKeyField.placeholder}
+                        autoComplete="off"
+                      />
+                    </div>
+                  )}
+                  <div className="form-group">
+                    <label>Embedding Model</label>
+                    <div className="input-with-button">
+                      {embeddingModelsLoaded && embeddingModels.length > 0 ? (
+                        <select
+                          value={formData.embedding_model || ''}
+                          onChange={(e) =>
+                            setFormData({ ...formData, embedding_model: e.target.value })
+                          }
+                        >
+                          <option value="">Select a model...</option>
+                          {embeddingModels.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.name}
+                              {model.dimensions ? ` (${model.dimensions} dims)` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={formData.embedding_model || ''}
+                          onChange={(e) =>
+                            setFormData({ ...formData, embedding_model: e.target.value })
+                          }
+                          placeholder={hostedEmbeddingProviderConfig.modelPlaceholder}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        className={`btn btn-test ${embeddingModelsLoaded ? 'btn-connected' : ''}`}
+                        onClick={() =>
+                          fetchEmbeddingModels(
+                            hostedEmbeddingProviderConfig.provider,
+                            hostedEmbeddingProviderConfig.apiKey,
+                          )
+                        }
+                        disabled={embeddingModelsFetching || !hostedEmbeddingProviderConfig.apiKey}
+                      >
+                        {embeddingModelsFetching
+                          ? 'Fetching...'
+                          : embeddingModelsLoaded
+                            ? 'Loaded'
+                            : 'Fetch Models'}
+                      </button>
+                    </div>
+                    {embeddingModelsError && <p className="field-error">{embeddingModelsError}</p>}
+                    <p className="field-help">
+                      {embeddingModelsLoaded
+                        ? hostedEmbeddingProviderConfig.loadedHelp()
+                        : hostedEmbeddingProviderConfig.unloadedHelp}
+                    </p>
+                  </div>
+
+                  {/* Embedding Dimensions (only for text-embedding-3-* models) */}
+                  {(hostedEmbeddingProviderConfig.provider === 'openai' ||
+                    hostedEmbeddingProviderConfig.provider === 'openai_codex') &&
+                    formData.embedding_model?.startsWith('text-embedding-3') && (
+                      <div className="form-group">
+                        <label>Embedding Dimensions</label>
+                        <input
+                          type="number"
+                          min="256"
+                          max="3072"
+                          step="1"
+                          value={formData.embedding_dimensions ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value ? parseInt(e.target.value, 10) : null;
+                            setFormData({ ...formData, embedding_dimensions: val });
+                          }}
+                          placeholder="Default (model max)"
+                        />
+                        <p className="field-help">
+                          Controls the output size of embeddings. Lower values = faster search and
+                          less storage, but slightly reduced accuracy.{' '}
+                          <strong>Recommended: 1536</strong> for best balance. Values over 2000
+                          disable fast indexed search (pgvector limit). Changing this requires a
+                          full re-index of all filesystem indexes.
+                        </p>
+                      </div>
+                    )}
+                </>
+              )}
+
+              {/* Advanced Embedding Settings */}
+              <details style={{ marginBottom: '16px' }} id="setting-embedding_advanced">
+                <summary className="settings-advanced-summary">Advanced Settings</summary>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label>Embedding Timeout (seconds)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <input
+                        type="range"
+                        min="30"
+                        max="600"
+                        step="10"
+                        style={{ flex: 1 }}
+                        value={
+                          formData.ollama_embedding_timeout_seconds ??
+                          settings?.ollama_embedding_timeout_seconds ??
+                          180
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            ollama_embedding_timeout_seconds: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '48px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {formData.ollama_embedding_timeout_seconds ??
+                          settings?.ollama_embedding_timeout_seconds ??
+                          180}
+                        s
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Maximum time allowed per embedding sub-batch for any embedding provider. If a
+                      batch times out, it is automatically retried with a smaller batch size.
+                      Increase for slow hardware or large embedding models.
+                    </p>
+                  </div>
+
+                  <div
+                    className="form-group"
+                    style={{ flex: 1 }}
+                    id="setting-sequential_index_loading"
+                  >
+                    <label
+                      className="chat-toggle-control"
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
+                    >
+                      <label className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          checked={
+                            formData.sequential_index_loading ??
+                            settings?.sequential_index_loading ??
+                            false
+                          }
+                          onChange={(e) =>
+                            setFormData({ ...formData, sequential_index_loading: e.target.checked })
+                          }
+                        />
+                        <span className="toggle-slider"></span>
+                      </label>
+                      <span>
+                        {(formData.sequential_index_loading ??
+                        settings?.sequential_index_loading ??
+                        false)
+                          ? 'Sequential Index Loading'
+                          : 'Parallel Index Loading'}
+                      </span>
+                    </label>
+                    <p className="field-help">
+                      <strong>Parallel (default):</strong> All indexes load simultaneously for
+                      faster startup, but peak RAM is ~1.8x total index size during deserialization.
+                    </p>
+                    <p className="field-help">
+                      <strong>Sequential:</strong> Indexes load one at a time (smallest first),
+                      reducing peak memory to ~1.8x the largest index. Useful when RAM is limited or
+                      OOM errors occur on startup.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="form-row">
+                  <div className="form-group" style={{ flex: 1 }} id="setting-chunking_max_workers">
+                    <label>Chunking Pool Workers</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <input
+                        type="range"
+                        min={1}
+                        max={16}
+                        step={1}
+                        style={{ flex: 1 }}
+                        value={formData.chunking_max_workers ?? settings?.chunking_max_workers ?? 4}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chunking_max_workers: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '48px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {formData.chunking_max_workers ?? settings?.chunking_max_workers ?? 4}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Maximum parallel processes used by the chunking pool during indexing. Lower
+                      this (e.g. 2) if indexing causes OOMs or starves the API/UI; raise on
+                      high-memory hosts. Default 4. Changing this restarts the pool on next use.
+                    </p>
+                  </div>
+
+                  <div
+                    className="form-group"
+                    style={{ flex: 1 }}
+                    id="setting-chunking_max_batch_size"
+                  >
+                    <label>Chunking Batch Size</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <input
+                        type="range"
+                        min={10}
+                        max={500}
+                        step={10}
+                        style={{ flex: 1 }}
+                        value={
+                          formData.chunking_max_batch_size ??
+                          settings?.chunking_max_batch_size ??
+                          100
+                        }
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            chunking_max_batch_size: parseInt(e.target.value, 10),
+                          })
+                        }
+                      />
+                      <span
+                        style={{
+                          minWidth: '48px',
+                          textAlign: 'right',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {formData.chunking_max_batch_size ??
+                          settings?.chunking_max_batch_size ??
+                          100}
+                      </span>
+                    </div>
+                    <p className="field-help">
+                      Maximum documents submitted to each chunking worker batch. Smaller batches
+                      reduce per-worker memory spikes at the cost of throughput. Default 100.
+                    </p>
+                  </div>
+                </div>
+
+                {/* OCR Settings */}
+                <div id="setting-ocr" style={{ marginTop: '1rem' }}>
+                  <h4 style={{ margin: '0 0 4px' }}>OCR Settings</h4>
+                  <p className="field-help" style={{ marginBottom: '12px' }}>
+                    Configure default OCR (Optical Character Recognition) mode for extracting text
+                    from images during indexing.
+                  </p>
+
+                  <div
+                    className="form-row"
+                    style={
+                      formData.default_ocr_mode === 'vision'
+                        ? { display: 'flex', flexWrap: 'nowrap', gap: 'var(--space-md)' }
+                        : undefined
+                    }
+                  >
+                    <div className="form-group" style={{ flex: 1 }}>
+                      <label>Default OCR Mode</label>
+                      <select
+                        value={formData.default_ocr_mode || 'disabled'}
+                        onChange={(e) => {
+                          const newMode = e.target.value as OcrMode;
+                          setFormData({
+                            ...formData,
+                            default_ocr_mode: newMode,
+                            default_ocr_provider: formData.default_ocr_provider || 'ollama',
+                          });
+                          if (newMode !== 'vision') {
+                            setVisionModelsError(null);
+                          }
+                        }}
+                      >
+                        <option value="disabled">Disabled (skip images)</option>
+                        <option value="tesseract">Tesseract (fast, traditional OCR)</option>
+                        <option value="vision">Vision Model (semantic OCR with AI)</option>
+                      </select>
+                      <p className="field-help">
+                        {formData.default_ocr_mode === 'disabled' && (
+                          <>Image files will be skipped during indexing.</>
+                        )}
+                        {formData.default_ocr_mode === 'tesseract' && (
+                          <>
+                            Fast traditional OCR using Tesseract. Good for screenshots and scanned
+                            documents with clear text.
+                          </>
+                        )}
+                        {formData.default_ocr_mode === 'vision' && (
+                          <>
+                            Semantic OCR using a vision-capable model. Better at understanding
+                            complex layouts, handwriting, and context.
+                          </>
+                        )}
+                      </p>
+                    </div>
+
+                    {formData.default_ocr_mode === 'vision' && (
+                      <div className="form-group" style={{ flex: 1 }}>
+                        <label>Vision OCR Provider</label>
+                        <select
+                          value={selectedOcrProvider}
+                          onChange={(e) => {
+                            const provider = e.target.value as OcrProvider;
+                            setFormData({
+                              ...formData,
+                              default_ocr_mode: 'vision',
+                              default_ocr_provider: provider,
+                              default_ocr_vision_model: null,
+                            });
+                            setVisionModels([]);
+                            setVisionModelsError(null);
+                          }}
+                        >
+                          {Object.entries(OCR_PROVIDER_LABELS).map(([provider, label]) => (
+                            <option key={provider} value={provider}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="field-help">
+                          Uses the provider connection configured above for chat or model serving.
+                        </p>
+                      </div>
+                    )}
+
+                    {formData.default_ocr_mode === 'vision' && (
+                      <div className="form-group" style={{ flex: 1 }}>
+                        <label>Vision Model</label>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <select
+                            value={formData.default_ocr_vision_model || ''}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                default_ocr_vision_model: e.target.value || null,
+                              })
+                            }
+                            style={{ flex: 1 }}
+                          >
+                            <option value="">Select a model</option>
+                            {formData.default_ocr_vision_model &&
+                              !visionModels.some(
+                                (model) => model.name === formData.default_ocr_vision_model,
+                              ) && (
+                                <option value={formData.default_ocr_vision_model}>
+                                  {formData.default_ocr_vision_model}
+                                </option>
+                              )}
+                            {visionModels.map((model) => (
+                              <option
+                                key={`${model.provider || selectedOcrProvider}:${model.name}`}
+                                value={model.name}
+                              >
+                                {model.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={fetchVisionModels}
+                            disabled={visionModelsLoading}
+                          >
+                            {visionModelsLoading ? 'Loading...' : 'Load'}
+                          </button>
+                        </div>
+                        {visionModelsError && (
+                          <p className="error-text" style={{ marginBottom: '8px' }}>
+                            {visionModelsError}
+                          </p>
+                        )}
+                        <p className="field-help">
+                          Select a {selectedOcrProviderLabel} vision model for semantic OCR. Load
+                          checks provider metadata without running a vision request.
+                        </p>
+                      </div>
+                    )}
+
+                    {formData.default_ocr_mode === 'vision' && (
+                      <div className="form-group" style={{ flex: '0 0 120px' }}>
+                        <label>Concurrency</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={formData.ocr_concurrency_limit ?? 1}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              ocr_concurrency_limit: Math.max(
+                                1,
+                                Math.min(10, parseInt(e.target.value) || 1),
+                              ),
+                            })
+                          }
+                          style={{ width: '80px' }}
+                        />
+                        <p className="field-help">
+                          Parallel OCR requests. Higher values use more VRAM.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {formData.default_ocr_mode === 'vision' && (
+                    <div
+                      className="form-group"
+                      style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}
+                    >
+                      {(selectedOcrProvider === 'openai' ||
+                        selectedOcrProvider === 'openrouter') && (
+                        <p className="field-help" style={{ marginBottom: '8px' }}>
+                          <span style={{ color: 'var(--color-warning)' }}>
+                            <strong>API cost note:</strong> {selectedOcrProviderLabel} vision OCR
+                            sends image content to the selected model for each processed image. Cost
+                            and latency vary by model, image size, and OCR concurrency.
+                          </span>
+                        </p>
+                      )}
+                      <p className="field-help">
+                        <span style={{ color: 'var(--color-warning)' }}>
+                          <strong>Performance note:</strong> Vision models are usually slower than
+                          Tesseract depending on provider and model size.
+                          <button
+                            type="button"
+                            onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
+                            title="View model recommendations"
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              marginLeft: '4px',
+                              padding: 0,
+                              color: 'inherit',
+                              verticalAlign: 'middle',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                            }}
+                          >
+                            <Info size="1em" />
+                          </button>
+                        </span>
+                        {showOcrRecommendations && (
+                          <div
+                            style={{
+                              marginTop: '12px',
+                              padding: '12px',
+                              backgroundColor: 'var(--color-input-bg)',
+                              border: '1px solid var(--color-border)',
+                              borderRadius: '6px',
+                              fontSize: '0.9em',
+                              color: 'var(--text-color, inherit)',
+                            }}
+                          >
+                            Use the smallest vision-capable model that reliably reads your document
+                            style. Local models trade speed for privacy and cost control; hosted
+                            models are often easier to operate but depend on API limits.
+                          </div>
+                        )}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </details>
+
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleSaveEmbedding}
+                  disabled={embeddingSaving}
+                >
+                  {embeddingSaving ? 'Saving...' : 'Save Embedding Configuration'}
+                </button>
+              </div>
+            </fieldset>
+          </SettingsAccordionSection>
+
+          {/* Authentication Provider Configuration */}
+          <SettingsAccordionSection
+            id="authentication"
+            title="Authentication Providers"
+            open={openAccordionSections.authentication}
+            onToggle={handleToggleAccordionSection}
+            status={authenticationProviderStatus}
+          >
+            <fieldset>
+              <legend>Authentication Providers</legend>
+              <p className="fieldset-help">
+                Both providers can be configured independently. Login attempts are tried in order:
+                the env-based local admin, then internal users, then LDAP. OAuth and PKCE clients
+                continue to use the existing login and token endpoints.
+              </p>
+
+              <div className="form-row">
+                <div className="form-actions">
+                  <label>Configure</label>
+                  <select
+                    value={activeAuthProvider.value}
+                    onChange={(e) =>
+                      setActiveAuthProviderValue(
+                        e.target.value as (typeof AUTH_PROVIDER_OPTIONS)[number]['value'],
+                      )
+                    }
+                  >
+                    {AUTH_PROVIDER_OPTIONS.map((provider) => (
+                      <option key={provider.value} value={provider.value}>
+                        {provider.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="field-help">{activeAuthProvider.description}</p>
+                </div>
+
+                {authProviderConfig && (
+                  <div className="form-group">
+                    <label>Internal Users</label>
+                    <div className="auth-provider-toggle-control">
+                      <label
+                        className="toggle-switch"
+                        title={authProviderConfig.local_users_enabled ? 'Enabled' : 'Disabled'}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={authProviderConfig.local_users_enabled}
+                          onChange={(e) =>
+                            setAuthProviderConfig({
+                              ...authProviderConfig,
+                              local_users_enabled: e.target.checked,
+                            })
+                          }
+                        />
+                        <span className="toggle-slider"></span>
+                      </label>
+                      <span className="auth-provider-toggle-state">
+                        {authProviderConfig.local_users_enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </div>
+                    <p className="field-help auth-provider-help-tight">
+                      When disabled, only the env-based local admin and LDAP (if configured) can
+                      sign in.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {authProviderConfig && (
+                <div className="form-group" id="setting-authentication_totp_policy">
+                  <h4>Two-Factor Authentication</h4>
+                  <p className="fieldset-help auth-provider-help-tight">
+                    TOTP uses authenticator apps and encrypted server-side secrets. Passkeys use
+                    WebAuthn credentials stored on the user's device. Required users are forced to
+                    enroll after password or LDAP verification before app access is granted.
+                  </p>
+
+                  <div className="form-group">
+                    <label>Allowed methods</label>
+                    <div className="form-row" style={{ alignItems: 'center' }}>
+                      {(['totp', 'webauthn'] as MfaMethod[]).map((method) => {
+                        const allowed = (
+                          authProviderConfig.mfa_allowed_methods ?? ['totp']
+                        ).includes(method);
+                        const isLast =
+                          allowed && (authProviderConfig.mfa_allowed_methods ?? []).length === 1;
+                        return (
+                          <label
+                            key={method}
+                            className="checkbox-label"
+                            style={{ marginRight: '1rem' }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={allowed}
+                              disabled={isLast}
+                              onChange={() => {
+                                const current = new Set(
+                                  authProviderConfig.mfa_allowed_methods ?? [],
+                                );
+                                if (current.has(method)) {
+                                  if (current.size > 1) {
+                                    current.delete(method);
+                                  }
+                                } else {
+                                  current.add(method);
+                                }
+                                const nextAllowedMethods = Array.from(current);
+                                const currentDefault = authProviderConfig.mfa_default_method;
+                                const nextDefault =
+                                  currentDefault && nextAllowedMethods.includes(currentDefault)
+                                    ? currentDefault
+                                    : null;
+                                setAuthProviderConfig({
+                                  ...authProviderConfig,
+                                  mfa_allowed_methods: nextAllowedMethods,
+                                  mfa_default_method: nextDefault,
+                                });
+                              }}
+                            />
+                            <span>
+                              {method === 'totp'
+                                ? 'Authenticator app (TOTP)'
+                                : 'Passkeys (WebAuthn)'}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {(authProviderConfig.mfa_allowed_methods ?? []).length === 1 && (
+                      <p className="field-help">At least one method must remain enabled.</p>
+                    )}
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="mfa-default-method">Default method</label>
+                    <select
+                      id="mfa-default-method"
+                      value={authProviderConfig.mfa_default_method ?? ''}
+                      onChange={(e) =>
+                        setAuthProviderConfig({
+                          ...authProviderConfig,
+                          mfa_default_method: (e.target.value as MfaMethod) || null,
+                        })
+                      }
+                    >
+                      <option value="">No default (let users choose)</option>
+                      {(authProviderConfig.mfa_allowed_methods ?? []).map((method) => (
+                        <option key={method} value={method}>
+                          {method === 'totp' ? 'Authenticator app (TOTP)' : 'Passkeys (WebAuthn)'}
                         </option>
                       ))}
                     </select>
                     <p className="field-help">
-                      Uses the provider connection configured above for chat or model serving.
+                      When set, users without their own preferred method see this option first at
+                      sign in.
                     </p>
                   </div>
-                )}
 
-                {formData.default_ocr_mode === 'vision' && (
-                  <div className="form-group" style={{ flex: 1 }}>
-                    <label>Vision Model</label>
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>TOTP Policy</label>
                       <select
-                        value={formData.default_ocr_vision_model || ''}
+                        value={authProviderConfig.totp_policy}
                         onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            default_ocr_vision_model: e.target.value || null,
+                          setAuthProviderConfig({
+                            ...authProviderConfig,
+                            totp_policy: e.target.value as AuthProviderConfig['totp_policy'],
                           })
                         }
-                        style={{ flex: 1 }}
                       >
-                        <option value="">Select a model</option>
-                        {formData.default_ocr_vision_model &&
-                          !visionModels.some(
-                            (model) => model.name === formData.default_ocr_vision_model,
-                          ) && (
-                            <option value={formData.default_ocr_vision_model}>
-                              {formData.default_ocr_vision_model}
-                            </option>
-                          )}
-                        {visionModels.map((model) => (
-                          <option
-                            key={`${model.provider || selectedOcrProvider}:${model.name}`}
-                            value={model.name}
-                          >
-                            {model.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        onClick={fetchVisionModels}
-                        disabled={visionModelsLoading}
-                      >
-                        {visionModelsLoading ? 'Loading...' : 'Load'}
-                      </button>
-                    </div>
-                    {visionModelsError && (
-                      <p className="error-text" style={{ marginBottom: '8px' }}>
-                        {visionModelsError}
-                      </p>
-                    )}
-                    <p className="field-help">
-                      Select a {selectedOcrProviderLabel} vision model for semantic OCR. Load checks
-                      provider metadata without running a vision request.
-                    </p>
-                  </div>
-                )}
-
-                {formData.default_ocr_mode === 'vision' && (
-                  <div className="form-group" style={{ flex: '0 0 120px' }}>
-                    <label>Concurrency</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={formData.ocr_concurrency_limit ?? 1}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          ocr_concurrency_limit: Math.max(
-                            1,
-                            Math.min(10, parseInt(e.target.value) || 1),
-                          ),
-                        })
-                      }
-                      style={{ width: '80px' }}
-                    />
-                    <p className="field-help">
-                      Parallel OCR requests. Higher values use more VRAM.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {formData.default_ocr_mode === 'vision' && (
-                <div className="form-group" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
-                  {(selectedOcrProvider === 'openai' || selectedOcrProvider === 'openrouter') && (
-                    <p className="field-help" style={{ marginBottom: '8px' }}>
-                      <span style={{ color: 'var(--color-warning)' }}>
-                        <strong>API cost note:</strong> {selectedOcrProviderLabel} vision OCR sends
-                        image content to the selected model for each processed image. Cost and
-                        latency vary by model, image size, and OCR concurrency.
-                      </span>
-                    </p>
-                  )}
-                  <p className="field-help">
-                    <span style={{ color: 'var(--color-warning)' }}>
-                      <strong>Performance note:</strong> Vision models are usually slower than
-                      Tesseract depending on provider and model size.
-                      <button
-                        type="button"
-                        onClick={() => setShowOcrRecommendations(!showOcrRecommendations)}
-                        title="View model recommendations"
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          marginLeft: '4px',
-                          padding: 0,
-                          color: 'inherit',
-                          verticalAlign: 'middle',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <Info size="1em" />
-                      </button>
-                    </span>
-                    {showOcrRecommendations && (
-                      <div
-                        style={{
-                          marginTop: '12px',
-                          padding: '12px',
-                          backgroundColor: 'var(--color-input-bg)',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: '6px',
-                          fontSize: '0.9em',
-                          color: 'var(--text-color, inherit)',
-                        }}
-                      >
-                        Use the smallest vision-capable model that reliably reads your document
-                        style. Local models trade speed for privacy and cost control; hosted models
-                        are often easier to operate but depend on API limits.
-                      </div>
-                    )}
-                  </p>
-                </div>
-              )}
-            </div>
-          </details>
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveEmbedding}
-              disabled={embeddingSaving}
-            >
-              {embeddingSaving ? 'Saving...' : 'Save Embedding Configuration'}
-            </button>
-          </div>
-        </fieldset>
-
-        {/* Authentication Provider Configuration */}
-        <fieldset>
-          <legend className="legend-with-status">
-            <span>Authentication Providers</span>
-            <span className="legend-divider" aria-hidden="true" />
-            <span
-              className="llm-provider-status-inline"
-              aria-label="Authentication provider configuration status"
-            >
-              <span
-                className="llm-provider-status-item"
-                title={
-                  (authProviderConfig?.local_users_enabled ?? true)
-                    ? 'Internal users enabled'
-                    : 'Internal users disabled'
-                }
-              >
-                <span
-                  className={`llm-provider-status-dot ${(authProviderConfig?.local_users_enabled ?? true) ? 'configured' : ''}`}
-                  aria-hidden="true"
-                />
-                <span className="llm-provider-status-label">INTERNAL</span>
-              </span>
-              <span
-                className="llm-provider-status-item"
-                title={ldapConfigured ? 'LDAP configured' : 'LDAP not configured'}
-              >
-                <span
-                  className={`llm-provider-status-dot ${ldapConfigured ? 'configured' : ''}`}
-                  aria-hidden="true"
-                />
-                <span className="llm-provider-status-label">LDAP</span>
-              </span>
-            </span>
-          </legend>
-          <p className="fieldset-help">
-            Both providers can be configured independently. Login attempts are tried in order: the
-            env-based local admin, then internal users, then LDAP. OAuth and PKCE clients continue
-            to use the existing login and token endpoints.
-          </p>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label>Configure</label>
-              <select
-                value={activeAuthProvider.value}
-                onChange={(e) =>
-                  setActiveAuthProviderValue(
-                    e.target.value as (typeof AUTH_PROVIDER_OPTIONS)[number]['value'],
-                  )
-                }
-              >
-                {AUTH_PROVIDER_OPTIONS.map((provider) => (
-                  <option key={provider.value} value={provider.value}>
-                    {provider.label}
-                  </option>
-                ))}
-              </select>
-              <p className="field-help">{activeAuthProvider.description}</p>
-            </div>
-
-            {authProviderConfig && (
-              <div className="form-group">
-                <label>Internal Users</label>
-                <div className="auth-provider-toggle-control">
-                  <label
-                    className="toggle-switch"
-                    title={authProviderConfig.local_users_enabled ? 'Enabled' : 'Disabled'}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={authProviderConfig.local_users_enabled}
-                      onChange={(e) =>
-                        setAuthProviderConfig({
-                          ...authProviderConfig,
-                          local_users_enabled: e.target.checked,
-                        })
-                      }
-                    />
-                    <span className="toggle-slider"></span>
-                  </label>
-                  <span className="auth-provider-toggle-state">
-                    {authProviderConfig.local_users_enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-                <p className="field-help auth-provider-help-tight">
-                  When disabled, only the env-based local admin and LDAP (if configured) can sign
-                  in.
-                </p>
-              </div>
-            )}
-          </div>
-
-          {authProviderConfig && (
-            <div className="form-group" id="setting-authentication_totp_policy">
-              <h4>Two-Factor Authentication</h4>
-              <p className="fieldset-help auth-provider-help-tight">
-                TOTP uses authenticator apps and encrypted server-side secrets. Passkeys use
-                WebAuthn credentials stored on the user's device. Required users are forced to
-                enroll after password or LDAP verification before app access is granted.
-              </p>
-
-              <div className="form-group">
-                <label>Allowed methods</label>
-                <div className="form-row" style={{ alignItems: 'center' }}>
-                  {(['totp', 'webauthn'] as MfaMethod[]).map((method) => {
-                    const allowed = (authProviderConfig.mfa_allowed_methods ?? ['totp']).includes(
-                      method,
-                    );
-                    const isLast =
-                      allowed && (authProviderConfig.mfa_allowed_methods ?? []).length === 1;
-                    return (
-                      <label
-                        key={method}
-                        className="checkbox-label"
-                        style={{ marginRight: '1rem' }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={allowed}
-                          disabled={isLast}
-                          onChange={() => {
-                            const current = new Set(authProviderConfig.mfa_allowed_methods ?? []);
-                            if (current.has(method)) {
-                              if (current.size > 1) {
-                                current.delete(method);
-                              }
-                            } else {
-                              current.add(method);
-                            }
-                            const nextAllowedMethods = Array.from(current);
-                            const currentDefault = authProviderConfig.mfa_default_method;
-                            const nextDefault =
-                              currentDefault && nextAllowedMethods.includes(currentDefault)
-                                ? currentDefault
-                                : null;
-                            setAuthProviderConfig({
-                              ...authProviderConfig,
-                              mfa_allowed_methods: nextAllowedMethods,
-                              mfa_default_method: nextDefault,
-                            });
-                          }}
-                        />
-                        <span>
-                          {method === 'totp' ? 'Authenticator app (TOTP)' : 'Passkeys (WebAuthn)'}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-                {(authProviderConfig.mfa_allowed_methods ?? []).length === 1 && (
-                  <p className="field-help">At least one method must remain enabled.</p>
-                )}
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="mfa-default-method">Default method</label>
-                <select
-                  id="mfa-default-method"
-                  value={authProviderConfig.mfa_default_method ?? ''}
-                  onChange={(e) =>
-                    setAuthProviderConfig({
-                      ...authProviderConfig,
-                      mfa_default_method: (e.target.value as MfaMethod) || null,
-                    })
-                  }
-                >
-                  <option value="">No default (let users choose)</option>
-                  {(authProviderConfig.mfa_allowed_methods ?? []).map((method) => (
-                    <option key={method} value={method}>
-                      {method === 'totp' ? 'Authenticator app (TOTP)' : 'Passkeys (WebAuthn)'}
-                    </option>
-                  ))}
-                </select>
-                <p className="field-help">
-                  When set, users without their own preferred method see this option first at sign
-                  in.
-                </p>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>TOTP Policy</label>
-                  <select
-                    value={authProviderConfig.totp_policy}
-                    onChange={(e) =>
-                      setAuthProviderConfig({
-                        ...authProviderConfig,
-                        totp_policy: e.target.value as AuthProviderConfig['totp_policy'],
-                      })
-                    }
-                  >
-                    <option value="optional">Optional self-service</option>
-                    <option value="required_all">Required for all users</option>
-                    <option value="required_admins_groups">Required for admins and groups</option>
-                  </select>
-                  <p className="field-help">
-                    Optional mode still requires MFA for users who have enrolled voluntarily.
-                  </p>
-                </div>
-                <div className="form-group">
-                  <label>Remember Device Duration</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={365}
-                    value={authProviderConfig.totp_remember_device_days}
-                    onChange={(e) =>
-                      setAuthProviderConfig({
-                        ...authProviderConfig,
-                        totp_remember_device_days: parseInt(e.target.value, 10) || 30,
-                      })
-                    }
-                  />
-                  <p className="field-help">
-                    Trusted browser devices can skip MFA for this many days.
-                  </p>
-                </div>
-              </div>
-              {authProviderConfig.totp_policy === 'required_admins_groups' && (
-                <div className="form-group">
-                  <label>Required MFA Groups</label>
-                  <CheckboxDropdown
-                    options={authGroups.map((group) => ({
-                      id: group.id,
-                      label: group.display_name,
-                      description:
-                        group.provider === 'ldap' ? group.source_dn || group.key : group.key,
-                    }))}
-                    selectedIds={authProviderConfig.totp_required_group_ids}
-                    onChange={(ids) =>
-                      setAuthProviderConfig({
-                        ...authProviderConfig,
-                        totp_required_group_ids: ids,
-                      })
-                    }
-                    placeholder="Admins only"
-                    searchPlaceholder="Search auth groups..."
-                  />
-                  <p className="field-help">
-                    Admin users always require MFA in this mode. Selected group members require it
-                    too.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeAuthProvider.value === 'local_managed' && (
-            <>
-              <div className="form-group">
-                <h4>Internal Users &amp; Groups</h4>
-                <p className="fieldset-help auth-provider-help-tight">
-                  Create local users and groups from focused dialogs to keep this page compact.
-                </p>
-                <div className="auth-provider-actions-row auth-provider-launchers">
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => {
-                      setShowCreateLocalUserModal(true);
-                    }}
-                  >
-                    Create Internal User
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={openManageAuthGroupsModal}
-                  >
-                    <Pencil size={16} />
-                    Manage Group Memberships
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-
-          {activeAuthProvider.value === 'ldap' && (
-            <>
-              <h4 style={{ margin: '0 0 4px' }}>Server Connection</h4>
-              <p className="fieldset-help">Connect to your LDAP or Active Directory server.</p>
-
-              <div className="form-row-4" style={{ gridTemplateColumns: '110px 1fr 90px' }}>
-                <div className="form-group">
-                  <label>Protocol</label>
-                  <select
-                    value={ldapFormData.ldap_protocol}
-                    onChange={(e) => {
-                      const protocol = e.target.value as 'ldap' | 'ldaps';
-                      const defaultPort = protocol === 'ldaps' ? 636 : 389;
-                      setLdapFormData({
-                        ...ldapFormData,
-                        ldap_protocol: protocol,
-                        ldap_port: defaultPort,
-                      });
-                    }}
-                  >
-                    <option value="ldaps">ldaps://</option>
-                    <option value="ldap">ldap://</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Host</label>
-                  <input
-                    type="text"
-                    value={ldapFormData.ldap_host}
-                    onChange={(e) =>
-                      setLdapFormData({ ...ldapFormData, ldap_host: e.target.value })
-                    }
-                    placeholder="ldap.example.com"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Port</label>
-                  <input
-                    type="number"
-                    value={ldapFormData.ldap_port}
-                    onChange={(e) =>
-                      setLdapFormData({
-                        ...ldapFormData,
-                        ldap_port: parseInt(e.target.value, 10) || 636,
-                      })
-                    }
-                  />
-                </div>
-              </div>
-
-              {ldapFormData.ldap_protocol === 'ldaps' && (
-                <div className="form-group">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={ldapFormData.allow_self_signed}
-                      onChange={(e) =>
-                        setLdapFormData({ ...ldapFormData, allow_self_signed: e.target.checked })
-                      }
-                      style={{ marginRight: '0.5rem' }}
-                    />
-                    <span>Allow self-signed certificates</span>
-                  </label>
-                  <p className="field-help">
-                    Skip SSL certificate validation. Use only for testing or with internal CAs.
-                  </p>
-                </div>
-              )}
-
-              <div className="form-row-3 ldap-bind-row">
-                <div className="form-group">
-                  <label>Bind DN / Username</label>
-                  <input
-                    type="text"
-                    value={ldapFormData.bind_dn}
-                    onChange={(e) => setLdapFormData({ ...ldapFormData, bind_dn: e.target.value })}
-                    placeholder="user@domain.com or CN=admin,DC=example,DC=com"
-                  />
-                  <p className="field-help">
-                    AD: user@domain.com or DOMAIN\user. OpenLDAP: full DN like
-                    cn=admin,dc=example,dc=com
-                  </p>
-                </div>
-                <div className="form-group">
-                  <label>Bind Password</label>
-                  <input
-                    type="password"
-                    value={ldapFormData.bind_password}
-                    onChange={(e) =>
-                      setLdapFormData({ ...ldapFormData, bind_password: e.target.value })
-                    }
-                    placeholder={ldapConfig?.bind_dn ? '(password saved)' : 'Enter password'}
-                  />
-                </div>
-                <div className="form-group ldap-bind-test-group">
-                  <label>Connection Test</label>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={handleTestLdapConnection}
-                    disabled={ldapTestDisabled}
-                  >
-                    {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
-                  </button>
-                </div>
-              </div>
-
-              {ldapTestResult && (
-                <p
-                  className={`fieldset-help ${ldapTestResult.success ? 'connection-status success' : 'connection-status error'}`}
-                >
-                  {ldapTestResult.message}
-                </p>
-              )}
-
-              {ldapDiscoveredOus.length > 0 && (
-                <>
-                  <h4 style={{ margin: '1rem 0 4px' }}>Search Configuration</h4>
-                  <p className="fieldset-help">
-                    Discovered from your directory. Refine where users and groups are looked up.
-                  </p>
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label>User Search Base</label>
-                      <select
-                        value={ldapFormData.user_search_base}
-                        onChange={(e) =>
-                          setLdapFormData({ ...ldapFormData, user_search_base: e.target.value })
-                        }
-                      >
-                        <option value="">Select a search base...</option>
-                        {ldapDiscoveredOus.map((ou) => (
-                          <option key={ou} value={ou}>
-                            {formatDnForDisplay(ou, ldapDiscoveredOus[0] || ou)}
-                          </option>
-                        ))}
+                        <option value="optional">Optional self-service</option>
+                        <option value="required_all">Required for all users</option>
+                        <option value="required_admins_groups">
+                          Required for admins and groups
+                        </option>
                       </select>
                       <p className="field-help">
-                        Where to search for users. Select the root domain to search all users, or a
-                        specific OU to limit scope.
+                        Optional mode still requires MFA for users who have enrolled voluntarily.
                       </p>
-                      {ldapFormData.user_search_base && (
-                        <p className="field-help" style={{ fontFamily: 'var(--font-mono)' }}>
-                          DN: {ldapFormData.user_search_base}
-                        </p>
-                      )}
                     </div>
                     <div className="form-group">
-                      <label>User Search Filter</label>
+                      <label>Remember Device Duration</label>
                       <input
-                        type="text"
-                        value={ldapFormData.user_search_filter}
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={authProviderConfig.totp_remember_device_days}
                         onChange={(e) =>
-                          setLdapFormData({ ...ldapFormData, user_search_filter: e.target.value })
+                          setAuthProviderConfig({
+                            ...authProviderConfig,
+                            totp_remember_device_days: parseInt(e.target.value, 10) || 30,
+                          })
                         }
-                        placeholder="(uid={username})"
                       />
                       <p className="field-help">
-                        LDAP filter to find users. Use {'{username}'} as placeholder.
+                        Trusted browser devices can skip MFA for this many days.
                       </p>
                     </div>
                   </div>
-
-                  <div className="form-row">
+                  {authProviderConfig.totp_policy === 'required_admins_groups' && (
                     <div className="form-group">
-                      <label>Admin Group DNs</label>
+                      <label>Required MFA Groups</label>
                       <CheckboxDropdown
-                        options={ldapDiscoveredGroups.map((group) => ({
-                          id: group.dn,
-                          label: group.name,
-                          description: group.dn,
+                        options={authGroups.map((group) => ({
+                          id: group.id,
+                          label: group.display_name,
+                          description:
+                            group.provider === 'ldap' ? group.source_dn || group.key : group.key,
                         }))}
-                        selectedIds={ldapFormData.admin_group_dns}
+                        selectedIds={authProviderConfig.totp_required_group_ids}
                         onChange={(ids) =>
-                          setLdapFormData({ ...ldapFormData, admin_group_dns: ids })
+                          setAuthProviderConfig({
+                            ...authProviderConfig,
+                            totp_required_group_ids: ids,
+                          })
                         }
-                        placeholder="No admin groups selected"
-                        searchPlaceholder="Search LDAP groups..."
+                        placeholder="Admins only"
+                        searchPlaceholder="Search auth groups..."
                       />
                       <p className="field-help">
-                        Members of any selected group get admin privileges.
+                        Admin users always require MFA in this mode. Selected group members require
+                        it too.
                       </p>
                     </div>
-                    <div className="form-group">
-                      <label>User Group DNs (optional)</label>
-                      <CheckboxDropdown
-                        options={ldapDiscoveredGroups.map((group) => ({
-                          id: group.dn,
-                          label: group.name,
-                          description: group.dn,
-                        }))}
-                        selectedIds={ldapFormData.user_group_dns}
-                        onChange={(ids) =>
-                          setLdapFormData({ ...ldapFormData, user_group_dns: ids })
-                        }
-                        placeholder="Any LDAP user can log in"
-                        searchPlaceholder="Search LDAP groups..."
-                      />
-                      <p className="field-help">
-                        If set, users must be members of at least one selected group to login.
-                      </p>
+                  )}
+                </div>
+              )}
+
+              {activeAuthProvider.value === 'local_managed' && (
+                <>
+                  <div className="form-group">
+                    <h4>Internal Users &amp; Groups</h4>
+                    <p className="fieldset-help auth-provider-help-tight">
+                      Create local users and groups from focused dialogs to keep this page compact.
+                    </p>
+                    <div className="auth-provider-actions-row auth-provider-launchers">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          setShowCreateLocalUserModal(true);
+                        }}
+                      >
+                        Create Internal User
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={openManageAuthGroupsModal}
+                      >
+                        <Pencil size={16} />
+                        Manage Group Memberships
+                      </button>
                     </div>
                   </div>
                 </>
               )}
 
-              {ldapConfig?.server_url && !ldapTestResult?.success && (
-                <div className="form-group">
-                  <div className="meta-pills">
-                    <span className="meta-pill">
-                      <span className="meta-pill-label">Server</span>
-                      <span className="meta-pill-value">{ldapConfig.server_url}</span>
-                    </span>
-                    {ldapConfig.user_search_base && (
-                      <span className="meta-pill">
-                        <span className="meta-pill-label">Base</span>
-                        <span className="meta-pill-value">{ldapConfig.user_search_base}</span>
-                      </span>
-                    )}
-                    {ldapConfig.admin_group_dns.length > 0 && (
-                      <span className="meta-pill">
-                        <span className="meta-pill-label">Admin Groups</span>
-                        <span className="meta-pill-value">{ldapConfig.admin_group_dns.length}</span>
-                      </span>
-                    )}
-                    {ldapConfig.user_group_dns.length > 0 && (
-                      <span className="meta-pill">
-                        <span className="meta-pill-label">Logon Gates</span>
-                        <span className="meta-pill-value">{ldapConfig.user_group_dns.length}</span>
-                      </span>
-                    )}
+              {activeAuthProvider.value === 'ldap' && (
+                <>
+                  <h4 style={{ margin: '0 0 4px' }}>Server Connection</h4>
+                  <p className="fieldset-help">Connect to your LDAP or Active Directory server.</p>
+
+                  <div className="form-row-4" style={{ gridTemplateColumns: '110px 1fr 90px' }}>
+                    <div className="form-group">
+                      <label>Protocol</label>
+                      <select
+                        value={ldapFormData.ldap_protocol}
+                        onChange={(e) => {
+                          const protocol = e.target.value as 'ldap' | 'ldaps';
+                          const defaultPort = protocol === 'ldaps' ? 636 : 389;
+                          setLdapFormData({
+                            ...ldapFormData,
+                            ldap_protocol: protocol,
+                            ldap_port: defaultPort,
+                          });
+                        }}
+                      >
+                        <option value="ldaps">ldaps://</option>
+                        <option value="ldap">ldap://</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label>Host</label>
+                      <input
+                        type="text"
+                        value={ldapFormData.ldap_host}
+                        onChange={(e) =>
+                          setLdapFormData({ ...ldapFormData, ldap_host: e.target.value })
+                        }
+                        placeholder="ldap.example.com"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Port</label>
+                      <input
+                        type="number"
+                        value={ldapFormData.ldap_port}
+                        onChange={(e) =>
+                          setLdapFormData({
+                            ...ldapFormData,
+                            ldap_port: parseInt(e.target.value, 10) || 636,
+                          })
+                        }
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
 
-              <details style={{ marginBottom: '16px' }} id="setting-authentication_advanced">
-                <summary
-                  style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
-                >
-                  Advanced Settings
-                </summary>
-
-                <h4 style={{ margin: '1rem 0 4px' }}>Sync &amp; Cache</h4>
-                <p className="fieldset-help">
-                  Controls how LDAP identities are projected into the local database. LDAP passwords
-                  are never cached; only identity, groups, and role projection.
-                </p>
-                {authProviderConfig && (
-                  <div className="form-row">
+                  {ldapFormData.ldap_protocol === 'ldaps' && (
                     <div className="form-group">
                       <label className="checkbox-label">
                         <input
                           type="checkbox"
-                          checked={authProviderConfig.ldap_lazy_sync_enabled}
+                          checked={ldapFormData.allow_self_signed}
                           onChange={(e) =>
-                            setAuthProviderConfig({
-                              ...authProviderConfig,
-                              ldap_lazy_sync_enabled: e.target.checked,
+                            setLdapFormData({
+                              ...ldapFormData,
+                              allow_self_signed: e.target.checked,
                             })
                           }
                           style={{ marginRight: '0.5rem' }}
                         />
-                        <span>Lazy sync LDAP identities on login</span>
+                        <span>Allow self-signed certificates</span>
                       </label>
                       <p className="field-help">
-                        When a user authenticates via LDAP, cache their identity and groups locally
-                        for the TTL below.
+                        Skip SSL certificate validation. Use only for testing or with internal CAs.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="form-row-3 ldap-bind-row">
+                    <div className="form-group">
+                      <label>Bind DN / Username</label>
+                      <input
+                        type="text"
+                        value={ldapFormData.bind_dn}
+                        onChange={(e) =>
+                          setLdapFormData({ ...ldapFormData, bind_dn: e.target.value })
+                        }
+                        placeholder="user@domain.com or CN=admin,DC=example,DC=com"
+                      />
+                      <p className="field-help">
+                        AD: user@domain.com or DOMAIN\user. OpenLDAP: full DN like
+                        cn=admin,dc=example,dc=com
                       </p>
                     </div>
                     <div className="form-group">
-                      <label>Cache TTL (minutes)</label>
+                      <label>Bind Password</label>
                       <input
-                        type="number"
-                        min={1}
-                        max={10080}
-                        value={authProviderConfig.cache_ttl_minutes}
+                        type="password"
+                        value={ldapFormData.bind_password}
                         onChange={(e) =>
-                          setAuthProviderConfig({
-                            ...authProviderConfig,
-                            cache_ttl_minutes: parseInt(e.target.value, 10) || 1,
-                          })
+                          setLdapFormData({ ...ldapFormData, bind_password: e.target.value })
                         }
+                        placeholder={ldapConfig?.bind_dn ? '(password saved)' : 'Enter password'}
                       />
                     </div>
-                  </div>
-                )}
-
-                <h4 style={{ margin: '1rem 0 4px' }}>Pre-import LDAP User</h4>
-                <p className="fieldset-help">
-                  Optionally cache an LDAP identity into the local database before they sign in
-                  &mdash; useful for assigning role or group overrides ahead of time. The user still
-                  authenticates with their LDAP password.
-                </p>
-                <div className="form-group">
-                  <label>Search LDAP User</label>
-                  <div className="ldap-user-search-row">
-                    <div className="ldap-user-search-typeahead" ref={ldapUserSearchContainerRef}>
-                      <input
-                        type="text"
-                        value={ldapUserSearchName}
-                        onChange={(e) => {
-                          setLdapUserSearchName(e.target.value);
-                          setLdapUserPreview(null);
-                        }}
-                        onKeyUp={() => {
-                          if (suppressLdapUserSearchDropdown) {
-                            setSuppressLdapUserSearchDropdown(false);
-                          }
-                        }}
-                        onFocus={() => {
-                          if (
-                            !suppressLdapUserSearchDropdown &&
-                            (ldapUserSearchResults.length > 0 ||
-                              ldapUserSearchName.trim().length >= 2)
-                          ) {
-                            setShowLdapUserSearchResults(true);
-                          }
-                        }}
-                        placeholder={
-                          ldapConfigured ? 'Search by username or email' : 'Configure LDAP first'
-                        }
-                        disabled={!ldapConfigured}
-                      />
-                      {ldapUserSearching && (
-                        <div className="ldap-user-search-status">Searching...</div>
-                      )}
-                      {showLdapUserSearchResults && ldapUserSearchEnabled && (
-                        <div
-                          className="ldap-user-search-dropdown"
-                          role="listbox"
-                          aria-label="LDAP user search results"
-                        >
-                          {ldapUserSearchResults.length > 0 ? (
-                            ldapUserSearchResults.map((profile) => (
-                              <button
-                                key={`${profile.source_dn || profile.username}-${profile.email || ''}`}
-                                type="button"
-                                className="ldap-user-search-option"
-                                onClick={() => handleSelectLdapUserSuggestion(profile)}
-                              >
-                                <span className="ldap-user-search-option-title">
-                                  {profile.display_name || profile.username}
-                                </span>
-                                <span className="ldap-user-search-option-meta">
-                                  <span className="ldap-user-search-option-username">
-                                    {profile.username}
-                                  </span>
-                                  {profile.email && (
-                                    <span className="ldap-user-search-option-email">
-                                      {profile.email}
-                                    </span>
-                                  )}
-                                </span>
-                              </button>
-                            ))
-                          ) : (
-                            <div className="ldap-user-search-empty">No matching LDAP users</div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={handleImportLdapUser}
-                      disabled={ldapUserImporting || !ldapConfigured || !ldapUserSearchName.trim()}
-                    >
-                      {ldapUserImporting ? 'Syncing...' : 'Sync User'}
-                    </button>
-                  </div>
-                </div>
-                {ldapUserPreview && (
-                  <div className="form-group">
-                    <div className="meta-pills">
-                      <span className="meta-pill">
-                        <span className="meta-pill-label">User</span>
-                        <span className="meta-pill-value">
-                          {ldapUserPreview.display_name || ldapUserPreview.username}
-                        </span>
-                      </span>
-                      <span className="meta-pill">
-                        <span className="meta-pill-label">Role</span>
-                        <span className="meta-pill-value">{ldapUserPreview.role}</span>
-                      </span>
-                      <span className="meta-pill">
-                        <span className="meta-pill-label">Groups</span>
-                        <span className="meta-pill-value">{ldapUserPreview.groups.length}</span>
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </details>
-            </>
-          )}
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <h4 style={{ margin: '0 0 4px' }}>Current Group Memberships</h4>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                marginBottom: 'var(--space-sm)',
-              }}
-            >
-              <p className="fieldset-help auth-provider-help-tight" style={{ margin: 0 }}>
-                Internal groups are managed here. LDAP groups are projected from synced LDAP user
-                memberships.
-              </p>
-            </div>
-            {authGroups.length > 0 && (
-              <div className="meta-pills auth-provider-pills">
-                {authGroups.slice(0, 8).map((group) => {
-                  const isLdap = group.provider === 'ldap';
-                  const isAdmin = group.role === 'admin';
-                  const isLogon = Boolean(group.is_logon_group);
-                  const memberPreviews = group.member_previews ?? [];
-                  return (
-                    <Popover
-                      key={group.id}
-                      trigger="hover"
-                      position="right"
-                      content={
-                        <div className="auth-group-members-popover">
-                          <div className="auth-group-members-popover-header">
-                            {group.display_name} members
-                          </div>
-                          {memberPreviews.length === 0 ? (
-                            <div className="auth-group-members-popover-status">
-                              No members in this group.
-                            </div>
-                          ) : (
-                            <ul className="auth-group-members-popover-list">
-                              {memberPreviews.map((member) => {
-                                const displayName = member.display_name || member.username;
-                                return (
-                                  <li
-                                    key={`${group.id}-${member.username}`}
-                                    className="auth-group-members-popover-item"
-                                  >
-                                    <span className="auth-group-member-display-name">
-                                      {displayName}
-                                    </span>
-                                    <span className="auth-group-member-handle">
-                                      @{member.username}
-                                    </span>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                        </div>
-                      }
-                    >
-                      <span
-                        className={`meta-pill auth-provider-pill auth-provider-pill-${group.provider}${isAdmin ? ' auth-provider-pill-admin' : ''}${isLogon ? ' auth-provider-pill-logon' : ''}`}
+                    <div className="form-group ldap-bind-test-group">
+                      <label>Connection Test</label>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={handleTestLdapConnection}
+                        disabled={ldapTestDisabled}
                       >
-                        <span className="meta-pill-value">{group.display_name}</span>
-                        <span className="auth-provider-pill-count">({group.member_count})</span>
-                        {isLdap && <span className="auth-provider-pill-source-badge">LDAP</span>}
-                        {isAdmin && <span className="auth-provider-pill-admin-badge">Admin</span>}
-                        {isLogon && <span className="auth-provider-pill-logon-badge">Logon</span>}
-                      </span>
-                    </Popover>
-                  );
-                })}
-              </div>
-            )}
-            {authGroups.length === 0 && (
-              <p className="muted" style={{ margin: 0 }}>
-                No groups created yet.
-              </p>
-            )}
-          </div>
-
-          {authProviderConfig && (
-            <div className="form-group">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={handleSaveAuthProviderConfig}
-                disabled={authProviderConfigSaving}
-              >
-                {authProviderConfigSaving ? 'Saving...' : 'Save Authentication Policy'}
-              </button>
-            </div>
-          )}
-        </fieldset>
-
-        {/* Search Configuration */}
-        <fieldset>
-          <legend>Search Configuration</legend>
-          <p className="fieldset-help">
-            Configure how vector search behaves across your indexed knowledge bases.
-          </p>
-
-          <div className="form-group">
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={formData.aggregate_search ?? settings?.aggregate_search ?? true}
-                onChange={(e) => setFormData({ ...formData, aggregate_search: e.target.checked })}
-                style={{ marginRight: '0.5rem' }}
-              />
-              <span>Aggregate search results (single tool)</span>
-            </label>
-            <p className="field-help">
-              <strong>Enabled (default):</strong> A single <code>search_knowledge</code> tool
-              searches all indexes. Results are combined and the AI receives context from all
-              sources.
-              <br />
-              <strong>Disabled:</strong> Creates separate <code>search_&lt;index_name&gt;</code>{' '}
-              tools for each index. The AI can choose which specific index to search, giving it
-              granular control. Use this when you have distinct knowledge bases (e.g., code vs.
-              docs) and want the AI to target searches.
-            </p>
-          </div>
-
-          {/* Advanced Search Settings */}
-          <details style={{ marginBottom: '16px' }} id="setting-search_advanced">
-            <summary
-              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
-            >
-              Advanced Settings
-            </summary>
-
-            <div className="form-group">
-              <label>Results per Search (k)</label>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={formData.search_results_k ?? settings?.search_results_k ?? 5}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    search_results_k: Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 5)),
-                  })
-                }
-              />
-              <p className="field-help">
-                Document chunks retrieved per query (k). Lower (3-5) is faster; higher (10-20) gives
-                more context but costs more tokens.
-              </p>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.search_use_mmr ?? settings?.search_use_mmr ?? true}
-                    onChange={(e) => setFormData({ ...formData, search_use_mmr: e.target.checked })}
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Use MMR (Max Marginal Relevance)</span>
-                </label>
-                <p className="field-help">
-                  Reduces near-duplicate results by balancing relevance with diversity.
-                </p>
-
-                {(formData.search_use_mmr ?? settings?.search_use_mmr ?? true) && (
-                  <div style={{ marginTop: '0.5rem' }}>
-                    <label>
-                      MMR Diversity/Relevance (lambda:{' '}
-                      {formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5})
-                    </label>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.1}
-                      value={formData.search_mmr_lambda ?? settings?.search_mmr_lambda ?? 0.5}
-                      onChange={(e) =>
-                        setFormData({ ...formData, search_mmr_lambda: parseFloat(e.target.value) })
-                      }
-                      style={{ width: '100%' }}
-                    />
-                    <p className="field-help">
-                      <strong>0 = Max diversity</strong> |<strong> 1 = Max relevance</strong>.
-                      Default 0.5 provides a good balance.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={formData.chunking_use_tokens ?? settings?.chunking_use_tokens ?? true}
-                    onChange={(e) =>
-                      setFormData({ ...formData, chunking_use_tokens: e.target.checked })
-                    }
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Token-based chunking</span>
-                </label>
-                <p className="field-help">
-                  Use token-based chunking instead of character-based for more accurate chunk sizes
-                  aligned with model tokenization.
-                </p>
-
-                <div style={{ marginTop: '0.5rem' }}>
-                  <label>IVFFlat Lists (pgvector)</label>
-                  <input
-                    type="number"
-                    min={10}
-                    max={1000}
-                    value={formData.ivfflat_lists ?? settings?.ivfflat_lists ?? 100}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        ivfflat_lists: Math.max(
-                          10,
-                          Math.min(1000, parseInt(e.target.value, 10) || 100),
-                        ),
-                      })
-                    }
-                  />
-                  <p className="field-help">
-                    pgvector index parameter. Higher = faster queries for large datasets.
-                    Recommended: sqrt(num embeddings). Default: 100.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Archive Extraction Limits */}
-            <div
-              className="form-row"
-              style={{
-                marginTop: '1rem',
-                borderTop: '1px solid var(--color-border)',
-                paddingTop: '1rem',
-              }}
-            >
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Archive Max Size</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum total uncompressed size of an uploaded index or workspace archive.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.archive_max_total_size_bytes ??
-                    settings?.archive_max_total_size_bytes ??
-                    5_368_709_120;
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min={104_857_600}
-                          max={536_870_912_000}
-                          step={104_857_600}
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              archive_max_total_size_bytes: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <span
-                          style={{
-                            minWidth: '84px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {formatBytes(currentVal)}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Range: 100 MB to 500 GB. Applies to both upload and git-sourced index
-                        archives, plus User Space workspace archive imports.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Archive Max File Count</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum number of entries allowed in a single extracted index or workspace
-                  archive.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.archive_max_file_count ?? settings?.archive_max_file_count ?? 100000;
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min={100}
-                          max={500000}
-                          step={1000}
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              archive_max_file_count: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <span
-                          style={{
-                            minWidth: '72px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {currentVal.toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Default: 100,000. Increase for large monorepos or bulk archives. Range: 100
-                        to 500,000.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          </details>
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveSearch}
-              disabled={searchSaving}
-            >
-              {searchSaving ? 'Saving...' : 'Save Search Configuration'}
-            </button>
-          </div>
-        </fieldset>
-
-        {/* MCP Configuration */}
-        <fieldset>
-          <legend>MCP Configuration</legend>
-          <p className="fieldset-help">
-            Configure Model Context Protocol (MCP) access and authentication settings.
-          </p>
-
-          <div className="form-group">
-            <label
-              className="chat-toggle-control"
-              style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}
-            >
-              <label className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={formData.mcp_enabled ?? settings?.mcp_enabled ?? false}
-                  onChange={(e) => setFormData({ ...formData, mcp_enabled: e.target.checked })}
-                />
-                <span className="toggle-slider"></span>
-              </label>
-              <span>Enable MCP Server</span>
-            </label>
-            <p className="field-help">
-              When enabled, the MCP server endpoints (<code>/mcp</code> and custom routes) will be
-              active. Disable to prevent all MCP access.
-            </p>
-          </div>
-
-          {/* Only show other MCP settings when enabled */}
-          {(formData.mcp_enabled ?? settings?.mcp_enabled ?? false) && (
-            <>
-              <div className="form-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={
-                      formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth ?? false
-                    }
-                    onChange={(e) =>
-                      setFormData({ ...formData, mcp_default_route_auth: e.target.checked })
-                    }
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Require authentication for default /mcp route</span>
-                </label>
-                <p className="field-help">
-                  When enabled, the default <code>/mcp</code> endpoint requires authentication.
-                  {(formData.mcp_default_route_auth_method ??
-                    settings?.mcp_default_route_auth_method ??
-                    'password') === 'oauth2'
-                    ? ' MCP clients must authenticate via OAuth2 using the /auth/oauth2/token endpoint.'
-                    : (formData.mcp_default_route_auth_method ??
-                          settings?.mcp_default_route_auth_method ??
-                          'password') === 'client_credentials'
-                      ? ' MCP clients must authenticate with a client ID and client secret, either via HTTP Basic or the per-route token endpoint.'
-                      : settings?.has_mcp_default_password
-                        ? ' A password is configured - MCP clients should use this password as the Bearer token.'
-                        : ' Set a password below to enable password-based authentication.'}
-                </p>
-              </div>
-
-              {/* Auth method selection - always show when auth is enabled. LDAP-only OAuth2 is conditional. */}
-              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
-                <div className="form-group" style={{ marginTop: '1rem' }}>
-                  <label>Authentication Method</label>
-                  <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                    <label className="radio-label">
-                      <input
-                        type="radio"
-                        name="mcp_auth_method"
-                        value="password"
-                        checked={
-                          (formData.mcp_default_route_auth_method ??
-                            settings?.mcp_default_route_auth_method ??
-                            'password') === 'password'
-                        }
-                        onChange={() =>
-                          setFormData({ ...formData, mcp_default_route_auth_method: 'password' })
-                        }
-                      />
-                      <span>Password</span>
-                    </label>
-                    <label className="radio-label">
-                      <input
-                        type="radio"
-                        name="mcp_auth_method"
-                        value="client_credentials"
-                        checked={
-                          (formData.mcp_default_route_auth_method ??
-                            settings?.mcp_default_route_auth_method ??
-                            'password') === 'client_credentials'
-                        }
-                        onChange={() =>
-                          setFormData({
-                            ...formData,
-                            mcp_default_route_auth_method: 'client_credentials',
-                          })
-                        }
-                      />
-                      <span>Client Credentials</span>
-                    </label>
-                    {ldapConfigured && (
-                      <label className="radio-label">
-                        <input
-                          type="radio"
-                          name="mcp_auth_method"
-                          value="oauth2"
-                          checked={
-                            (formData.mcp_default_route_auth_method ??
-                              settings?.mcp_default_route_auth_method ??
-                              'password') === 'oauth2'
-                          }
-                          onChange={() =>
-                            setFormData({ ...formData, mcp_default_route_auth_method: 'oauth2' })
-                          }
-                        />
-                        <span>OAuth2 (LDAP)</span>
-                      </label>
-                    )}
-                  </div>
-                  <p className="field-help">
-                    {(formData.mcp_default_route_auth_method ??
-                      settings?.mcp_default_route_auth_method ??
-                      'password') === 'oauth2'
-                      ? 'MCP clients authenticate with LDAP credentials via POST /auth/oauth2/token to get a Bearer token.'
-                      : (formData.mcp_default_route_auth_method ??
-                            settings?.mcp_default_route_auth_method ??
-                            'password') === 'client_credentials'
-                        ? 'MCP clients authenticate with client_id/client_secret over HTTP Basic, or exchange them at the token endpoint for a short-lived Bearer token.'
-                        : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
-                  </p>
-                </div>
-              )}
-
-              {/* LDAP Group restriction - only for OAuth2 auth method */}
-              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-                ldapConfigured &&
-                (formData.mcp_default_route_auth_method ??
-                  settings?.mcp_default_route_auth_method ??
-                  'password') === 'oauth2' && (
-                  <div className="form-group" style={{ marginTop: '1rem' }}>
-                    <label htmlFor="mcp-allowed-group">Allowed LDAP Group (Optional)</label>
-                    <div style={{ maxWidth: '500px' }}>
-                      <LdapGroupSelect
-                        id="mcp-allowed-group"
-                        value={
-                          formData.mcp_default_route_allowed_group ??
-                          settings?.mcp_default_route_allowed_group ??
-                          ''
-                        }
-                        onChange={(value) =>
-                          setFormData({
-                            ...formData,
-                            mcp_default_route_allowed_group: value || null,
-                          })
-                        }
-                        groups={ldapDiscoveredGroups}
-                        emptyOptionLabel="Any authenticated LDAP user"
-                      />
+                        {ldapTesting ? 'Testing...' : 'Test Connection & Discover'}
+                      </button>
                     </div>
-                    <p className="field-help">
-                      Restrict access to members of a specific LDAP group. Leave empty to allow all
-                      authenticated LDAP users.
-                    </p>
                   </div>
-                )}
 
-              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-                (formData.mcp_default_route_auth_method ??
-                  settings?.mcp_default_route_auth_method ??
-                  'password') === 'client_credentials' && (
-                  <>
-                    <div className="form-group" style={{ marginTop: '1rem' }}>
-                      <label htmlFor="mcp-client-id">Client ID</label>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {ldapTestResult && (
+                    <p
+                      className={`fieldset-help ${ldapTestResult.success ? 'connection-status success' : 'connection-status error'}`}
+                    >
+                      {ldapTestResult.message}
+                    </p>
+                  )}
+
+                  {ldapDiscoveredOus.length > 0 && (
+                    <>
+                      <h4 style={{ margin: '1rem 0 4px' }}>Search Configuration</h4>
+                      <p className="fieldset-help">
+                        Discovered from your directory. Refine where users and groups are looked up.
+                      </p>
+                      <div className="form-row">
+                        <div className="form-group">
+                          <label>User Search Base</label>
+                          <select
+                            value={ldapFormData.user_search_base}
+                            onChange={(e) =>
+                              setLdapFormData({ ...ldapFormData, user_search_base: e.target.value })
+                            }
+                          >
+                            <option value="">Select a search base...</option>
+                            {ldapDiscoveredOus.map((ou) => (
+                              <option key={ou} value={ou}>
+                                {formatDnForDisplay(ou, ldapDiscoveredOus[0] || ou)}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="field-help">
+                            Where to search for users. Select the root domain to search all users,
+                            or a specific OU to limit scope.
+                          </p>
+                          {ldapFormData.user_search_base && (
+                            <p className="field-help" style={{ fontFamily: 'var(--font-mono)' }}>
+                              DN: {ldapFormData.user_search_base}
+                            </p>
+                          )}
+                        </div>
+                        <div className="form-group">
+                          <label>User Search Filter</label>
+                          <input
+                            type="text"
+                            value={ldapFormData.user_search_filter}
+                            onChange={(e) =>
+                              setLdapFormData({
+                                ...ldapFormData,
+                                user_search_filter: e.target.value,
+                              })
+                            }
+                            placeholder="(uid={username})"
+                          />
+                          <p className="field-help">
+                            LDAP filter to find users. Use {'{username}'} as placeholder.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="form-row">
+                        <div className="form-group">
+                          <label>Admin Group DNs</label>
+                          <CheckboxDropdown
+                            options={ldapDiscoveredGroups.map((group) => ({
+                              id: group.dn,
+                              label: group.name,
+                              description: group.dn,
+                            }))}
+                            selectedIds={ldapFormData.admin_group_dns}
+                            onChange={(ids) =>
+                              setLdapFormData({ ...ldapFormData, admin_group_dns: ids })
+                            }
+                            placeholder="No admin groups selected"
+                            searchPlaceholder="Search LDAP groups..."
+                          />
+                          <p className="field-help">
+                            Members of any selected group get admin privileges.
+                          </p>
+                        </div>
+                        <div className="form-group">
+                          <label>User Group DNs (optional)</label>
+                          <CheckboxDropdown
+                            options={ldapDiscoveredGroups.map((group) => ({
+                              id: group.dn,
+                              label: group.name,
+                              description: group.dn,
+                            }))}
+                            selectedIds={ldapFormData.user_group_dns}
+                            onChange={(ids) =>
+                              setLdapFormData({ ...ldapFormData, user_group_dns: ids })
+                            }
+                            placeholder="Any LDAP user can log in"
+                            searchPlaceholder="Search LDAP groups..."
+                          />
+                          <p className="field-help">
+                            If set, users must be members of at least one selected group to login.
+                          </p>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {ldapConfig?.server_url && !ldapTestResult?.success && (
+                    <div className="form-group">
+                      <div className="meta-pills">
+                        <span className="meta-pill">
+                          <span className="meta-pill-label">Server</span>
+                          <span className="meta-pill-value">{ldapConfig.server_url}</span>
+                        </span>
+                        {ldapConfig.user_search_base && (
+                          <span className="meta-pill">
+                            <span className="meta-pill-label">Base</span>
+                            <span className="meta-pill-value">{ldapConfig.user_search_base}</span>
+                          </span>
+                        )}
+                        {ldapConfig.admin_group_dns.length > 0 && (
+                          <span className="meta-pill">
+                            <span className="meta-pill-label">Admin Groups</span>
+                            <span className="meta-pill-value">
+                              {ldapConfig.admin_group_dns.length}
+                            </span>
+                          </span>
+                        )}
+                        {ldapConfig.user_group_dns.length > 0 && (
+                          <span className="meta-pill">
+                            <span className="meta-pill-label">Logon Gates</span>
+                            <span className="meta-pill-value">
+                              {ldapConfig.user_group_dns.length}
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <details style={{ marginBottom: '16px' }} id="setting-authentication_advanced">
+                    <summary className="settings-advanced-summary">Advanced Settings</summary>
+
+                    <h4 style={{ margin: '1rem 0 4px' }}>Sync &amp; Cache</h4>
+                    <p className="fieldset-help">
+                      Controls how LDAP identities are projected into the local database. LDAP
+                      passwords are never cached; only identity, groups, and role projection.
+                    </p>
+                    {authProviderConfig && (
+                      <div className="form-row">
+                        <div className="form-group">
+                          <label className="checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={authProviderConfig.ldap_lazy_sync_enabled}
+                              onChange={(e) =>
+                                setAuthProviderConfig({
+                                  ...authProviderConfig,
+                                  ldap_lazy_sync_enabled: e.target.checked,
+                                })
+                              }
+                              style={{ marginRight: '0.5rem' }}
+                            />
+                            <span>Lazy sync LDAP identities on login</span>
+                          </label>
+                          <p className="field-help">
+                            When a user authenticates via LDAP, cache their identity and groups
+                            locally for the TTL below.
+                          </p>
+                        </div>
+                        <div className="form-group">
+                          <label>Cache TTL (minutes)</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={10080}
+                            value={authProviderConfig.cache_ttl_minutes}
+                            onChange={(e) =>
+                              setAuthProviderConfig({
+                                ...authProviderConfig,
+                                cache_ttl_minutes: parseInt(e.target.value, 10) || 1,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <h4 style={{ margin: '1rem 0 4px' }}>Pre-import LDAP User</h4>
+                    <p className="fieldset-help">
+                      Optionally cache an LDAP identity into the local database before they sign in
+                      &mdash; useful for assigning role or group overrides ahead of time. The user
+                      still authenticates with their LDAP password.
+                    </p>
+                    <div className="form-group">
+                      <label>Search LDAP User</label>
+                      <div className="ldap-user-search-row">
                         <div
-                          className="settings-inline-copy-wrap"
-                          style={{ flex: 1, maxWidth: '400px' }}
+                          className="ldap-user-search-typeahead"
+                          ref={ldapUserSearchContainerRef}
                         >
                           <input
                             type="text"
-                            id="mcp-client-id"
-                            placeholder="cid-..."
-                            value={
-                              formData.mcp_default_route_client_id ??
-                              settings?.mcp_default_route_client_id ??
-                              ''
-                            }
-                            onChange={(e) =>
-                              setFormData({
-                                ...formData,
-                                mcp_default_route_client_id: e.target.value,
-                              })
-                            }
-                            style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-                          />
-                          <InlineCopyButton
-                            copyText={
-                              formData.mcp_default_route_client_id ??
-                              settings?.mcp_default_route_client_id ??
-                              ''
-                            }
-                            className="settings-inline-copy"
-                            disabled={
-                              !(
-                                formData.mcp_default_route_client_id ??
-                                settings?.mcp_default_route_client_id ??
-                                ''
-                              )
-                            }
-                            title="Copy client ID"
-                            ariaLabel="Copy client ID"
-                            copiedTitle="Client ID copied"
-                            copiedAriaLabel="Client ID copied"
-                            feedbackMs={2000}
-                            onCopySuccess={() => toast.success('Client ID copied')}
-                            onCopyError={() =>
-                              setMcpError('Unable to copy client-id. Please copy it manually.')
-                            }
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-small btn-secondary"
-                          onClick={() =>
-                            setFormData({
-                              ...formData,
-                              mcp_default_route_client_id: generateMcpClientId(),
-                            })
-                          }
-                        >
-                          Generate Client ID
-                        </button>
-                      </div>
-                      <p className="field-help">
-                        Public identifier for MCP clients. Use this with the client secret for HTTP
-                        Basic auth or token exchange.
-                      </p>
-                    </div>
-
-                    <div className="form-group" style={{ marginTop: '1rem' }}>
-                      <label htmlFor="mcp-client-secret">Client Secret</label>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <div
-                          className="settings-inline-copy-wrap"
-                          style={{ flex: 1, maxWidth: '400px' }}
-                        >
-                          <input
-                            type={showMcpPassword ? 'text' : 'password'}
-                            id="mcp-client-secret"
+                            value={ldapUserSearchName}
+                            onChange={(e) => {
+                              setLdapUserSearchName(e.target.value);
+                              setLdapUserPreview(null);
+                            }}
+                            onKeyUp={() => {
+                              if (suppressLdapUserSearchDropdown) {
+                                setSuppressLdapUserSearchDropdown(false);
+                              }
+                            }}
+                            onFocus={() => {
+                              if (
+                                !suppressLdapUserSearchDropdown &&
+                                (ldapUserSearchResults.length > 0 ||
+                                  ldapUserSearchName.trim().length >= 2)
+                              ) {
+                                setShowLdapUserSearchResults(true);
+                              }
+                            }}
                             placeholder={
-                              settings?.has_mcp_default_password
-                                ? '••••••••'
-                                : 'Enter client secret (min 8 characters)'
+                              ldapConfigured
+                                ? 'Search by username or email'
+                                : 'Configure LDAP first'
                             }
-                            value={formData.mcp_default_route_password ?? ''}
-                            onChange={(e) =>
-                              setFormData({
-                                ...formData,
-                                mcp_default_route_password: e.target.value,
-                              })
-                            }
-                            style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                            disabled={!ldapConfigured}
                           />
-                          <InlineCopyButton
-                            copyText={formData.mcp_default_route_password ?? ''}
-                            className="settings-inline-copy"
-                            disabled={!(formData.mcp_default_route_password ?? '')}
-                            title="Copy client secret"
-                            ariaLabel="Copy client secret"
-                            copiedTitle="Client secret copied"
-                            copiedAriaLabel="Client secret copied"
-                            feedbackMs={2000}
-                            onCopySuccess={() => toast.success('Client secret copied')}
-                            onCopyError={() =>
-                              setMcpError('Unable to copy secret. Please copy it manually.')
-                            }
-                          />
-                          <button
-                            type="button"
-                            className="settings-inline-copy settings-inline-copy-secondary"
-                            onClick={() => setShowMcpPassword(!showMcpPassword)}
-                            title={showMcpPassword ? 'Hide client secret' : 'Show client secret'}
-                            aria-label={
-                              showMcpPassword ? 'Hide client secret' : 'Show client secret'
-                            }
-                          >
-                            {showMcpPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                          </button>
+                          {ldapUserSearching && (
+                            <div className="ldap-user-search-status">Searching...</div>
+                          )}
+                          {showLdapUserSearchResults && ldapUserSearchEnabled && (
+                            <div
+                              className="ldap-user-search-dropdown"
+                              role="listbox"
+                              aria-label="LDAP user search results"
+                            >
+                              {ldapUserSearchResults.length > 0 ? (
+                                ldapUserSearchResults.map((profile) => (
+                                  <button
+                                    key={`${profile.source_dn || profile.username}-${profile.email || ''}`}
+                                    type="button"
+                                    className="ldap-user-search-option"
+                                    onClick={() => handleSelectLdapUserSuggestion(profile)}
+                                  >
+                                    <span className="ldap-user-search-option-title">
+                                      {profile.display_name || profile.username}
+                                    </span>
+                                    <span className="ldap-user-search-option-meta">
+                                      <span className="ldap-user-search-option-username">
+                                        {profile.username}
+                                      </span>
+                                      {profile.email && (
+                                        <span className="ldap-user-search-option-email">
+                                          {profile.email}
+                                        </span>
+                                      )}
+                                    </span>
+                                  </button>
+                                ))
+                              ) : (
+                                <div className="ldap-user-search-empty">No matching LDAP users</div>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <button
                           type="button"
-                          className="btn btn-small btn-secondary"
-                          onClick={() =>
-                            setFormData({
-                              ...formData,
-                              mcp_default_route_password: generateMcpSecret(),
-                            })
+                          className="btn btn-secondary"
+                          onClick={handleImportLdapUser}
+                          disabled={
+                            ldapUserImporting || !ldapConfigured || !ldapUserSearchName.trim()
                           }
                         >
-                          Generate Password
+                          {ldapUserImporting ? 'Syncing...' : 'Sync User'}
                         </button>
-                        {settings?.has_mcp_default_password && (
-                          <button
-                            type="button"
-                            className="btn btn-small btn-secondary"
-                            onClick={() =>
-                              setFormData({ ...formData, mcp_default_route_password: '' })
-                            }
-                            title="Clear client secret (submit empty to remove)"
-                          >
-                            Clear
-                          </button>
-                        )}
                       </div>
-                      <p className="field-help">
-                        {settings?.has_mcp_default_password
-                          ? 'Client secret is set. Leave blank to keep the current secret, or enter a new one to rotate it. Clear and save to remove client credentials protection.'
-                          : 'Set a client secret for MCP clients. Minimum 8 characters.'}
-                      </p>
-                      {window.location.protocol === 'http:' && (
-                        <div
-                          className="field-warning"
-                          style={{
-                            marginTop: '0.5rem',
-                            padding: '0.5rem',
-                            backgroundColor: 'rgba(255, 193, 7, 0.15)',
-                            borderLeft: '3px solid #ffc107',
-                            borderRadius: '4px',
-                            fontSize: '0.85em',
-                          }}
-                        >
-                          <strong>Security:</strong> You are accessing over HTTP. Client credentials
-                          will be transmitted in plaintext. Consider using HTTPS via a reverse proxy
-                          for production deployments.
+                    </div>
+                    {ldapUserPreview && (
+                      <div className="form-group">
+                        <div className="meta-pills">
+                          <span className="meta-pill">
+                            <span className="meta-pill-label">User</span>
+                            <span className="meta-pill-value">
+                              {ldapUserPreview.display_name || ldapUserPreview.username}
+                            </span>
+                          </span>
+                          <span className="meta-pill">
+                            <span className="meta-pill-label">Role</span>
+                            <span className="meta-pill-value">{ldapUserPreview.role}</span>
+                          </span>
+                          <span className="meta-pill">
+                            <span className="meta-pill-label">Groups</span>
+                            <span className="meta-pill-value">{ldapUserPreview.groups.length}</span>
+                          </span>
                         </div>
-                      )}
-                      {mcpError && <p className="field-error">{mcpError}</p>}
-                    </div>
-                  </>
-                )}
-
-              {/* Warning when auth is disabled */}
-              {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) && (
-                <div
-                  className="field-warning"
-                  style={{
-                    marginTop: '0.5rem',
-                    padding: '0.75rem',
-                    backgroundColor: 'rgba(255, 193, 7, 0.15)',
-                    borderLeft: '3px solid #ffc107',
-                    borderRadius: '4px',
-                  }}
-                >
-                  <strong>Security Notice:</strong> The <code>/mcp</code> endpoint is currently open
-                  without authentication. Anyone with network access can invoke your configured
-                  tools. Consider enabling authentication if this server is accessible beyond
-                  localhost or a trusted network.
-                </div>
-              )}
-
-              {/* Password for default MCP route - only show for password auth method */}
-              {(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-                (formData.mcp_default_route_auth_method ??
-                  settings?.mcp_default_route_auth_method ??
-                  'password') === 'password' && (
-                  <div className="form-group" style={{ marginTop: '1rem' }}>
-                    <label htmlFor="mcp-password">MCP Password</label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <div
-                        className="settings-inline-copy-wrap"
-                        style={{ flex: 1, maxWidth: '400px' }}
-                      >
-                        <input
-                          type={showMcpPassword ? 'text' : 'password'}
-                          id="mcp-password"
-                          placeholder={
-                            settings?.has_mcp_default_password
-                              ? '••••••••'
-                              : 'Enter password (min 8 characters)'
-                          }
-                          value={formData.mcp_default_route_password ?? ''}
-                          onChange={(e) =>
-                            setFormData({ ...formData, mcp_default_route_password: e.target.value })
-                          }
-                          style={{ width: '100%' }}
-                        />
-                        <InlineCopyButton
-                          copyText={formData.mcp_default_route_password ?? ''}
-                          className="settings-inline-copy"
-                          disabled={!(formData.mcp_default_route_password ?? '')}
-                          title="Copy password"
-                          ariaLabel="Copy password"
-                          copiedTitle="Password copied"
-                          copiedAriaLabel="Password copied"
-                          feedbackMs={2000}
-                          onCopySuccess={() => toast.success('Password copied')}
-                          onCopyError={() =>
-                            setMcpError('Unable to copy secret. Please copy it manually.')
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="settings-inline-copy settings-inline-copy-secondary"
-                          onClick={() => setShowMcpPassword(!showMcpPassword)}
-                          title={showMcpPassword ? 'Hide password' : 'Show password'}
-                          aria-label={showMcpPassword ? 'Hide password' : 'Show password'}
-                        >
-                          {showMcpPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                        </button>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn btn-small btn-secondary"
-                        onClick={() =>
-                          setFormData({
-                            ...formData,
-                            mcp_default_route_password: generateMcpSecret(),
-                          })
-                        }
-                        title="Generate password"
-                      >
-                        Generate Password
-                      </button>
-                      {settings?.has_mcp_default_password && (
-                        <button
-                          type="button"
-                          className="btn btn-small btn-secondary"
-                          onClick={() =>
-                            setFormData({ ...formData, mcp_default_route_password: '' })
-                          }
-                          title="Clear password (submit empty to remove)"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                    <p className="field-help">
-                      {settings?.has_mcp_default_password
-                        ? 'Password is set. Leave blank to keep current password, or enter a new one to change it. Clear and save to remove password protection.'
-                        : 'Set a password that MCP clients will use as their Bearer token. Minimum 8 characters.'}
-                    </p>
-                    {window.location.protocol === 'http:' && (
-                      <div
-                        className="field-warning"
-                        style={{
-                          marginTop: '0.5rem',
-                          padding: '0.5rem',
-                          backgroundColor: 'rgba(255, 193, 7, 0.15)',
-                          borderLeft: '3px solid #ffc107',
-                          borderRadius: '4px',
-                          fontSize: '0.85em',
-                        }}
-                      >
-                        <strong>Security:</strong> You are accessing over HTTP. MCP passwords will
-                        be transmitted in plaintext. Consider using HTTPS via a reverse proxy for
-                        production deployments.
                       </div>
                     )}
-                    {mcpError && <p className="field-error">{mcpError}</p>}
-                  </div>
-                )}
+                  </details>
+                </>
+              )}
 
-              {/* Show MCP error when password field is not visible */}
-              {!(formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth) &&
-                mcpError && (
-                  <p className="field-error" style={{ marginTop: '0.5rem' }}>
-                    {mcpError}
-                  </p>
-                )}
-            </>
-          )}
-
-          <div className="form-group" style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
-            <button type="button" className="btn" onClick={handleSaveMcp} disabled={mcpSaving}>
-              {mcpSaving ? 'Saving...' : 'Save MCP Configuration'}
-            </button>
-            {(formData.mcp_enabled ?? settings?.mcp_enabled ?? false) && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowMcpRoutesPanel(true)}
-              >
-                Manage Custom Routes
-              </button>
-            )}
-          </div>
-        </fieldset>
-
-        <fieldset id="setting-userspace">
-          <legend>User Space</legend>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-              gap: '1rem',
-              alignItems: 'start',
-            }}
-          >
-            <div>
-              <h4 style={{ margin: '0 0 8px' }}>Global Environment Variables</h4>
-              <p className="fieldset-help" style={{ marginBottom: 12 }}>
-                Define admin-managed environment variables that are inherited by every workspace.
-              </p>
-              <div className="form-group">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    void handleOpenGlobalEnvVarsModal();
+              <div className="form-group" style={{ marginTop: '1rem' }}>
+                <h4 style={{ margin: '0 0 4px' }}>Current Group Memberships</h4>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    marginBottom: 'var(--space-sm)',
                   }}
                 >
-                  Manage Global Env Vars
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <h4 style={{ margin: '0 0 8px' }}>Preview Sandbox</h4>
-              <p className="fieldset-help" style={{ marginBottom: 12 }}>
-                Control which HTML iframe sandbox flags are granted to User Space previews.
-              </p>
-              <div className="form-group">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowSandboxModal(true)}
-                >
-                  Configure Sandbox Flags
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <h4 style={{ margin: '0 0 8px' }}>Workspace Code Indexes</h4>
-              <p className="fieldset-help" style={{ marginBottom: 12 }}>
-                Inspect and manage per-workspace code indexes used by User Space agents.
-              </p>
-              <div className="form-group">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowCodeIndexesModal(true)}
-                >
-                  Manage Code Indexes
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <details style={{ marginBottom: '16px' }} id="setting-userspace_advanced">
-            <summary
-              style={{ cursor: 'pointer', color: 'var(--color-accent)', marginBottom: '8px' }}
-            >
-              Advanced Settings
-            </summary>
-
-            <div className="form-group">
-              <label>Workspace Duplication Defaults</label>
-              <p className="field-help" style={{ marginTop: 0 }}>
-                Control what the hover-duplicate action copies into the new workspace when no
-                per-duplicate override is provided.
-              </p>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  marginBottom: '0.5rem',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={
-                    formData.userspace_duplicate_copy_files_default ??
-                    settings?.userspace_duplicate_copy_files_default ??
-                    true
-                  }
-                  onChange={(event) =>
-                    setFormData({
-                      ...formData,
-                      userspace_duplicate_copy_files_default: event.target.checked,
-                    })
-                  }
-                />
-                Copy workspace files by default
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input
-                  type="checkbox"
-                  checked={
-                    formData.userspace_duplicate_copy_metadata_default ??
-                    settings?.userspace_duplicate_copy_metadata_default ??
-                    true
-                  }
-                  onChange={(event) =>
-                    setFormData({
-                      ...formData,
-                      userspace_duplicate_copy_metadata_default: event.target.checked,
-                    })
-                  }
-                />
-                Copy metadata by default (description, SQLite mode, tool selections, env vars when
-                accessible)
-              </label>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  marginTop: '0.5rem',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={
-                    formData.userspace_duplicate_copy_chats_default ??
-                    settings?.userspace_duplicate_copy_chats_default ??
-                    false
-                  }
-                  onChange={(event) =>
-                    setFormData({
-                      ...formData,
-                      userspace_duplicate_copy_chats_default: event.target.checked,
-                    })
-                  }
-                />
-                Copy chats by default
-              </label>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  marginTop: '0.5rem',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={
-                    formData.userspace_duplicate_copy_mounts_default ??
-                    settings?.userspace_duplicate_copy_mounts_default ??
-                    false
-                  }
-                  onChange={(event) =>
-                    setFormData({
-                      ...formData,
-                      userspace_duplicate_copy_mounts_default: event.target.checked,
-                    })
-                  }
-                />
-                Copy mounts by default
-              </label>
-              <p className="field-help">
-                Disable metadata copy to create a copy with the source files but fresh workspace
-                settings. Chat and mount defaults are off by default.
-              </p>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Mount Auto-Sync Interval</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Global default used by SSH, OneDrive, and Google Drive workspace mounts when no
-                  mount source or workspace mount override is set.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_mount_sync_interval_seconds ??
-                    settings?.userspace_mount_sync_interval_seconds ??
-                    MOUNT_SYNC_DEFAULT_SECONDS;
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={mountSyncIntervalToSlider(currentVal)}
-                          onChange={(e) => {
-                            const slider = parseInt(e.target.value, 10);
-                            setFormData({
-                              ...formData,
-                              userspace_mount_sync_interval_seconds:
-                                sliderToMountSyncInterval(slider),
-                            });
-                          }}
-                        />
-                        <span
-                          style={{
-                            minWidth: '64px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
+                  <p className="fieldset-help auth-provider-help-tight" style={{ margin: 0 }}>
+                    Internal groups are managed here. LDAP groups are projected from synced LDAP
+                    user memberships.
+                  </p>
+                </div>
+                {authGroups.length > 0 && (
+                  <div className="meta-pills auth-provider-pills">
+                    {authGroups.slice(0, 8).map((group) => {
+                      const isLdap = group.provider === 'ldap';
+                      const isAdmin = group.role === 'admin';
+                      const isLogon = Boolean(group.is_logon_group);
+                      const memberPreviews = group.member_previews ?? [];
+                      return (
+                        <Popover
+                          key={group.id}
+                          trigger="hover"
+                          position="right"
+                          content={
+                            <div className="auth-group-members-popover">
+                              <div className="auth-group-members-popover-header">
+                                {group.display_name} members
+                              </div>
+                              {memberPreviews.length === 0 ? (
+                                <div className="auth-group-members-popover-status">
+                                  No members in this group.
+                                </div>
+                              ) : (
+                                <ul className="auth-group-members-popover-list">
+                                  {memberPreviews.map((member) => {
+                                    const displayName = member.display_name || member.username;
+                                    return (
+                                      <li
+                                        key={`${group.id}-${member.username}`}
+                                        className="auth-group-members-popover-item"
+                                      >
+                                        <span className="auth-group-member-display-name">
+                                          {displayName}
+                                        </span>
+                                        <span className="auth-group-member-handle">
+                                          @{member.username}
+                                        </span>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              )}
+                            </div>
+                          }
                         >
-                          {formatMountSyncInterval(currentVal)}
-                        </span>
-                      </div>
-                      <ScheduleStartTimeInput
-                        enabled={currentVal > 0}
-                        startMinute={
-                          formData.userspace_mount_sync_start_minute ??
-                          settings?.userspace_mount_sync_start_minute ??
-                          null
-                        }
-                        timezone={
-                          formData.userspace_mount_sync_timezone ??
-                          settings?.userspace_mount_sync_timezone ??
-                          null
-                        }
-                        onStartMinuteChange={(value) =>
-                          setFormData({ ...formData, userspace_mount_sync_start_minute: value })
-                        }
-                        onTimezoneChange={(value) =>
-                          setFormData({ ...formData, userspace_mount_sync_timezone: value })
-                        }
-                        label="Start Time"
-                        style={{ marginTop: 10 }}
-                      />
-                      <p className="field-help">
-                        Range: 1 second to 30 days. Local workspace file changes still wake eligible
-                        mounts immediately.
-                      </p>
-                    </>
-                  );
-                })()}
+                          <span
+                            className={`meta-pill auth-provider-pill auth-provider-pill-${group.provider}${isAdmin ? ' auth-provider-pill-admin' : ''}${isLogon ? ' auth-provider-pill-logon' : ''}`}
+                          >
+                            <span className="meta-pill-value">{group.display_name}</span>
+                            <span className="auth-provider-pill-count">({group.member_count})</span>
+                            {isLdap && (
+                              <span className="auth-provider-pill-source-badge">LDAP</span>
+                            )}
+                            {isAdmin && (
+                              <span className="auth-provider-pill-admin-badge">Admin</span>
+                            )}
+                            {isLogon && (
+                              <span className="auth-provider-pill-logon-badge">Logon</span>
+                            )}
+                          </span>
+                        </Popover>
+                      );
+                    })}
+                  </div>
+                )}
+                {authGroups.length === 0 && (
+                  <p className="muted" style={{ margin: 0 }}>
+                    No groups created yet.
+                  </p>
+                )}
               </div>
 
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Stale Branch Threshold</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Branches that fall behind the active head by this many snapshots are hidden from
-                  the timeline.
-                </p>
-                {(() => {
-                  const sliderMin = 10;
-                  const sliderMax = 500;
-                  const currentVal = formData.snapshot_stale_branch_threshold ?? 50;
-                  const isAll = currentVal === 0;
+              {authProviderConfig && (
+                <div className="form-group">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={handleSaveAuthProviderConfig}
+                    disabled={authProviderConfigSaving}
+                  >
+                    {authProviderConfigSaving ? 'Saving...' : 'Save Authentication Policy'}
+                  </button>
+                </div>
+              )}
+            </fieldset>
+          </SettingsAccordionSection>
 
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={(() => {
-                            if (isAll) return 100;
-                            const scale = Math.log(sliderMax / sliderMin);
-                            return Math.max(
-                              0,
-                              Math.min(
-                                99,
-                                Math.round((Math.log(currentVal / sliderMin) / scale) * 99),
-                              ),
-                            );
-                          })()}
-                          onChange={(e) => {
-                            const slider = parseInt(e.target.value, 10);
-                            let val: number;
-                            if (slider >= 100) {
-                              val = 0; // "All" sentinel
-                            } else {
-                              const scale = Math.log(sliderMax / sliderMin);
-                              val = Math.max(
-                                sliderMin,
-                                Math.round(sliderMin * Math.exp((slider / 99) * scale)),
-                              );
-                            }
-                            setFormData({ ...formData, snapshot_stale_branch_threshold: val });
-                          }}
-                        />
-                        <span
-                          style={{
-                            minWidth: '48px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {isAll ? 'All' : currentVal}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Default: 50. Set to "All" to show every branch regardless of age.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
+          <SearchSettingsSection
+            open={openAccordionSections.search}
+            onToggle={handleToggleAccordionSection}
+            formData={formData}
+            settings={settings}
+            setFormData={setFormData}
+            handleSaveSearch={handleSaveSearch}
+            searchSaving={searchSaving}
+          />
 
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>SQLite Import Size Limit</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum SQL dump upload accepted by the User Space SQLite import wizard.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_sqlite_import_max_bytes ??
-                    settings?.userspace_sqlite_import_max_bytes ??
-                    SQLITE_IMPORT_DEFAULT_MAX_BYTES;
+          <AppearanceSettingsSection
+            open={openAccordionSections.appearance}
+            onToggle={handleToggleAccordionSection}
+            formData={formData}
+            settings={settings}
+            setFormData={setFormData}
+            defaultThemePack={defaultThemePack}
+            setDefaultThemePack={setDefaultThemePack}
+            isAdmin={isAdmin}
+            highlightSetting={highlightSetting}
+            handleSaveBranding={handleSaveBranding}
+            brandingSaving={brandingSaving}
+          />
 
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={sqliteImportBytesToSlider(currentVal)}
-                          onChange={(e) => {
-                            const slider = parseInt(e.target.value, 10);
-                            setFormData({
-                              ...formData,
-                              userspace_sqlite_import_max_bytes: sliderToSqliteImportBytes(slider),
-                            });
-                          }}
-                        />
-                        <span
-                          style={{
-                            minWidth: '84px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {formatBytes(currentVal)}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Range: 100 MB to 100 GB. Large imports are memory and disk intensive; use
-                        higher caps only for trusted dumps on hosts with enough headroom.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>HTTP Request Timeout</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Cap synchronous User Space live-data and retry-tool requests before a reverse
-                  proxy returns an unhelpful 504/524.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.http_proxy_safe_timeout_seconds ??
-                    settings?.http_proxy_safe_timeout_seconds ??
-                    90;
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="10"
-                          max="300"
-                          step="5"
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              http_proxy_safe_timeout_seconds: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <span
-                          style={{
-                            minWidth: '52px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {currentVal}s
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Default: 90 seconds. Keep this below your load balancer, CDN, or
-                        reverse-proxy upstream timeout so Ragtime can return structured timeout
-                        guidance to the agent.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Primitive Upload Size Limit</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum upload accepted by same-origin User Space primitives for files, objects,
-                  document previews, and archive extraction.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_primitive_upload_max_bytes ??
-                    settings?.userspace_primitive_upload_max_bytes ??
-                    104857600;
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="1048576"
-                          max="1073741824"
-                          step="1048576"
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              userspace_primitive_upload_max_bytes: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <span
-                          style={{
-                            minWidth: '84px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {formatBytes(currentVal)}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Range: 1 MB to 1 GB. This is a platform resource cap; workspace editors
-                        still choose their own app upload UI and storage pattern.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Primitive Archive File Limit</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum number of files extracted from one User Space archive primitive request.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_primitive_archive_max_entries ??
-                    settings?.userspace_primitive_archive_max_entries ??
-                    500;
-
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="1"
-                          max="10000"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              userspace_primitive_archive_max_entries: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <span
-                          style={{
-                            minWidth: '72px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {currentVal.toLocaleString()}
-                        </span>
-                      </div>
-                      <p className="field-help">
-                        Default: 500. Higher values are useful for bulk support packages but can
-                        create many workspace file-change events.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>User Space Code Index Debounce</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Delay after workspace file writes before scheduling a hidden code-index update.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_code_index_debounce_seconds ??
-                    settings?.userspace_code_index_debounce_seconds ??
-                    2;
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={valueToZeroableLogSlider(currentVal, 1, 3600)}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              userspace_code_index_debounce_seconds: zeroableLogSliderToValue(
-                                parseInt(e.target.value, 10),
-                                1,
-                                3600,
-                              ),
-                            })
-                          }
-                        />
-                        <input
-                          type="number"
-                          min="0"
-                          max="3600"
-                          step="1"
-                          aria-label="User Space Code Index Debounce seconds"
-                          value={currentVal}
-                          onChange={(e) => {
-                            const value = parseInt(e.target.value, 10);
-                            if (Number.isFinite(value)) {
-                              setFormData({
-                                ...formData,
-                                userspace_code_index_debounce_seconds: value,
-                              });
-                            }
-                          }}
-                          style={{
-                            width: '96px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        />
-                      </div>
-                      <p className="field-help">Range: 0 to 3600 seconds. Default: 2 seconds.</p>
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>User Space Code Index Reconcile Interval</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Background interval for recovering persisted dirty workspace code-index rows.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_code_index_reconcile_interval_seconds ??
-                    settings?.userspace_code_index_reconcile_interval_seconds ??
-                    300;
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={valueToLogSlider(currentVal, 10, 86400)}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              userspace_code_index_reconcile_interval_seconds: logSliderToValue(
-                                parseInt(e.target.value, 10),
-                                10,
-                                86400,
-                              ),
-                            })
-                          }
-                        />
-                        <input
-                          type="number"
-                          min="10"
-                          max="86400"
-                          step="1"
-                          aria-label="User Space Code Index Reconcile Interval seconds"
-                          value={currentVal}
-                          onChange={(e) => {
-                            const value = parseInt(e.target.value, 10);
-                            if (Number.isFinite(value)) {
-                              setFormData({
-                                ...formData,
-                                userspace_code_index_reconcile_interval_seconds: value,
-                              });
-                            }
-                          }}
-                          style={{
-                            width: '96px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        />
-                      </div>
-                      <p className="field-help">
-                        Range: 10 to 86400 seconds. Default: 300 seconds.
-                      </p>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>User Space Code Index Max Attempts</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Retry cap for a dirty path before leaving its last error visible to admins.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_code_index_max_attempts ??
-                    settings?.userspace_code_index_max_attempts ??
-                    3;
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="1"
-                          max="20"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              userspace_code_index_max_attempts: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <input
-                          type="number"
-                          min="1"
-                          max="20"
-                          step="1"
-                          aria-label="User Space Code Index Max Attempts"
-                          value={currentVal}
-                          onChange={(e) => {
-                            const value = parseInt(e.target.value, 10);
-                            if (Number.isFinite(value)) {
-                              setFormData({
-                                ...formData,
-                                userspace_code_index_max_attempts: value,
-                              });
-                            }
-                          }}
-                          style={{
-                            width: '72px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        />
-                      </div>
-                      <p className="field-help">Range: 1 to 20 attempts. Default: 3 attempts.</p>
-                    </>
-                  );
-                })()}
-              </div>
-
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>User Space Code Index Max Concurrency</label>
-                <p className="field-help" style={{ marginTop: 0 }}>
-                  Maximum number of User Space code index jobs that may run at the same time.
-                </p>
-                {(() => {
-                  const currentVal =
-                    formData.userspace_code_index_max_concurrency ??
-                    settings?.userspace_code_index_max_concurrency ??
-                    1;
-                  return (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <input
-                          type="range"
-                          min="1"
-                          max="8"
-                          step="1"
-                          style={{ flex: 1 }}
-                          value={currentVal}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              userspace_code_index_max_concurrency: parseInt(e.target.value, 10),
-                            })
-                          }
-                        />
-                        <input
-                          type="number"
-                          min="1"
-                          max="8"
-                          step="1"
-                          aria-label="User Space Code Index Max Concurrency"
-                          value={currentVal}
-                          onChange={(e) => {
-                            const value = parseInt(e.target.value, 10);
-                            if (Number.isFinite(value)) {
-                              setFormData({
-                                ...formData,
-                                userspace_code_index_max_concurrency: value,
-                              });
-                            }
-                          }}
-                          style={{
-                            width: '72px',
-                            textAlign: 'right',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        />
-                      </div>
-                      <p className="field-help">Range: 1 to 8. Default: 1.</p>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          </details>
-
-          <div className="form-actions" style={{ borderTop: 'none', paddingTop: 0 }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveStaleBranchThreshold}
-              disabled={staleBranchSaving}
-            >
-              {staleBranchSaving ? 'Saving...' : 'Save User Space Settings'}
-            </button>
-          </div>
-        </fieldset>
-
-        {/* Security */}
-        <fieldset id="setting-security">
-          <legend>Security</legend>
-          <p className="fieldset-help">
-            Set the minimum password strength required when exporting encrypted tool configurations.
-            These rules are enforced by the server; the export dialog also checks them live so users
-            get immediate feedback.
-          </p>
-
-          <div className="form-row">
-            <div>
-              <div className="form-group">
-                <label>Minimum Password Length</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={128}
-                  value={
-                    formData.export_password_min_length ??
-                    settings?.export_password_min_length ??
-                    12
-                  }
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      export_password_min_length: Math.max(
-                        1,
-                        Math.min(128, parseInt(e.target.value, 10) || 1),
-                      ),
-                    })
-                  }
-                />
-                <p className="field-help">
-                  Number of characters an export password must contain. Range: 1 to 128. Default:
-                  12.
-                </p>
-              </div>
-
-              <div className="form-group">
-                <label htmlFor="export-policy-preview">Test a password against this policy</label>
-                <input
-                  id="export-policy-preview"
-                  type="text"
-                  value={exportPolicyPreview}
-                  onChange={(e) => setExportPolicyPreview(e.target.value)}
-                  placeholder="Type a sample password"
-                  autoComplete="off"
-                />
-                <PasswordRequirementsChecklist
-                  password={exportPolicyPreview}
-                  policy={getExportPasswordPolicy({
-                    export_password_min_length:
-                      formData.export_password_min_length ??
-                      settings?.export_password_min_length ??
-                      12,
-                    export_password_require_uppercase:
-                      formData.export_password_require_uppercase ??
-                      settings?.export_password_require_uppercase ??
-                      true,
-                    export_password_require_lowercase:
-                      formData.export_password_require_lowercase ??
-                      settings?.export_password_require_lowercase ??
-                      true,
-                    export_password_require_number:
-                      formData.export_password_require_number ??
-                      settings?.export_password_require_number ??
-                      true,
-                    export_password_require_special:
-                      formData.export_password_require_special ??
-                      settings?.export_password_require_special ??
-                      true,
-                  })}
-                />
-              </div>
-            </div>
-
-            <div>
-              <div className="form-group">
-                <label>Complexity requirements</label>
-              </div>
-
-              <div className="form-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={
-                      formData.export_password_require_uppercase ??
-                      settings?.export_password_require_uppercase ??
-                      true
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        export_password_require_uppercase: e.target.checked,
-                      })
-                    }
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Require an uppercase letter</span>
-                </label>
-              </div>
-
-              <div className="form-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={
-                      formData.export_password_require_lowercase ??
-                      settings?.export_password_require_lowercase ??
-                      true
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        export_password_require_lowercase: e.target.checked,
-                      })
-                    }
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Require a lowercase letter</span>
-                </label>
-              </div>
-
-              <div className="form-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={
-                      formData.export_password_require_number ??
-                      settings?.export_password_require_number ??
-                      true
-                    }
-                    onChange={(e) =>
-                      setFormData({ ...formData, export_password_require_number: e.target.checked })
-                    }
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Require a number</span>
-                </label>
-              </div>
-
-              <div className="form-group">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={
-                      formData.export_password_require_special ??
-                      settings?.export_password_require_special ??
-                      true
-                    }
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        export_password_require_special: e.target.checked,
-                      })
-                    }
-                    style={{ marginRight: '0.5rem' }}
-                  />
-                  <span>Require a special character</span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div className="form-group" style={{ marginTop: '1rem' }}>
-            <button
-              type="button"
-              className="btn"
-              onClick={handleSaveSecurity}
-              disabled={securitySaving}
-            >
-              {securitySaving ? 'Saving...' : 'Save Security Settings'}
-            </button>
-          </div>
-        </fieldset>
+          {/* Security */}
+          <SecuritySettingsSection
+            open={openAccordionSections.security}
+            onToggle={handleToggleAccordionSection}
+            formData={formData}
+            settings={settings}
+            setFormData={setFormData}
+            handleSaveSecurity={handleSaveSecurity}
+            securitySaving={securitySaving}
+            exportPolicyPreview={exportPolicyPreview}
+            setExportPolicyPreview={setExportPolicyPreview}
+          />
+        </div>
       </form>
 
       <AuthAdminModalHost
