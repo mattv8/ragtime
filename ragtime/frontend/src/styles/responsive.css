@@ -4,7 +4,7 @@
 
 /* =============================================================================
    RESPONSIVE CONTAINER BREAKPOINTS (mobile-first, similar to Bootstrap)
-   sm >=576px | md >=768px | lg >=992px | xl >=1200px | xxl >=1400px
+   sm >=576px | md >=768px | lg >=992px | xl >=1200px | xxl >=1400px | uw >=1600px | uww >=1920px
    ============================================================================= */
 
 @media (min-width: 576px) {
@@ -34,6 +34,18 @@
 @media (min-width: 1400px) {
   :root {
     --container-max-width: 1320px;
+  }
+}
+
+@media (min-width: 1600px) {
+  :root {
+    --container-max-width: 1536px;
+  }
+}
+
+@media (min-width: 1920px) {
+  :root {
+    --container-max-width: 1720px;
   }
 }
 
