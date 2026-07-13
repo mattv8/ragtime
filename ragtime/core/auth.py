@@ -744,6 +744,17 @@ def _get_first_entry_attribute_value(entry: Any, *attribute_names: str) -> str |
     return None
 
 
+def _format_ldap_group_entry(entry: Any) -> dict[str, str]:
+    """Format an LDAP group entry for API/UI discovery responses."""
+    dn = str(entry.entry_dn)
+    name = _get_first_entry_attribute_value(entry, "cn") or dn.split(",")[0].replace("CN=", "")
+    group = {"dn": dn, "name": name}
+    display_name = _get_first_entry_attribute_value(entry, "displayName", "display_name")
+    if display_name:
+        group["display_name"] = display_name
+    return group
+
+
 def _get_user_entry_search_attributes() -> list[str]:
     """Return LDAP attributes needed for user lookup and role checks."""
     return ["*", "memberOf"]
@@ -1163,15 +1174,14 @@ def _discover_ldap_structure_sync(
                     search_base=base_dn,
                     search_filter=f"(objectClass={obj_class})",
                     search_scope=SUBTREE,
-                    attributes=["distinguishedName", "cn"],
+                    attributes=["distinguishedName", "cn", "displayName"],
                     size_limit=200,  # Limit per search to avoid timeouts
                 )
                 for entry in conn.entries:
                     dn = str(entry.entry_dn)
                     if dn not in seen_dns:
                         seen_dns.add(dn)
-                        cn = str(entry.cn) if hasattr(entry, "cn") else dn.split(",")[0].replace("CN=", "")
-                        groups.append({"dn": dn, "name": cn})
+                        groups.append(_format_ldap_group_entry(entry))
             except LDAPException as e:
                 # This objectClass doesn't exist on this server - expected
                 logger.debug(f"Group search for {obj_class} failed: {e}")

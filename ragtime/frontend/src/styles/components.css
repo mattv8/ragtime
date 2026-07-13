@@ -548,143 +548,6 @@ textarea:focus {
   max-width: min(370px, calc(100vw - 24px));
 }
 
-.userspace-share-link-picker {
-  position: relative;
-  width: 100%;
-}
-
-.userspace-share-link-trigger {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 32px;
-  justify-content: space-between;
-  padding: 6px 10px 6px 12px;
-  max-width: none;
-  font-size: var(--text-sm);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: inherit;
-}
-
-.userspace-share-link-trigger .model-selector-text {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-}
-
-.userspace-share-link-trigger .model-selector-arrow {
-  font-size: 10px;
-  opacity: 0.7;
-  flex-shrink: 0;
-}
-
-.userspace-share-link-picker .userspace-share-link-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  width: 100%;
-  min-width: 100%;
-  max-width: none;
-  right: auto;
-}
-
-.userspace-share-link-item {
-  gap: var(--space-xxs, 2px);
-  padding: 3px 6px 3px 8px;
-  height: 30px;
-  box-sizing: border-box;
-}
-
-.userspace-share-link-item.is-selected {
-  background: color-mix(in srgb, var(--color-primary-soft) 72%, var(--color-surface));
-  border: 1px solid var(--color-primary-border);
-  border-radius: var(--radius-sm);
-  box-shadow: inset 3px 0 0 var(--color-primary);
-}
-
-.userspace-share-link-item.is-selected .userspace-share-link-select-btn {
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-
-.userspace-share-link-select-btn {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  min-height: 24px;
-  background: none;
-  border: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  padding: 2px;
-}
-
-.userspace-share-link-inline-edit {
-  flex: 1;
-  min-width: 0;
-  height: 24px;
-  display: flex;
-  align-items: center;
-}
-
-.userspace-share-link-rename-input {
-  width: 100%;
-  min-width: 0;
-  height: 24px;
-  line-height: 24px;
-  padding: 0 8px;
-  box-sizing: border-box;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  color: inherit;
-  font: inherit;
-  font-size: var(--text-sm);
-}
-
-.userspace-share-link-empty {
-  padding: 8px 10px;
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
-}
-
-.userspace-share-link-create-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  justify-content: flex-start;
-  width: 100%;
-  padding: 6px var(--space-sm);
-  margin-top: 0;
-  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: 0 -2px 10px color-mix(in srgb, black 20%, transparent);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
-  color: var(--color-text-muted);
-  font: inherit;
-  font-size: var(--text-xs);
-  font-weight: 400;
-  cursor: pointer;
-}
-
-.userspace-share-link-create-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-surface-hover) 78%, transparent);
-  box-shadow: 0 -2px 12px color-mix(in srgb, black 24%, transparent);
-  color: var(--color-text-primary);
-}
-
-.userspace-share-link-create-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 .userspace-workspace-item {
   gap: var(--space-xxs, 2px);
   padding: 3px 6px 3px 8px;
@@ -4677,13 +4540,43 @@ textarea:focus {
   gap: var(--space-xs);
 }
 
-.userspace-share-modal {
-  max-width: 520px;
+.modal-content.userspace-share-modal {
+  width: min(620px, calc(100vw - 32px));
+  max-width: 620px;
 }
 
 .userspace-share-modal .modal-header,
 .userspace-members-modal .modal-header {
   border: none;
+}
+
+.userspace-share-modal-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.userspace-share-modal-title h3 {
+  margin: 0;
+}
+
+.userspace-share-header-back-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.userspace-share-header-back-btn:hover {
+  color: var(--color-text-primary);
 }
 
 .userspace-share-modal .modal-footer,
@@ -4692,7 +4585,7 @@ textarea:focus {
 }
 
 .userspace-share-modal-footer {
-  flex-direction: column;
+  flex-direction: row;
   align-items: stretch;
   gap: var(--space-xs);
   border-top: 1px solid var(--color-border) !important;
@@ -4702,7 +4595,62 @@ textarea:focus {
 .userspace-share-modal .modal-body {
   display: flex;
   flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.userspace-share-edit-header {
+  display: flex;
+  align-items: center;
   gap: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.userspace-share-edit-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.userspace-share-edit-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.userspace-share-edit-title svg {
+  opacity: 0;
+  color: var(--color-text-muted);
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.userspace-share-edit-title:hover svg,
+.userspace-share-edit-title:focus-visible svg {
+  opacity: 1;
+}
+
+.userspace-share-edit-title:hover svg {
+  color: var(--color-text-secondary);
+}
+
+.userspace-share-title-input {
+  max-width: 100%;
+}
+
+.userspace-share-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.65fr);
+  gap: var(--space-sm);
+  align-items: start;
 }
 
 .userspace-share-label {
@@ -4730,7 +4678,11 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-xs);
-  align-items: center;
+  align-items: stretch;
+}
+
+.userspace-share-slug-row > .btn {
+  height: auto;
 }
 
 .userspace-share-url-copy-wrap {
@@ -4774,6 +4726,129 @@ textarea:focus {
 }
 
 .userspace-share-inline-copy:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-links-table-wrapper {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.jobs-table.userspace-share-links-table {
+  min-width: max(100%, 960px);
+  table-layout: auto;
+}
+
+.userspace-share-links-table th:nth-child(1),
+.userspace-share-links-table th:nth-child(2),
+.userspace-share-links-table th:nth-child(4),
+.userspace-share-links-table th:nth-child(5),
+.userspace-share-links-table td:nth-child(1),
+.userspace-share-links-table td:nth-child(2),
+.userspace-share-links-table td:nth-child(4),
+.userspace-share-links-table td:nth-child(5) {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.userspace-share-links-table th:nth-child(3),
+.userspace-share-links-table td:nth-child(3) {
+  min-width: 420px;
+  white-space: nowrap;
+}
+
+.userspace-share-links-table th,
+.userspace-share-links-table td {
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--text-sm);
+}
+
+.userspace-share-links-table th {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.userspace-share-links-empty-cell {
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.userspace-share-link-cell-primary {
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.userspace-share-link-cell-secondary {
+  margin-top: 2px;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.userspace-share-access-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border: 1px solid var(--color-primary-border);
+  border-radius: var(--radius-full);
+  background: var(--color-primary-soft);
+  color: var(--color-text-primary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.userspace-share-table-url-text {
+  display: block;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.userspace-share-table-actions {
+  justify-content: flex-end;
+}
+
+.userspace-share-table-action {
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+}
+
+.userspace-share-table-action:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.userspace-share-table-action:disabled {
+  opacity: 0.6;
+}
+
+@media (max-width: 768px) {
+  .jobs-table.userspace-share-links-table {
+    min-width: auto;
+  }
+
+  .userspace-share-links-table th:nth-child(3),
+  .userspace-share-links-table td:nth-child(3) {
+    min-width: auto;
+    white-space: normal;
+  }
+
+  .userspace-share-table-url-text {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
+.userspace-share-copy-action {
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+}
+
+.userspace-share-copy-action:hover:not(:disabled) {
   background: var(--color-surface-hover);
   color: var(--color-text-primary);
 }
@@ -4906,7 +4981,7 @@ textarea:focus {
 }
 
 .userspace-share-access-row select,
-.userspace-share-access-row input {
+.userspace-share-access-row input:not([type='checkbox']):not([type='radio']) {
   width: 100%;
 }
 
@@ -4931,34 +5006,80 @@ textarea:focus {
   color: var(--color-text-secondary);
 }
 
-.userspace-share-group-list {
+.userspace-share-user-option input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.userspace-share-user-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ldap-group-chips {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: var(--space-xs);
   margin-top: var(--space-xs);
 }
 
-.userspace-share-group-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-xs);
+.ldap-group-chip {
+  display: inline-flex;
   align-items: center;
-  padding: var(--space-xs);
+  max-width: 100%;
+  gap: var(--space-xs);
+  padding: 4px 6px 4px 10px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-secondary);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
 }
 
-.userspace-share-group-item span {
+.ldap-group-chip-label {
   min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ldap-group-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.ldap-group-chip-remove:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.ldap-group-chip-remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ldap-group-chips-empty {
+  margin: var(--space-xs) 0 0;
+  color: var(--color-text-muted);
   font-size: var(--text-xs);
 }
 
 .userspace-share-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-xs);
 }
 
@@ -4970,9 +5091,27 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.userspace-share-actions.userspace-share-actions-edit {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 @media (max-width: 640px) {
-  .userspace-share-actions {
+  .userspace-share-edit-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .userspace-share-edit-grid {
     grid-template-columns: 1fr;
+  }
+
+  .userspace-share-actions:not(.userspace-share-actions-edit) {
+    grid-template-columns: 1fr;
+  }
+
+  .userspace-share-actions.userspace-share-actions-edit {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

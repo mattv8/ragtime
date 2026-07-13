@@ -390,7 +390,14 @@ export interface LdapConfig {
   admin_group_dns: string[];
   user_group_dns: string[];
   discovered_ous: string[];
-  discovered_groups: { dn: string; name: string }[];
+  discovered_groups: LdapGroupSummary[];
+}
+
+export interface LdapGroupSummary {
+  dn: string;
+  name: string;
+  display_name?: string | null;
+  displayName?: string | null;
 }
 
 export interface LdapDiscoverRequest {
@@ -404,7 +411,7 @@ export interface LdapDiscoverResponse {
   success: boolean;
   base_dn?: string;
   user_ous: string[];
-  groups: { dn: string; name: string }[];
+  groups: LdapGroupSummary[];
   error?: string;
 }
 

@@ -4910,28 +4910,10 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceShareLinkListResponse>(response);
   },
 
-  async revokeUserSpaceWorkspaceShareLink(
-    workspaceId: string,
-  ): Promise<UserSpaceWorkspaceShareLinkStatus> {
-    const list = await this.listUserSpaceWorkspaceShareLinks(workspaceId);
-    for (const link of list.links) {
-      if (link.id) {
-        await this.deleteUserSpaceWorkspaceShareLink(workspaceId, link.id);
-      }
-    }
-    return this.getUserSpaceWorkspaceShareLinkStatus(workspaceId);
-  },
-
   async createUserSpaceWorkspaceShareLink(
     workspaceId: string,
-    requestOrRotate: CreateWorkspaceShareLinkRequest | boolean = {},
+    request: CreateWorkspaceShareLinkRequest = {},
   ): Promise<UserSpaceWorkspaceShareLink> {
-    const request: CreateWorkspaceShareLinkRequest =
-      typeof requestOrRotate === 'boolean' ? {} : requestOrRotate;
-    if (typeof requestOrRotate === 'boolean' && requestOrRotate) {
-      // Legacy "rotateToken=true" callers expected revoke + new link.
-      await this.revokeUserSpaceWorkspaceShareLink(workspaceId);
-    }
     const response = await apiFetch(`${API_BASE}/userspace/workspaces/${workspaceId}/share-links`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5078,16 +5060,6 @@ export const api = {
       granted_role: 'viewer',
       active_share_style: 'named',
     };
-  },
-
-  async revokeConversationShareLink(conversationId: string): Promise<ConversationShareLinkStatus> {
-    const list = await this.listConversationShareLinks(conversationId);
-    for (const link of list.links) {
-      if (link.id) {
-        await this.deleteConversationShareLink(conversationId, link.id);
-      }
-    }
-    return this.getConversationShareLinkStatus(conversationId);
   },
 
   async createConversationShareLink(

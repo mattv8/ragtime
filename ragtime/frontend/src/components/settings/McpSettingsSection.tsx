@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { InlineCopyButton } from '../shared/InlineCopyButton';
-import { LdapGroupSelect } from '../LdapGroupSelect';
+import { LdapGroupChips, LdapGroupSelect, type LdapGroup } from '../LdapGroupSelect';
 import { SettingsAccordionSection } from './SettingsAccordionSection';
 import type { AppSettings, UpdateSettingsRequest } from '@/types';
 import type { SettingsAccordionSectionId } from './settingsAccordionState';
@@ -13,7 +13,7 @@ export interface McpSettingsSectionProps {
   settings: AppSettings | null;
   setFormData: Dispatch<SetStateAction<UpdateSettingsRequest>>;
   ldapConfigured: boolean;
-  ldapDiscoveredGroups: { dn: string; name: string }[];
+  ldapDiscoveredGroups: LdapGroup[];
   showMcpPassword: boolean;
   setShowMcpPassword: Dispatch<SetStateAction<boolean>>;
   mcpError: string | null;
@@ -46,6 +46,8 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
     generateMcpClientId,
     generateMcpSecret,
   } = props;
+  const selectedMcpAllowedGroup =
+    formData.mcp_default_route_allowed_group ?? settings?.mcp_default_route_allowed_group ?? '';
 
   return (
     <SettingsAccordionSection id="mcp" title="MCP Configuration" open={open} onToggle={onToggle}>
@@ -206,6 +208,16 @@ export function McpSettingsSection(props: McpSettingsSectionProps): JSX.Element 
                       }
                       groups={ldapDiscoveredGroups}
                       emptyOptionLabel="Any authenticated LDAP user"
+                    />
+                    <LdapGroupChips
+                      selectedDns={selectedMcpAllowedGroup ? [selectedMcpAllowedGroup] : []}
+                      groups={ldapDiscoveredGroups}
+                      onRemove={() =>
+                        setFormData({
+                          ...formData,
+                          mcp_default_route_allowed_group: null,
+                        })
+                      }
                     />
                   </div>
                   <p className="field-help">

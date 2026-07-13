@@ -175,6 +175,7 @@ import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
 import { ShareLinkModal } from './shared/ShareLinkModal';
+import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
 import { useWorkspaceScmWizardActivity, WorkspaceScmWizard } from './WorkspaceScmWizard';
 
@@ -975,7 +976,6 @@ export function UserSpacePanel({
   >({});
   const duplicatingWorkspaceTasksRef = useRef<Record<string, UserSpaceWorkspaceDuplicateTask>>({});
   const [sharingWorkspace, setSharingWorkspace] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
   const [shareLinkType, setShareLinkType] = useState<ShareLinkType>('anonymous');
   const [showShareModal, setShowShareModal] = useState(false);
   const [shareLinks, setShareLinks] = useState<UserSpaceWorkspaceShareLinkStatus[]>([]);
@@ -984,8 +984,6 @@ export function UserSpacePanel({
     null,
   );
   const [loadingShareStatus, setLoadingShareStatus] = useState(false);
-  const [rotatingShareLink, setRotatingShareLink] = useState(false);
-  const [revokingShareLink, setRevokingShareLink] = useState(false);
   const [deletingSelectedShareLink, setDeletingSelectedShareLink] = useState(false);
   const [shareSlugDraft, setShareSlugDraft] = useState('');
   const [checkingShareSlug, setCheckingShareSlug] = useState(false);
@@ -996,9 +994,7 @@ export function UserSpacePanel({
   const [shareSelectedUserIdsDraft, setShareSelectedUserIdsDraft] = useState<string[]>([]);
   const [shareSelectedLdapGroupsDraft, setShareSelectedLdapGroupsDraft] = useState<string[]>([]);
   const [shareLdapGroupDraft, setShareLdapGroupDraft] = useState('');
-  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>(
-    [],
-  );
+  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<LdapGroup[]>([]);
   const [loadingLdapGroups, setLoadingLdapGroups] = useState(false);
   const [savingShareAccess, setSavingShareAccess] = useState(false);
   const [savingShareLabel, setSavingShareLabel] = useState(false);
@@ -7164,7 +7160,7 @@ export function UserSpacePanel({
         }
 
         const normalized = groups
-          .filter((group): group is { dn: string; name: string } => Boolean(group?.dn))
+          .filter((group): group is LdapGroup => Boolean(group?.dn))
           .filter(
             (group, index, all) =>
               all.findIndex((candidate) => candidate.dn === group.dn) === index,
@@ -7180,16 +7176,12 @@ export function UserSpacePanel({
   }, [activeWorkspace?.name, activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
 
   const handleEnsureShareLink = useCallback(
-    async (rotateToken = false) => {
+    async () => {
       if (!activeWorkspaceId || !canEditWorkspace) return null;
 
       setSharingWorkspace(true);
-      if (rotateToken) {
-        setRotatingShareLink(true);
-      }
-
       try {
-        const link = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId, rotateToken);
+        const link = await api.createUserSpaceWorkspaceShareLink(activeWorkspaceId, {});
         await loadShareLinkStatus(link.id);
         setError(null);
         return {
@@ -7217,7 +7209,6 @@ export function UserSpacePanel({
         return null;
       } finally {
         setSharingWorkspace(false);
-        setRotatingShareLink(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally depends on specific activeShareLinkStatus fields, not active_share_style
@@ -7269,56 +7260,15 @@ export function UserSpacePanel({
     }
   }, [shareLinkType, shareSubdomainEnabled]);
 
-  const handleCopyShareLink = useCallback(async () => {
-    let url = effectiveShareUrl;
-    if (!activeShareLinkStatus?.has_share_link) {
-      const created = await handleEnsureShareLink(false);
-      url = resolveShareUrl(created);
-    }
-    if (!url) return;
-
-    try {
-      await navigator.clipboard.writeText(url);
-      setShareCopied(true);
-      window.setTimeout(() => setShareCopied(false), 1500);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to copy share link');
-    }
-  }, [
-    activeShareLinkStatus?.has_share_link,
-    effectiveShareUrl,
-    handleEnsureShareLink,
-    resolveShareUrl,
-  ]);
-
   const handleOpenFullPreview = useCallback(async () => {
     let url = resolveShareUrl(activeShareLinkStatus);
     if (!activeShareLinkStatus?.has_share_link) {
-      const created = await handleEnsureShareLink(false);
+      const created = await handleEnsureShareLink();
       url = resolveShareUrl(created);
     }
     if (!url) return;
     window.open(url, '_blank', 'noopener,noreferrer');
   }, [activeShareLinkStatus, handleEnsureShareLink, resolveShareUrl]);
-
-  const handleRotateShareLink = useCallback(async () => {
-    await handleEnsureShareLink(true);
-  }, [handleEnsureShareLink]);
-
-  const handleRevokeShareLink = useCallback(async () => {
-    if (!activeWorkspaceId || !canEditWorkspace) return;
-    setRevokingShareLink(true);
-    try {
-      await api.revokeUserSpaceWorkspaceShareLink(activeWorkspaceId);
-      await loadShareLinkStatus();
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke share link');
-    } finally {
-      setRevokingShareLink(false);
-    }
-  }, [activeWorkspaceId, canEditWorkspace, loadShareLinkStatus]);
 
   useEffect(() => {
     if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) return;
@@ -7400,6 +7350,7 @@ export function UserSpacePanel({
   const handleSaveShareAccess = useCallback(async () => {
     if (!activeWorkspaceId || !canEditWorkspace) return;
 
+    const linkIdentityLocked = Boolean(activeShareLinkStatus?.has_share_link);
     const normalizedSlug = normalizeShareSlugInput(shareSlugDraft);
     if (!normalizedSlug) {
       setError('Share slug is required');
@@ -7408,7 +7359,7 @@ export function UserSpacePanel({
 
     let currentStatus = activeShareLinkStatus;
     if (!currentStatus?.has_share_link) {
-      currentStatus = await handleEnsureShareLink(false);
+      currentStatus = await handleEnsureShareLink();
     }
     if (!currentStatus) {
       return;
@@ -7428,7 +7379,7 @@ export function UserSpacePanel({
       let status = currentStatus;
       const currentShareId = status.id;
 
-      if ((status.share_slug ?? '') !== normalizedSlug) {
+      if (!linkIdentityLocked && (status.share_slug ?? '') !== normalizedSlug) {
         status = await api.updateUserSpaceWorkspaceShareSlug(
           activeWorkspaceId,
           currentShareId,
@@ -7438,7 +7389,8 @@ export function UserSpacePanel({
 
       const selectedUserIds = normalizeUniqueStrings(shareSelectedUserIdsDraft);
       const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
-      const styleChanged = shareLinkType !== (status.active_share_style ?? 'anonymous');
+      const styleChanged =
+        !linkIdentityLocked && shareLinkType !== (status.active_share_style ?? 'anonymous');
       const hasAccessChanges =
         shareAccessMode !== status.share_access_mode ||
         !areSameNormalizedStringArrays(selectedUserIds, status.selected_user_ids ?? []) ||
@@ -7452,7 +7404,7 @@ export function UserSpacePanel({
           password: sharePasswordDraft.trim() || undefined,
           selected_user_ids: selectedUserIds,
           selected_ldap_groups: selectedLdapGroups,
-          active_share_style: shareLinkType,
+          active_share_style: linkIdentityLocked ? undefined : shareLinkType,
         });
       }
 
@@ -7499,12 +7451,16 @@ export function UserSpacePanel({
 
       setSavingShareLabel(true);
       try {
-        await api.updateUserSpaceWorkspaceShareLinkLabel(
+        const updatedStatus = await api.updateUserSpaceWorkspaceShareLinkLabel(
           activeWorkspaceId,
           activeShareLinkStatus.id,
           { label },
         );
-        await loadShareLinkStatus(activeShareLinkStatus.id);
+        setShareLinks((current) =>
+          current.map((link) => (link.id === updatedStatus.id ? updatedStatus : link)),
+        );
+        setSelectedShareId(updatedStatus.id);
+        applyWorkspaceShareStatus(updatedStatus);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to update share link label');
@@ -7512,7 +7468,7 @@ export function UserSpacePanel({
         setSavingShareLabel(false);
       }
     },
-    [activeShareLinkStatus?.id, activeWorkspaceId, canEditWorkspace, loadShareLinkStatus],
+    [activeShareLinkStatus?.id, activeWorkspaceId, applyWorkspaceShareStatus, canEditWorkspace],
   );
 
   const handleDeleteSelectedShareLink = useCallback(
@@ -11703,11 +11659,8 @@ export function UserSpacePanel({
         activeShareCreatedLabel={activeShareCreatedLabel}
         savingShareAccess={savingShareAccess}
         sharingWorkspace={sharingWorkspace}
-        revokingShareLink={revokingShareLink}
-        rotatingShareLink={rotatingShareLink}
         checkingShareSlug={checkingShareSlug}
         shareHasUnsavedChanges={shareHasUnsavedChanges}
-        shareCopied={shareCopied}
         creatingShareLink={sharingWorkspace}
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
@@ -11727,7 +11680,6 @@ export function UserSpacePanel({
           setShareSlugDraft(normalizeShareSlugInput(value));
           setShareSlugAvailable(null);
         }}
-        onShareLinkTypeChange={setShareLinkType}
         onShareAccessModeChange={setShareAccessMode}
         onSharePasswordDraftChange={setSharePasswordDraft}
         onToggleShareSelectedUser={handleToggleShareSelectedUser}
@@ -11737,17 +11689,8 @@ export function UserSpacePanel({
         onSaveShareAccess={() => {
           void handleSaveShareAccess();
         }}
-        onCopyShareLink={() => {
-          void handleCopyShareLink();
-        }}
         onOpenFullPreview={() => {
           void handleOpenFullPreview();
-        }}
-        onRotateShareLink={() => {
-          void handleRotateShareLink();
-        }}
-        onRevokeShareLink={() => {
-          void handleRevokeShareLink();
         }}
         onShareUrlInlineCopySuccess={() => {
           setError(null);

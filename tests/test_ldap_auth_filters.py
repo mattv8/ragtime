@@ -5,6 +5,7 @@ from ragtime.core.auth import (
     UserRole,
     _build_default_user_search_filters,
     _determine_ldap_role_for_entry,
+    _format_ldap_group_entry,
     _get_first_entry_attribute_value,
     _get_user_entry_search_attributes,
 )
@@ -34,6 +35,22 @@ class LdapAuthFilterTests(unittest.TestCase):
 
     def test_user_entry_search_attributes_avoid_explicit_primary_group_id(self) -> None:
         self.assertEqual(_get_user_entry_search_attributes(), ["*", "memberOf"])
+
+    def test_group_entry_format_includes_display_name_when_available(self) -> None:
+        entry = SimpleNamespace(
+            entry_dn="CN=Engineering,OU=Groups,DC=example,DC=com",
+            cn="engineering",
+            displayName="Engineering Team",
+        )
+
+        self.assertEqual(
+            _format_ldap_group_entry(entry),
+            {
+                "dn": "CN=Engineering,OU=Groups,DC=example,DC=com",
+                "name": "engineering",
+                "display_name": "Engineering Team",
+            },
+        )
 
     def test_ldap_role_uses_any_configured_admin_and_gate_group(self) -> None:
         ldap_config = SimpleNamespace(

@@ -16,14 +16,19 @@ import type {
 } from '@/types';
 import { Icon } from './Icon';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
-import { LdapGroupSelect } from './LdapGroupSelect';
+import {
+  getLdapGroupDisplayName,
+  LdapGroupChips,
+  LdapGroupSelect,
+  type LdapGroup,
+} from './LdapGroupSelect';
 
 type PanelTab = 'custom-routes' | 'default-filters';
 
 interface MCPRoutesPanelProps {
   onClose?: () => void;
   ldapConfigured?: boolean;
-  ldapGroups?: { dn: string; name: string }[];
+  ldapGroups?: LdapGroup[];
 }
 
 type RouteAuthMethod = 'password' | 'oauth2' | 'client_credentials';
@@ -139,7 +144,7 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
 interface DefaultFilterCardProps {
   filter: McpDefaultRouteFilter;
   tools: ToolConfig[];
-  ldapGroups: { dn: string; name: string }[];
+  ldapGroups: LdapGroup[];
   onEdit: (filter: McpDefaultRouteFilter) => void;
   onDelete: (filterId: string) => void;
   onToggle: (filterId: string, enabled: boolean) => void;
@@ -154,8 +159,10 @@ function DefaultFilterCard({
   onToggle,
 }: DefaultFilterCardProps) {
   const selectedTools = tools.filter((t) => filter.tool_config_ids.includes(t.id));
-  const groupName =
-    ldapGroups.find((g) => g.dn === filter.ldap_group_dn)?.name || filter.ldap_group_dn;
+  const groupName = getLdapGroupDisplayName(
+    ldapGroups.find((g) => g.dn === filter.ldap_group_dn),
+    filter.ldap_group_dn,
+  );
 
   return (
     <div className={`tool-card ${!filter.enabled ? 'disabled' : ''}`}>
@@ -221,7 +228,7 @@ interface RouteWizardProps {
   schemaTools: ToolConfig[];
   aggregateSearch: boolean;
   ldapConfigured: boolean;
-  ldapGroups: { dn: string; name: string }[];
+  ldapGroups: LdapGroup[];
   onCopySuccessToast: (message: string) => void;
   onSave: (data: CreateMcpRouteRequest | UpdateMcpRouteRequest, routeId?: string) => Promise<void>;
   onCancel: () => void;
@@ -586,6 +593,11 @@ function RouteWizard({
                 onChange={setAllowedLdapGroup}
                 groups={ldapGroups}
                 emptyOptionLabel="Any authenticated LDAP user"
+              />
+              <LdapGroupChips
+                selectedDns={allowedLdapGroup ? [allowedLdapGroup] : []}
+                groups={ldapGroups}
+                onRemove={() => setAllowedLdapGroup('')}
               />
               <p className="field-help">
                 Restrict access to members of a specific LDAP group. Leave empty to allow all
@@ -1068,7 +1080,7 @@ interface DefaultFilterWizardProps {
   filesystemTools: ToolConfig[];
   schemaTools: ToolConfig[];
   aggregateSearch: boolean;
-  ldapGroups: { dn: string; name: string }[];
+  ldapGroups: LdapGroup[];
   onSave: (
     data: CreateMcpDefaultRouteFilterRequest | UpdateMcpDefaultRouteFilterRequest,
     filterId?: string,
@@ -1264,6 +1276,12 @@ function DefaultFilterWizard({
             disabled={!!editingFilter}
             required
             emptyOptionLabel="Select an LDAP group..."
+          />
+          <LdapGroupChips
+            selectedDns={ldapGroupDn ? [ldapGroupDn] : []}
+            groups={ldapGroups}
+            onRemove={() => setLdapGroupDn('')}
+            disabled={!!editingFilter}
           />
           <p className="field-help">
             {editingFilter

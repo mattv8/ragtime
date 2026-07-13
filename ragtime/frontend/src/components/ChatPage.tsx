@@ -58,12 +58,9 @@ export function ChatPage({
   const [sharingConversation, setSharingConversation] = useState(false);
   const [savingShareAccess, setSavingShareAccess] = useState(false);
   const [savingShareLabel, setSavingShareLabel] = useState(false);
-  const [revokingShareLink, setRevokingShareLink] = useState(false);
   const [deletingSelectedShareLink, setDeletingSelectedShareLink] = useState(false);
-  const [rotatingShareLink, setRotatingShareLink] = useState(false);
   const [autoCreateShareLinkAttempted, setAutoCreateShareLinkAttempted] = useState(false);
   const [checkingShareSlug, setCheckingShareSlug] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
   const [grantedRoleDraft, setGrantedRoleDraft] = useState<ConversationShareRole>('viewer');
   const [shareAnchorMessageIdx, setShareAnchorMessageIdx] = useState<number | null>(null);
   const [shareScopeDirection, setShareScopeDirection] = useState<'forward' | 'backward'>('forward');
@@ -303,11 +300,6 @@ export function ChatPage({
     shareStatus,
   ]);
 
-  const resetCopiedState = useCallback(() => {
-    setShareCopied(true);
-    window.setTimeout(() => setShareCopied(false), 1500);
-  }, []);
-
   const handleOpenShareModal = useCallback(() => {
     if (!activeConversationId) {
       return;
@@ -357,31 +349,24 @@ export function ChatPage({
     [activeConversationId, loadShareStatus, showErrorToast],
   );
 
-  const ensureShareLink = useCallback(
-    async (rotateToken = false) => {
-      if (!activeConversationId) {
-        return null;
-      }
-      setSharingConversation(true);
-      try {
-        if (rotateToken) {
-          // Legacy "rotate token" semantics: revoke existing primary then create a fresh one.
-          await api.revokeConversationShareLink(activeConversationId);
-        }
-        const link = await api.createConversationShareLink(activeConversationId, {});
-        await loadShareStatus(activeConversationId, link.id);
-        return link;
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : 'Failed to create conversation share link';
-        showErrorToast(message);
-        return null;
-      } finally {
-        setSharingConversation(false);
-      }
-    },
-    [activeConversationId, loadShareStatus, showErrorToast],
-  );
+  const ensureShareLink = useCallback(async () => {
+    if (!activeConversationId) {
+      return null;
+    }
+    setSharingConversation(true);
+    try {
+      const link = await api.createConversationShareLink(activeConversationId, {});
+      await loadShareStatus(activeConversationId, link.id);
+      return link;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to create conversation share link';
+      showErrorToast(message);
+      return null;
+    } finally {
+      setSharingConversation(false);
+    }
+  }, [activeConversationId, loadShareStatus, showErrorToast]);
 
   useEffect(() => {
     if (!shareModalOpen || !activeConversationId) {
@@ -395,7 +380,7 @@ export function ChatPage({
     }
 
     setAutoCreateShareLinkAttempted(true);
-    void ensureShareLink(false);
+    void ensureShareLink();
   }, [
     activeConversationId,
     autoCreateShareLinkAttempted,
@@ -410,9 +395,10 @@ export function ChatPage({
     if (!activeConversationId) {
       return;
     }
+    const linkIdentityLocked = Boolean(shareStatus?.has_share_link);
     setSavingShareAccess(true);
     try {
-      const ensuredLink = !shareStatus?.id ? await ensureShareLink(false) : null;
+      const ensuredLink = !shareStatus?.id ? await ensureShareLink() : null;
       const currentShareId = shareStatus?.id || ensuredLink?.id;
       if (!currentShareId) {
         return;
@@ -420,6 +406,7 @@ export function ChatPage({
 
       const normalizedSlug = normalizeShareSlugInput(shareSlugDraft);
       if (
+        !linkIdentityLocked &&
         normalizedSlug &&
         normalizedSlug !== normalizeShareSlugInput(shareStatus?.share_slug || '')
       ) {
@@ -441,7 +428,8 @@ export function ChatPage({
 
       const selectedUserIds = normalizeUniqueStrings(shareSelectedUserIdsDraft);
       const selectedLdapGroups = normalizeUniqueStrings(shareSelectedLdapGroupsDraft);
-      const styleChanged = shareLinkType !== (shareStatus?.active_share_style ?? 'named');
+      const styleChanged =
+        !linkIdentityLocked && shareLinkType !== (shareStatus?.active_share_style ?? 'named');
       const hasAccessChanges =
         shareAccessMode !== (shareStatus?.share_access_mode ?? 'token') ||
         grantedRoleDraft !== (shareStatus?.granted_role ?? 'viewer') ||
@@ -460,7 +448,7 @@ export function ChatPage({
           selected_user_ids: selectedUserIds,
           selected_ldap_groups: selectedLdapGroups,
           granted_role: grantedRoleDraft,
-          active_share_style: shareLinkType,
+          active_share_style: linkIdentityLocked ? undefined : shareLinkType,
         });
       }
 
@@ -517,12 +505,20 @@ export function ChatPage({
       }
       setSavingShareLabel(true);
       try {
-        await api.updateConversationShareLinkMetadata(activeConversationId, shareStatus.id, {
-          label,
-          scope_anchor_message_idx: shareStatus.scope_anchor_message_idx ?? null,
-          scope_direction: shareStatus.scope_direction ?? null,
-        });
-        await loadShareStatus(activeConversationId, shareStatus.id);
+        const updatedStatus = await api.updateConversationShareLinkMetadata(
+          activeConversationId,
+          shareStatus.id,
+          {
+            label,
+            scope_anchor_message_idx: shareStatus.scope_anchor_message_idx ?? null,
+            scope_direction: shareStatus.scope_direction ?? null,
+          },
+        );
+        setShareLinks((current) =>
+          current.map((link) => (link.id === updatedStatus.id ? updatedStatus : link)),
+        );
+        setSelectedShareId(updatedStatus.id);
+        applyShareStatus(updatedStatus);
         showSuccessToast('Conversation share label updated');
       } catch (error) {
         const message =
@@ -532,7 +528,7 @@ export function ChatPage({
         setSavingShareLabel(false);
       }
     },
-    [activeConversationId, loadShareStatus, shareStatus, showErrorToast, showSuccessToast],
+    [activeConversationId, applyShareStatus, shareStatus, showErrorToast, showSuccessToast],
   );
 
   const handleDeleteSelectedShareLink = useCallback(
@@ -556,29 +552,10 @@ export function ChatPage({
     [activeConversationId, loadShareStatus, showErrorToast, showSuccessToast],
   );
 
-  const handleCopyShareLink = useCallback(async () => {
-    let targetUrl = effectiveShareUrl;
-    if (!targetUrl) {
-      const link = await ensureShareLink(false);
-      if (!link) {
-        return;
-      }
-      targetUrl =
-        shareLinkType === 'anonymous' ? link.anonymous_share_url || link.share_url : link.share_url;
-    }
-    try {
-      await navigator.clipboard.writeText(targetUrl);
-      resetCopiedState();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to copy share link';
-      showErrorToast(message);
-    }
-  }, [effectiveShareUrl, ensureShareLink, resetCopiedState, shareLinkType, showErrorToast]);
-
   const handleOpenShareLink = useCallback(async () => {
     let targetUrl = effectiveShareUrl;
     if (!targetUrl) {
-      const link = await ensureShareLink(false);
+      const link = await ensureShareLink();
       if (!link) {
         return;
       }
@@ -602,37 +579,6 @@ export function ChatPage({
       window.open(targetUrl, '_blank', 'noopener,noreferrer');
     }
   }, [effectiveShareUrl, ensureShareLink, shareLinkType]);
-
-  const handleRotateShareLink = useCallback(async () => {
-    if (!activeConversationId) {
-      return;
-    }
-    setRotatingShareLink(true);
-    try {
-      await ensureShareLink(true);
-      showSuccessToast('Conversation share link rotated');
-    } finally {
-      setRotatingShareLink(false);
-    }
-  }, [activeConversationId, ensureShareLink, showSuccessToast]);
-
-  const handleRevokeShareLink = useCallback(async () => {
-    if (!activeConversationId) {
-      return;
-    }
-    setRevokingShareLink(true);
-    try {
-      await api.revokeConversationShareLink(activeConversationId);
-      await loadShareStatus(activeConversationId);
-      showSuccessToast('Conversation share link revoked');
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to revoke conversation share link';
-      showErrorToast(message);
-    } finally {
-      setRevokingShareLink(false);
-    }
-  }, [activeConversationId, loadShareStatus, showErrorToast, showSuccessToast]);
 
   const extraAccessControls = (
     <>
@@ -722,11 +668,8 @@ export function ChatPage({
         activeShareCreatedLabel={activeShareCreatedLabel}
         savingShareAccess={savingShareAccess}
         sharingWorkspace={sharingConversation}
-        revokingShareLink={revokingShareLink}
-        rotatingShareLink={rotatingShareLink}
         checkingShareSlug={checkingShareSlug}
         shareHasUnsavedChanges={shareHasUnsavedChanges}
-        shareCopied={shareCopied}
         creatingShareLink={sharingConversation}
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
@@ -750,7 +693,6 @@ export function ChatPage({
           setShareSlugAvailable(null);
           setShareSlugDraft(normalizeShareSlugInput(value));
         }}
-        onShareLinkTypeChange={setShareLinkType}
         onShareAccessModeChange={(value) =>
           setShareAccessMode(value as ConversationShareAccessMode)
         }
@@ -779,19 +721,9 @@ export function ChatPage({
           );
         }}
         onSaveShareAccess={handleSaveShareAccess}
-        onCopyShareLink={() => {
-          void handleCopyShareLink();
-        }}
         onOpenFullPreview={() => {
           void handleOpenShareLink();
         }}
-        onRotateShareLink={() => {
-          void handleRotateShareLink();
-        }}
-        onRevokeShareLink={() => {
-          void handleRevokeShareLink();
-        }}
-        onShareUrlInlineCopySuccess={resetCopiedState}
         onShareUrlInlineCopyError={(error) => showErrorToast(error.message)}
         formatUserLabel={formatUserLabel}
       />

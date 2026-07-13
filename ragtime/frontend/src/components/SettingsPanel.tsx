@@ -85,6 +85,7 @@ import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
 import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
 import { McpSettingsSection } from './settings/McpSettingsSection';
+import { getLdapGroupDisplayName, type LdapGroup } from './LdapGroupSelect';
 import {
   getDefaultSettingsAccordionState,
   openSettingsAccordionSections,
@@ -778,9 +779,7 @@ export function SettingsPanel({
     message: string;
   } | null>(null);
   const [ldapDiscoveredOus, setLdapDiscoveredOus] = useState<string[]>([]);
-  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<{ dn: string; name: string }[]>(
-    [],
-  );
+  const [ldapDiscoveredGroups, setLdapDiscoveredGroups] = useState<LdapGroup[]>([]);
   const [authProviderConfig, setAuthProviderConfig] = useState<AuthProviderConfig | null>(null);
   const [authProviderConfigSaving, setAuthProviderConfigSaving] = useState(false);
   const [authGroups, setAuthGroups] = useState<AuthGroup[]>([]);
@@ -7957,7 +7956,7 @@ export function SettingsPanel({
                           <CheckboxDropdown
                             options={ldapDiscoveredGroups.map((group) => ({
                               id: group.dn,
-                              label: group.name,
+                              label: getLdapGroupDisplayName(group, group.dn),
                               description: group.dn,
                             }))}
                             selectedIds={ldapFormData.admin_group_dns}
@@ -7976,7 +7975,7 @@ export function SettingsPanel({
                           <CheckboxDropdown
                             options={ldapDiscoveredGroups.map((group) => ({
                               id: group.dn,
-                              label: group.name,
+                              label: getLdapGroupDisplayName(group, group.dn),
                               description: group.dn,
                             }))}
                             selectedIds={ldapFormData.user_group_dns}
