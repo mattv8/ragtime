@@ -154,6 +154,26 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
           </div>
         </div>
 
+        <div className="form-group" id="setting-available_models_cache_enabled">
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.9em', margin: 0, whiteSpace: 'nowrap' }}
+          >
+            <input
+              type="checkbox"
+              checked={formData.available_models_cache_enabled !== false}
+              onChange={(e) =>
+                setFormData({ ...formData, available_models_cache_enabled: e.target.checked })
+              }
+            />
+            Cache Model Discovery
+          </label>
+          <p className="field-help">
+            {formData.available_models_cache_enabled !== false
+              ? 'Model lists from providers are cached briefly (default 30s) so repeated page loads stay fast. Saved settings changes always refresh immediately.'
+              : 'Caching disabled: every request performs live provider discovery. Model pickers may load noticeably slower.'}
+          </p>
+        </div>
+
         <div className="form-actions">
           <button type="button" className="btn" onClick={handleSaveLlm} disabled={llmSaving}>
             {llmSaving ? 'Saving...' : 'Save Chat Model Settings'}

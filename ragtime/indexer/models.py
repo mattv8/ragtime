@@ -589,6 +589,10 @@ class AppSettings(BaseModel):
         default=DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
         description="If True, prefix OpenAI-compatible API model names with the server name.",
     )
+    available_models_cache_enabled: bool = Field(
+        default=True,
+        description="Serve /chat/available-models from a short-lived cache; disable to force live provider discovery on every request.",
+    )
     show_tool_card_footer_actions: bool = Field(
         default=DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
         description="If True, show action buttons on tool cards instead of only in the right-click menu.",
@@ -1344,6 +1348,7 @@ class UpdateSettingsRequest(BaseModel):
     default_theme_pack: Optional[str] = None
     authenticated_webgl_background_enabled: Optional[bool] = None
     openapi_model_prefix_enabled: Optional[bool] = None
+    available_models_cache_enabled: Optional[bool] = None
     show_tool_card_footer_actions: Optional[bool] = None
     # Embedding settings
     embedding_provider: Optional[str] = None

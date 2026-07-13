@@ -2130,9 +2130,10 @@ export function SettingsPanel({
         userspace_code_index_max_concurrency: data.userspace_code_index_max_concurrency,
         archive_max_total_size_bytes: data.archive_max_total_size_bytes,
         archive_max_file_count: data.archive_max_file_count,
-
+        
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
+        available_models_cache_enabled: data.available_models_cache_enabled,
       });
       // Reset Ollama connection state (for embeddings)
       resetEmbeddingOllamaState();
@@ -2751,6 +2752,7 @@ export function SettingsPanel({
         chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
         openapi_sync_chat_models: formData.openapi_sync_chat_models,
+        available_models_cache_enabled: formData.available_models_cache_enabled,
         // Token optimization settings
         max_tool_output_chars: formData.max_tool_output_chars,
         scratchpad_window_size: formData.scratchpad_window_size,

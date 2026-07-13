@@ -10698,7 +10698,7 @@ async def get_available_chat_models() -> AvailableModelsResponse:
         )
 
     cache_key = _available_models_cache_key(app_settings)
-    if not cache_key:
+    if not cache_key or not bool(getattr(app_settings, "available_models_cache_enabled", True)):
         return await _build_available_models_response(app_settings)
     return await _get_or_build_available_models(
         cache_key,

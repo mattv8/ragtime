@@ -356,6 +356,14 @@ class GetAvailableChatModelsRouteTests(unittest.IsolatedAsyncioTestCase):
         build_calls = await self._call_route_twice(settings)
         self.assertEqual(build_calls, 2)
 
+    async def test_cache_disabled_bypasses_cache(self) -> None:
+        settings = SimpleNamespace(
+            updated_at=datetime(2026, 7, 12, 10, 30, 0, tzinfo=timezone.utc),
+            available_models_cache_enabled=False,
+        )
+        build_calls = await self._call_route_twice(settings)
+        self.assertEqual(build_calls, 2)
+
     async def test_settings_key_uses_cache(self) -> None:
         settings = SimpleNamespace(updated_at=datetime(2026, 7, 12, 10, 30, 0, tzinfo=timezone.utc))
         build_calls = await self._call_route_twice(settings)

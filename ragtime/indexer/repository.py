@@ -1130,6 +1130,7 @@ class IndexerRepository:
                 "openapiModelPrefixEnabled",
                 DEFAULT_OPENAPI_MODEL_PREFIX_ENABLED,
             ),
+            available_models_cache_enabled=getattr(settings, "availableModelsCacheEnabled", True),
             show_tool_card_footer_actions=getattr(
                 settings,
                 "showToolCardFooterActions",
@@ -1492,6 +1493,7 @@ class IndexerRepository:
             "default_theme_pack": "defaultThemePack",
             "authenticated_webgl_background_enabled": "authenticatedWebglBackgroundEnabled",
             "openapi_model_prefix_enabled": "openapiModelPrefixEnabled",
+            "available_models_cache_enabled": "availableModelsCacheEnabled",
             "show_tool_card_footer_actions": "showToolCardFooterActions",
             # Embedding settings
             "embedding_provider": "embeddingProvider",

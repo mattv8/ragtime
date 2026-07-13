@@ -808,6 +808,7 @@ export interface AppSettings {
   // OpenAPI-compatible endpoint model configuration
   allowed_openapi_models: string[];
   openapi_sync_chat_models: boolean;
+  available_models_cache_enabled: boolean;
   max_iterations: number;
   chat_compaction_threshold_percent: number;
   chat_auto_compaction_threshold_percent: number;
@@ -965,6 +966,7 @@ export interface UpdateSettingsRequest {
   default_chat_model?: string | null;
   allowed_openapi_models?: string[];
   openapi_sync_chat_models?: boolean;
+  available_models_cache_enabled?: boolean;
   max_iterations?: number;
   chat_compaction_threshold_percent?: number;
   chat_auto_compaction_threshold_percent?: number;
