@@ -7957,6 +7957,38 @@ def _find_available_model_for_identifier(models: List[AvailableModel], identifie
     return None
 
 
+def _apply_allowed_model_filter(models: List[AvailableModel], allowed_models: List[str]) -> List[AvailableModel]:
+    """Filter by allowlist unless stale entries would hide every discovered model."""
+    allowed = [str(value).strip() for value in (allowed_models or []) if str(value).strip()]
+    if not allowed or not models:
+        return models
+
+    filtered = [model for model in models if _identifier_in_allowed_models(_build_scoped_model_identifier(model), allowed)]
+    if filtered:
+        return filtered
+
+    logger.warning(
+        "Ignoring stale chat model allowlist because it excludes all %d discovered model(s): %s",
+        len(models),
+        allowed,
+    )
+    return models
+
+
+async def _resolve_available_default_conversation_model(settings: AppSettings) -> Optional[str]:
+    """Resolve a provider-scoped fallback model from the live available-model catalog."""
+    response = await _build_available_models_response(settings)
+    if not response.models:
+        return None
+
+    for candidate in (response.default_model, response.automatic_default_model, response.current_model):
+        match = _find_available_model_for_identifier(response.models, candidate)
+        if match:
+            return _build_scoped_model_identifier(match)
+
+    return _build_scoped_model_identifier(response.models[0])
+
+
 def _find_discovered_model(models: List[LLMModel], model_id: str) -> Optional[LLMModel]:
     """Find a discovered model by exact id, tolerating normalized GitHub prefixes."""
     requested = str(model_id or "").strip().lstrip("/")
@@ -8362,11 +8394,11 @@ async def _validate_conversation_model_selection(
         )
 
 
-async def _validate_conversation_model_before_send(stored_model: str) -> None:
-    """Verify the current conversation model still exists in the live provider catalog."""
+async def _validate_conversation_model_before_send(stored_model: str) -> str:
+    """Verify the current conversation model still exists, or return a live default fallback."""
     provider, model_id = _parse_model_identifier(stored_model)
     if not model_id:
-        return
+        return stored_model
 
     settings = await repository.get_settings()
     if not settings:
@@ -8381,18 +8413,41 @@ async def _validate_conversation_model_before_send(stored_model: str) -> None:
     normalized_provider = normalize_provider_name(provider)
     allowed_models = [str(value).strip() for value in (getattr(settings, "allowed_chat_models", None) or []) if str(value).strip()]
     if allowed_models and not _identifier_in_allowed_models(f"{normalized_provider}::{model_id}", allowed_models):
+        fallback_model = await _resolve_available_default_conversation_model(settings)
+        if fallback_model:
+            logger.info(
+                "Falling back conversation model from unavailable %s to %s",
+                stored_model,
+                fallback_model,
+            )
+            return fallback_model
         raise HTTPException(
             status_code=400,
             detail="Selected model has been removed from Chat Models. Select another model to continue.",
         )
 
-    await _validate_conversation_model_selection(
-        provider=normalized_provider,
-        model_id=model_id,
-        include_directory_models=False,
-        force_refresh=(normalized_provider == "github_copilot"),
-        settings=settings,
-    )
+    try:
+        await _validate_conversation_model_selection(
+            provider=normalized_provider,
+            model_id=model_id,
+            include_directory_models=False,
+            force_refresh=(normalized_provider == "github_copilot"),
+            settings=settings,
+        )
+    except HTTPException as exc:
+        if exc.status_code != 400:
+            raise
+        fallback_model = await _resolve_available_default_conversation_model(settings)
+        if fallback_model and fallback_model != f"{normalized_provider}::{model_id}":
+            logger.info(
+                "Falling back conversation model from unavailable %s to %s",
+                stored_model,
+                fallback_model,
+            )
+            return fallback_model
+        raise
+
+    return stored_model
 
 
 def _generation_failure_message(error: Exception) -> str:
@@ -8421,15 +8476,29 @@ async def _persist_generation_failure_message(conversation_id: str, error: Excep
 async def _validate_generation_ready_after_user_message(
     conversation_id: str,
     stored_model: str,
-) -> None:
+) -> str:
     """Validate generation readiness after the submitted user message is saved."""
     try:
         if not rag.is_ready:
             raise HTTPException(status_code=503, detail="RAG service initializing, please retry")
-        await _validate_conversation_model_before_send(stored_model)
+        return await _validate_conversation_model_before_send(stored_model)
     except Exception as exc:
         await _persist_generation_failure_message(conversation_id, exc)
         raise
+
+
+async def _apply_validated_conversation_model(
+    conversation_id: str,
+    conv: Conversation,
+    resolved_model: str,
+) -> Conversation:
+    if not resolved_model or resolved_model == conv.model:
+        return conv
+
+    updated = await repository.update_conversation_model(conversation_id, resolved_model)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update conversation model fallback")
+    return updated
 
 
 async def _create_background_chat_task_after_user_message(
@@ -10961,7 +11030,7 @@ async def _build_available_models_response(app_settings: AppSettings) -> Availab
     # Filter by allowed models if specified.
     # Supports legacy model IDs and provider-scoped keys: provider::model_id.
     if allowed_models:
-        all_models = [model for model in all_models if _identifier_in_allowed_models(_build_scoped_model_identifier(model), allowed_models)]
+        all_models = _apply_allowed_model_filter(all_models, allowed_models)
 
     # Assign groups to models for UI organization
     await ensure_model_metadata_loaded()
@@ -11578,7 +11647,8 @@ async def _send_message_to_loaded_conversation(
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
 
-    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
 
     chat_history = await _build_chat_history_for_conversation(
         conv.messages[:-1],
@@ -11702,7 +11772,8 @@ async def _send_background_message_to_loaded_conversation(
         raise HTTPException(status_code=500, detail="Failed to add user message")
     conv = updated_conversation
 
-    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     current_time_context = _build_current_time_prompt_context(request)
 
     task = await _create_background_chat_task_after_user_message(
@@ -13853,7 +13924,8 @@ async def send_message_stream(
     if not conv:
         raise HTTPException(status_code=500, detail="Failed to store message")
 
-    await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+    conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
 
     # Build chat history for RAG
     chat_history = await _build_chat_history_for_conversation(
@@ -14834,7 +14906,8 @@ async def send_message_background(
     schedule_title_generation(conversation_id, user_message)
 
     try:
-        await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+        resolved_model = await _validate_generation_ready_after_user_message(conversation_id, conv.model)
+        conv = await _apply_validated_conversation_model(conversation_id, conv, resolved_model)
     except Exception:
         await repository.cancel_chat_task(claimed_task.id)
         raise

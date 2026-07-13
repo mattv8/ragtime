@@ -7,6 +7,7 @@ from unittest import mock
 from ragtime.indexer.routes import (
     AvailableModel,
     AvailableModelsResponse,
+    _apply_allowed_model_filter,
     _available_models_cache_key,
     _get_or_build_available_models,
     _is_available_models_response_cacheable,
@@ -291,6 +292,16 @@ class AvailableModelsCacheTests(unittest.IsolatedAsyncioTestCase):
     def test_cache_key_without_updated_at(self) -> None:
         settings = SimpleNamespace()
         self.assertEqual(_available_models_cache_key(settings), "")
+
+    def test_stale_allowlist_does_not_empty_discovered_models(self) -> None:
+        models = [AvailableModel(id="Qwen3.6-27B-MLX-8bit", name="Qwen", provider="omlx")]
+
+        filtered = _apply_allowed_model_filter(
+            models,
+            ["openai_codex::gpt-5.4-mini", "claude_code::claude-sonnet-4-6"],
+        )
+
+        self.assertEqual(filtered, models)
 
 
 class GetAvailableChatModelsRouteTests(unittest.IsolatedAsyncioTestCase):

@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from pydantic import SecretStr
@@ -30,9 +31,10 @@ from ragtime.core.model_providers import (
     normalize_provider_name,
     resolve_model_family_from_metadata,
 )
-from ragtime.indexer.models import AppSettings
+from ragtime.indexer.models import AppSettings, Conversation
 from ragtime.indexer.routes import (
     AvailableModel,
+    AvailableModelsResponse,
     LLMModel,
     LLMModelsResponse,
     _assign_model_groups,
@@ -1169,6 +1171,118 @@ class ModelResolutionTests(unittest.TestCase):
 
 
 class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_validation_falls_back_when_allowlist_contains_only_removed_models(self) -> None:
+        settings = SimpleNamespace(
+            allowed_chat_models=["openai_codex::gpt-5.4-mini", "claude_code::claude-sonnet-4-6"],
+            llm_provider="omlx",
+        )
+        fallback_response = AvailableModelsResponse(
+            models=[
+                AvailableModel(id="Qwen3.6-27B-MLX-8bit", name="Qwen", provider="omlx"),
+                AvailableModel(id="GLM-5.2-Demolition-q4a4-soul-MLX", name="GLM", provider="omlx"),
+            ],
+            default_model="Qwen3.6-27B-MLX-8bit",
+            automatic_default_model="omlx::GLM-5.2-Demolition-q4a4-soul-MLX",
+        )
+
+        with (
+            mock.patch.object(
+                indexer_routes.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_build_available_models_response",
+                mock.AsyncMock(return_value=fallback_response),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_validate_conversation_model_selection",
+                mock.AsyncMock(),
+            ) as validate_live_model,
+        ):
+            resolved_model = await indexer_routes._validate_conversation_model_before_send("openrouter::google/gemini-3.1-pro-preview")
+
+        self.assertEqual(resolved_model, "omlx::Qwen3.6-27B-MLX-8bit")
+        validate_live_model.assert_not_awaited()
+
+    async def test_send_validation_falls_back_when_live_catalog_says_model_removed(self) -> None:
+        settings = SimpleNamespace(
+            allowed_chat_models=["openrouter::google/gemini-3.1-pro-preview"],
+            llm_provider="openrouter",
+        )
+        fallback_response = AvailableModelsResponse(
+            models=[AvailableModel(id="Qwen3.6-27B-MLX-8bit", name="Qwen", provider="omlx")],
+            default_model="Qwen3.6-27B-MLX-8bit",
+            automatic_default_model="omlx::Qwen3.6-27B-MLX-8bit",
+        )
+
+        with (
+            mock.patch.object(
+                indexer_routes.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_validate_conversation_model_selection",
+                mock.AsyncMock(side_effect=indexer_routes.HTTPException(status_code=400, detail="gone")),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_build_available_models_response",
+                mock.AsyncMock(return_value=fallback_response),
+            ),
+        ):
+            resolved_model = await indexer_routes._validate_conversation_model_before_send("openrouter::google/gemini-3.1-pro-preview")
+
+        self.assertEqual(resolved_model, "omlx::Qwen3.6-27B-MLX-8bit")
+
+    async def test_send_validation_preserves_transient_provider_refresh_failure(self) -> None:
+        settings = SimpleNamespace(
+            allowed_chat_models=["openrouter::google/gemini-3.1-pro-preview"],
+            llm_provider="openrouter",
+        )
+        build_fallback = mock.AsyncMock(return_value=AvailableModelsResponse(models=[]))
+
+        with (
+            mock.patch.object(
+                indexer_routes.repository,
+                "get_settings",
+                mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_validate_conversation_model_selection",
+                mock.AsyncMock(side_effect=indexer_routes.HTTPException(status_code=503, detail="retry")),
+            ),
+            mock.patch.object(indexer_routes, "_build_available_models_response", build_fallback),
+        ):
+            with self.assertRaises(indexer_routes.HTTPException) as raised:
+                await indexer_routes._validate_conversation_model_before_send("openrouter::google/gemini-3.1-pro-preview")
+
+        self.assertEqual(raised.exception.status_code, 503)
+        build_fallback.assert_not_awaited()
+
+    async def test_apply_validated_conversation_model_persists_fallback(self) -> None:
+        conv = cast(Conversation, SimpleNamespace(id="conv-1", model="openrouter::old"))
+        updated = SimpleNamespace(id="conv-1", model="omlx::new")
+
+        with mock.patch.object(
+            indexer_routes.repository,
+            "update_conversation_model",
+            mock.AsyncMock(return_value=updated),
+        ) as update_model:
+            result = await indexer_routes._apply_validated_conversation_model(
+                "conv-1",
+                conv,
+                "omlx::new",
+            )
+
+        self.assertIs(result, updated)
+        update_model.assert_awaited_once_with("conv-1", "omlx::new")
+
     async def test_send_validation_rejects_model_removed_from_chat_models(self) -> None:
         settings = SimpleNamespace(
             allowed_chat_models=["github_copilot::claude-sonnet-4.6"],
@@ -1180,6 +1294,11 @@ class ModelSendEligibilityTests(unittest.IsolatedAsyncioTestCase):
                 indexer_routes.repository,
                 "get_settings",
                 mock.AsyncMock(return_value=settings),
+            ),
+            mock.patch.object(
+                indexer_routes,
+                "_build_available_models_response",
+                mock.AsyncMock(return_value=AvailableModelsResponse(models=[])),
             ),
             mock.patch.object(
                 indexer_routes,
