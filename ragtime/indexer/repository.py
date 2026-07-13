@@ -3866,15 +3866,51 @@ class IndexerRepository:
         """List all branches for a conversation, grouped by branch point."""
         db = await self._get_db()
         try:
-            branches = await db.conversationbranch.find_many(
-                where={"conversationId": conversation_id},
-                order=[{"createdAt": "asc"}],
-                include={"createdByUser": True},
-            )
-            return [self._prisma_branch_to_summary(b) for b in branches]
+            rows = await db.query_raw(f"""
+                SELECT
+                    cb.id,
+                    cb.conversation_id,
+                    cb.parent_branch_id,
+                    cb.branch_point_index,
+                    cb.branch_kind,
+                    CASE WHEN jsonb_typeof(cb.preserved_messages) = 'array'
+                         THEN jsonb_array_length(cb.preserved_messages) ELSE 0 END AS message_count,
+                    cb.associated_snapshot_id,
+                    cb.created_by_user_id,
+                    u.username AS created_by_username,
+                    cb.created_at
+                FROM conversation_branches cb
+                LEFT JOIN users u ON u.id = cb.created_by_user_id
+                WHERE cb.conversation_id = {_sql_quote_literal(conversation_id)}
+                ORDER BY cb.created_at ASC
+            """)
+            return [
+                ConversationBranchSummary(
+                    id=str(row.get("id") or ""),
+                    conversation_id=str(row.get("conversation_id") or ""),
+                    parent_branch_id=row.get("parent_branch_id"),
+                    branch_point_index=int(row.get("branch_point_index") or 0),
+                    branch_kind=row.get("branch_kind"),
+                    message_count=int(row.get("message_count") or 0),
+                    associated_snapshot_id=row.get("associated_snapshot_id"),
+                    created_by_user_id=row.get("created_by_user_id"),
+                    created_by_username=row.get("created_by_username"),
+                    created_at=cast(datetime, row.get("created_at")),
+                )
+                for row in rows
+            ]
         except Exception as e:
             logger.warning(f"Failed to list conversation branches: {e}")
             return []
+
+    async def get_conversation_active_branch_id(self, conversation_id: str) -> Optional[str]:
+        """Fetch only the active branch pointer without materializing messages."""
+        db = await self._get_db()
+        rows = await db.query_raw(f"SELECT active_branch_id FROM conversations WHERE id = {_sql_quote_literal(conversation_id)}")
+        if not rows:
+            return None
+        value = rows[0].get("active_branch_id")
+        return str(value) if value else None
 
     async def release_conversation_branch(
         self,
@@ -4311,12 +4347,19 @@ class IndexerRepository:
             True if user has access, False otherwise
         """
         db = await self._get_db()
-        conv = await db.conversation.find_unique(where={"id": conversation_id}, include={"members": True})
-
-        if not conv:
+        quoted_conversation_id = _sql_quote_literal(conversation_id)
+        conversation_rows = await db.query_raw(f"SELECT c.user_id, c.workspace_id FROM conversations c WHERE c.id = {quoted_conversation_id}")
+        if not conversation_rows:
             return False
 
-        conversation_workspace_id = getattr(conv, "workspaceId", None)
+        conversation_row = conversation_rows[0]
+        conversation_user_id = conversation_row.get("user_id")
+        if conversation_user_id is not None:
+            conversation_user_id = str(conversation_user_id)
+        conversation_workspace_id = conversation_row.get("workspace_id")
+        if conversation_workspace_id is not None:
+            conversation_workspace_id = str(conversation_workspace_id)
+
         if workspace_id is not None:
             if conversation_workspace_id != workspace_id:
                 return False
@@ -4330,23 +4373,45 @@ class IndexerRepository:
             return False
 
         if conversation_workspace_id:
-            workspace = await db.workspace.find_unique(
-                where={"id": conversation_workspace_id},
-                include={"members": True},
+            workspace_rows = await db.query_raw(
+                f"""
+                SELECT
+                    w.owner_user_id,
+                    EXISTS(
+                        SELECT 1 FROM workspace_members wm
+                        WHERE wm.workspace_id = w.id AND wm.user_id = {_sql_quote_literal(user_id)}
+                    ) AS is_member
+                FROM workspaces w
+                WHERE w.id = {_sql_quote_literal(conversation_workspace_id)}
+                """
             )
-            if not workspace:
+            if not workspace_rows:
                 return False
 
-            if workspace.ownerUserId == user_id:
+            workspace_row = workspace_rows[0]
+            workspace_owner_user_id = workspace_row.get("owner_user_id")
+            if workspace_owner_user_id is not None:
+                workspace_owner_user_id = str(workspace_owner_user_id)
+
+            if workspace_owner_user_id == user_id:
                 return True
 
-            return any(getattr(member, "userId", None) == user_id for member in list(getattr(workspace, "members", []) or []))
+            return bool(workspace_row.get("is_member"))
 
         # Allow access if conversation has no owner (legacy) or matches user
-        if conv.userId is None or conv.userId == user_id:
+        if conversation_user_id is None or conversation_user_id == user_id:
             return True
 
-        return any(getattr(member, "userId", None) == user_id for member in list(getattr(conv, "members", []) or []))
+        member_rows = await db.query_raw(
+            f"""
+            SELECT 1 AS present
+            FROM conversation_members cm
+            WHERE cm.conversation_id = {quoted_conversation_id}
+              AND cm.user_id = {_sql_quote_literal(user_id)}
+            LIMIT 1
+            """
+        )
+        return bool(member_rows)
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete a conversation."""

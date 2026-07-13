@@ -156,7 +156,15 @@ export function ChatModelsSettingsSection(props: ChatModelsSettingsSectionProps)
 
         <div className="form-group" id="setting-available_models_cache_enabled">
           <label
-            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.9em', margin: 0, whiteSpace: 'nowrap' }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              cursor: 'pointer',
+              fontSize: '0.9em',
+              margin: 0,
+              whiteSpace: 'nowrap',
+            }}
           >
             <input
               type="checkbox"

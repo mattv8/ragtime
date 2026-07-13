@@ -2130,7 +2130,7 @@ export function SettingsPanel({
         userspace_code_index_max_concurrency: data.userspace_code_index_max_concurrency,
         archive_max_total_size_bytes: data.archive_max_total_size_bytes,
         archive_max_file_count: data.archive_max_file_count,
-        
+
         // OpenAPI model settings
         openapi_sync_chat_models: data.openapi_sync_chat_models,
         available_models_cache_enabled: data.available_models_cache_enabled,

@@ -13546,8 +13546,7 @@ async def list_conversation_branch_points(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     branches = await repository.get_conversation_branches(conversation_id)
-    conv = await repository.get_conversation(conversation_id)
-    active_branch_id = conv.active_branch_id if conv else None
+    active_branch_id = await repository.get_conversation_active_branch_id(conversation_id)
 
     # Group by branch_point_index
     points: dict[int, list[ConversationBranchSummary]] = {}

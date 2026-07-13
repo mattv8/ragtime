@@ -1986,12 +1986,11 @@ class UserSpaceRuntimeService:
             success=True,
         )
 
-    async def get_devserver_status(
+    async def _get_devserver_status_authorized(
         self,
         workspace_id: str,
         user_id: str,
     ) -> UserSpaceRuntimeStatusResponse:
-        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
         live_data_warning = userspace_service.get_live_data_execution_warning(workspace_id)
         active = await self._get_active_session_row(workspace_id)
         if not active:
@@ -2139,6 +2138,14 @@ class UserSpaceRuntimeService:
             runtime_operation_updated_at=runtime_operation_updated_at,
         )
 
+    async def get_devserver_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> UserSpaceRuntimeStatusResponse:
+        await userspace_service.enforce_workspace_role(workspace_id, user_id, "viewer")
+        return await self._get_devserver_status_authorized(workspace_id, user_id)
+
     async def get_workspace_tab_state(
         self,
         workspace_id: str,
@@ -2155,7 +2162,7 @@ class UserSpaceRuntimeService:
             is_admin=is_admin,
         )
         runtime_status, chat_state = await asyncio.gather(
-            self.get_devserver_status(workspace_id, user_id),
+            self._get_devserver_status_authorized(workspace_id, user_id),
             build_workspace_chat_state(
                 workspace_id=workspace_id,
                 user_id=user_id,
