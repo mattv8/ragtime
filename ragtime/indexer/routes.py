@@ -413,6 +413,14 @@ _model_discovery_cache: dict[str, tuple[float, "LLMModelsResponse"]] = {}
 _model_discovery_inflight: dict[str, asyncio.Task["LLMModelsResponse"]] = {}
 _model_discovery_lock = asyncio.Lock()
 
+# Short-lived aggregate cache for /chat/available-models. Keyed by app_settings
+# updated_at so normal settings saves invalidate immediately. Single-slot because
+# only one global settings row exists; dedupe is best-effort across key changes.
+_AVAILABLE_MODELS_CACHE_TTL_SECONDS = float(os.getenv("AVAILABLE_MODELS_CACHE_TTL_SECONDS", "30"))
+_available_models_cache: Optional[tuple[float, str, AvailableModelsResponse]] = None
+_available_models_inflight: Optional[tuple[str, asyncio.Task[AvailableModelsResponse]]] = None
+_available_models_lock = asyncio.Lock()
+
 
 def _resolve_github_auth_mode(
     settings: AppSettings,
@@ -481,6 +489,67 @@ async def _get_or_fetch_model_discovery(
             )
 
     return result
+
+
+def _available_models_cache_key(app_settings: Any) -> str:
+    updated_at = getattr(app_settings, "updated_at", None)
+    return updated_at.isoformat() if updated_at else ""
+
+
+def _is_available_models_response_cacheable(response: AvailableModelsResponse) -> bool:
+    # Never cache transient/incomplete states: empty catalogs, in-progress
+    # discovery, or in-progress Copilot token refresh. Frontend polls those.
+    return bool(response.models) and not response.models_loading and not response.copilot_refresh_in_progress
+
+
+async def _get_or_build_available_models(
+    cache_key: str,
+    builder: Callable[[], Coroutine[Any, Any, AvailableModelsResponse]],
+    current_cache_key: Optional[Callable[[], str]] = None,
+) -> AvailableModelsResponse:
+    """Return cached aggregate response or dedupe concurrent builders."""
+    global _available_models_cache, _available_models_inflight
+
+    now = time.monotonic()
+
+    async with _available_models_lock:
+        cached = _available_models_cache
+        if cached is not None:
+            stored_at, stored_key, response = cached
+            if stored_key == cache_key and (now - stored_at) < _AVAILABLE_MODELS_CACHE_TTL_SECONDS:
+                return response.model_copy(deep=True)
+
+        if _available_models_inflight is not None:
+            inflight_key, inflight_task = _available_models_inflight
+            if inflight_key == cache_key:
+                task = inflight_task
+            else:
+                task = asyncio.create_task(builder())
+                _available_models_inflight = (cache_key, task)
+        else:
+            task = asyncio.create_task(builder())
+            _available_models_inflight = (cache_key, task)
+
+    try:
+        result = await task
+    finally:
+        async with _available_models_lock:
+            cur = _available_models_inflight
+            if cur is not None and cur[1] is task:
+                _available_models_inflight = None
+
+    if _is_available_models_response_cacheable(result):
+        store_key = current_cache_key() if current_cache_key is not None else cache_key
+        async with _available_models_lock:
+            # Single-slot, last completed cacheable build wins. Reads still
+            # require an exact key match, so stale-key entries only cause misses.
+            _available_models_cache = (
+                time.monotonic(),
+                store_key,
+                result.model_copy(deep=True),
+            )
+
+    return result.model_copy(deep=True)
 
 
 @router.get("", response_model=List[IndexInfo])
@@ -7841,7 +7910,9 @@ async def _reconcile_allowed_models_with_discovery(
         return allowed_models
 
     try:
-        await repository.update_settings({update_key: reconciled})
+        updated_settings = await repository.update_settings({update_key: reconciled})
+        setattr(app_settings, settings_attr, reconciled)
+        app_settings.updated_at = updated_settings.updated_at
         invalidate_settings_cache()
         logger.info(
             "Pruned %d stale %s model allowlist entr%s: %s",
@@ -10626,6 +10697,17 @@ async def get_available_chat_models() -> AvailableModelsResponse:
             models_loading=await _is_model_discovery_loading(),
         )
 
+    cache_key = _available_models_cache_key(app_settings)
+    if not cache_key:
+        return await _build_available_models_response(app_settings)
+    return await _get_or_build_available_models(
+        cache_key,
+        lambda: _build_available_models_response(app_settings),
+        lambda: _available_models_cache_key(app_settings),
+    )
+
+
+async def _build_available_models_response(app_settings: AppSettings) -> AvailableModelsResponse:
     all_models: List[AvailableModel] = []
     default_model = None
     provider_states: dict[str, ProviderModelState] = {
