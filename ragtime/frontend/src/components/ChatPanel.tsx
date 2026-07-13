@@ -104,7 +104,9 @@ import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
 import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import {
+  applyUserSpaceToolAvailabilityCap,
   fetchUserSpaceToolCatalog,
+  getCappedUserSpaceToolIdSet,
   resolveDefaultSelectedToolIds,
   type UserSpaceToolSelection,
 } from '@/utils/userSpaceTools';
@@ -9585,9 +9587,8 @@ interface ChatPanelProps {
   workspaceToolSelectionMode?: UserSpaceToolSelection['mode'];
   workspaceSelectedToolIds?: string[];
   workspaceSelectedToolGroupIds?: string[];
-  onWorkspaceToolSelectionChange?: (selection: UserSpaceToolSelection) => void;
   workspaceToolGroups?: ToolGroupInfo[];
-  workspaceSavingTools?: boolean;
+  onRequestEnableWorkspaceTool?: (toolId: string) => void;
   onWorkspaceBuiltInToolsChange?: (controls: WorkspaceBuiltInToolControls | null) => void;
   conversationShareableUserIds?: string[];
   onUserMessageSubmitted?: (message: string) => void | Promise<void>;
@@ -9647,9 +9648,8 @@ export function ChatPanel({
   workspaceToolSelectionMode,
   workspaceSelectedToolIds,
   workspaceSelectedToolGroupIds,
-  onWorkspaceToolSelectionChange,
   workspaceToolGroups,
-  workspaceSavingTools = false,
+  onRequestEnableWorkspaceTool,
   onWorkspaceBuiltInToolsChange,
   conversationShareableUserIds,
   onUserMessageSubmitted,
@@ -10616,11 +10616,7 @@ export function ChatPanel({
   const [promptDebugMessageIndex, setPromptDebugMessageIndex] = useState<number | null>(null);
 
   const useWorkspaceToolSource = Boolean(
-    embedded &&
-    workspaceId &&
-    workspaceAvailableTools &&
-    workspaceSelectedToolIds &&
-    onWorkspaceToolSelectionChange,
+    embedded && workspaceId && workspaceAvailableTools && workspaceSelectedToolIds,
   );
 
   const initialConversationIdRef = useRef<string | null>(
@@ -10671,10 +10667,6 @@ export function ChatPanel({
     }
   }, [initialConversationId]);
 
-  const effectiveAvailableTools = useMemo(
-    () => (useWorkspaceToolSource ? (workspaceAvailableTools ?? []) : availableTools),
-    [useWorkspaceToolSource, workspaceAvailableTools, availableTools],
-  );
   const conversationBaseToolSelection = useMemo<UserSpaceToolSelection>(
     () => ({
       mode: conversationToolSelectionMode,
@@ -10688,18 +10680,27 @@ export function ChatPanel({
     pendingConversationToolSelection.conversationId === activeConversation?.id
       ? pendingConversationToolSelection.selection
       : conversationBaseToolSelection;
-  const effectiveToolSelection = useWorkspaceToolSource
-    ? ({
-        mode:
-          workspaceToolSelectionMode ??
-          ((workspaceSelectedToolIds ?? []).length === 0 &&
-          (workspaceSelectedToolGroupIds ?? []).length === 0
-            ? 'default_all'
-            : 'custom'),
-        toolIds: workspaceSelectedToolIds ?? [],
-        toolGroupIds: workspaceSelectedToolGroupIds ?? [],
-      } satisfies UserSpaceToolSelection)
-    : effectiveConversationToolSelection;
+  const workspaceToolSelection = useMemo<UserSpaceToolSelection>(
+    () => ({
+      mode:
+        workspaceToolSelectionMode ??
+        ((workspaceSelectedToolIds ?? []).length === 0 &&
+        (workspaceSelectedToolGroupIds ?? []).length === 0
+          ? 'default_all'
+          : 'custom'),
+      toolIds: workspaceSelectedToolIds ?? [],
+      toolGroupIds: workspaceSelectedToolGroupIds ?? [],
+    }),
+    [workspaceSelectedToolGroupIds, workspaceSelectedToolIds, workspaceToolSelectionMode],
+  );
+  const effectiveAvailableTools = useMemo(
+    () =>
+      useWorkspaceToolSource
+        ? applyUserSpaceToolAvailabilityCap(workspaceAvailableTools ?? [], workspaceToolSelection)
+        : availableTools,
+    [availableTools, useWorkspaceToolSource, workspaceAvailableTools, workspaceToolSelection],
+  );
+  const effectiveToolSelection = effectiveConversationToolSelection;
   const resolvedConversationToolIds = useMemo(
     () =>
       resolveDefaultSelectedToolIds(
@@ -10710,16 +10711,29 @@ export function ChatPanel({
       ),
     [effectiveAvailableTools, effectiveConversationToolSelection],
   );
-  const resolvedEffectiveToolIds = useMemo(
-    () =>
-      resolveDefaultSelectedToolIds(
+  const resolvedEffectiveToolIds = useMemo(() => {
+    if (!useWorkspaceToolSource) {
+      return resolveDefaultSelectedToolIds(
         effectiveToolSelection.toolIds,
         effectiveToolSelection.toolGroupIds,
         effectiveAvailableTools,
         effectiveToolSelection.mode,
+      );
+    }
+    return Array.from(
+      getCappedUserSpaceToolIdSet(
+        effectiveToolSelection,
+        workspaceAvailableTools ?? [],
+        workspaceToolSelection,
       ),
-    [effectiveAvailableTools, effectiveToolSelection],
-  );
+    );
+  }, [
+    effectiveAvailableTools,
+    effectiveToolSelection,
+    useWorkspaceToolSource,
+    workspaceAvailableTools,
+    workspaceToolSelection,
+  ]);
   const resolvedConversationToolIdSet = useMemo(
     () => new Set(resolvedConversationToolIds),
     [resolvedConversationToolIds],
@@ -10728,7 +10742,7 @@ export function ChatPanel({
     () => new Set(resolvedEffectiveToolIds),
     [resolvedEffectiveToolIds],
   );
-  const effectiveSavingTools = useWorkspaceToolSource ? workspaceSavingTools : savingTools;
+  const effectiveSavingTools = savingTools;
 
   const effectiveToolGroupIds = useWorkspaceToolSource
     ? effectiveToolSelection.toolGroupIds
@@ -12663,10 +12677,6 @@ export function ChatPanel({
 
   const handleToolSelectionChange = useCallback(
     (selection: UserSpaceToolSelection) => {
-      if (useWorkspaceToolSource) {
-        onWorkspaceToolSelectionChange?.(selection);
-        return;
-      }
       if (!activeConversation || isConversationViewer) return;
 
       const conversationId = activeConversation.id;
@@ -12711,12 +12721,7 @@ export function ChatPanel({
           });
       }, 200);
     },
-    [
-      activeConversation,
-      isConversationViewer,
-      onWorkspaceToolSelectionChange,
-      useWorkspaceToolSource,
-    ],
+    [activeConversation, isConversationViewer],
   );
 
   useEffect(() => {
@@ -16964,6 +16969,9 @@ export function ChatPanel({
                     getToolMenuItems={getToolMenuItems}
                     getToolGroupMenuItems={getToolGroupMenuItems}
                     getToolStatusBadge={getToolStatusBadge}
+                    onRequestEnableWorkspaceTool={
+                      useWorkspaceToolSource ? onRequestEnableWorkspaceTool : undefined
+                    }
                   />
                 )}
                 <ModelSelector
@@ -18105,6 +18113,9 @@ export function ChatPanel({
                           getToolMenuItems={getToolMenuItems}
                           getToolGroupMenuItems={getToolGroupMenuItems}
                           getToolStatusBadge={getToolStatusBadge}
+                          onRequestEnableWorkspaceTool={
+                            useWorkspaceToolSource ? onRequestEnableWorkspaceTool : undefined
+                          }
                         />
                       )}
                       <button
@@ -18141,6 +18152,9 @@ export function ChatPanel({
                             getToolMenuItems={getToolMenuItems}
                             getToolGroupMenuItems={getToolGroupMenuItems}
                             getToolStatusBadge={getToolStatusBadge}
+                            onRequestEnableWorkspaceTool={
+                              useWorkspaceToolSource ? onRequestEnableWorkspaceTool : undefined
+                            }
                           />
                         )}
                         {(!segmentsAreEmpty(messageSegments) || attachments.length > 0) && (

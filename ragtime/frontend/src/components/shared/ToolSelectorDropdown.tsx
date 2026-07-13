@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Settings, ChevronRight, X, Globe2 } from 'lucide-react';
 import { ContextMenu } from './ContextMenu';
@@ -14,6 +14,11 @@ import {
   type UserSpaceToolSelection,
 } from '@/utils/userSpaceTools';
 import type { ToolSelectionMode } from '@/types';
+
+export interface ToolSelectorFocusRequest {
+  toolId: string;
+  requestId: number;
+}
 
 export interface ToolSelectorTool {
   id: string;
@@ -81,6 +86,8 @@ interface ToolSelectorDropdownProps {
   getToolGroupMenuItems?: (group: ToolSelectorToolGroup) => ToolSelectorMenuItem[];
   /** Optional status badge for configured tool rows. Defaults to global read/write when available. */
   getToolStatusBadge?: (tool: ToolSelectorTool) => ToolSelectorStatusBadge | null;
+  focusRequest?: ToolSelectorFocusRequest | null;
+  onRequestEnableWorkspaceTool?: (toolId: string) => void;
 }
 
 export function ToolSelectorDropdown({
@@ -105,10 +112,14 @@ export function ToolSelectorDropdown({
   getToolMenuItems,
   getToolGroupMenuItems,
   getToolStatusBadge,
+  focusRequest = null,
+  onRequestEnableWorkspaceTool,
 }: ToolSelectorDropdownProps) {
   const [showDropdown, setShowDropdown] = useState(false);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [highlightedFocusRequestId, setHighlightedFocusRequestId] = useState<number | null>(null);
+  const [focusRetryTick, setFocusRetryTick] = useState(0);
   const [dropdownPosition, setDropdownPosition] = useState<{
     top: number;
     left: number;
@@ -119,6 +130,9 @@ export function ToolSelectorDropdown({
   const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const toolRowRefs = useRef(new Map<string, HTMLElement>());
+  const processedFocusRequestIdRef = useRef<number | null>(null);
+  const focusRetryCountRef = useRef(0);
   const [contextMenu, setContextMenu] = useState<{
     kind: 'tool' | 'group';
     id: string;
@@ -169,6 +183,20 @@ export function ToolSelectorDropdown({
     return group && getToolGroupMenuItems ? getToolGroupMenuItems(group) : [];
   }, [availableTools, contextMenu, getToolGroupMenuItems, getToolMenuItems, groups]);
 
+  const markFocusRequestHandled = useCallback(() => {
+    if (!focusRequest) return;
+    processedFocusRequestIdRef.current = focusRequest.requestId;
+    focusRetryCountRef.current = 0;
+    setHighlightedFocusRequestId(null);
+  }, [focusRequest]);
+
+  const closeDropdown = useCallback(() => {
+    markFocusRequestHandled();
+    setShowDropdown(false);
+    setExpandedGroupId(null);
+    setSearchQuery('');
+  }, [markFocusRequestHandled]);
+
   // Compute fixed position so the dropdown draws over iframes without layout shift
   const computeDropdownPosition = useCallback(() => {
     if (!dropdownRef.current) return;
@@ -204,9 +232,7 @@ export function ToolSelectorDropdown({
         !menuRef.current?.contains(target) &&
         !contextMenuRef.current?.contains(target)
       ) {
-        setShowDropdown(false);
-        setExpandedGroupId(null);
-        setSearchQuery('');
+        closeDropdown();
       }
     }
 
@@ -216,7 +242,56 @@ export function ToolSelectorDropdown({
         document.removeEventListener('mousedown', handleClickOutside);
       };
     }
-  }, [showDropdown]);
+  }, [closeDropdown, showDropdown]);
+
+  useLayoutEffect(() => {
+    if (!focusRequest) return;
+    if (processedFocusRequestIdRef.current === focusRequest.requestId) return;
+    const requestedTool = availableTools.find((tool) => tool.id === focusRequest.toolId);
+    if (!requestedTool) return;
+
+    if (!showDropdown) {
+      setShowDropdown(true);
+      return;
+    }
+    if (searchQuery) {
+      setSearchQuery('');
+      return;
+    }
+    if (requestedTool.group_id && expandedGroupId !== requestedTool.group_id) {
+      setExpandedGroupId(requestedTool.group_id);
+      return;
+    }
+
+    const row = toolRowRefs.current.get(focusRequest.toolId);
+    if (!row) {
+      if (focusRetryCountRef.current >= 5) {
+        processedFocusRequestIdRef.current = focusRequest.requestId;
+        focusRetryCountRef.current = 0;
+        return;
+      }
+      focusRetryCountRef.current += 1;
+      const retryTimer = window.setTimeout(() => setFocusRetryTick((tick) => tick + 1), 0);
+      return () => window.clearTimeout(retryTimer);
+    }
+    row.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    processedFocusRequestIdRef.current = focusRequest.requestId;
+    focusRetryCountRef.current = 0;
+    setHighlightedFocusRequestId(focusRequest.requestId);
+  }, [availableTools, expandedGroupId, focusRequest, focusRetryTick, searchQuery, showDropdown]);
+
+  useEffect(() => {
+    if (highlightedFocusRequestId === null) return;
+    const cleanupTimer = window.setTimeout(() => {
+      setHighlightedFocusRequestId((currentRequestId) =>
+        currentRequestId === highlightedFocusRequestId ? null : currentRequestId,
+      );
+    }, 2000);
+
+    return () => {
+      window.clearTimeout(cleanupTimer);
+    };
+  }, [highlightedFocusRequestId]);
 
   useEffect(() => {
     if (!showDropdown) {
@@ -404,8 +479,12 @@ export function ToolSelectorDropdown({
 
   const renderToolItem = (tool: ToolSelectorTool) => {
     const toolAvailable = isUserSpaceToolAvailable(tool);
+    const disabledReason = toolAvailable ? null : tool.disabled_reason || 'No recent heartbeat';
+    const canRequestEnableInWorkspace =
+      disabledReason === 'Disabled in Workspace' && !!onRequestEnableWorkspaceTool;
+    const isFocusHighlighted =
+      focusRequest?.toolId === tool.id && focusRequest.requestId === highlightedFocusRequestId;
     const checked = toolAvailable && effectiveToolIds.has(tool.id);
-    const reason = tool.disabled_reason || 'No recent heartbeat';
     const statusBadge = getToolStatusBadge
       ? getToolStatusBadge(tool)
       : tool.allow_write === true
@@ -423,16 +502,12 @@ export function ToolSelectorDropdown({
       event.preventDefault();
       setContextMenu({ kind: 'tool', id: tool.id, x: event.clientX, y: event.clientY });
     };
-    return (
-      <label
-        key={tool.id}
-        className={`checkbox-label userspace-tool-item ${toolAvailable ? '' : 'userspace-tool-item-disabled'}`}
-        title={toolAvailable ? undefined : reason}
-        onContextMenu={handleContextMenu}
-      >
+    const body = (
+      <>
         <input
           type="checkbox"
           checked={checked}
+          aria-label={tool.name}
           onChange={() => {
             if (toolAvailable)
               onSelectionChange(toggleUserSpaceToolSelection(selection, availableTools, tool.id));
@@ -440,22 +515,73 @@ export function ToolSelectorDropdown({
           disabled={readOnly || disabled || !toolAvailable}
         />
         <span className="userspace-tool-item-body">
-          <strong>{tool.name}</strong>
+          <span className="userspace-tool-item-title-row">
+            <strong>{tool.name}</strong>
+            {statusBadge && (
+              <span
+                className={`userspace-tool-status-badge userspace-tool-status-badge-${statusBadge.tone} ${statusBadge.scope ? `userspace-tool-status-badge-${statusBadge.scope}` : ''}`}
+                title={statusBadge.title}
+              >
+                {statusBadge.scope === 'global' && <Globe2 size={10} strokeWidth={2.4} />}
+                {statusBadge.label}
+              </span>
+            )}
+          </span>
           <small className="userspace-muted">
-            {toolAvailable ? tool.tool_type : `${tool.tool_type} - Offline`}
+            {toolAvailable ? (
+              tool.tool_type
+            ) : disabledReason === 'Disabled in Workspace' ? (
+              <>
+                {tool.tool_type} - Disabled in Workspace
+                {canRequestEnableInWorkspace && (
+                  <>
+                    ,{' '}
+                    <button
+                      type="button"
+                      className="btn-link userspace-tool-enable-link"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onRequestEnableWorkspaceTool?.(tool.id);
+                      }}
+                      aria-label={`Enable ${tool.name} in Workspace Tools`}
+                    >
+                      Enable?
+                    </button>
+                  </>
+                )}
+              </>
+            ) : (
+              `${tool.tool_type} - ${disabledReason}`
+            )}
           </small>
         </span>
-        {statusBadge && (
-          <span
-            className={`userspace-tool-status-badge userspace-tool-status-badge-${statusBadge.tone} ${statusBadge.scope ? `userspace-tool-status-badge-${statusBadge.scope}` : ''}`}
-            title={statusBadge.title}
-          >
-            {statusBadge.scope === 'global' && <Globe2 size={10} strokeWidth={2.4} />}
-            {statusBadge.label}
-          </span>
-        )}
-      </label>
+      </>
     );
+
+    const commonProps = {
+      className: `checkbox-label userspace-tool-item ${toolAvailable ? '' : 'userspace-tool-item-disabled'} ${isFocusHighlighted ? 'highlight-setting' : ''}`,
+      onContextMenu: handleContextMenu,
+      ref: (element: HTMLElement | null) => {
+        if (element) {
+          toolRowRefs.current.set(tool.id, element);
+        } else {
+          toolRowRefs.current.delete(tool.id);
+        }
+      },
+    };
+
+    const item = toolAvailable ? (
+      <label key={tool.id} {...commonProps}>
+        {body}
+      </label>
+    ) : (
+      <div key={tool.id} {...commonProps}>
+        {body}
+      </div>
+    );
+
+    return item;
   };
 
   const renderBuiltInToolItem = (tool: ToolSelectorTool) => (
@@ -474,7 +600,13 @@ export function ToolSelectorDropdown({
     <div className="userspace-tool-picker-wrap" ref={dropdownRef}>
       <button
         className={`btn btn-secondary btn-sm btn-icon userspace-toolbar-action-btn ${showDropdown ? 'active' : ''}`}
-        onClick={() => setShowDropdown(!showDropdown)}
+        onClick={() => {
+          if (showDropdown) {
+            closeDropdown();
+          } else {
+            setShowDropdown(true);
+          }
+        }}
         title={`${title} (${effectiveSelectedCount}/${totalToolCount} selected)`}
         disabled={disabled}
       >
@@ -533,7 +665,7 @@ export function ToolSelectorDropdown({
                       if (searchQuery) {
                         setSearchQuery('');
                       } else {
-                        setShowDropdown(false);
+                        closeDropdown();
                       }
                     }
                   }}

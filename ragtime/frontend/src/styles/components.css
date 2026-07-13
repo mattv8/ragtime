@@ -293,7 +293,7 @@ textarea:focus {
   background: var(--color-bg-primary);
 }
 
-.chat-panel-fullscreen,
+.chat-page-container.chat-page-fullscreen,
 .userspace-layout.userspace-fullscreen {
   width: auto;
   position: fixed;
@@ -303,11 +303,11 @@ textarea:focus {
   bottom: 1rem;
   height: auto;
   z-index: 500;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
 }
 
 .userspace-layout.userspace-fullscreen {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
   max-width: none;
   margin: 0;
   background: var(--color-bg-primary);
@@ -1280,7 +1280,8 @@ textarea:focus {
   position: fixed;
   z-index: 9000;
   width: 320px;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: visible;
   background: transparent;
   border: none;
   border-radius: 0;
@@ -1359,6 +1360,7 @@ textarea:focus {
   flex-direction: column;
   gap: 4px;
   max-height: 360px;
+  overflow-x: hidden;
   padding: 4px;
 }
 
@@ -1366,6 +1368,8 @@ textarea:focus {
   display: flex;
   align-items: flex-start;
   gap: var(--space-xs);
+  width: 100%;
+  min-width: 0;
   padding: 2px 4px;
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
@@ -1374,6 +1378,14 @@ textarea:focus {
 .userspace-tool-item-body {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.userspace-tool-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1384,12 +1396,16 @@ textarea:focus {
   white-space: nowrap;
 }
 
+.userspace-tool-item-title-row strong {
+  flex: 1;
+  min-width: 0;
+}
+
 .userspace-tool-status-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 3px;
-  margin-left: auto;
   flex-shrink: 0;
   align-self: center;
   min-width: 38px;
@@ -1476,9 +1492,8 @@ textarea:focus {
 }
 
 .userspace-tool-calls-toggle {
-  border-top: 1px solid var(--color-border);
   margin-top: var(--space-xs);
-  padding-top: var(--space-xs);
+  padding-top: 2px;
 }
 
 .userspace-tool-calls-toggle .chat-toggle-control {
@@ -1491,6 +1506,7 @@ textarea:focus {
 .tool-group-section {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .tool-group-header {
@@ -1602,6 +1618,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .userspace-tool-context-menu {

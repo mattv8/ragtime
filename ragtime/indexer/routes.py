@@ -316,6 +316,7 @@ from ragtime.indexer.schema_service import SCHEMA_INDEXER_CAPABLE_TYPES, schema_
 from ragtime.indexer.service import UPLOAD_TMP_DIR, indexer
 from ragtime.indexer.title_generation import schedule_title_generation
 from ragtime.indexer.tool_health import tool_health_monitor
+from ragtime.indexer.tool_selection import intersect_tool_ids, require_valid_tool_selection_mode, resolve_effective_tool_ids
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 from ragtime.indexer.vector_utils import count_faiss_docstore_stats, ensure_pgvector_extension
@@ -12014,18 +12015,16 @@ async def _resolve_selected_tool_ids_for_request(
     finally:
         await db.disconnect()
 
-    conversation_tool_selection_mode = str(getattr(conversation, "tool_selection_mode", "") or getattr(conversation, "toolSelectionMode", "") or "").strip()
-    selected_tool_ids = set(conversation_selected_tool_ids)
-    if conversation_tool_selection_mode == "default_all":
-        selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
-    else:
-        if conversation_selected_group_ids:
-            group_tool_ids = await repository.get_tool_ids_for_groups(conversation_selected_group_ids)
-            selected_tool_ids.update(group_tool_ids)
-        elif not selected_tool_ids and conversation_tool_selection_mode != "custom":
-            # Legacy chat behavior: when no explicit per-conversation selection
-            # exists, allow all healthy enabled tools.
-            selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
+    conversation_tool_selection_mode = require_valid_tool_selection_mode(
+        getattr(conversation, "tool_selection_mode", "") or getattr(conversation, "toolSelectionMode", "") or ""
+    )
+    selected_tool_ids = await resolve_effective_tool_ids(
+        tool_selection_mode=conversation_tool_selection_mode,
+        selected_tool_ids=conversation_selected_tool_ids,
+        selected_tool_group_ids=conversation_selected_group_ids,
+        list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+        get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+    )
 
     workspace_context = None
     if effective_workspace_id:
@@ -12036,19 +12035,14 @@ async def _resolve_selected_tool_ids_for_request(
             required_role,
             is_admin=is_admin,
         )
-        # Workspace scope enforces strict selected-tool bounds.
-        selected_tool_ids = set()
-        if getattr(workspace, "tool_selection_mode", "custom") == "default_all":
-            selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
-        else:
-            selected_tool_ids = set(workspace.selected_tool_ids)
-        if getattr(workspace, "tool_selection_mode", "custom") != "default_all" and workspace.selected_tool_group_ids:
-            group_tool_ids = await repository.get_tool_ids_for_groups(workspace.selected_tool_group_ids)
-            selected_tool_ids.update(group_tool_ids)
-        elif not selected_tool_ids and getattr(workspace, "tool_selection_mode", "custom") != "custom":
-            # Workspaces created before tool-selection persistence may have no
-            # explicit rows; treat that as default-all.
-            selected_tool_ids.update(await repository.list_healthy_enabled_tool_ids())
+        workspace_tool_ids = await resolve_effective_tool_ids(
+            tool_selection_mode=getattr(workspace, "tool_selection_mode", ""),
+            selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
+            selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
+            list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+            get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+        )
+        selected_tool_ids = intersect_tool_ids(selected_tool_ids, workspace_tool_ids)
         # Resolve any cross-workspace agent grants originating from this workspace
         # so userspace tools can target other workspaces the user has explicitly
         # granted access to. Stored as JSON-friendly mapping for downstream use.
@@ -12083,11 +12077,7 @@ async def _resolve_selected_tool_ids_for_request(
             "accessible_workspace_modes": accessible_modes_for_user,
         }
 
-    if selected_tool_ids:
-        healthy_tool_ids = set(await repository.list_healthy_enabled_tool_ids())
-        selected_tool_ids.intersection_update(healthy_tool_ids)
-
-    return effective_workspace_id, selected_tool_ids, workspace_context
+    return effective_workspace_id, set(selected_tool_ids), workspace_context
 
 
 def _build_current_user_prompt_context(
@@ -15328,12 +15318,8 @@ async def get_conversation_tools(
 
         tool_config_ids = [s.toolConfigId for s in selections]
         tool_group_ids = [s.toolGroupId for s in group_selections]
-        tool_selection_mode = str(getattr(conversation, "toolSelectionMode", "") or "").strip()
-        if tool_selection_mode not in {"default_all", "custom"}:
-            tool_selection_mode = "default_all" if not tool_config_ids and not tool_group_ids else "custom"
+        tool_selection_mode = require_valid_tool_selection_mode(getattr(conversation, "toolSelectionMode", "") or "")
         if tool_selection_mode == "default_all":
-            tool_config_ids = await repository.list_healthy_enabled_tool_ids()
-        elif not tool_config_ids and not tool_group_ids and tool_selection_mode != "custom":
             tool_config_ids = await repository.list_healthy_enabled_tool_ids()
 
         return {

@@ -137,7 +137,11 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "ragtime.rag.components.userspace_service.get_workspace",
                 new_callable=mock.AsyncMock,
-                return_value=types.SimpleNamespace(selected_tool_ids=["tool-1"]),
+                return_value=types.SimpleNamespace(
+                    tool_selection_mode="default_all",
+                    selected_tool_ids=[],
+                    selected_tool_group_ids=[],
+                ),
             ),
             mock.patch(
                 "ragtime.rag.components.userspace_service.get_workspace_entrypoint_status",
@@ -146,6 +150,11 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch(
                 "ragtime.rag.components.userspace_service.is_default_static_entrypoint",
                 return_value=False,
+            ),
+            mock.patch(
+                "ragtime.rag.components.repository.list_healthy_enabled_tool_ids",
+                new_callable=mock.AsyncMock,
+                return_value=["tool-2"],
             ),
         ):
             raw = await coroutine()
@@ -160,7 +169,7 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(workspace["structure"]["has_index_html"])
         self.assertEqual(workspace["structure"]["authoritative_entrypoint"], ".ragtime/runtime-entrypoint.json")
         self.assertTrue(workspace["live_data_contract"]["workspace_has_selected_tools"])
-        self.assertEqual(workspace["live_data_contract"]["selected_tool_ids"], ["tool-1"])
+        self.assertEqual(workspace["live_data_contract"]["selected_tool_ids"], ["tool-2"])
         enforce_workspace_role.assert_awaited_once_with("workspace-1", "user-1", "editor")
 
     def test_userspace_prompt_guidance_splits_assay_from_indexed_search_with_fallback(self) -> None:

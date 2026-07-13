@@ -1029,7 +1029,7 @@ export function App() {
               />
             </div>
           ) : isChatView ? (
-            <div className="chat-page-container">
+            <div className={`chat-page-container${chatFullscreen ? ' chat-page-fullscreen' : ''}`}>
               <ChatPage
                 key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
                 currentUser={currentUser}

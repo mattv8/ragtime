@@ -105,6 +105,7 @@ from ragtime.indexer.models import (
     UpdateConversationShareAccessRequest,
 )
 from ragtime.indexer.repository import _resolve_default_conversation_model, repository
+from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
 from ragtime.userspace import sqlite_inspector as sqlite_inspector_helpers
@@ -19213,7 +19214,8 @@ class UserSpaceService:
 
         parsed_live_data_connections = request.live_data_connections or []
         parsed_live_data_checks = request.live_data_checks or []
-        workspace_has_tools = bool(workspace.selected_tool_ids)
+        effective_workspace_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
+        workspace_has_tools = bool(effective_workspace_tool_ids)
         _sqlite_include = getattr(workspace, "sqlite_persistence_mode", "include") == "include"
         _sqlite_suffix = (
             " Note: this workspace has SQLite local persistence enabled -- "
@@ -19248,7 +19250,7 @@ class UserSpaceService:
                 )
 
         if parsed_live_data_connections:
-            allowed_component_ids = set(workspace.selected_tool_ids)
+            allowed_component_ids = set(effective_workspace_tool_ids)
             for connection in parsed_live_data_connections:
                 if connection.component_id not in allowed_component_ids:
                     raise HTTPException(
@@ -19257,7 +19259,7 @@ class UserSpaceService:
                     )
 
         if parsed_live_data_checks:
-            allowed_component_ids = set(workspace.selected_tool_ids)
+            allowed_component_ids = set(effective_workspace_tool_ids)
             for check in parsed_live_data_checks:
                 if check.component_id not in allowed_component_ids:
                     raise HTTPException(
@@ -20773,11 +20775,12 @@ class UserSpaceService:
         record_diagnostics: bool = True,
     ) -> ExecuteComponentResponse:
         http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
+        selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
         started_at = _time.monotonic()
         try:
             response, query = await asyncio.wait_for(
                 self._execute_component_for_selected_tool_ids(
-                    selected_tool_ids=list(workspace.selected_tool_ids),
+                    selected_tool_ids=selected_tool_ids,
                     component_id=request.component_id,
                     request_payload=request.request,
                     error_log_prefix=error_log_prefix,
@@ -20956,7 +20959,17 @@ class UserSpaceService:
         workspace: UserSpaceWorkspace,
         component_id: str,
     ) -> tuple[str, dict[str, Any], Any]:
-        return await self._resolve_component_execution_config_for_tool_ids(list(workspace.selected_tool_ids), component_id)
+        selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
+        return await self._resolve_component_execution_config_for_tool_ids(selected_tool_ids, component_id)
+
+    async def _resolve_effective_workspace_tool_ids(self, workspace: UserSpaceWorkspace) -> list[str]:
+        return await resolve_effective_tool_ids(
+            tool_selection_mode=getattr(workspace, "tool_selection_mode", ""),
+            selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
+            selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
+            list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+            get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+        )
 
     async def _resolve_component_execution_config_for_tool_ids(
         self,
@@ -21012,14 +21025,6 @@ class UserSpaceService:
             if tool_name.lower().replace(" ", "_") == name_lower:
                 return tool_id
         return None
-
-    @staticmethod
-    async def _resolve_component_id_by_name(
-        workspace: UserSpaceWorkspace,
-        name: str,
-    ) -> str | None:
-        """Try to find a tool config by name among the workspace's selected tools."""
-        return await UserSpaceService._resolve_component_id_by_name_for_tool_ids(list(workspace.selected_tool_ids), name)
 
     def _build_execute_component_response(
         self,

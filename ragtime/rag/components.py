@@ -176,6 +176,7 @@ from ragtime.indexer.pdm_service import pdm_indexer, search_pdm_index
 from ragtime.indexer.repository import repository
 from ragtime.indexer.schema_service import schema_indexer, search_schema_index
 from ragtime.indexer.tool_presentation import normalize_tool_presentation
+from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.indexer.vector_backends import FaissBackend, get_faiss_backend
 from ragtime.rag.prompts import (
     BASE_CHAT_SYSTEM_PROMPT,
@@ -9825,7 +9826,13 @@ class RAGComponents:
             if ws is None:
                 ws = await userspace_service.get_workspace(workspace_id, user_id)
 
-            selected_tool_ids = list(getattr(ws, "selected_tool_ids", []) or [])
+            selected_tool_ids = await resolve_effective_tool_ids(
+                tool_selection_mode=getattr(ws, "tool_selection_mode", ""),
+                selected_tool_ids=getattr(ws, "selected_tool_ids", []),
+                selected_tool_group_ids=getattr(ws, "selected_tool_group_ids", []),
+                list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+            )
             requires_contract = bool(selected_tool_ids) and is_dashboard_entry
 
             entry_file_state: dict[str, Any] = {
@@ -10593,7 +10600,14 @@ class RAGComponents:
                 # Check if this file is the runtime entrypoint and workspace has tools
                 try:
                     patch_ws = await userspace_service.get_workspace(workspace_id, user_id)
-                    if bool(patch_ws.selected_tool_ids):
+                    patch_workspace_tool_ids = await resolve_effective_tool_ids(
+                        tool_selection_mode=getattr(patch_ws, "tool_selection_mode", ""),
+                        selected_tool_ids=getattr(patch_ws, "selected_tool_ids", []),
+                        selected_tool_group_ids=getattr(patch_ws, "selected_tool_group_ids", []),
+                        list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                        get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+                    )
+                    if bool(patch_workspace_tool_ids):
                         patch_resolved_ep: str | None = None
                         try:
                             patch_ep_file = await userspace_service.get_workspace_file(
@@ -10830,7 +10844,7 @@ class RAGComponents:
                 path,
                 workspace=workspace,
             )
-            allowed_component_ids = set(workspace.selected_tool_ids)
+            allowed_component_ids = set(live_data_contract_context["selected_tool_ids"])
             if parsed_live_data_connections:
                 for connection in parsed_live_data_connections:
                     if connection.component_id not in allowed_component_ids:
@@ -10856,7 +10870,7 @@ class RAGComponents:
             # tools and the write targets the dashboard entry module.
             # Helper components under dashboard/ receive data as
             # parameters and do not need their own live data wiring.
-            workspace_has_tools = bool(workspace.selected_tool_ids)
+            workspace_has_tools = bool(allowed_component_ids)
             effective_live_data_requested = live_data_requested or (workspace_has_tools and is_dashboard_entry)
 
             requires_live_data_contract = effective_live_data_requested and is_dashboard_entry
@@ -11694,7 +11708,15 @@ class RAGComponents:
             hardcoded_data_violations: dict[str, list[str]] = {}
             try:
                 ws = await userspace_service.get_workspace(workspace_id, user_id)
-                ws_has_tools = bool(ws.selected_tool_ids)
+                ws_has_tools = bool(
+                    await resolve_effective_tool_ids(
+                        tool_selection_mode=getattr(ws, "tool_selection_mode", ""),
+                        selected_tool_ids=getattr(ws, "selected_tool_ids", []),
+                        selected_tool_group_ids=getattr(ws, "selected_tool_group_ids", []),
+                        list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                        get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+                    )
+                )
             except Exception:
                 ws_has_tools = False
 
@@ -13719,7 +13741,13 @@ class RAGComponents:
                 workspace_id,
                 request_user_id,
             )
-            allowed_tool_config_ids = list(workspace.selected_tool_ids)
+            allowed_tool_config_ids = await resolve_effective_tool_ids(
+                tool_selection_mode=getattr(workspace, "tool_selection_mode", ""),
+                selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
+                selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
+                list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+            )
             workspace_builtin_tool_ids = {
                 CHAT_WEB_SEARCH_TOOL_ID,
                 CHAT_WEB_BROWSE_TOOL_ID,
@@ -13727,17 +13755,6 @@ class RAGComponents:
             }
             if disabled_builtin_tool_ids:
                 workspace_builtin_tool_ids.difference_update(disabled_builtin_tool_ids)
-
-            # Expand group selections: add all enabled tools from selected groups
-            if workspace.selected_tool_group_ids:
-                group_tool_ids = await repository.get_tool_ids_for_groups(workspace.selected_tool_group_ids)
-                existing = set(allowed_tool_config_ids)
-                for tid in group_tool_ids:
-                    if tid not in existing:
-                        allowed_tool_config_ids.append(tid)
-                        existing.add(tid)
-            elif not allowed_tool_config_ids:
-                allowed_tool_config_ids = await repository.list_healthy_enabled_tool_ids()
             if allowed_tool_config_ids:
                 healthy_ids = {str(config.get("id") or "") for config in self._tool_configs or []}
                 allowed_tool_config_ids = [tool_id for tool_id in allowed_tool_config_ids if tool_id in healthy_ids]

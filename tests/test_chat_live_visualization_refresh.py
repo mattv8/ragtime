@@ -8,7 +8,7 @@ import unittest
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 inserted_fake_rag_prompts = "ragtime.rag.prompts" not in sys.modules
 if inserted_fake_rag_prompts:
@@ -67,16 +67,20 @@ def _run_default_workspace_component_execution(service: _CaptureComponentExecuti
         updated_at=now,
     )
 
-    asyncio.run(
-        service._execute_component_for_workspace(
-            workspace,
-            ExecuteComponentRequest(
-                component_id="tool-1",
-                request={"query": "select * from accounts"},
-            ),
-            error_log_prefix="test",
+    with patch(
+        "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
+        AsyncMock(return_value=["tool-1"]),
+    ):
+        asyncio.run(
+            service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"query": "select * from accounts"},
+                ),
+                error_log_prefix="test",
+            )
         )
-    )
 
 
 class ChatLiveVisualizationRefreshTests(unittest.TestCase):
@@ -437,16 +441,20 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
             updated_at=now,
         )
 
-        asyncio.run(
-            service._execute_component_for_workspace(
-                workspace,
-                ExecuteComponentRequest(
-                    component_id="tool-1",
-                    request={"query": "select * from accounts"},
-                ),
-                error_log_prefix="test",
+        with patch(
+            "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
+            AsyncMock(return_value=["tool-1"]),
+        ):
+            asyncio.run(
+                service._execute_component_for_workspace(
+                    workspace,
+                    ExecuteComponentRequest(
+                        component_id="tool-1",
+                        request={"query": "select * from accounts"},
+                    ),
+                    error_log_prefix="test",
+                )
             )
-        )
 
         self.assertIsNone(service.get_live_data_execution_warning("workspace-1"))
 

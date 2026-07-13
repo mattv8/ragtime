@@ -82,7 +82,11 @@ import { AgentAccessModal } from './shared/AgentAccessModal';
 import { MemberManagementButton } from './shared/MemberManagementButton';
 import { MemberManagementModal, type Member } from './shared/MemberManagementModal';
 import { MiniLoadingSpinner } from './shared/MiniLoadingSpinner';
-import { ToolSelectorDropdown, type ToolGroupInfo } from './shared/ToolSelectorDropdown';
+import {
+  ToolSelectorDropdown,
+  type ToolGroupInfo,
+  type ToolSelectorFocusRequest,
+} from './shared/ToolSelectorDropdown';
 import {
   defaultScheduleStartMinute,
   defaultScheduleTimezone,
@@ -1015,6 +1019,8 @@ export function UserSpacePanel({
   const [changedFiles, setChangedFiles] = useState<Set<string>>(new Set());
   const [acknowledgedFiles, setAcknowledgedFiles] = useState<Set<string>>(new Set());
   const [savingWorkspaceTools, setSavingWorkspaceTools] = useState(false);
+  const [workspaceToolFocusRequest, setWorkspaceToolFocusRequest] =
+    useState<ToolSelectorFocusRequest | null>(null);
   const [deleteConfirmFileId, setDeleteConfirmFileId] = useState<string | null>(null);
   const [deleteConfirmFolderPath, setDeleteConfirmFolderPath] = useState<string | null>(null);
   const [newFileName, setNewFileName] = useState<string | null>(null);
@@ -1154,6 +1160,7 @@ export function UserSpacePanel({
     useState('Current Workspace');
 
   const toolPickerRef = useRef<HTMLDivElement>(null);
+  const workspaceToolFocusRequestIdRef = useRef(0);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
   const selectedFilePathRef = useRef(selectedFilePath);
   const treeFileHoverSuppressRef = useRef<string | null>(null);
@@ -4317,6 +4324,11 @@ export function UserSpacePanel({
     },
     [activeWorkspace, canEditWorkspace],
   );
+
+  const handleRequestEnableWorkspaceTool = useCallback((toolId: string) => {
+    workspaceToolFocusRequestIdRef.current += 1;
+    setWorkspaceToolFocusRequest({ toolId, requestId: workspaceToolFocusRequestIdRef.current });
+  }, []);
 
   const handleWorkspaceBuiltInToolsChange = useCallback(
     (controls: WorkspaceBuiltInToolControls | null) => {
@@ -8892,6 +8904,7 @@ export function UserSpacePanel({
               saving={savingWorkspaceTools || workspaceBuiltInToolControls?.saving === true}
               title="Workspace Tools"
               workspaceBuiltInSectionLabel="Built-in"
+              focusRequest={workspaceToolFocusRequest}
             />
             <button
               className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'}`}
@@ -9120,9 +9133,8 @@ export function UserSpacePanel({
                 workspaceToolSelectionMode={effectiveWorkspaceToolSelection.mode}
                 workspaceSelectedToolIds={effectiveWorkspaceToolSelection.toolIds}
                 workspaceSelectedToolGroupIds={effectiveWorkspaceToolSelection.toolGroupIds}
-                onWorkspaceToolSelectionChange={handleWorkspaceToolSelectionChange}
                 workspaceToolGroups={toolGroups}
-                workspaceSavingTools={savingWorkspaceTools}
+                onRequestEnableWorkspaceTool={handleRequestEnableWorkspaceTool}
                 onWorkspaceBuiltInToolsChange={handleWorkspaceBuiltInToolsChange}
                 conversationShareableUserIds={workspaceChatShareableUserIds}
                 onUserMessageSubmitted={handleUserMessageSubmitted}

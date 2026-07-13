@@ -94,6 +94,32 @@ export function getEffectiveUserSpaceToolIdSet(
   return ids;
 }
 
+export function applyUserSpaceToolAvailabilityCap(
+  availableTools: UserSpaceAvailableTool[],
+  capSelection: UserSpaceToolSelection,
+): UserSpaceAvailableTool[] {
+  const cappedIds = getEffectiveUserSpaceToolIdSet(capSelection, availableTools);
+  return availableTools.map((tool) => {
+    if (cappedIds.has(tool.id)) return tool;
+    if (!isUserSpaceToolAvailable(tool)) return tool;
+    return {
+      ...tool,
+      available: false,
+      disabled_reason: 'Disabled in Workspace',
+    };
+  });
+}
+
+export function getCappedUserSpaceToolIdSet(
+  selection: UserSpaceToolSelection,
+  availableTools: UserSpaceAvailableTool[],
+  capSelection: UserSpaceToolSelection,
+): Set<string> {
+  const effectiveIds = getEffectiveUserSpaceToolIdSet(selection, availableTools);
+  const cappedIds = getEffectiveUserSpaceToolIdSet(capSelection, availableTools);
+  return new Set(Array.from(effectiveIds).filter((id) => cappedIds.has(id)));
+}
+
 export function getUserSpaceGroupCheckState(
   selection: UserSpaceToolSelection,
   availableTools: UserSpaceAvailableTool[],

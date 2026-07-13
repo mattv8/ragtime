@@ -85,6 +85,16 @@ class _ImmediateExecuteService(UserSpaceService):
         return len(events)
 
 
+class _CaptureSelectedToolsService(_ImmediateExecuteService):
+    def __init__(self, response: ExecuteComponentResponse) -> None:
+        super().__init__(response)
+        self.selected_tool_ids: list[str] | None = None
+
+    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.selected_tool_ids = list(kwargs.get("selected_tool_ids") or [])
+        return await super()._execute_component_for_selected_tool_ids(**kwargs)
+
+
 class _HangingSubprocess:
     def __init__(self) -> None:
         self.returncode: int | None = None
@@ -107,10 +117,17 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         service = _HangingExecuteService()
         request = ExecuteComponentRequest(component_id="tool-1", request={"query": "select pg_sleep(600)"})
 
-        with mock.patch.object(
-            userspace_service_module,
-            "get_http_proxy_safe_timeout_seconds",
-            mock.AsyncMock(return_value=0.05),
+        with (
+            mock.patch.object(
+                userspace_service_module,
+                "get_http_proxy_safe_timeout_seconds",
+                mock.AsyncMock(return_value=0.05),
+            ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
         ):
             response = await service._execute_component_for_workspace(
                 _make_workspace(),
@@ -149,11 +166,16 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         service = _ImmediateExecuteService(ok_response)
         request = ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"})
 
-        response = await service._execute_component_for_workspace(
-            _make_workspace(),
-            request,
-            error_log_prefix="Component execution failed",
-        )
+        with mock.patch.object(
+            userspace_service_module.repository,
+            "list_healthy_enabled_tool_ids",
+            mock.AsyncMock(return_value=["tool-1"]),
+        ):
+            response = await service._execute_component_for_workspace(
+                _make_workspace(),
+                request,
+                error_log_prefix="Component execution failed",
+            )
 
         self.assertIsNone(response.error)
         self.assertIsNone(response.error_kind)
@@ -170,6 +192,66 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         self.assertEqual(success_event.row_count, 1)
         self.assertIsNone(success_event.error)
         self.assertGreaterEqual(success_event.elapsed_ms, 0)
+
+    async def test_execute_component_expands_default_all_workspace_tools(self) -> None:
+        ok_response = ExecuteComponentResponse(
+            component_id="tool-2",
+            rows=[{"id": 1}],
+            columns=["id"],
+            row_count=1,
+        )
+        service = _CaptureSelectedToolsService(ok_response)
+        workspace = _make_workspace()
+        workspace.tool_selection_mode = "default_all"
+        workspace.selected_tool_ids = []
+
+        with mock.patch.object(
+            userspace_service_module.repository,
+            "list_healthy_enabled_tool_ids",
+            mock.AsyncMock(return_value=["tool-1", "tool-2"]),
+        ):
+            response = await service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(component_id="tool-2", request={"query": "select 1"}),
+                error_log_prefix="Component execution failed",
+            )
+
+        self.assertIsNone(response.error)
+        self.assertEqual(service.selected_tool_ids, ["tool-1", "tool-2"])
+
+    async def test_execute_component_filters_custom_workspace_tools_to_healthy_enabled(self) -> None:
+        ok_response = ExecuteComponentResponse(
+            component_id="tool-3",
+            rows=[{"id": 1}],
+            columns=["id"],
+            row_count=1,
+        )
+        service = _CaptureSelectedToolsService(ok_response)
+        workspace = _make_workspace()
+        workspace.tool_selection_mode = "custom"
+        workspace.selected_tool_ids = ["tool-1", "tool-2"]
+        workspace.selected_tool_group_ids = ["group-1"]
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_ids_for_groups",
+                mock.AsyncMock(return_value=["tool-2", "tool-3"]),
+            ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-2", "tool-3"]),
+            ),
+        ):
+            response = await service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(component_id="tool-3", request={"query": "select 1"}),
+                error_log_prefix="Component execution failed",
+            )
+
+        self.assertIsNone(response.error)
+        self.assertEqual(service.selected_tool_ids, ["tool-2", "tool-3"])
 
     async def test_postgres_subprocess_is_killed_when_outer_request_is_cancelled(self) -> None:
         service = UserSpaceService()
@@ -211,10 +293,15 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         )
         service = _ImmediateExecuteService(ok_response)
 
-        response = await service.execute_component_from_authorized_shared_preview(
-            "workspace-1",
-            ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"}),
-        )
+        with mock.patch.object(
+            userspace_service_module.repository,
+            "list_healthy_enabled_tool_ids",
+            mock.AsyncMock(return_value=["tool-1"]),
+        ):
+            response = await service.execute_component_from_authorized_shared_preview(
+                "workspace-1",
+                ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"}),
+            )
 
         self.assertEqual(response.row_count, 1)
         self.assertEqual(service.diagnostic_events, [])

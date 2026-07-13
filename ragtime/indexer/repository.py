@@ -4495,9 +4495,7 @@ class IndexerRepository:
             tool_output_mode = ToolOutputMode(tool_output_mode_raw)
         except ValueError:
             tool_output_mode = ToolOutputMode.DEFAULT
-        tool_selection_mode = str(getattr(prisma_conv, "toolSelectionMode", "") or "custom")
-        if tool_selection_mode not in {"default_all", "custom"}:
-            tool_selection_mode = "custom"
+        tool_selection_mode = str(getattr(prisma_conv, "toolSelectionMode", "") or "").strip()
 
         created_at = getattr(prisma_conv, "createdAt", None)
         updated_at = getattr(prisma_conv, "updatedAt", None)

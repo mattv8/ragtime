@@ -9,7 +9,6 @@ function readStyleFile(name) {
 }
 
 const attachmentsCss = readStyleFile('attachments.css');
-const chatCss = readStyleFile('chat.css');
 const componentsCss = readStyleFile('components.css');
 
 test('live attachment and modal selectors remain defined', () => {
@@ -46,16 +45,4 @@ test('unused legacy attachment selectors are removed', () => {
   for (const pattern of retiredPatterns) {
     expect(attachmentsCss).not.toMatch(pattern);
   }
-});
-
-test('fullscreen chrome is consolidated without changing surface-specific backgrounds', () => {
-  expect(componentsCss).toMatch(
-    /\.chat-panel-fullscreen,\s*\.userspace-layout\.userspace-fullscreen\s*\{/s,
-  );
-
-  expect(chatCss).toMatch(/\.chat-panel-fullscreen\s*\{[^}]*background: var\(--color-surface\);/s);
-
-  expect(componentsCss).toMatch(
-    /\.userspace-layout\.userspace-fullscreen\s*\{[^}]*background: var\(--color-bg-primary\);/s,
-  );
 });
