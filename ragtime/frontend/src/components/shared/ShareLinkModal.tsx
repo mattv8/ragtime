@@ -295,7 +295,7 @@ export function ShareLinkModal({
                                     </button>
                                   )}
 
-                                  <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                                  <div className="userspace-item-actions is-visible">
                                     {isConfirmingDelete ? (
                                       <>
                                         <button

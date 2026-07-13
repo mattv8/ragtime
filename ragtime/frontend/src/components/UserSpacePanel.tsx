@@ -7646,7 +7646,7 @@ export function UserSpacePanel({
                   }}
                   autoFocus
                 />
-                <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                <div className="userspace-item-actions is-visible">
                   <button
                     className="chat-action-btn"
                     onClick={() => handleRenameFolder(node.path, renameValue)}
@@ -7834,7 +7834,7 @@ export function UserSpacePanel({
                 }}
                 autoFocus
               />
-              <div className="userspace-item-actions" style={{ opacity: 1 }}>
+              <div className="userspace-item-actions is-visible">
                 <button
                   className="chat-action-btn"
                   onClick={() => handleRenameFile(node.path, renameValue)}
@@ -8996,7 +8996,7 @@ export function UserSpacePanel({
                         }
                         autoFocus
                       />
-                      <div className="userspace-item-actions" style={{ opacity: 1 }}>
+                      <div className="userspace-item-actions is-visible">
                         <button
                           className="chat-action-btn"
                           onClick={() => handleCreateNewFile(newFileName, newFileParentPath)}

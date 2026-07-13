@@ -2572,13 +2572,22 @@ textarea:focus {
   gap: 2px;
   padding-right: 4px;
   opacity: 0;
+  /* Collapse to zero width while idle so the filename column gets the full
+     row instead of being permanently squeezed by the hidden actions. The
+     label only ellipsizes on hover, when the actions reclaim their width. */
+  width: 0;
+  overflow: hidden;
+  flex-shrink: 0;
   transition: opacity var(--transition-fast);
 }
 
 .userspace-file-item:hover .userspace-item-actions,
+.userspace-item-actions.is-visible,
 .userspace-item-actions:has(.confirm-delete),
 .userspace-item-actions:has(.cancel-delete) {
   opacity: 1;
+  width: auto;
+  overflow: visible;
 }
 
 .userspace-file-rename-input {
