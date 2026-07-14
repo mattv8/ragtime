@@ -342,4 +342,8 @@ CONNECTION_CONFIG_PASSWORD_FIELDS = [
     "ssh_tunnel_password",
     "ssh_tunnel_key_content",
     "ssh_tunnel_key_passphrase",
+    # Remote Docker host SSH fields
+    "docker_ssh_password",
+    "docker_ssh_key_content",
+    "docker_ssh_key_passphrase",
 ]

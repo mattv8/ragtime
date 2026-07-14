@@ -2889,6 +2889,12 @@ async def import_tool_config(
 
     if tool_type == ToolType.FILESYSTEM_INDEXER:
         connection_config = _prepare_imported_filesystem_config(imported_name, connection_config)
+        connection_config.pop("last_indexed_at", None)
+    elif tool_type.value in SCHEMA_INDEXER_CAPABLE_TYPES:
+        # Imported tools do not carry over indexes, so copied freshness state
+        # must not suppress the first scheduled or manual incremental index.
+        connection_config.pop("last_schema_indexed_at", None)
+        connection_config.pop("schema_hash", None)
 
     try:
         config = ToolConfig(

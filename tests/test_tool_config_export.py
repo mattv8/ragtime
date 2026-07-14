@@ -10,7 +10,7 @@ from cryptography.fernet import InvalidToken
 from pydantic import ValidationError
 
 from ragtime.core import encryption
-from ragtime.core.encryption import CONNECTION_CONFIG_PASSWORD_FIELDS, ENCRYPTED_PREFIX, attempt_decrypt, encrypt_secret
+from ragtime.core.encryption import CONNECTION_CONFIG_PASSWORD_FIELDS, ENCRYPTED_PREFIX, attempt_decrypt, decrypt_secret, encrypt_secret
 from ragtime.indexer import routes
 from ragtime.indexer.models import AppSettings, ToolConfig, ToolType
 from ragtime.indexer.repository import IndexerRepository
@@ -51,6 +51,11 @@ class PasswordEncryptionTests(unittest.TestCase):
         self.assertEqual(len(key1), 44)  # base64-encoded 32-byte key
         self.assertNotEqual(key1, key2)
         self.assertNotEqual(key1, key3)
+
+    def test_docker_ssh_credentials_are_connection_secrets(self) -> None:
+        self.assertIn("docker_ssh_password", CONNECTION_CONFIG_PASSWORD_FIELDS)
+        self.assertIn("docker_ssh_key_content", CONNECTION_CONFIG_PASSWORD_FIELDS)
+        self.assertIn("docker_ssh_key_passphrase", CONNECTION_CONFIG_PASSWORD_FIELDS)
 
 
 class ToolExportImportHelpersTests(unittest.IsolatedAsyncioTestCase):
@@ -206,6 +211,87 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(created)
         created_config = cast(ToolConfig, created)
         self.assertEqual(created_config.name, "Existing Tool Copy")
+
+    async def test_import_clears_schema_index_freshness_markers(self) -> None:
+        envelope = routes._build_tool_export_envelope(
+            ToolConfig(
+                name="Schema Tool",
+                tool_type=ToolType.POSTGRES,
+                connection_config={
+                    "schema_index_enabled": True,
+                    "schema_index_interval_hours": 12,
+                    "schema_index_timezone": "UTC",
+                    "last_schema_indexed_at": "2026-01-01T00:00:00+00:00",
+                    "schema_hash": "stale-hash",
+                },
+            ),
+            EXPORT_PASSWORD,
+        )
+        mock_repo = mock.AsyncMock()
+        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[])
+        created: ToolConfig | None = None
+
+        async def fake_create(config: ToolConfig) -> ToolConfig:
+            nonlocal created
+            created = config
+            return config
+
+        mock_repo.create_tool_config = fake_create
+
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
+            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+        ):
+            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+
+        self.assertIsNotNone(created)
+        imported_config = cast(ToolConfig, created).connection_config
+        self.assertEqual(imported_config["schema_index_enabled"], True)
+        self.assertEqual(imported_config["schema_index_interval_hours"], 12)
+        self.assertEqual(imported_config["schema_index_timezone"], "UTC")
+        self.assertNotIn("last_schema_indexed_at", imported_config)
+        self.assertNotIn("schema_hash", imported_config)
+
+    async def test_import_clears_filesystem_index_freshness_marker(self) -> None:
+        envelope = routes._build_tool_export_envelope(
+            ToolConfig(
+                name="Filesystem Tool",
+                tool_type=ToolType.FILESYSTEM_INDEXER,
+                connection_config={
+                    "mount_type": "local",
+                    "base_path": "/data/files",
+                    "index_name": "old-index",
+                    "reindex_interval_hours": 12,
+                    "last_indexed_at": "2026-01-01T00:00:00+00:00",
+                },
+            ),
+            EXPORT_PASSWORD,
+        )
+        mock_repo = mock.AsyncMock()
+        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[])
+        created: ToolConfig | None = None
+
+        async def fake_create(config: ToolConfig) -> ToolConfig:
+            nonlocal created
+            created = config
+            return config
+
+        mock_repo.create_tool_config = fake_create
+
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
+            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+        ):
+            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+
+        self.assertIsNotNone(created)
+        imported_config = cast(ToolConfig, created).connection_config
+        self.assertEqual(imported_config["reindex_interval_hours"], 12)
+        self.assertNotIn("last_indexed_at", imported_config)
 
     async def test_import_wrong_password_rejected(self) -> None:
         envelope = routes._build_tool_export_envelope(
@@ -489,6 +575,55 @@ class ToolConfigRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model.undecryptable_fields, [])
         self.assertEqual(model.connection_config["password"], "plaintext")
+
+    async def test_create_encrypts_and_model_decrypts_docker_ssh_credentials(self) -> None:
+        repo = IndexerRepository()
+        captured_config: dict | None = None
+        tool = self._fake_prisma_tool(
+            connection_config={},
+            id="tool-docker-ssh",
+            name="Remote Docker",
+        )
+
+        async def fake_create(data, include=None):
+            nonlocal captured_config
+            del include
+            captured_config = dict(data["connectionConfig"].data if hasattr(data["connectionConfig"], "data") else data["connectionConfig"])
+            tool.connectionConfig = captured_config
+            return tool
+
+        db = mock.AsyncMock()
+        db.toolconfig.create = fake_create
+
+        config = ToolConfig(
+            name="Remote Docker",
+            tool_type=ToolType.POSTGRES,
+            connection_config={
+                "container": "postgres-postgres-1",
+                "docker_ssh_host": "remote.example.com",
+                "docker_ssh_user": "deploy",
+                "docker_ssh_password": "ssh-secret",
+                "docker_ssh_key_content": "private-key",
+                "docker_ssh_key_passphrase": "key-passphrase",
+            },
+        )
+
+        with mock.patch.object(repo, "_get_db", return_value=db):
+            result = await repo.create_tool_config(config)
+
+        assert captured_config is not None
+        for field, plaintext in {
+            "docker_ssh_password": "ssh-secret",
+            "docker_ssh_key_content": "private-key",
+            "docker_ssh_key_passphrase": "key-passphrase",
+        }.items():
+            encrypted = captured_config[field]
+            self.assertTrue(encrypted.startswith(ENCRYPTED_PREFIX))
+            self.assertEqual(decrypt_secret(encrypted), plaintext)
+
+        self.assertEqual(result.connection_config["docker_ssh_password"], "ssh-secret")
+        self.assertEqual(result.connection_config["docker_ssh_key_content"], "private-key")
+        self.assertEqual(result.connection_config["docker_ssh_key_passphrase"], "key-passphrase")
 
     async def test_clear_undecryptable_credentials_removes_only_broken_secret_fields(self) -> None:
         repo = IndexerRepository()

@@ -25,8 +25,10 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, cast
 
 from ragtime.core.database import get_db
+from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.logging import get_logger
 from ragtime.core.ssh import (
+    SSHConfig,
     SSHTunnel,
     build_ssh_tunnel_config,
     ssh_tunnel_config_from_dict,
@@ -436,6 +438,8 @@ class SchemaIndexerService:
 
                 # Set up SSH tunnel if configured
                 tunnel: SSHTunnel | None = None
+                if container:
+                    host = ""
                 tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
                 if tunnel_cfg_dict and host:
                     tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=5432)
@@ -446,6 +450,7 @@ class SchemaIndexerService:
                         port = local_port
 
                 try:
+                    docker_ssh_config = docker_ssh_config_from_dict(connection_config, timeout=60) if container else None
                     # Simple SELECT 1 to verify connection
                     result = await self._execute_postgres_query(
                         "SELECT 1 AS ok",
@@ -455,6 +460,7 @@ class SchemaIndexerService:
                         password,
                         database,
                         container,
+                        docker_ssh_config,
                     )
                     if not result:
                         return False, "Connection test returned no results"
@@ -485,6 +491,14 @@ class SchemaIndexerService:
             if "does not exist" in error_msg.lower():
                 return False, "Database does not exist. Check database name."
             return False, f"Connection test failed: {error_msg}"
+
+    async def _tool_has_undecryptable_credentials(self, tool_config_id: str) -> bool:
+        try:
+            tool_config = await repository.get_tool_config(tool_config_id)
+        except Exception as exc:
+            logger.warning("Could not check tool credential health for schema index job %s: %s", tool_config_id, exc)
+            return False
+        return bool(getattr(tool_config, "undecryptable_fields", None))
 
     # Type for optional progress callback: (total_discovered, introspected_count, current_table_name) -> Awaitable
     IntrospectionCallback = Callable[[int, int, str], Awaitable[None]]
@@ -540,9 +554,12 @@ class SchemaIndexerService:
         password = connection_config.get("password", "")
         database = connection_config.get("database", "")
         container = connection_config.get("container", "")
+        docker_ssh_config = docker_ssh_config_from_dict(connection_config, timeout=60) if container else None
 
         # Set up SSH tunnel if configured
         tunnel: SSHTunnel | None = None
+        if container:
+            host = ""
         tunnel_cfg_dict = build_ssh_tunnel_config(connection_config, host, port)
         if tunnel_cfg_dict and host:
             tunnel_cfg = ssh_tunnel_config_from_dict(tunnel_cfg_dict, default_remote_port=5432)
@@ -554,7 +571,7 @@ class SchemaIndexerService:
                 port = local_port
 
         try:
-            return await self._introspect_postgres_impl(host, port, user, password, database, container, on_progress)
+            return await self._introspect_postgres_impl(host, port, user, password, database, container, on_progress, docker_ssh_config)
         finally:
             if tunnel:
                 tunnel.stop()
@@ -568,6 +585,7 @@ class SchemaIndexerService:
         database: str,
         container: str,
         on_progress: "IntrospectionCallback | None" = None,
+        docker_ssh_config: SSHConfig | None = None,
     ) -> List[TableSchemaInfo]:
         """Internal PostgreSQL introspection (after tunnel setup).
 
@@ -629,7 +647,7 @@ class SchemaIndexerService:
         try:
             # Discover all tables, views, and materialized views
             try:
-                table_rows = await self._execute_postgres_query(tables_query, host, port, user, password, database, container)
+                table_rows = await self._execute_postgres_query(tables_query, host, port, user, password, database, container, docker_ssh_config)
             except Exception as e:
                 if self._is_permission_error(e):
                     logger.warning(
@@ -644,12 +662,13 @@ class SchemaIndexerService:
                         password,
                         database,
                         container,
+                        docker_ssh_config,
                     )
                 else:
                     raise
 
             try:
-                matview_rows = await self._execute_postgres_query(matview_query, host, port, user, password, database, container)
+                matview_rows = await self._execute_postgres_query(matview_query, host, port, user, password, database, container, docker_ssh_config)
             except Exception as e:
                 if self._is_permission_error(e):
                     logger.warning(
@@ -679,6 +698,7 @@ class SchemaIndexerService:
                 password,
                 database,
                 container,
+                docker_ssh_config,
             )
             columns_map = metadata["columns"]
             pk_map = metadata["primary_keys"]
@@ -777,6 +797,7 @@ class SchemaIndexerService:
         password: str,
         database: str,
         container: str,
+        docker_ssh_config: SSHConfig | None = None,
     ) -> Dict[str, Dict[Tuple[str, str], list]]:
         """Fetch PostgreSQL schema metadata for all discovered objects in bulk."""
         empty_metadata: Dict[str, Dict[Tuple[str, str], list]] = {
@@ -941,10 +962,10 @@ class SchemaIndexerService:
             index_rows,
             check_constraint_rows,
         ) = await asyncio.gather(
-            self._execute_postgres_json_query(columns_query, host, port, user, password, database, container),
-            self._execute_postgres_json_query(primary_keys_query, host, port, user, password, database, container),
-            self._execute_postgres_json_query(foreign_keys_query, host, port, user, password, database, container),
-            self._execute_postgres_json_query(indexes_query, host, port, user, password, database, container),
+            self._execute_postgres_json_query(columns_query, host, port, user, password, database, container, docker_ssh_config),
+            self._execute_postgres_json_query(primary_keys_query, host, port, user, password, database, container, docker_ssh_config),
+            self._execute_postgres_json_query(foreign_keys_query, host, port, user, password, database, container, docker_ssh_config),
+            self._execute_postgres_json_query(indexes_query, host, port, user, password, database, container, docker_ssh_config),
             self._execute_postgres_json_query(
                 check_constraints_query,
                 host,
@@ -953,6 +974,7 @@ class SchemaIndexerService:
                 password,
                 database,
                 container,
+                docker_ssh_config,
             ),
         )
 
@@ -1011,6 +1033,28 @@ class SchemaIndexerService:
 
         return metadata
 
+    async def _run_postgres_command(
+        self,
+        cmd: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        timeout: int = 60,
+        docker_ssh_config: SSHConfig | None = None,
+    ) -> tuple[int, str, str]:
+        if docker_ssh_config:
+            result = await asyncio.to_thread(execute_docker_command_on_remote_host, docker_ssh_config, cmd)
+            return result.exit_code, result.stdout, result.stderr
+
+        result = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+        )
+        return result.returncode, result.stdout, result.stderr
+
     async def _execute_postgres_json_query(
         self,
         query: str,
@@ -1020,6 +1064,7 @@ class SchemaIndexerService:
         password: str,
         database: str,
         container: str,
+        docker_ssh_config: SSHConfig | None = None,
     ) -> List[dict]:
         """Execute a PostgreSQL query and parse the JSON row payload."""
         wrapped_query = f"SELECT COALESCE(json_agg(row_to_json(query_rows)), '[]'::json)::text FROM ({query}) query_rows"
@@ -1042,25 +1087,22 @@ class SchemaIndexerService:
                 wrapped_query,
             ]
             env = {"PGPASSWORD": password}
-            result = await asyncio.to_thread(
-                subprocess.run,
+            returncode, stdout, stderr = await self._run_postgres_command(
                 cmd,
-                capture_output=True,
-                text=True,
                 env=env,
                 timeout=60,
             )
         elif container:
             inner_cmd = f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -c \'{escaped_query}\''
             cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
-            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=60)
+            returncode, stdout, stderr = await self._run_postgres_command(cmd, timeout=60, docker_ssh_config=docker_ssh_config)
         else:
             raise ValueError("No PostgreSQL connection configured (host or container)")
 
-        if result.returncode != 0:
-            raise RuntimeError(f"PostgreSQL query failed: {result.stderr}")
+        if returncode != 0:
+            raise RuntimeError(f"PostgreSQL query failed: {stderr}")
 
-        payload = result.stdout.strip()
+        payload = stdout.strip()
         if not payload:
             return []
 
@@ -1076,6 +1118,7 @@ class SchemaIndexerService:
         password: str,
         database: str,
         container: str,
+        docker_ssh_config: SSHConfig | None = None,
     ) -> List[dict]:
         """Execute a PostgreSQL query and return results as list of dicts."""
         # Escape the query for shell
@@ -1101,21 +1144,21 @@ class SchemaIndexerService:
                 query,
             ]
             env = {"PGPASSWORD": password}
-            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, env=env, timeout=60)
+            returncode, stdout, stderr = await self._run_postgres_command(cmd, env=env, timeout=60)
         elif container:
             # Docker container
             inner_cmd = f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -F "\t" -c \'{escaped_query}\''
             cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
-            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=60)
+            returncode, stdout, stderr = await self._run_postgres_command(cmd, timeout=60, docker_ssh_config=docker_ssh_config)
         else:
             raise ValueError("No PostgreSQL connection configured (host or container)")
 
-        if result.returncode != 0:
-            raise RuntimeError(f"PostgreSQL query failed: {result.stderr}")
+        if returncode != 0:
+            raise RuntimeError(f"PostgreSQL query failed: {stderr}")
 
         # Parse tab-separated output
         rows: List[Dict[str, Any]] = []
-        output = result.stdout.strip()
+        output = stdout.strip()
         if not output:
             return rows
 
@@ -1389,6 +1432,7 @@ class SchemaIndexerService:
         password: str,
         database: str,
         container: str,
+        docker_ssh_config: SSHConfig | None = None,
     ) -> List[dict]:
         """Execute a simple PostgreSQL query with known columns."""
         escaped_query = query.replace("'", "'\\''")
@@ -1412,20 +1456,20 @@ class SchemaIndexerService:
                 query,
             ]
             env = {"PGPASSWORD": password}
-            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, env=env, timeout=60)
+            returncode, stdout, stderr = await self._run_postgres_command(cmd, env=env, timeout=60)
         elif container:
             inner_cmd = f'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -A -F "\t" -c \'{escaped_query}\''
             cmd = ["docker", "exec", "-i", container, "bash", "-c", inner_cmd]
-            result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=60)
+            returncode, stdout, stderr = await self._run_postgres_command(cmd, timeout=60, docker_ssh_config=docker_ssh_config)
         else:
             return []
 
-        if result.returncode != 0:
-            logger.warning(f"Query failed: {result.stderr}")
+        if returncode != 0:
+            logger.warning(f"Query failed: {stderr}")
             return []
 
         rows = []
-        for line in result.stdout.strip().split("\n"):
+        for line in stdout.strip().split("\n"):
             if line.strip():
                 parts = line.split("\t")
                 row = {}
@@ -2001,7 +2045,7 @@ class SchemaIndexerService:
                     encryption_recovery_hint,
                 )
 
-                if encryption_key_mismatch_detected():
+                if encryption_key_mismatch_detected() and await self._tool_has_undecryptable_credentials(job.tool_config_id):
                     raise RuntimeError(
                         "Database connection failed because the stored credentials could not be "
                         "decrypted (encryption key mismatch). " + encryption_recovery_hint() + f" Original error: {error_msg}"
