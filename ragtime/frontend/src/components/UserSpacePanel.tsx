@@ -4375,7 +4375,7 @@ export function UserSpacePanel({
         {
           label: 'Enable write access for this workspace',
           description:
-            'Allow the workspace backend to make changes with this tool. Applies to all backend calls in this workspace.',
+            'Allow this workspace app to make changes to the underlying data with this tool.',
           checked,
           disabled: savingWorkspaceToolOptions,
           onChange: () => void handleToggleWorkspaceToolWriteAccess(tool.id, !checked),

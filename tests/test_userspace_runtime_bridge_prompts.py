@@ -26,19 +26,23 @@ class RuntimeBridgePromptTests(unittest.TestCase):
         self.assertIn("RAGTIME_BRIDGE_TOKEN", text)
         self.assertIn("execute-component", text)
         self.assertIn(
-            "Runtime bridge calls follow Workspace Tools access policy.",
+            "SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.",
             text,
         )
         self.assertIn(
-            "Tools default read-only unless a workspace owner/admin explicitly enables write access and the global tool config permits writes.",
+            "Tools default read-only unless a workspace owner/admin explicitly enables write",
+            text,
+        )
+        self.assertIn(
+            "ALWAYS read-only, regardless of the workspace write toggle.",
+            text,
+        )
+        self.assertIn(
+            "Never attempt INSERT/UPDATE/DELETE or other mutations from browser code.",
             text,
         )
         self.assertIn(
             "The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.",
-            text,
-        )
-        self.assertIn(
-            "Browser/shared preview component execution stays read-only.",
             text,
         )
         self.assertNotIn(

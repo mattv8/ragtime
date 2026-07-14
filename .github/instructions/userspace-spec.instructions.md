@@ -4,7 +4,7 @@ applyTo: 'ragtime/userspace/**, runtime/**'
 
 # User Space Feature Implementation Instructions
 
-Last updated: 2026-07-02 (codebase-scanned; concise agent-focused)
+Last updated: 2026-07-14 (codebase-scanned; concise agent-focused)
 
 ## Scope
 
@@ -108,6 +108,15 @@ Last updated: 2026-07-02 (codebase-scanned; concise agent-focused)
 - Auth-required preview apps declare `<meta name="ragtime-auth" content="required; surfaces=collab,runtime_pty">` in the initial HTML `<head>` before app scripts. This must be present in the server-returned HTML (`index.html`, server template, or root HTML response); adding it dynamically from app JavaScript is too late. The preview proxy enforces this before returning app HTML, redirects unauthenticated browsers to `/__ragtime/browser-auth/start`, and injects `window.__ragtime_session` before app scripts after authentication.
 - LLM prompt instructs passing `window.__ragtime_context` as the context argument to `render(container, context)`. The bridge exposes the injected auth/session payload as `context.session` and `context.auth` when present. Authenticated user UI should use `context.auth.user.display_name`/`context.auth.user.username`; audit logs should use `user_fingerprint` instead of raw user IDs.
 - **The preview iframe is always cross-origin from the parent UI** (workspace served on `<workspace_id>.<host>`, parent on `<host>`). Workspace code that synchronously reads `window.parent[anything]` will throw `SecurityError` and abort module evaluation, leaving the loading shell visible forever. The bridge intentionally sets `window.__ragtime_context` only on the iframe's own window — workspace code must never scan `window.parent`/`window.top`/`window.opener` for context. This is documented in the LLM prompt (`USERSPACE_ENTRYPOINT_SETUP_PROMPT` in `ragtime/rag/prompts.py`); keep that guidance in sync if the bridge ever changes how context is exposed.
+
+## Tool Write Access Model (Critical — Two Lanes)
+
+- Effective write access for a workspace tool is `ToolConfig.allowWrite AND WorkspaceToolOption.write_access_enabled`. Global `allowWrite=false` is a hard ceiling; a missing workspace option means read-only; only workspace owners and global admins may change the workspace opt-in (`ragtime/userspace/workspace_tool_options.py`).
+- That effective write access applies to exactly ONE execution lane: the **server lane** — workspace backend code (e.g. Express) calling `POST {RAGTIME_BRIDGE_URL}/execute-component` with `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN`, handled by `execute_component_from_runtime_bridge()` in `ragtime/userspace/service.py`. The bridge token is a backend service identity injected only into the runtime process env; it is never exposed to browsers.
+- The **browser lane** is hardcoded read-only regardless of the workspace write toggle: workspace preview `execute_component()`, shared preview `execute_component_from_authorized_shared_preview()`, and the preview-host `/__ragtime/execute-component` endpoint all execute with `allow_workspace_write=False`.
+- Why the browser lane can never be write-enabled: `ExecuteComponentRequest.request` is client-supplied query/command text with no execution-time binding of `component_id` to a server-registered query. Write-enabling it would let anyone holding a share URL (or preview session) curl arbitrary `UPDATE`/`DELETE`/Odoo/SSH mutations directly, bypassing the app. Do not "unify" the lanes without first adding server-side component-to-query binding.
+- Anonymous shared-preview visitors can still trigger writes indirectly and safely: they call the app's own server routes, and the app's server decides what to write via the bridge. The server owns authn/authz for its mutation routes.
+- Prompt guidance for this contract lives in `_USERSPACE_RUNTIME_BRIDGE_BLOCK` (`ragtime/rag/prompts.py`); keep it in sync with these semantics (tests: `tests/test_userspace_runtime_bridge_prompts.py`).
 
 ## Security + Proxy Rules (Do Not Violate)
 

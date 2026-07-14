@@ -91,6 +91,17 @@ my_tool_tool = StructuredTool.from_function(
 
 The module name and export should follow the discovery convention (`my_tool.py` -> `my_tool_tool`). Enable via the Tools tab in the UI.
 
+### Tool Write Access (User Space)
+
+Whether a User Space app can *write* through a tool is decided by two flags together:
+
+- `ToolConfig.allowWrite` (global, admin-set) — the hard ceiling. If false, nothing can write with this tool.
+- Workspace write opt-in (`workspace_tool_options.write_access_enabled`) — set per workspace by the workspace owner or an admin in Workspace Tools. Missing = read-only.
+
+Even when both are enabled, write access applies only to the **server lane**: workspace backend code (e.g. an Express server) calling the runtime bridge with `RAGTIME_BRIDGE_TOKEN`. The **browser lane** — `context.components[componentId].execute()` in previews and shared previews — is always read-only, because its request payload is client-supplied and there is no server-side binding of a component ID to a registered query. Granting it write access would let anyone with a share URL execute arbitrary mutations with `curl`.
+
+Anonymous shared-preview users can still use apps that persist data: the app's own server routes perform the writes via the bridge, and the app decides who may call those routes. Do not change this split without adding execution-time component-to-query binding (see `.github/instructions/userspace-spec.instructions.md`, "Tool Write Access Model").
+
 ## Database
 
 ### Prisma Migrations

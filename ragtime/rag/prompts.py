@@ -1149,12 +1149,18 @@ browser modules:
   `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
   `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
 - Responses are `{rows, columns, row_count, error}` — same shape as the browser bridge.
-- Runtime bridge calls follow Workspace Tools access policy.
-- Tools default read-only unless a workspace owner/admin explicitly enables write access and the global tool config permits writes.
+- Write access has two lanes; do not mix them:
+  - SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.
+    Tools default read-only unless a workspace owner/admin explicitly enables write
+    access and the global tool config permits writes.
+  - BROWSER lane (`context.components[...].execute()` in preview/shared pages):
+    ALWAYS read-only, regardless of the workspace write toggle. Its request payload
+    comes from the browser, so the platform rejects writes on this lane by design.
+- Never attempt INSERT/UPDATE/DELETE or other mutations from browser code. Route
+  every mutation through your own server route, and have the server call this bridge.
 - The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.
-- Browser/shared preview component execution stays read-only.
 - The browser bridge (`context.components[...]`) still works and remains correct
-  for static pages; prefer the server bridge for backend routes and data APIs.
+  for static-page reads; prefer the server bridge for backend routes and data APIs.
 """.strip()
 
 # Nudge for missing/default entrypoint – lightweight suggestion style.
