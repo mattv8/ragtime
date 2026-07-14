@@ -2897,6 +2897,8 @@ class ConversationShareLinkStatus(BaseModel):
     scope_anchor_message_idx: int | None = None
     scope_direction: Literal["forward", "backward"] | None = None
     active_share_style: ConversationShareLinkStyle = "anonymous"
+    public_hit_count: int = 0
+    last_public_hit_at: datetime | None = None
 
 
 class ConversationShareLinkListResponse(BaseModel):

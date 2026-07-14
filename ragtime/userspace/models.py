@@ -953,6 +953,8 @@ class UserSpaceWorkspaceShareLinkStatus(BaseModel):
     selected_ldap_groups: list[str] = Field(default_factory=list)
     has_password: bool = False
     active_share_style: ShareLinkStyle = "anonymous"
+    public_hit_count: int = 0
+    last_public_hit_at: datetime | None = None
 
 
 class UserSpaceWorkspaceShareLinkListResponse(BaseModel):

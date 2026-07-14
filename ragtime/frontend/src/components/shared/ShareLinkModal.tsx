@@ -523,6 +523,7 @@ export function ShareLinkModal({
                       <tr>
                         <th>Label</th>
                         <th>Access</th>
+                        <th>Click Count</th>
                         <th>URL</th>
                         <th>Created</th>
                         <th>Actions</th>
@@ -531,7 +532,7 @@ export function ShareLinkModal({
                     <tbody>
                       {availableShareLinks.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="userspace-share-links-empty-cell">
+                          <td colSpan={6} className="userspace-share-links-empty-cell">
                             No share links yet for this {shareTargetLabel}.
                           </td>
                         </tr>
@@ -561,6 +562,7 @@ export function ShareLinkModal({
                                   {SHARE_ACCESS_MODE_LABELS[link.share_access_mode]}
                                 </span>
                               </td>
+                              <td>{link.public_hit_count ?? 0}</td>
                               <td>
                                 {shareUrl ? (
                                   <span title={shareUrl} className="userspace-share-table-url-text">

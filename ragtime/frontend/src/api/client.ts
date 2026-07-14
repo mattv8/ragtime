@@ -4910,6 +4910,13 @@ export const api = {
     return handleResponse<UserSpaceWorkspaceShareLinkListResponse>(response);
   },
 
+  subscribeUserSpaceWorkspaceShareLinkAnalytics(workspaceId: string): EventSource {
+    return new EventSource(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/share-links/events`,
+      { withCredentials: true },
+    );
+  },
+
   async createUserSpaceWorkspaceShareLink(
     workspaceId: string,
     request: CreateWorkspaceShareLinkRequest = {},
@@ -5053,6 +5060,8 @@ export const api = {
       share_url: null,
       anonymous_share_url: null,
       created_at: null,
+      public_hit_count: 0,
+      last_public_hit_at: null,
       share_access_mode: 'token',
       selected_user_ids: [],
       selected_ldap_groups: [],
@@ -5060,6 +5069,13 @@ export const api = {
       granted_role: 'viewer',
       active_share_style: 'named',
     };
+  },
+
+  subscribeConversationShareLinkAnalytics(conversationId: string): EventSource {
+    return new EventSource(
+      `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/share-links/events`,
+      { withCredentials: true },
+    );
   },
 
   async createConversationShareLink(

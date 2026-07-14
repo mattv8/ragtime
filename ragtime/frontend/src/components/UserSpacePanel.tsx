@@ -209,6 +209,46 @@ interface CachedUserSpaceFile {
 }
 
 type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
+
+type WorkspaceShareLinkAnalyticsUpdate = Partial<UserSpaceWorkspaceShareLinkStatus> & {
+  id: string;
+};
+
+function parseWorkspaceShareLinkAnalyticsEvent(
+  rawData: string,
+): WorkspaceShareLinkAnalyticsUpdate[] {
+  try {
+    const parsed: unknown = JSON.parse(rawData);
+    const links = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { links?: unknown }).links)
+        ? (parsed as { links: unknown[] }).links
+        : [];
+    return links.filter(
+      (link): link is WorkspaceShareLinkAnalyticsUpdate =>
+        Boolean(link) &&
+        typeof link === 'object' &&
+        typeof (link as { id?: unknown }).id === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function mergeWorkspaceShareLinkAnalytics(
+  current: UserSpaceWorkspaceShareLinkStatus[],
+  updates: WorkspaceShareLinkAnalyticsUpdate[],
+): UserSpaceWorkspaceShareLinkStatus[] {
+  if (updates.length === 0) {
+    return current;
+  }
+  const updatesById = new Map(updates.map((update) => [update.id, update]));
+  return current.map((link) => {
+    const update = updatesById.get(link.id);
+    return update ? { ...link, ...update } : link;
+  });
+}
+
 function SearchHighlightedText({ text, query }: { text: string; query: string }) {
   const needle = query.trim();
   if (!needle) return <>{text}</>;
@@ -7137,6 +7177,8 @@ export function UserSpacePanel({
         subdomain_share_enabled: false,
         subdomain_share_disabled_reason: null,
         created_at: null,
+        public_hit_count: 0,
+        last_public_hit_at: null,
         share_access_mode: 'token',
         selected_user_ids: [],
         selected_ldap_groups: [],
@@ -7187,6 +7229,38 @@ export function UserSpacePanel({
     if (shareLinkStatus && shareLinkStatus.workspace_id === activeWorkspaceId) return;
     void loadShareLinkStatus();
   }, [activeWorkspaceId, loadShareLinkStatus, shareLinkStatus, showShareModal]);
+
+  useEffect(() => {
+    if (!showShareModal || !activeWorkspaceId || !canEditWorkspace) {
+      return;
+    }
+
+    const source = api.subscribeUserSpaceWorkspaceShareLinkAnalytics(activeWorkspaceId);
+    const handleShareLinks = (event: Event) => {
+      const updates = parseWorkspaceShareLinkAnalyticsEvent((event as MessageEvent<string>).data);
+      if (updates.length === 0) {
+        return;
+      }
+      setShareLinks((current) => mergeWorkspaceShareLinkAnalytics(current, updates));
+      setShareLinkStatus((current) => {
+        if (!current) {
+          return current;
+        }
+        const update = updates.find((candidate) => candidate.id === current.id);
+        return update ? { ...current, ...update } : current;
+      });
+    };
+
+    source.addEventListener('share_links', handleShareLinks as EventListener);
+    source.onerror = () => {
+      // EventSource reconnects automatically; leave the modal undisturbed.
+    };
+
+    return () => {
+      source.removeEventListener('share_links', handleShareLinks as EventListener);
+      source.close();
+    };
+  }, [activeWorkspaceId, canEditWorkspace, showShareModal]);
 
   const activeShareLinkStatus = useMemo(() => {
     if (!shareLinkStatus || !activeWorkspaceId) {
@@ -7278,6 +7352,8 @@ export function UserSpacePanel({
           subdomain_share_enabled: link.subdomain_share_enabled,
           subdomain_share_disabled_reason: link.subdomain_share_disabled_reason,
           created_at: new Date().toISOString(),
+          public_hit_count: 0,
+          last_public_hit_at: null,
           share_access_mode: activeShareLinkStatus?.share_access_mode ?? 'token',
           selected_user_ids: activeShareLinkStatus?.selected_user_ids ?? [],
           selected_ldap_groups: activeShareLinkStatus?.selected_ldap_groups ?? [],

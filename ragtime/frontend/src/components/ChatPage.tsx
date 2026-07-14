@@ -27,6 +27,43 @@ interface ChatPageProps {
   onFullscreenChange?: (isFullscreen: boolean) => void;
 }
 
+type ConversationShareLinkAnalyticsUpdate = Partial<ConversationShareLinkStatus> & { id: string };
+
+function parseConversationShareLinkAnalyticsEvent(
+  rawData: string,
+): ConversationShareLinkAnalyticsUpdate[] {
+  try {
+    const parsed: unknown = JSON.parse(rawData);
+    const links = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { links?: unknown }).links)
+        ? (parsed as { links: unknown[] }).links
+        : [];
+    return links.filter(
+      (link): link is ConversationShareLinkAnalyticsUpdate =>
+        Boolean(link) &&
+        typeof link === 'object' &&
+        typeof (link as { id?: unknown }).id === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function mergeConversationShareLinkAnalytics(
+  current: ConversationShareLinkStatus[],
+  updates: ConversationShareLinkAnalyticsUpdate[],
+): ConversationShareLinkStatus[] {
+  if (updates.length === 0) {
+    return current;
+  }
+  const updatesById = new Map(updates.map((update) => [update.id, update]));
+  return current.map((link) => {
+    const update = updatesById.get(link.id);
+    return update ? { ...link, ...update } : link;
+  });
+}
+
 export function ChatPage({
   currentUser,
   debugMode = false,
@@ -121,6 +158,8 @@ export function ChatPage({
           share_url: null,
           anonymous_share_url: null,
           created_at: null,
+          public_hit_count: 0,
+          last_public_hit_at: null,
           share_access_mode: 'token',
           selected_user_ids: [],
           selected_ldap_groups: [],
@@ -163,6 +202,41 @@ export function ChatPage({
     }
     void loadShareStatus(activeConversationId);
   }, [activeConversationId, loadShareStatus, shareModalOpen]);
+
+  useEffect(() => {
+    if (!shareModalOpen || !activeConversationId) {
+      return;
+    }
+
+    const source = api.subscribeConversationShareLinkAnalytics(activeConversationId);
+    const handleShareLinks = (event: Event) => {
+      const updates = parseConversationShareLinkAnalyticsEvent(
+        (event as MessageEvent<string>).data,
+      );
+      if (updates.length === 0) {
+        return;
+      }
+      setShareLinks((current) => mergeConversationShareLinkAnalytics(current, updates));
+      setShareStatus((current) => {
+        if (!current) {
+          return current;
+        }
+        const update = updates.find((candidate) => candidate.id === current.id);
+        return update ? { ...current, ...update } : current;
+      });
+    };
+
+    source.addEventListener('share_links', handleShareLinks as EventListener);
+    source.onerror = () => {
+      // EventSource reconnects automatically; malformed or transient stream issues
+      // should not disturb the modal.
+    };
+
+    return () => {
+      source.removeEventListener('share_links', handleShareLinks as EventListener);
+      source.close();
+    };
+  }, [activeConversationId, shareModalOpen]);
 
   useEffect(() => {
     if (!shareModalOpen) {

@@ -3597,6 +3597,8 @@ export interface UserSpaceWorkspaceShareLinkStatus {
   subdomain_share_enabled: boolean;
   subdomain_share_disabled_reason: string | null;
   created_at: string | null;
+  public_hit_count: number;
+  last_public_hit_at: string | null;
   share_access_mode: UserSpaceShareAccessMode;
   selected_user_ids: string[];
   selected_ldap_groups: string[];
@@ -3673,6 +3675,8 @@ export interface ConversationShareLinkStatus {
   share_url: string | null;
   anonymous_share_url: string | null;
   created_at: string | null;
+  public_hit_count: number;
+  last_public_hit_at: string | null;
   share_access_mode: ConversationShareAccessMode;
   selected_user_ids: string[];
   selected_ldap_groups: string[];

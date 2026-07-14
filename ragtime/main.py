@@ -1064,6 +1064,48 @@ def _shared_chat_shell_response() -> Response:
     )
 
 
+def _should_record_public_share_entry(path: str) -> bool:
+    return not str(path or "").strip("/")
+
+
+async def _record_public_share_entry_hit(
+    request: Request,
+    *,
+    route_kind: str,
+    path: str,
+    target_type: str,
+    share_id: str,
+    outcome: str,
+    current_user: Any | None,
+) -> None:
+    if not _should_record_public_share_entry(path):
+        return
+    kwargs: dict[str, Any] = {
+        "event_name": f"public_share_{route_kind}_hit",
+        "metadata": {"route_kind": route_kind},
+    }
+    authenticated_user_id = str(getattr(current_user, "id", "") or "") or None
+    if authenticated_user_id:
+        kwargs["authenticated_user_id"] = authenticated_user_id
+    try:
+        await userspace_service.record_public_share_hit(
+            request,
+            target_type,
+            share_id,
+            outcome,
+            **kwargs,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record public share analytics hit: route_kind=%s target_type=%s share_id=%s outcome=%s path=%s",
+            route_kind,
+            target_type,
+            share_id,
+            outcome,
+            request.url.path,
+        )
+
+
 async def _shared_launch_redirect_by_slug(
     owner_username: str,
     share_slug: str,
@@ -1084,11 +1126,17 @@ async def _shared_launch_redirect_by_slug(
         owner_username,
         share_slug,
     )
-    target_type = await userspace_service.resolve_public_share_target_by_slug(
-        owner_username,
-        share_slug,
-    )
-    if target_type == "unknown":
+    try:
+        target_type, share_record = await userspace_service._resolve_public_share_record_by_slug(
+            owner_username,
+            share_slug,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail="Not found") from exc
+        raise
+    share_id = str(getattr(share_record, "id", "") or "")
+    if not share_id:
         raise HTTPException(status_code=404, detail="Not found")
 
     if target_type == "conversation":
@@ -1117,10 +1165,37 @@ async def _shared_launch_redirect_by_slug(
                     owner_username=owner_username,
                     share_slug=share_slug,
                 )
+                await _record_public_share_entry_hit(
+                    request,
+                    route_kind="slug",
+                    path=path,
+                    target_type=target_type,
+                    share_id=share_id,
+                    outcome="password_prompt",
+                    current_user=current_user,
+                )
                 return response
             if exc.status_code in {401, 403} and request.method == "GET":
+                await _record_public_share_entry_hit(
+                    request,
+                    route_kind="slug",
+                    path=path,
+                    target_type=target_type,
+                    share_id=share_id,
+                    outcome="unauthorized_shell",
+                    current_user=current_user,
+                )
                 return _shared_chat_shell_response()
             raise
+        await _record_public_share_entry_hit(
+            request,
+            route_kind="slug",
+            path=path,
+            target_type=target_type,
+            share_id=share_id,
+            outcome="conversation_shell",
+            current_user=current_user,
+        )
         return _shared_chat_shell_response()
 
     try:
@@ -1148,8 +1223,26 @@ async def _shared_launch_redirect_by_slug(
                 owner_username=owner_username,
                 share_slug=share_slug,
             )
+            await _record_public_share_entry_hit(
+                request,
+                route_kind="slug",
+                path=path,
+                target_type=target_type,
+                share_id=share_id,
+                outcome="password_prompt",
+                current_user=current_user,
+            )
             return response
         if exc.status_code in {401, 403} and request.method == "GET":
+            await _record_public_share_entry_hit(
+                request,
+                route_kind="slug",
+                path=path,
+                target_type=target_type,
+                share_id=share_id,
+                outcome="unauthorized_shell",
+                current_user=current_user,
+            )
             return _shared_chat_shell_response()
         raise
 
@@ -1166,6 +1259,15 @@ async def _shared_launch_redirect_by_slug(
         share_slug=share_slug,
         subject_user_id=str(getattr(current_user, "id", "") or "") or None,
         share_access_mode=current_access_mode,
+    )
+    await _record_public_share_entry_hit(
+        request,
+        route_kind="slug",
+        path=path,
+        target_type=target_type,
+        share_id=share_id,
+        outcome="redirect",
+        current_user=current_user,
     )
     return RedirectResponse(url=launch.preview_url, status_code=302)
 
@@ -1184,8 +1286,14 @@ async def _shared_launch_redirect_by_token(
     workspace_name, _ = await userspace_service.get_share_prompt_metadata_by_token(
         share_token,
     )
-    target_type = await userspace_service.resolve_public_share_target_by_token(share_token)
-    if target_type == "unknown":
+    try:
+        target_type, share_record = await userspace_service._resolve_public_share_record_by_token(share_token)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail="Not found") from exc
+        raise
+    share_id = str(getattr(share_record, "id", "") or "")
+    if not share_id:
         raise HTTPException(status_code=404, detail="Not found")
 
     if target_type == "conversation":
@@ -1211,10 +1319,37 @@ async def _shared_launch_redirect_by_token(
                     response,
                     share_token=share_token,
                 )
+                await _record_public_share_entry_hit(
+                    request,
+                    route_kind="token",
+                    path=path,
+                    target_type=target_type,
+                    share_id=share_id,
+                    outcome="password_prompt",
+                    current_user=current_user,
+                )
                 return response
             if exc.status_code in {401, 403} and request.method == "GET":
+                await _record_public_share_entry_hit(
+                    request,
+                    route_kind="token",
+                    path=path,
+                    target_type=target_type,
+                    share_id=share_id,
+                    outcome="unauthorized_shell",
+                    current_user=current_user,
+                )
                 return _shared_chat_shell_response()
             raise
+        await _record_public_share_entry_hit(
+            request,
+            route_kind="token",
+            path=path,
+            target_type=target_type,
+            share_id=share_id,
+            outcome="conversation_shell",
+            current_user=current_user,
+        )
         return _shared_chat_shell_response()
 
     try:
@@ -1239,8 +1374,26 @@ async def _shared_launch_redirect_by_token(
                 response,
                 share_token=share_token,
             )
+            await _record_public_share_entry_hit(
+                request,
+                route_kind="token",
+                path=path,
+                target_type=target_type,
+                share_id=share_id,
+                outcome="password_prompt",
+                current_user=current_user,
+            )
             return response
         if exc.status_code in {401, 403} and request.method == "GET":
+            await _record_public_share_entry_hit(
+                request,
+                route_kind="token",
+                path=path,
+                target_type=target_type,
+                share_id=share_id,
+                outcome="unauthorized_shell",
+                current_user=current_user,
+            )
             return _shared_chat_shell_response()
         raise
 
@@ -1256,6 +1409,15 @@ async def _shared_launch_redirect_by_token(
         share_token=share_token,
         subject_user_id=str(getattr(current_user, "id", "") or "") or None,
         share_access_mode=current_access_mode,
+    )
+    await _record_public_share_entry_hit(
+        request,
+        route_kind="token",
+        path=path,
+        target_type=target_type,
+        share_id=share_id,
+        outcome="redirect",
+        current_user=current_user,
     )
     return RedirectResponse(url=launch.preview_url, status_code=302)
 

@@ -10234,6 +10234,117 @@ class UserSpaceService:
             raise HTTPException(status_code=404, detail="Shared workspace not found")
         return str(getattr(share_record, "workspaceId", "") or "")
 
+    @staticmethod
+    def _share_analytics_request_path(request: Any) -> str:
+        path = str(getattr(getattr(request, "url", None), "path", "") or "").strip()
+        if path:
+            return path
+        scope = getattr(request, "scope", None)
+        if isinstance(scope, dict):
+            return str(scope.get("path") or "").strip()
+        return ""
+
+    @staticmethod
+    def _share_analytics_request_header(request: Any, name: str) -> str | None:
+        headers = getattr(request, "headers", None)
+        if headers is None:
+            return None
+        value: Any = None
+        if hasattr(headers, "get"):
+            value = headers.get(name)
+        elif isinstance(headers, dict):
+            value = headers.get(name)
+        return str(value or "").strip() or None
+
+    def _build_public_share_client_fingerprint(self, request: Any) -> str | None:
+        forwarded_for = self._share_analytics_request_header(request, "x-forwarded-for")
+        forwarded_ip = str((forwarded_for or "").split(",", 1)[0] or "").strip().lower()
+        client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+        user_agent = str(self._share_analytics_request_header(request, "user-agent") or "").strip()
+        normalized_identity = "|".join(part for part in (forwarded_ip or client_host, user_agent) if part)
+        if not normalized_identity:
+            return None
+        digest = hmac.new(
+            settings.encryption_key.encode("utf-8"),
+            f"share_link_analytics:v1:{normalized_identity}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return f"v1:{digest}"
+
+    async def _get_public_share_record_by_target(
+        self,
+        db: Any,
+        target_type: str,
+        share_id: str,
+    ) -> Any | None:
+        if target_type == "workspace":
+            return await db.workspaceshare.find_unique(where={"id": share_id})
+        if target_type == "conversation":
+            return await db.conversationshare.find_unique(where={"id": share_id})
+        raise HTTPException(status_code=400, detail="Unsupported share target type")
+
+    async def _increment_public_share_hit_counters(
+        self,
+        db: Any,
+        target_type: str,
+        share_id: str,
+        recorded_at: datetime,
+    ) -> Any:
+        model = db.workspaceshare if target_type == "workspace" else db.conversationshare
+        return await model.update(
+            where={"id": share_id},
+            data={
+                "publicHitCount": {"increment": 1},
+                "lastPublicHitAt": recorded_at,
+            },
+        )
+
+    async def record_public_share_hit(
+        self,
+        request: Any,
+        target_type: str,
+        share_id: str,
+        outcome: str,
+        *,
+        event_name: str = "public_share_hit",
+        authenticated_user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        normalized_target_type = str(target_type or "").strip().lower()
+        normalized_share_id = str(share_id or "").strip()
+        normalized_outcome = str(outcome or "").strip() or "unknown"
+        normalized_event_name = str(event_name or "").strip() or "public_share_hit"
+        if normalized_target_type not in {"workspace", "conversation"}:
+            raise HTTPException(status_code=400, detail="Unsupported share target type")
+        if not normalized_share_id:
+            raise HTTPException(status_code=400, detail="Share ID is required")
+
+        db = await get_db()
+        recorded_at = utc_now()
+        event_data: dict[str, Any] = {
+            "shareTargetType": normalized_target_type,
+            "shareId": normalized_share_id,
+            "eventName": normalized_event_name,
+            "outcome": normalized_outcome,
+            "requestPath": self._share_analytics_request_path(request),
+            "requestMethod": str(getattr(request, "method", "GET") or "GET").strip().upper(),
+            "referrer": self._share_analytics_request_header(request, "referer") or self._share_analytics_request_header(request, "referrer"),
+            "userAgent": self._share_analytics_request_header(request, "user-agent"),
+            "authenticatedUserId": str(authenticated_user_id or "").strip() or None,
+            "clientFingerprint": self._build_public_share_client_fingerprint(request),
+            "metadata": metadata if metadata is not None else None,
+            "createdAt": recorded_at,
+        }
+
+        if hasattr(db, "tx"):
+            async with db.tx() as tx:
+                await self._increment_public_share_hit_counters(tx, normalized_target_type, normalized_share_id, recorded_at)
+                await tx.sharelinkrequestlog.create(data=cast(Any, event_data))
+            return
+
+        await self._increment_public_share_hit_counters(db, normalized_target_type, normalized_share_id, recorded_at)
+        await db.sharelinkrequestlog.create(data=cast(Any, event_data))
+
     async def _get_public_owner_username(self, owner_user_id: str) -> str:
         db = await get_db()
         owner = await db.user.find_unique(where={"id": owner_user_id})
@@ -13024,6 +13135,8 @@ class UserSpaceService:
             selected_ldap_groups=selected_ldap_groups,
             has_password=bool(password_encrypted),
             active_share_style=cast(Any, active_share_style),
+            public_hit_count=int(getattr(share_record, "publicHitCount", 0) or 0),
+            last_public_hit_at=getattr(share_record, "lastPublicHitAt", None),
         )
 
     async def list_workspace_share_links(
@@ -13461,6 +13574,8 @@ class UserSpaceService:
             scope_anchor_message_idx=(int(scope_anchor) if scope_anchor is not None else None),
             scope_direction=cast(Any, scope_direction),
             active_share_style=cast(Any, active_share_style),
+            public_hit_count=int(getattr(share_record, "publicHitCount", 0) or 0),
+            last_public_hit_at=getattr(share_record, "lastPublicHitAt", None),
         )
 
     async def list_conversation_share_links(

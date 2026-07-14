@@ -1259,6 +1259,8 @@ model ConversationShare {
   grantedRole             ConversationShareRole @default(viewer) @map("granted_role")
   scopeAnchorMessageIdx   Int?                  @map("scope_anchor_message_idx")
   scopeDirection          String?               @map("scope_direction")
+  publicHitCount          Int                   @default(0) @map("public_hit_count")
+  lastPublicHitAt         DateTime?             @map("last_public_hit_at")
   createdAt               DateTime              @default(now()) @map("created_at")
   updatedAt               DateTime              @default(now()) @updatedAt @map("updated_at")
 
@@ -1533,6 +1535,8 @@ model WorkspaceShare {
   shareSelectedUserIds    Json      @default("[]") @map("share_selected_user_ids")
   shareSelectedLdapGroups Json      @default("[]") @map("share_selected_ldap_groups")
   activeShareStyle        String    @default("anonymous") @map("active_share_style")
+  publicHitCount          Int       @default(0) @map("public_hit_count")
+  lastPublicHitAt         DateTime? @map("last_public_hit_at")
   createdAt               DateTime  @default(now()) @map("created_at")
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
@@ -1540,6 +1544,26 @@ model WorkspaceShare {
   @@index([ownerUserId, shareSlug])
   @@index([workspaceId, shareToken])
   @@map("workspace_shares")
+}
+
+model ShareLinkRequestLog {
+  id                  String   @id @default(uuid())
+  shareTargetType     String   @map("share_target_type")
+  shareId             String   @map("share_id")
+  eventName           String   @map("event_name")
+  outcome             String
+  requestPath         String   @map("request_path")
+  requestMethod       String   @map("request_method")
+  referrer            String?
+  userAgent           String?  @map("user_agent")
+  authenticatedUserId String?  @map("authenticated_user_id")
+  clientFingerprint   String?  @map("client_fingerprint")
+  metadata            Json?
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([shareTargetType, shareId, createdAt], map: "share_link_req_logs_target_share_created_idx")
+  @@index([eventName, createdAt], map: "share_link_req_logs_event_created_idx")
+  @@map("share_link_request_logs")
 }
 
 /// Cross-workspace agent access mode

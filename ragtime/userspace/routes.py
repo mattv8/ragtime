@@ -2001,6 +2001,39 @@ async def list_workspace_share_links(
     )
 
 
+@router.get("/workspaces/{workspace_id}/share-links/events")
+async def stream_workspace_share_link_events(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+):
+    initial_payload = await userspace_service.list_workspace_share_links(workspace_id, user.id)
+
+    async def event_stream() -> AsyncIterator[str]:
+        last_payload: str | None = None
+        payload = initial_payload
+        first_iteration = True
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                if not first_iteration:
+                    payload = await userspace_service.list_workspace_share_links(workspace_id, user.id)
+                else:
+                    first_iteration = False
+                payload_json = json.dumps(payload.model_dump(mode="json"))
+                if payload_json != last_payload:
+                    last_payload = payload_json
+                    yield f"event: share_links\ndata: {payload_json}\n\n"
+                else:
+                    yield ": keepalive\n\n"
+            except Exception as exc:
+                yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+            await asyncio.sleep(5)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @router.post(
     "/workspaces/{workspace_id}/share-links",
     response_model=UserSpaceWorkspaceShareLink,
