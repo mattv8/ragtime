@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { Popover } from '../Popover';
 import createFragmentShader from './fragmentShader';
 import { FluidSimulation } from './fluidSimulation';
 import { bindFullscreenQuad, createFullscreenQuadBuffer, createProgram } from './glUtils';
@@ -11,6 +12,19 @@ const DEFAULT_COLOR_VARIABLES = [
   '--login-gradient-end',
 ] as const;
 const FALLBACK_BLUE_COLORS = ['#0a1220', '#0f182a', '#354b61'] as const;
+const BATTERY_NOTICE_TEXT = 'Background paused on battery';
+const SCREEN_READER_ONLY_STYLE = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: 0,
+  margin: '-1px',
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+  border: 0,
+} as const;
 
 interface WebGLGradientProps {
   className?: string;
@@ -617,10 +631,20 @@ const WebGLGradient: React.FC<WebGLGradientProps> = ({
         style={{ display: fluidDisabledForBattery ? 'none' : 'block' }}
       />
       {fluidDisabledForBattery ? (
-        <div className="webgl-battery-notice" role="status" aria-live="polite">
-          <AlertTriangle size={14} aria-hidden="true" />
-          <span>Background paused on battery</span>
-        </div>
+        <>
+          <span role="status" aria-live="polite" style={SCREEN_READER_ONLY_STYLE}>
+            {BATTERY_NOTICE_TEXT}
+          </span>
+          <Popover className="webgl-battery-notice" content={BATTERY_NOTICE_TEXT} position="top">
+            <button
+              type="button"
+              className="webgl-battery-notice-trigger"
+              aria-label={BATTERY_NOTICE_TEXT}
+            >
+              <AlertTriangle size={14} aria-hidden="true" />
+            </button>
+          </Popover>
+        </>
       ) : null}
     </>
   );

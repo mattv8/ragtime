@@ -177,29 +177,29 @@ legend {
   bottom: max(var(--space-md), env(safe-area-inset-bottom));
   z-index: var(--z-tooltip);
   display: inline-flex;
+}
+
+.webgl-battery-notice-trigger {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  max-width: min(320px, calc(100vw - 2 * var(--space-md)));
-  padding: 6px 9px;
-  border: 1px solid var(--color-warning-border);
-  border-radius: var(--radius-md);
-  background: rgba(15, 23, 42, 0.68);
-  color: var(--color-text-secondary);
-  box-shadow: var(--shadow-sm);
-  font-size: var(--text-xs);
-  line-height: 1.25;
-  opacity: 0.82;
-  pointer-events: none;
-  backdrop-filter: blur(10px);
-}
-
-.webgl-battery-notice svg {
-  flex: 0 0 auto;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--color-warning);
+  cursor: help;
 }
 
-[data-theme='light'] .webgl-battery-notice {
-  background: rgba(255, 255, 255, 0.72);
+.webgl-battery-notice-trigger svg {
+  flex: 0 0 auto;
+}
+
+.webgl-battery-notice-trigger:focus-visible {
+  outline: 2px solid var(--color-input-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .app-shell > .webgl-motion-toggle {
