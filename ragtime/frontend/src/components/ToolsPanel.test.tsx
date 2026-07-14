@@ -54,6 +54,8 @@ type MockPopoverProps = {
   disabled?: boolean;
   openDelayMs?: number;
   followCursor?: boolean;
+  requireHoverIdleMs?: number;
+  focusTrigger?: boolean;
   ignoreSelector?: string;
 } & HTMLAttributes<HTMLDivElement>;
 
@@ -61,15 +63,28 @@ vi.mock('./Popover', () => ({
   Popover: ({
     children,
     content: _content,
-    position: _position,
+    position,
     show: _show,
     trigger: _trigger,
     disabled: _disabled,
     openDelayMs: _openDelayMs,
-    followCursor: _followCursor,
-    ignoreSelector: _ignoreSelector,
+    followCursor,
+    requireHoverIdleMs,
+    focusTrigger,
+    ignoreSelector,
     ...rest
-  }: MockPopoverProps) => <div {...rest}>{children}</div>,
+  }: MockPopoverProps) => (
+    <div
+      {...rest}
+      data-follow-cursor={followCursor === undefined ? undefined : String(followCursor)}
+      data-require-hover-idle-ms={requireHoverIdleMs ?? undefined}
+      data-focus-trigger={focusTrigger === undefined ? undefined : String(focusTrigger)}
+      data-position={position}
+      data-ignore-selector={ignoreSelector}
+    >
+      {children}
+    </div>
+  ),
 }));
 vi.mock('./AnimatedCreateButton', () => ({
   AnimatedCreateButton: ({ onClick, label }: { onClick: () => void; label: string }) => (
@@ -594,5 +609,21 @@ describe('ToolsPanel', () => {
 
     await user.type(confirmInput, 'StrongPass123!');
     await waitFor(() => expect(exportButton.disabled).toBe(false));
+  });
+
+  it('uses idle-hover popovers for tool-card right-click hints', async () => {
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+
+    const toolCardPopover = document.querySelector('.tool-card-drag-wrap') as HTMLElement;
+    expect(toolCardPopover.dataset.followCursor).toBe('true');
+    expect(toolCardPopover.dataset.requireHoverIdleMs).toBe('1000');
+    expect(toolCardPopover.dataset.focusTrigger).toBe('false');
+    expect(toolCardPopover.dataset.position).toBe('top');
+    expect(toolCardPopover.dataset.ignoreSelector).not.toContain('.editable-field-wrapper');
+    expect(toolCardPopover.dataset.ignoreSelector).toContain('button');
+    expect(toolCardPopover.dataset.ignoreSelector).toContain('input');
+    expect(toolCardPopover.dataset.ignoreSelector).toContain('textarea');
   });
 });

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Settings, ChevronRight, X, Globe2 } from 'lucide-react';
 import { ContextMenu } from './ContextMenu';
+import { Popover } from '../Popover';
 import {
   getEffectiveUserSpaceToolIdSet,
   getSelectableUserSpaceToolIds,
@@ -610,6 +611,8 @@ export function ToolSelectorDropdown({
     </label>
   );
 
+  const hasRightClickOptions = Boolean(getToolMenuItems || getToolGroupMenuItems);
+
   return (
     <div className="userspace-tool-picker-wrap" ref={dropdownRef}>
       <button
@@ -630,8 +633,15 @@ export function ToolSelectorDropdown({
       {showDropdown &&
         dropdownPosition &&
         createPortal(
-          <div
-            ref={menuRef}
+          <Popover
+            content="Right-click a tool for more options"
+            position="top"
+            trigger="hover"
+            followCursor
+            requireHoverIdleMs={1000}
+            focusTrigger={false}
+            zIndexAboveTrigger
+            disabled={!hasRightClickOptions || contextMenu !== null}
             className="userspace-tool-dropdown"
             style={{
               top: openDirection === 'up' ? undefined : dropdownPosition.top,
@@ -643,169 +653,177 @@ export function ToolSelectorDropdown({
               transform: 'translateX(-100%)',
             }}
           >
-            <div className="userspace-tool-dropdown-title">
-              <h4>{title}</h4>
-              <div className="userspace-tool-title-actions">
-                {saving && <span className="userspace-muted userspace-tool-saving">Saving...</span>}
-                <button
-                  type="button"
-                  className="userspace-tool-bulk-toggle"
-                  onClick={handleBulkToggle}
-                  disabled={readOnly || disabled || allVisibleCount === 0}
-                >
-                  {allVisibleSelected || bulkAction === 'deselect_all'
-                    ? isSearching
-                      ? 'Deselect visible'
-                      : 'Deselect all'
-                    : isSearching
-                      ? 'Select visible'
-                      : 'Select all'}
-                </button>
-              </div>
-            </div>
-            {readOnly && <p className="userspace-muted">Read-only access</p>}
-            {(availableTools.length > 1 || builtInTools.length > 1) && (
-              <div className="model-selector-search userspace-tool-search">
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  className="model-selector-search-input"
-                  placeholder="Search tools..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      if (searchQuery) {
-                        setSearchQuery('');
-                      } else {
-                        closeDropdown();
-                      }
-                    }
-                  }}
-                  aria-label="Filter tools"
-                />
-                {searchQuery && (
+            <div ref={menuRef} className="userspace-tool-dropdown-surface">
+              <div className="userspace-tool-dropdown-title">
+                <h4>{title}</h4>
+                <div className="userspace-tool-title-actions">
+                  {saving && (
+                    <span className="userspace-muted userspace-tool-saving">Saving...</span>
+                  )}
                   <button
                     type="button"
-                    className="model-selector-search-clear"
-                    onClick={() => {
-                      setSearchQuery('');
-                      searchInputRef.current?.focus();
-                    }}
-                    title="Clear search"
-                    aria-label="Clear search"
+                    className="userspace-tool-bulk-toggle"
+                    onClick={handleBulkToggle}
+                    disabled={readOnly || disabled || allVisibleCount === 0}
                   >
-                    <X size={12} />
+                    {allVisibleSelected || bulkAction === 'deselect_all'
+                      ? isSearching
+                        ? 'Deselect visible'
+                        : 'Deselect all'
+                      : isSearching
+                        ? 'Select visible'
+                        : 'Select all'}
                   </button>
-                )}
+                </div>
               </div>
-            )}
-            <div className="userspace-tool-list model-selector-dropdown-inner">
-              {builtInTools.length > 0 && (
-                <div className="userspace-tool-builtins">
-                  {filteredWorkspaceBuiltInTools.length > 0 && (
-                    <>
-                      <div className="userspace-tool-section-label">
-                        {workspaceBuiltInSectionLabel}
-                      </div>
-                      {filteredWorkspaceBuiltInTools.map(renderBuiltInToolItem)}
-                    </>
-                  )}
-                  {filteredChatBuiltInTools.length > 0 && (
-                    <>
-                      <div className="userspace-tool-section-label">Built-in</div>
-                      {filteredChatBuiltInTools.map(renderBuiltInToolItem)}
-                    </>
+              {readOnly && <p className="userspace-muted">Read-only access</p>}
+              {(availableTools.length > 1 || builtInTools.length > 1) && (
+                <div className="model-selector-search userspace-tool-search">
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    className="model-selector-search-input"
+                    placeholder="Search tools..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.preventDefault();
+                        if (searchQuery) {
+                          setSearchQuery('');
+                        } else {
+                          closeDropdown();
+                        }
+                      }
+                    }}
+                    aria-label="Filter tools"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      className="model-selector-search-clear"
+                      onClick={() => {
+                        setSearchQuery('');
+                        searchInputRef.current?.focus();
+                      }}
+                      title="Clear search"
+                      aria-label="Clear search"
+                    >
+                      <X size={12} />
+                    </button>
                   )}
                 </div>
               )}
-              {builtInTools.length > 0 && availableTools.length > 0 && (
-                <div className="userspace-tool-divider" />
-              )}
-              {hasGroups &&
-                filteredGroups.map((group) => {
-                  const checkState = getGroupCheckState(group.id, group.tools);
-                  const isExpanded = expandedGroupId === group.id;
-                  const handleGroupContextMenu = (event: React.MouseEvent) => {
-                    if (!getToolGroupMenuItems) return;
-                    const items = getToolGroupMenuItems(group);
-                    if (items.length === 0) return;
-                    event.preventDefault();
-                    setContextMenu({
-                      kind: 'group',
-                      id: group.id,
-                      x: event.clientX,
-                      y: event.clientY,
-                    });
-                  };
-                  return (
-                    <div key={group.id} className="tool-group-section">
-                      <div
-                        className={`tool-group-header ${isExpanded ? 'expanded' : ''}`}
-                        onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
-                        onContextMenu={handleGroupContextMenu}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            setExpandedGroupId(isExpanded ? null : group.id);
-                          }
-                        }}
-                        aria-expanded={isExpanded}
-                        aria-label={`Tool group: ${group.name}`}
-                      >
-                        <input
-                          type="checkbox"
-                          className="tool-group-checkbox"
-                          checked={checkState === 'all'}
-                          ref={(el) => {
-                            if (el) el.indeterminate = checkState === 'some';
-                          }}
-                          onChange={() => handleGroupToggle(group.id, group.tools)}
-                          disabled={
-                            readOnly || disabled || !group.tools.some(isUserSpaceToolAvailable)
-                          }
-                          onClick={(e) => e.stopPropagation()}
-                          aria-label={`Select all tools in ${group.name}`}
-                        />
-                        <span className="tool-group-name">{group.name}</span>
-                        <span className="tool-group-count">{group.tools.length}</span>
-                        <ChevronRight
-                          size={14}
-                          className={`tool-group-chevron ${isExpanded ? 'rotated' : ''}`}
-                        />
-                      </div>
-                      {isExpanded && (
-                        <div className="tool-group-submenu">{group.tools.map(renderToolItem)}</div>
-                      )}
-                    </div>
-                  );
-                })}
-              {filteredUngroupedTools.map(renderToolItem)}
-              {filteredBuiltInTools.length === 0 &&
-                filteredGroups.length === 0 &&
-                filteredUngroupedTools.length === 0 && (
-                  <div className="model-selector-empty">No tools match "{searchQuery.trim()}"</div>
+              <div className="userspace-tool-list model-selector-dropdown-inner">
+                {builtInTools.length > 0 && (
+                  <div className="userspace-tool-builtins">
+                    {filteredWorkspaceBuiltInTools.length > 0 && (
+                      <>
+                        <div className="userspace-tool-section-label">
+                          {workspaceBuiltInSectionLabel}
+                        </div>
+                        {filteredWorkspaceBuiltInTools.map(renderBuiltInToolItem)}
+                      </>
+                    )}
+                    {filteredChatBuiltInTools.length > 0 && (
+                      <>
+                        <div className="userspace-tool-section-label">Built-in</div>
+                        {filteredChatBuiltInTools.map(renderBuiltInToolItem)}
+                      </>
+                    )}
+                  </div>
                 )}
-            </div>
-            {onToggleToolCalls !== undefined && showToolCalls !== undefined && (
-              <div className="userspace-tool-calls-toggle">
-                <label className="chat-toggle-control" title="Show/hide tool calls in messages">
-                  <span className="chat-toggle-label">Show tool calls</span>
-                  <label className="toggle-switch">
-                    <input
-                      type="checkbox"
-                      checked={showToolCalls}
-                      onChange={(e) => onToggleToolCalls(e.target.checked)}
-                    />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </label>
+                {builtInTools.length > 0 && availableTools.length > 0 && (
+                  <div className="userspace-tool-divider" />
+                )}
+                {hasGroups &&
+                  filteredGroups.map((group) => {
+                    const checkState = getGroupCheckState(group.id, group.tools);
+                    const isExpanded = expandedGroupId === group.id;
+                    const handleGroupContextMenu = (event: React.MouseEvent) => {
+                      if (!getToolGroupMenuItems) return;
+                      const items = getToolGroupMenuItems(group);
+                      if (items.length === 0) return;
+                      event.preventDefault();
+                      setContextMenu({
+                        kind: 'group',
+                        id: group.id,
+                        x: event.clientX,
+                        y: event.clientY,
+                      });
+                    };
+                    return (
+                      <div key={group.id} className="tool-group-section">
+                        <div
+                          className={`tool-group-header ${isExpanded ? 'expanded' : ''}`}
+                          onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
+                          onContextMenu={handleGroupContextMenu}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setExpandedGroupId(isExpanded ? null : group.id);
+                            }
+                          }}
+                          aria-expanded={isExpanded}
+                          aria-label={`Tool group: ${group.name}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="tool-group-checkbox"
+                            checked={checkState === 'all'}
+                            ref={(el) => {
+                              if (el) el.indeterminate = checkState === 'some';
+                            }}
+                            onChange={() => handleGroupToggle(group.id, group.tools)}
+                            disabled={
+                              readOnly || disabled || !group.tools.some(isUserSpaceToolAvailable)
+                            }
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label={`Select all tools in ${group.name}`}
+                          />
+                          <span className="tool-group-name">{group.name}</span>
+                          <span className="tool-group-count">{group.tools.length}</span>
+                          <ChevronRight
+                            size={14}
+                            className={`tool-group-chevron ${isExpanded ? 'rotated' : ''}`}
+                          />
+                        </div>
+                        {isExpanded && (
+                          <div className="tool-group-submenu">
+                            {group.tools.map(renderToolItem)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                {filteredUngroupedTools.map(renderToolItem)}
+                {filteredBuiltInTools.length === 0 &&
+                  filteredGroups.length === 0 &&
+                  filteredUngroupedTools.length === 0 && (
+                    <div className="model-selector-empty">
+                      No tools match "{searchQuery.trim()}"
+                    </div>
+                  )}
               </div>
-            )}
-          </div>,
+              {onToggleToolCalls !== undefined && showToolCalls !== undefined && (
+                <div className="userspace-tool-calls-toggle">
+                  <label className="chat-toggle-control" title="Show/hide tool calls in messages">
+                    <span className="chat-toggle-label">Show tool calls</span>
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={showToolCalls}
+                        onChange={(e) => onToggleToolCalls(e.target.checked)}
+                      />
+                      <span className="toggle-slider"></span>
+                    </label>
+                  </label>
+                </div>
+              )}
+            </div>
+          </Popover>,
           document.body,
         )}
       {contextMenu && contextMenuItems.length > 0 && (

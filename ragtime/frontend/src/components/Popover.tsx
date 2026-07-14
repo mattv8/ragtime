@@ -15,6 +15,7 @@ const POPOVER_GAP = 8; // px between trigger edge and popover
 const HOVER_CLOSE_DELAY_MS = 80;
 const VIEWPORT_PADDING = 12;
 const ARROW_INSET = 14;
+const FOLLOW_CURSOR_TOP_OFFSET = -8;
 
 type PopoverPosition = NonNullable<PopoverProps['position']>;
 
@@ -39,8 +40,14 @@ interface PopoverProps {
   openDelayMs?: number;
   /** Whether the popover should appear at the cursor coordinates instead of anchoring to the trigger bounds */
   followCursor?: boolean;
+  /** Require the pointer to stay still for this many ms before opening on hover */
+  requireHoverIdleMs?: number;
   /** CSS selector for elements that should not trigger the popover */
   ignoreSelector?: string;
+  /** Whether focus should open hover-triggered popovers */
+  focusTrigger?: boolean;
+  /** Whether the popover should render one z-index above its trigger */
+  zIndexAboveTrigger?: boolean;
 }
 
 interface ComputedPos {
@@ -56,6 +63,12 @@ type PopoverStyle = CSSProperties & {
   '--popover-arrow-left'?: string;
   '--popover-arrow-top'?: string;
 };
+
+function getZIndexAboveElement(element: HTMLElement | null): number | undefined {
+  if (!element) return undefined;
+  const zIndex = Number.parseInt(window.getComputedStyle(element).zIndex, 10);
+  return Number.isFinite(zIndex) ? zIndex + 1 : undefined;
+}
 
 function clamp(value: number, min: number, max: number): number {
   if (max < min) {
@@ -211,7 +224,10 @@ export function Popover({
   disabled = false,
   openDelayMs = 0,
   followCursor = false,
+  requireHoverIdleMs = 0,
   ignoreSelector,
+  focusTrigger = true,
+  zIndexAboveTrigger = false,
   ...rest
 }: PopoverProps & Omit<React.HTMLAttributes<HTMLDivElement>, 'content'>) {
   const [internalShow, setInternalShow] = useState(false);
@@ -242,12 +258,34 @@ export function Popover({
     }
   }, []);
 
+  const clearHoverOpenTimeout = useCallback(() => {
+    if (hoverOpenTimeoutRef.current !== null) {
+      window.clearTimeout(hoverOpenTimeoutRef.current);
+      hoverOpenTimeoutRef.current = null;
+    }
+  }, []);
+
   const openHoverPopover = useCallback(() => {
     clearHoverCloseTimeout();
     if (!isControlled) {
       setInternalShow(true);
     }
   }, [clearHoverCloseTimeout, isControlled]);
+
+  const scheduleHoverOpen = useCallback(
+    (delayMs: number) => {
+      clearHoverOpenTimeout();
+      if (delayMs > 0) {
+        hoverOpenTimeoutRef.current = window.setTimeout(() => {
+          hoverOpenTimeoutRef.current = null;
+          openHoverPopover();
+        }, delayMs);
+      } else {
+        openHoverPopover();
+      }
+    },
+    [clearHoverOpenTimeout, openHoverPopover],
+  );
 
   const closeHoverPopover = useCallback(() => {
     clearHoverCloseTimeout();
@@ -274,15 +312,16 @@ export function Popover({
 
     let targetRect = triggerRef.current.getBoundingClientRect();
     if (followCursor && cursorPosRef.current) {
+      const y = cursorPosRef.current.y + FOLLOW_CURSOR_TOP_OFFSET;
       targetRect = {
-        top: cursorPosRef.current.y + 12,
-        bottom: cursorPosRef.current.y + 12,
+        top: y,
+        bottom: y,
         left: cursorPosRef.current.x,
         right: cursorPosRef.current.x,
         width: 0,
         height: 0,
         x: cursorPosRef.current.x,
-        y: cursorPosRef.current.y + 12,
+        y,
         toJSON: () => {},
       } as DOMRect;
     }
@@ -340,15 +379,13 @@ export function Popover({
   useEffect(() => {
     return () => {
       clearHoverCloseTimeout();
-      if (hoverOpenTimeoutRef.current !== null) {
-        window.clearTimeout(hoverOpenTimeoutRef.current);
-      }
+      clearHoverOpenTimeout();
       if (recomputeRafRef.current !== null) {
         window.cancelAnimationFrame(recomputeRafRef.current);
         recomputeRafRef.current = null;
       }
     };
-  }, [clearHoverCloseTimeout]);
+  }, [clearHoverCloseTimeout, clearHoverOpenTimeout]);
 
   // Close on outside click for click trigger (but not if clicked inside popover)
   useEffect(() => {
@@ -369,64 +406,61 @@ export function Popover({
     if (trigger === 'hover' && !disabled) {
       if (isIgnored(e.target)) return;
       clearHoverCloseTimeout();
-      if (hoverOpenTimeoutRef.current !== null) {
-        window.clearTimeout(hoverOpenTimeoutRef.current);
+      if (followCursor) {
+        cursorPosRef.current = { x: e.clientX, y: e.clientY };
       }
-      if (openDelayMs > 0) {
-        hoverOpenTimeoutRef.current = window.setTimeout(() => {
-          hoverOpenTimeoutRef.current = null;
-          openHoverPopover();
-        }, openDelayMs);
+      if (requireHoverIdleMs > 0) {
+        if (!isControlled && internalShow) {
+          setInternalShow(false);
+        }
+        scheduleHoverOpen(requireHoverIdleMs);
       } else {
-        openHoverPopover();
+        scheduleHoverOpen(openDelayMs);
       }
     }
   };
   const handleMouseLeave = () => {
-    if (hoverOpenTimeoutRef.current !== null) {
-      window.clearTimeout(hoverOpenTimeoutRef.current);
-      hoverOpenTimeoutRef.current = null;
-    }
+    clearHoverOpenTimeout();
     cursorPosRef.current = null;
     scheduleHoverClose();
   };
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isIgnored(e.target)) {
-      if (hoverOpenTimeoutRef.current !== null) {
-        window.clearTimeout(hoverOpenTimeoutRef.current);
-        hoverOpenTimeoutRef.current = null;
-      }
+      clearHoverOpenTimeout();
       cursorPosRef.current = null;
       scheduleHoverClose();
+      return;
+    }
+
+    if (followCursor) {
+      cursorPosRef.current = { x: e.clientX, y: e.clientY };
+    }
+
+    if (trigger === 'hover' && !disabled && requireHoverIdleMs > 0) {
+      clearHoverCloseTimeout();
+      if (!isControlled && internalShow) {
+        setInternalShow(false);
+      }
+      scheduleHoverOpen(requireHoverIdleMs);
       return;
     }
 
     if (trigger === 'hover' && !disabled) {
       clearHoverCloseTimeout();
       if (!isControlled && !internalShow && hoverOpenTimeoutRef.current === null) {
-        if (openDelayMs > 0) {
-          hoverOpenTimeoutRef.current = window.setTimeout(() => {
-            hoverOpenTimeoutRef.current = null;
-            openHoverPopover();
-          }, openDelayMs);
-        } else {
-          openHoverPopover();
-        }
+        scheduleHoverOpen(openDelayMs);
       }
     }
 
-    if (followCursor) {
-      cursorPosRef.current = { x: e.clientX, y: e.clientY };
-      if (isVisible) {
-        scheduleRecomputePos();
-      }
+    if (followCursor && isVisible) {
+      scheduleRecomputePos();
     }
   };
   const handleClick = () => {
     if (trigger === 'click' && !disabled) setInternalShow((v) => !v);
   };
   const handleFocus = () => {
-    if (trigger === 'hover' && !disabled) {
+    if (focusTrigger && trigger === 'hover' && !disabled) {
       openHoverPopover();
     }
   };
@@ -450,10 +484,11 @@ export function Popover({
       top: pos.top,
       left: pos.left,
       visibility: pos.visibility,
+      zIndex: zIndexAboveTrigger ? getZIndexAboveElement(triggerRef.current) : undefined,
       '--popover-arrow-left': pos.arrowLeft != null ? `${pos.arrowLeft}px` : undefined,
       '--popover-arrow-top': pos.arrowTop != null ? `${pos.arrowTop}px` : undefined,
     };
-  }, [pos]);
+  }, [pos, zIndexAboveTrigger]);
 
   const popoverPortal =
     shouldRender && pos

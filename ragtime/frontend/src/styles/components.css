@@ -1155,6 +1155,18 @@ textarea:focus {
   gap: 4px;
 }
 
+.userspace-tool-dropdown.popover-container {
+  align-items: stretch;
+}
+
+.userspace-tool-dropdown-surface {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-height: inherit;
+}
+
 .userspace-tool-dropdown-title {
   display: flex;
   align-items: center;

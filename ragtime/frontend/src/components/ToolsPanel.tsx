@@ -2142,12 +2142,13 @@ export function ToolsPanel({
       <Popover
         key={tool.id}
         content="Right-click for tool actions."
-        position="bottom"
+        position="top"
         trigger="hover"
-        openDelayMs={500}
         followCursor={true}
+        requireHoverIdleMs={1000}
+        focusTrigger={false}
         disabled={showFooterActions}
-        ignoreSelector=".tool-badge, .tool-card-heartbeat, .editable-field-wrapper, .inline-edit-btn, button, input, textarea, a"
+        ignoreSelector=".tool-badge, .tool-card-heartbeat, .inline-edit-btn, button, input, textarea, a"
         className={`tool-card-drag-wrap${isBeingDragged ? ' dragging' : ''}${isGroupTarget ? ' group-target' : ''}`}
         draggable
         onDragStart={(e) => handleDragStart(e, tool.id)}

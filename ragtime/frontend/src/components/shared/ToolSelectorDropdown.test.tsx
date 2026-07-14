@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useMemo, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +18,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 const groupedTool: ToolSelectorTool = {
@@ -153,78 +154,101 @@ function ControlledDropdown({
 }
 
 describe('ToolSelectorDropdown bulk selection', () => {
-  it('deselects configured tools before built-in tools, then reselects all presented tools', async () => {
-    const user = userEvent.setup();
-    render(<ControlledDropdown />);
-
-    await user.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
-
-    await user.click(screen.getByRole('button', { name: 'Deselect all' }));
-    expectCheckbox('Select all tools in Alpha Group', false);
-    expectCheckbox(/Ungrouped Tool/, false);
-    expectCheckbox('Web Search', true);
-    expect(screen.getByRole('button', { name: 'Deselect all' })).toBeDefined();
-
-    await user.click(screen.getByRole('button', { name: 'Deselect all' }));
-    expectCheckbox('Web Search', false);
-    expect(screen.getByRole('button', { name: 'Select all' })).toBeDefined();
-
-    await user.click(screen.getByRole('button', { name: 'Select all' }));
-    expectCheckbox('Select all tools in Alpha Group', true);
-    expectCheckbox(/Ungrouped Tool/, true);
-    expectCheckbox('Web Search', true);
-  });
-
-  it('falls back to a two-step cycle when only built-in tools are presented', async () => {
-    const user = userEvent.setup();
-    render(<ControlledDropdown availableTools={[]} />);
-
-    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
-
-    await user.click(screen.getByRole('button', { name: 'Deselect all' }));
-    expectCheckbox('Web Search', false);
-    expect(screen.getByRole('button', { name: 'Select all' })).toBeDefined();
-
-    await user.click(screen.getByRole('button', { name: 'Select all' }));
-    expectCheckbox('Web Search', true);
-  });
-
-  it('falls back to a two-step cycle when only configured tools are presented', async () => {
-    const user = userEvent.setup();
-    render(<ControlledDropdown builtInTools={[]} initialBuiltInToolIds={[]} />);
-
-    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
-
-    await user.click(screen.getByRole('button', { name: 'Deselect all' }));
-    expectCheckbox('Select all tools in Alpha Group', false);
-    expectCheckbox(/Ungrouped Tool/, false);
-    expect(screen.getByRole('button', { name: 'Select all' })).toBeDefined();
-
-    await user.click(screen.getByRole('button', { name: 'Select all' }));
-    expectCheckbox('Select all tools in Alpha Group', true);
-    expectCheckbox(/Ungrouped Tool/, true);
-  });
-
-  it('selects all presented tools from a partial custom selection', async () => {
-    const user = userEvent.setup();
-    render(
-      <ControlledDropdown
-        initialSelection={{
-          mode: 'custom',
+  it.each([
+    {
+      label: 'deselects configured tools before built-in tools, then reselects all presented tools',
+      props: {},
+      triggerTitle: 'Conversation Tools (3/3 selected)',
+      firstAction: 'Deselect all',
+      firstExpected: [
+        ['Select all tools in Alpha Group', false],
+        [/Ungrouped Tool/, false],
+        ['Web Search', true],
+      ] as const,
+      secondAction: 'Deselect all',
+      secondExpected: [['Web Search', false]] as const,
+      finalAction: 'Select all',
+      finalExpected: [
+        ['Select all tools in Alpha Group', true],
+        [/Ungrouped Tool/, true],
+        ['Web Search', true],
+      ] as const,
+    },
+    {
+      label: 'falls back to a two-step cycle when only built-in tools are presented',
+      props: { availableTools: [] },
+      triggerTitle: 'Conversation Tools (1/1 selected)',
+      firstAction: 'Deselect all',
+      firstExpected: [['Web Search', false]] as const,
+      finalAction: 'Select all',
+      finalExpected: [['Web Search', true]] as const,
+    },
+    {
+      label: 'falls back to a two-step cycle when only configured tools are presented',
+      props: { builtInTools: [], initialBuiltInToolIds: [] },
+      triggerTitle: 'Conversation Tools (2/2 selected)',
+      firstAction: 'Deselect all',
+      firstExpected: [
+        ['Select all tools in Alpha Group', false],
+        [/Ungrouped Tool/, false],
+      ] as const,
+      finalAction: 'Select all',
+      finalExpected: [
+        ['Select all tools in Alpha Group', true],
+        [/Ungrouped Tool/, true],
+      ] as const,
+    },
+    {
+      label: 'selects all presented tools from a partial custom selection',
+      props: {
+        initialSelection: {
+          mode: 'custom' as const,
           toolIds: [ungroupedTool.id],
           toolGroupIds: [],
-        }}
-        initialBuiltInToolIds={[]}
-      />,
-    );
+        },
+        initialBuiltInToolIds: [],
+      },
+      triggerTitle: 'Conversation Tools (1/3 selected)',
+      firstAction: 'Select all',
+      firstExpected: [
+        ['Select all tools in Alpha Group', true],
+        [/Ungrouped Tool/, true],
+        ['Web Search', true],
+      ] as const,
+    },
+  ])(
+    '$label',
+    async ({
+      props,
+      triggerTitle,
+      firstAction,
+      firstExpected,
+      secondAction,
+      secondExpected,
+      finalAction,
+      finalExpected,
+    }) => {
+      const user = userEvent.setup();
+      render(<ControlledDropdown {...props} />);
 
-    await user.click(screen.getByTitle('Conversation Tools (1/3 selected)'));
+      await user.click(screen.getByTitle(triggerTitle));
 
-    await user.click(screen.getByRole('button', { name: 'Select all' }));
-    expectCheckbox('Select all tools in Alpha Group', true);
-    expectCheckbox(/Ungrouped Tool/, true);
-    expectCheckbox('Web Search', true);
-  });
+      await user.click(screen.getByRole('button', { name: firstAction }));
+      firstExpected.forEach(([name, checked]) => expectCheckbox(name, checked));
+
+      if (secondAction && secondExpected) {
+        expect(screen.getByRole('button', { name: secondAction })).toBeDefined();
+        await user.click(screen.getByRole('button', { name: secondAction }));
+        secondExpected.forEach(([name, checked]) => expectCheckbox(name, checked));
+      }
+
+      if (finalAction && finalExpected) {
+        expect(screen.getByRole('button', { name: finalAction })).toBeDefined();
+        await user.click(screen.getByRole('button', { name: finalAction }));
+        finalExpected.forEach(([name, checked]) => expectCheckbox(name, checked));
+      }
+    },
+  );
 
   it('does not preserve out-of-scope hidden tool ids when selecting visible tools', async () => {
     const user = userEvent.setup();
@@ -402,28 +426,89 @@ describe('ToolSelectorDropdown bulk selection', () => {
     expect(titleRow?.textContent).toContain('Write');
   });
 
-  it('renders a workspace-scope write badge without the global icon', async () => {
-    const user = userEvent.setup();
-    render(
-      <ControlledDropdown
-        availableTools={[{ ...ungroupedTool, allow_write: true }]}
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolStatusBadge={() => ({
+  it.each([
+    {
+      label: 'renders a workspace-scope write badge without the global icon',
+      props: {
+        availableTools: [{ ...ungroupedTool, allow_write: true }],
+        builtInTools: [],
+        initialBuiltInToolIds: [],
+        getToolStatusBadge: () => ({
           label: 'Write',
-          tone: 'write',
-          scope: 'workspace',
+          tone: 'write' as const,
+          scope: 'workspace' as const,
           title: 'Write access enabled for this workspace',
-        })}
-      />,
-    );
+        }),
+      },
+      triggerTitle: 'Conversation Tools (1/1 selected)',
+      expectedTitle: 'Write access enabled for this workspace',
+      expectedLabel: 'Write',
+      expectWorkspaceClass: true,
+      expectIcon: false,
+    },
+    {
+      label: 'renders a read-only status badge label from getToolStatusBadge',
+      props: {
+        availableTools: [ungroupedTool],
+        builtInTools: [],
+        initialBuiltInToolIds: [],
+        getToolStatusBadge: () => ({
+          label: 'Read only',
+          tone: 'read' as const,
+          title: 'Write access unavailable',
+        }),
+      },
+      triggerTitle: 'Conversation Tools (1/1 selected)',
+      expectedTitle: 'Write access unavailable',
+      expectedLabel: 'Read only',
+      expectWorkspaceClass: false,
+      expectIcon: false,
+    },
+    {
+      label: 'omits status badges when getToolStatusBadge returns null',
+      props: {
+        availableTools: [ungroupedTool],
+        builtInTools: [],
+        initialBuiltInToolIds: [],
+        getToolStatusBadge: () => null,
+      },
+      triggerTitle: 'Conversation Tools (1/1 selected)',
+      expectedLabel: null,
+    },
+  ])(
+    '$label',
+    async ({
+      props,
+      triggerTitle,
+      expectedTitle,
+      expectedLabel,
+      expectWorkspaceClass,
+      expectIcon,
+    }) => {
+      const user = userEvent.setup();
+      render(<ControlledDropdown {...props} />);
 
-    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
+      await user.click(screen.getByTitle(triggerTitle));
 
-    const badge = screen.getByTitle('Write access enabled for this workspace');
-    expect(badge.classList.contains('userspace-tool-status-badge-workspace')).toBe(true);
-    expect(badge.querySelector('svg')).toBeNull();
-  });
+      const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
+      if (expectedLabel === null) {
+        expect(titleRow?.querySelector('.userspace-tool-status-badge')).toBeNull();
+        expect(titleRow?.textContent).toBe('Ungrouped Tool');
+        return;
+      }
+
+      expect(titleRow?.textContent).toContain(expectedLabel);
+      const badge = screen.getByTitle(expectedTitle!);
+      expect(badge.classList.contains('userspace-tool-status-badge-workspace')).toBe(
+        expectWorkspaceClass,
+      );
+      if (expectIcon) {
+        expect(badge.querySelector('svg')).not.toBeNull();
+      } else {
+        expect(badge.querySelector('svg')).toBeNull();
+      }
+    },
+  );
 
   it('lets status badges depend on selected workspace tool state', async () => {
     const user = userEvent.setup();
@@ -589,42 +674,77 @@ describe('ToolSelectorDropdown bulk selection', () => {
     expect(onNavigate).toHaveBeenCalledWith('tool:tool-ungrouped');
   });
 
-  it('renders a read-only status badge label from getToolStatusBadge', async () => {
-    const user = userEvent.setup();
+  it('hints that tools support right-click above the pointer when hovering the open dropdown', async () => {
+    vi.useFakeTimers();
+    userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
     render(
       <ControlledDropdown
-        availableTools={[ungroupedTool]}
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolStatusBadge={() => ({
-          label: 'Read only',
-          tone: 'read',
-          title: 'Write access unavailable',
-        })}
+        getToolMenuItems={() => [
+          {
+            label: 'Enable write access for this workspace',
+            checked: false,
+            onChange: vi.fn(),
+          },
+        ]}
       />,
     );
 
-    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
+    fireEvent.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
+    const dropdown = document.querySelector('.userspace-tool-dropdown') as HTMLElement;
+    dropdown.style.zIndex = '9000';
+    fireEvent.mouseEnter(dropdown, { clientX: 300, clientY: 250 });
+    fireEvent.mouseMove(dropdown, { clientX: 300, clientY: 250 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999);
+    });
+    expect(screen.queryByText('Right-click a tool for more options')).toBeNull();
 
-    const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
-    expect(titleRow?.textContent).toContain('Read only');
+    fireEvent.mouseMove(dropdown, { clientX: 302, clientY: 252 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999);
+    });
+    expect(screen.queryByText('Right-click a tool for more options')).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    const tooltip = screen.getByText('Right-click a tool for more options');
+    const popover = tooltip.closest('.popover') as HTMLElement;
+    expect(popover.style.left).toBe('302px');
+    expect(popover.style.top).toBe('236px');
+    expect(popover.style.zIndex).toBe('9001');
   });
 
-  it('omits status badges when getToolStatusBadge returns null', async () => {
+  it('does not hint at right-click when the menu has no right-click options', async () => {
+    const user = userEvent.setup();
+    render(<ControlledDropdown />);
+
+    await user.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
+    await user.hover(document.querySelector('.userspace-tool-dropdown-surface') as HTMLElement);
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByText('Right-click a tool for more options')).toBeNull();
+  });
+
+  it('does not hint at right-click when hovering the trigger while the menu is open', async () => {
     const user = userEvent.setup();
     render(
       <ControlledDropdown
-        availableTools={[ungroupedTool]}
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolStatusBadge={() => null}
+        getToolMenuItems={() => [
+          {
+            label: 'Enable write access for this workspace',
+            checked: false,
+            onChange: vi.fn(),
+          },
+        ]}
       />,
     );
 
-    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
+    await user.click(screen.getByTitle('Conversation Tools (3/3 selected)'));
+    await user.hover(screen.getByTitle('Conversation Tools (3/3 selected)'));
 
-    const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
-    expect(titleRow?.querySelector('.userspace-tool-status-badge')).toBeNull();
-    expect(titleRow?.textContent).toBe('Ungrouped Tool');
+    await waitFor(() =>
+      expect(screen.queryByText('Right-click a tool for more options')).toBeNull(),
+    );
   });
 });
