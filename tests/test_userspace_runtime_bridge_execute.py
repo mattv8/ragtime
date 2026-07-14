@@ -103,8 +103,8 @@ class _RuntimeBridgeRecordingMixin:
     def record_execution_proof(self, workspace_id: str, component_id: str, row_count: int, query: str) -> None:  # type: ignore[override]
         self.proofs_recorded.append((workspace_id, component_id, row_count, query))
 
-    def clear_live_data_execution_warning(self, workspace_id: str) -> None:  # type: ignore[override]
-        pass
+    def clear_live_data_execution_warning(self, workspace_id: str) -> bool:  # type: ignore[override]
+        return False
 
     async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
         self.diagnostic_events.append((workspace_id, events))

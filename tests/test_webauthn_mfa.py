@@ -271,8 +271,8 @@ class FactorNoExisting:
 
 class RecordingRecovery:
     def __init__(self, id_template: str = "rc-1") -> None:
-        self.deleted = []
-        self.created = []
+        self.deleted: list[dict[str, object]] = []
+        self.created: list[dict[str, object]] = []
         self._id_template = id_template
 
     async def delete_many(self, where):

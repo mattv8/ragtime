@@ -3,7 +3,8 @@ import sys
 import tempfile
 import types
 import unittest
-from contextlib import ExitStack, contextmanager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -93,9 +94,9 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
         return [SimpleNamespace(path=str(path.relative_to(self.files_dir))) for path in self.files_dir.rglob("*") if path.is_file()]
 
     @contextmanager
-    def _service_environment(self, *extra_patchers: mock._patch):
+    def _service_environment(self, *extra_patchers: AbstractContextManager[object]) -> Iterator[None]:
         with ExitStack() as stack:
-            for patcher in (
+            base_patchers: tuple[AbstractContextManager[object], ...] = (
                 mock.patch.object(userspace_service, "_base_dir", Path(self.temp_dir.name)),
                 mock.patch.object(userspace_service, "_workspaces_dir", self.workspaces_dir),
                 mock.patch.object(userspace_service, "_enforce_workspace_access", new=mock.AsyncMock(return_value=self._workspace())),
@@ -119,8 +120,10 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(userspace_service, "get_workspace", new=mock.AsyncMock(return_value=self._workspace())),
                 mock.patch("ragtime.rag.components.repository.list_healthy_enabled_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
                 mock.patch("ragtime.rag.components.repository.get_tool_ids_for_groups", new=mock.AsyncMock(return_value=[])),
-                *extra_patchers,
-            ):
+            )
+            for patcher in base_patchers:
+                stack.enter_context(patcher)
+            for patcher in extra_patchers:
                 stack.enter_context(patcher)
             yield
 
