@@ -1538,6 +1538,7 @@ interface SSHAuthPanelProps {
   onCopyPublicKey: () => void;
   toolName?: string;
   showHostPort?: boolean; // Whether to show host/port fields (true for generic SSH, false for Odoo which shows them separately)
+  compact?: boolean;
 }
 
 function SSHAuthPanel({
@@ -1551,9 +1552,13 @@ function SSHAuthPanel({
   onCopyPublicKey,
   toolName: _toolName = 'ragtime',
   showHostPort = false,
+  compact = false,
 }: SSHAuthPanelProps) {
+  const authPanelClassName = compact ? 'ssh-auth-panel compact' : 'ssh-auth-panel';
+  const keyPanelClassName = compact ? 'ssh-key-panel flat' : 'ssh-key-panel';
+
   return (
-    <div className="ssh-auth-panel">
+    <div className={authPanelClassName}>
       {showHostPort && (
         <>
           <div
@@ -1632,7 +1637,7 @@ function SSHAuthPanel({
         </div>
 
         {authMode === 'generate' && (
-          <div className="ssh-key-panel">
+          <div className={keyPanelClassName}>
             <p className="field-help">
               Generate a new SSH keypair. The private key will be stored securely with this tool
               configuration. Copy the public key to the remote server's{' '}
@@ -1678,7 +1683,7 @@ function SSHAuthPanel({
         )}
 
         {authMode === 'upload' && (
-          <div className="ssh-key-panel">
+          <div className={keyPanelClassName}>
             <div className="form-group">
               <label>Private Key Content</label>
               <textarea
@@ -1714,7 +1719,7 @@ function SSHAuthPanel({
         )}
 
         {authMode === 'path' && (
-          <div className="ssh-key-panel">
+          <div className={keyPanelClassName}>
             <div className="form-group">
               <label>SSH Key File Path</label>
               <input
@@ -1743,7 +1748,7 @@ function SSHAuthPanel({
         )}
 
         {authMode === 'password' && (
-          <div className="ssh-key-panel">
+          <div className={keyPanelClassName}>
             <div className="form-group">
               <label>SSH Password</label>
               <input
@@ -1821,8 +1826,8 @@ function RemoteDockerSSHPanel({
 
       {enabled && (
         <>
-          <div className="form-row">
-            <div className="form-group" style={{ flex: 2 }}>
+          <div className="form-row remote-docker-ssh-row">
+            <div className="form-group">
               <label>SSH Host</label>
               <input
                 type="text"
@@ -1831,7 +1836,7 @@ function RemoteDockerSSHPanel({
                 placeholder="docker.example.com"
               />
             </div>
-            <div className="form-group form-group-small" style={{ flex: 1 }}>
+            <div className="form-group">
               <label>SSH Port</label>
               <input
                 type="number"
@@ -1847,16 +1852,15 @@ function RemoteDockerSSHPanel({
                 max={65535}
               />
             </div>
-          </div>
-
-          <div className="form-group">
-            <label>SSH User</label>
-            <input
-              type="text"
-              value={config.docker_ssh_user || ''}
-              onChange={(e) => onConfigChange({ ...config, docker_ssh_user: e.target.value })}
-              placeholder="ubuntu"
-            />
+            <div className="form-group">
+              <label>SSH User</label>
+              <input
+                type="text"
+                value={config.docker_ssh_user || ''}
+                onChange={(e) => onConfigChange({ ...config, docker_ssh_user: e.target.value })}
+                placeholder="ubuntu"
+              />
+            </div>
           </div>
 
           <SSHAuthPanel
@@ -1888,6 +1892,7 @@ function RemoteDockerSSHPanel({
             onCopyPublicKey={onCopyPublicKey}
             toolName={toolName}
             showHostPort={false}
+            compact
           />
         </>
       )}
@@ -2034,6 +2039,7 @@ function SSHTunnelPanel({
             onCopyPublicKey={onCopyPublicKey}
             toolName={toolName}
             showHostPort={false}
+            compact
           />
         </>
       )}

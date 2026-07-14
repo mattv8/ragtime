@@ -2781,6 +2781,59 @@ legend {
   margin: var(--space-lg) 0;
 }
 
+.remote-docker-ssh-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(88px, 0.75fr) minmax(0, 1.1fr);
+  gap: var(--space-sm);
+  align-items: start;
+}
+
+.remote-docker-ssh-row .form-group {
+  margin-bottom: 0;
+}
+
+.ssh-auth-panel.compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.ssh-auth-panel.compact .ssh-key-section {
+  margin: var(--space-sm) 0 0;
+}
+
+.ssh-auth-panel.compact .ssh-key-section > label {
+  margin-bottom: var(--space-xs);
+}
+
+.ssh-auth-panel.compact .ssh-key-tabs {
+  margin-bottom: var(--space-sm);
+}
+
+.ssh-auth-panel.compact .ssh-key-tab {
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.ssh-auth-panel.compact .ssh-key-panel.flat {
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.ssh-auth-panel.compact .ssh-key-panel.flat .form-group:last-child,
+.ssh-auth-panel.compact .ssh-key-panel.flat .public-key-display:last-child,
+.ssh-auth-panel.compact .ssh-key-panel.flat > .field-help:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 768px) {
+  .form-row.remote-docker-ssh-row {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
 .ssh-key-section > label {
   display: block;
   margin-bottom: var(--space-sm);
