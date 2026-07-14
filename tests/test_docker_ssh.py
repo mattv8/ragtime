@@ -70,10 +70,105 @@ def test_execute_docker_command_on_remote_host_quotes_command_and_embeds_input_h
     )
 
     assert result.success is True
-    assert captured["command"] == (
-        "docker exec -i odoo-prod bash -c 'echo '\"'\"'$POSTGRES_DB'\"'\"'' <<'RAGTIME_DOCKER_STDIN'\nprint('hello')\n\nRAGTIME_DOCKER_STDIN"
-    )
+    heredoc_block = "docker exec -i odoo-prod bash -c 'echo '\"'\"'$POSTGRES_DB'\"'\"'' <<'RAGTIME_DOCKER_STDIN'\nprint('hello')\n\nRAGTIME_DOCKER_STDIN"
+    assert captured["command"] is not None
+    assert heredoc_block in captured["command"]
+    assert captured["command"].startswith("printf '%s\\n' __RAGTIME_DOCKER_OUTPUT_BEGIN__\n")
+    assert "docker exec -i odoo-prod bash -c" in captured["command"]
+    assert "<<'RAGTIME_DOCKER_STDIN'\nprint('hello')\n\nRAGTIME_DOCKER_STDIN\nstatus=$?" in captured["command"]
+    assert captured["command"].endswith("printf '\\n%s\\n' __RAGTIME_DOCKER_OUTPUT_END__\nexit $status")
     assert captured["input_data"] is None
+
+
+def test_execute_docker_command_on_remote_host_strips_shell_banner_from_stdout(monkeypatch) -> None:
+    def fake_execute_ssh_command(config: SSHConfig, command: str, input_data: str | None = None) -> SSHResult:
+        assert "docker ps --format" in command
+        assert input_data is None
+        return SSHResult(
+            stdout=(
+                'Docker LXC Container\nProvided by community-scripts\n__RAGTIME_DOCKER_OUTPUT_BEGIN__\n{"Names":"odoo-web"}\n\n__RAGTIME_DOCKER_OUTPUT_END__\n'
+            ),
+            stderr="",
+            exit_code=0,
+            success=True,
+        )
+
+    monkeypatch.setattr("ragtime.core.docker_ssh.execute_ssh_command", fake_execute_ssh_command)
+
+    ssh_config = SSHConfig(host="example.com", user="ubuntu", password="secret")
+    result = execute_docker_command_on_remote_host(ssh_config, ["docker", "ps", "--format", "{{json .}}"])
+
+    assert result.success is True
+    assert result.stdout == '{"Names":"odoo-web"}\n'
+
+
+def test_execute_docker_command_on_remote_host_passes_stdout_through_when_markers_missing(monkeypatch) -> None:
+    def fake_execute_ssh_command(config: SSHConfig, command: str, input_data: str | None = None) -> SSHResult:
+        return SSHResult(stdout="plain output without markers\n", stderr="", exit_code=0, success=True)
+
+    monkeypatch.setattr("ragtime.core.docker_ssh.execute_ssh_command", fake_execute_ssh_command)
+
+    ssh_config = SSHConfig(host="example.com", user="ubuntu", password="secret")
+    result = execute_docker_command_on_remote_host(ssh_config, ["docker", "ps"])
+
+    assert result.success is True
+    assert result.stdout == "plain output without markers\n"
+
+
+def test_execute_docker_command_on_remote_host_keeps_output_after_begin_when_end_marker_missing(monkeypatch) -> None:
+    def fake_execute_ssh_command(config: SSHConfig, command: str, input_data: str | None = None) -> SSHResult:
+        return SSHResult(
+            stdout=('login banner\n__RAGTIME_DOCKER_OUTPUT_BEGIN__\n{"Names":"odoo-web"}\n'),
+            stderr="",
+            exit_code=0,
+            success=True,
+        )
+
+    monkeypatch.setattr("ragtime.core.docker_ssh.execute_ssh_command", fake_execute_ssh_command)
+
+    ssh_config = SSHConfig(host="example.com", user="ubuntu", password="secret")
+    result = execute_docker_command_on_remote_host(ssh_config, ["docker", "ps", "--format", "{{json .}}"])
+
+    assert result.success is True
+    assert result.stdout == '{"Names":"odoo-web"}\n'
+
+
+def test_execute_docker_command_on_remote_host_handles_crlf_line_endings(monkeypatch) -> None:
+    def fake_execute_ssh_command(config: SSHConfig, command: str, input_data: str | None = None) -> SSHResult:
+        return SSHResult(
+            stdout=('banner\r\n__RAGTIME_DOCKER_OUTPUT_BEGIN__\r\n{"Names":"odoo-web"}\r\n\r\n__RAGTIME_DOCKER_OUTPUT_END__\r\n'),
+            stderr="",
+            exit_code=0,
+            success=True,
+        )
+
+    monkeypatch.setattr("ragtime.core.docker_ssh.execute_ssh_command", fake_execute_ssh_command)
+
+    ssh_config = SSHConfig(host="example.com", user="ubuntu", password="secret")
+    result = execute_docker_command_on_remote_host(ssh_config, ["docker", "ps", "--format", "{{json .}}"])
+
+    assert result.success is True
+    assert result.stdout == '{"Names":"odoo-web"}\r\n'
+
+
+def test_execute_docker_command_on_remote_host_preserves_failure_status_and_stderr(monkeypatch) -> None:
+    def fake_execute_ssh_command(config: SSHConfig, command: str, input_data: str | None = None) -> SSHResult:
+        return SSHResult(
+            stdout=("Docker LXC Container\n__RAGTIME_DOCKER_OUTPUT_BEGIN__\npartial output\n\n__RAGTIME_DOCKER_OUTPUT_END__\n"),
+            stderr="docker: command failed",
+            exit_code=1,
+            success=False,
+        )
+
+    monkeypatch.setattr("ragtime.core.docker_ssh.execute_ssh_command", fake_execute_ssh_command)
+
+    ssh_config = SSHConfig(host="example.com", user="ubuntu", password="secret")
+    result = execute_docker_command_on_remote_host(ssh_config, ["docker", "ps"])
+
+    assert result.success is False
+    assert result.exit_code == 1
+    assert result.stderr == "docker: command failed"
+    assert result.stdout == "partial output\n"
 
 
 def test_remote_docker_heartbeat_uses_longer_timeout() -> None:
