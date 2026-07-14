@@ -54,7 +54,7 @@ export interface ToolSelectorMenuItem {
 export interface ToolSelectorStatusBadge {
   label: string;
   tone: 'read' | 'write';
-  scope?: 'global' | 'conversation';
+  scope?: 'global' | 'conversation' | 'workspace';
   title?: string;
 }
 

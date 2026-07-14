@@ -20,3 +20,6 @@ limiter = Limiter(
 # Rate limit constants
 LOGIN_RATE_LIMIT = "5/minute"  # 5 login attempts per minute per IP
 SHARE_AUTH_RATE_LIMIT = LOGIN_RATE_LIMIT
+# v1 runtime-bridge calls are keyed per IP, which is acceptable because they
+# originate from the runtime host rather than arbitrary browser clients.
+RUNTIME_BRIDGE_RATE_LIMIT = "120/minute"

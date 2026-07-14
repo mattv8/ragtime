@@ -1394,6 +1394,119 @@ async def validate_live_data_binding(
     return parsed
 
 
+def validate_server_delegated_live_data(
+    server_sources: dict[str, str],
+    component_ids: list[str],
+) -> tuple[bool, list[str]]:
+    """Check whether server sources delegate declared component IDs via the runtime bridge."""
+    missing_component_ids: list[str] = []
+    source_texts = [str(content or "") for content in server_sources.values()]
+
+    for component_id in component_ids:
+        component_literal = str(component_id or "")
+        matched = any(
+            component_literal and component_literal in source_text and ("RAGTIME_BRIDGE_URL" in source_text or "execute-component" in source_text)
+            for source_text in source_texts
+        )
+        if not matched:
+            missing_component_ids.append(component_literal)
+
+    return (not missing_component_ids, missing_component_ids)
+
+
+LIVE_DATA_BINDING_MISSING_MESSAGE = (
+    "Live data binding not found in module source. "
+    "Dashboard modules must either call "
+    "context.components[componentId].execute() or "
+    "fetch same-origin data from a workspace server "
+    "file that delegates to the runtime bridge "
+    "execute-component endpoint for each declared "
+    "component_id. Hardcoded/static data is not "
+    "permitted when workspace tools are available."
+)
+
+LIVE_DATA_CONTEXT_ACCESS_MISSING_MESSAGE = (
+    "Module source does not access "
+    "context.components anywhere. Dashboard "
+    "modules with live_data_connections must wire "
+    "data through "
+    "context.components[componentId].execute() or "
+    "same-origin fetches backed by workspace server "
+    "bridge delegation for each component_id."
+)
+
+
+def _resolve_same_directory_server_import_candidates(
+    entrypoint_path: str,
+    import_specifier: str,
+) -> list[str]:
+    cleaned = str(import_specifier or "").strip().split("#", 1)[0].split("?", 1)[0].strip()
+    if not cleaned or not cleaned.startswith(("./", "../")):
+        return []
+
+    entrypoint_dir = posixpath.dirname(entrypoint_path)
+    resolved_import = posixpath.normpath(posixpath.join(entrypoint_dir, cleaned))
+    if posixpath.dirname(resolved_import) != entrypoint_dir:
+        return []
+
+    lower_resolved = resolved_import.lower()
+    if lower_resolved.endswith((".js", ".ts")):
+        return [resolved_import]
+    if "." in posixpath.basename(resolved_import):
+        return []
+    return [f"{resolved_import}.js", f"{resolved_import}.ts"]
+
+
+async def load_workspace_server_delegation_sources(
+    workspace_id: str,
+    user_id: str,
+) -> dict[str, str]:
+    """Load the resolved runtime entrypoint file and its same-directory JS/TS imports."""
+    resolved_entrypoint: str | None = None
+    try:
+        entrypoint_config_file = await userspace_service.get_workspace_file(
+            workspace_id,
+            ".ragtime/runtime-entrypoint.json",
+            user_id,
+        )
+        entrypoint_config = json.loads(entrypoint_config_file.content or "{}")
+        if isinstance(entrypoint_config, dict):
+            resolved_entrypoint = _resolve_entrypoint_source_file(entrypoint_config)
+    except Exception:
+        resolved_entrypoint = None
+
+    if not resolved_entrypoint:
+        return {}
+
+    try:
+        entrypoint_source = await userspace_service.get_workspace_file(
+            workspace_id,
+            resolved_entrypoint,
+            user_id,
+        )
+    except HTTPException:
+        return {}
+
+    server_sources: dict[str, str] = {
+        resolved_entrypoint: entrypoint_source.content or "",
+    }
+    for specifier in _IMPORT_SPECIFIER_PATTERN.findall(entrypoint_source.content or ""):
+        for candidate_path in _resolve_same_directory_server_import_candidates(resolved_entrypoint, specifier):
+            if candidate_path in server_sources:
+                break
+            try:
+                imported_source = await userspace_service.get_workspace_file(
+                    workspace_id,
+                    candidate_path,
+                    user_id,
+                )
+            except HTTPException:
+                continue
+            server_sources[candidate_path] = imported_source.content or ""
+            break
+    return server_sources
+
+
 async def validate_userspace_typescript_content(
     content: str,
     file_path: str,
@@ -9875,7 +9988,7 @@ class RAGComponents:
                     "Provide live_data_connections with component_kind=tool_config, component_id, and request.",
                     "Provide live_data_checks with connection_check_passed=true and transformation_check_passed=true for each declared component_id.",
                     "Use only selected_tool_ids as component_id values.",
-                    "Source code must structurally call context.components[componentId].execute() for live data wiring.",
+                    "Source code must either call context.components[componentId].execute() directly or fetch same-origin data from a workspace server file that delegates to the runtime bridge for each declared component_id.",
                 ],
                 "entry_file_state": entry_file_state,
             }
@@ -10993,28 +11106,23 @@ class RAGComponents:
                     has_imports = binding.get("has_local_imports", False)
                     has_access = binding.get("has_context_components_access", False)
                     is_entry = normalized_path == "dashboard/main.ts"
+                    server_delegated_ok = False
+
+                    if not has_execute and not (is_entry and has_imports) and declared_ids:
+                        server_sources = await load_workspace_server_delegation_sources(workspace_id, user_id)
+                        server_delegated_ok, _missing_server_ids = validate_server_delegated_live_data(
+                            server_sources,
+                            sorted(declared_ids),
+                        )
 
                     # Entry file may delegate data fetching to imported
                     # sub-modules, so we accept local imports as evidence
                     # of deferred binding.  Non-entry files that declare
                     # live connections must call execute() directly.
-                    if not has_execute and not (is_entry and has_imports):
-                        contract_violations.append(
-                            "Live data binding not found in module source. "
-                            "Dashboard modules must call "
-                            "context.components[componentId].execute() to "
-                            "fetch data at runtime. Hardcoded/static data "
-                            "is not permitted when workspace tools are "
-                            "available."
-                        )
-                    elif not has_access and not has_imports:
-                        contract_violations.append(
-                            "Module source does not access "
-                            "context.components anywhere. Dashboard "
-                            "modules with live_data_connections must wire "
-                            "data through "
-                            "context.components[componentId].execute()."
-                        )
+                    if not has_execute and not (is_entry and has_imports) and not server_delegated_ok:
+                        contract_violations.append(LIVE_DATA_BINDING_MISSING_MESSAGE)
+                    elif not has_access and not has_imports and not server_delegated_ok:
+                        contract_violations.append(LIVE_DATA_CONTEXT_ACCESS_MISSING_MESSAGE)
 
                     ast_missing = binding.get("missing_component_ids", [])
                     if ast_missing and has_execute:

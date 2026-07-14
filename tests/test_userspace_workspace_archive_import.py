@@ -374,6 +374,7 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
                         sqlite_persistence_mode="include",
                         selected_tool_ids=[],
                         selected_tool_group_ids=[],
+                        tool_options={},
                         scm=None,
                     )
                 )

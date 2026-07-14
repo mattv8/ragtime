@@ -30,7 +30,7 @@ from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import decode_access_token, get_browser_matched_origin
 from ragtime.core.auth_methods import build_auth_method_statuses, normalize_auth_method_key
 from ragtime.core.logging import get_logger
-from ragtime.core.rate_limit import SHARE_AUTH_RATE_LIMIT, limiter
+from ragtime.core.rate_limit import RUNTIME_BRIDGE_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.security import get_current_user, get_current_user_optional, get_session_token
 from ragtime.core.user_identity import (
     USER_FINGERPRINT_SCOPE_WORKSPACE,
@@ -47,6 +47,8 @@ from ragtime.core.userspace_limits import (
 from ragtime.indexer.document_parser import extract_text_from_file_async
 from ragtime.userspace.html_templates import render_preview_host_unreachable_page_html
 from ragtime.userspace.models import (
+    ExecuteComponentRequest,
+    ExecuteComponentResponse,
     UserSpaceAuthMethod,
     UserSpaceBrowserAuthorization,
     UserSpaceBrowserAuthRequest,
@@ -1501,6 +1503,15 @@ def _extract_capability_token_from_request(request: Request) -> str | None:
     return None
 
 
+def _extract_bearer_token(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+    return None
+
+
 def _extract_capability_token_from_websocket(websocket: WebSocket) -> str | None:
     # Capability tokens must travel via Authorization/explicit header only.
     # See _extract_capability_token_from_request.
@@ -2031,6 +2042,24 @@ async def stop_runtime_session(
     user: Any = Depends(get_current_user),
 ):
     return await _runtime_service().stop_runtime_session(workspace_id, user.id)
+
+
+@router.post(
+    "/runtime-bridge/execute-component",
+    response_model=ExecuteComponentResponse,
+)
+@limiter.limit(RUNTIME_BRIDGE_RATE_LIMIT)
+async def runtime_bridge_execute_component(
+    request: Request,
+    payload: ExecuteComponentRequest,
+):
+    token = _extract_bearer_token(request)
+    claims = await _runtime_service().verify_runtime_bridge_token(token)
+    return await _userspace_service().execute_component_from_runtime_bridge(
+        str(claims["workspace_id"]),
+        payload,
+        session_id=str(claims["session_id"]),
+    )
 
 
 @router.get(

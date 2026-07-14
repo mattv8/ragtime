@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyUserSpaceToolAvailabilityCap,
+  canManageUserSpaceToolWriteForWorkspace,
   getCappedUserSpaceToolIdSet,
+  getNextWorkspaceToolOptions,
+  isUserSpaceToolWriteEnabledForWorkspace,
   type UserSpaceToolSelection,
 } from './userSpaceTools';
-import type { UserSpaceAvailableTool } from '@/types';
+import type { UserSpaceAvailableTool, WorkspaceToolOptionState } from '@/types';
 
 const tools: UserSpaceAvailableTool[] = [
   {
@@ -100,5 +103,46 @@ describe('userSpaceTools workspace capping', () => {
     expect(
       Array.from(getCappedUserSpaceToolIdSet(conversationSelection, tools, workspaceSelection)),
     ).toEqual(['tool-c']);
+  });
+
+  it('caps workspace write access to globally writable tools only', () => {
+    const options: Record<string, WorkspaceToolOptionState> = {
+      'tool-a': { write_access_enabled: true },
+      'tool-c': { write_access_enabled: true },
+    };
+
+    expect(
+      isUserSpaceToolWriteEnabledForWorkspace({ ...tools[0], allow_write: true }, options),
+    ).toBe(true);
+    expect(
+      isUserSpaceToolWriteEnabledForWorkspace({ ...tools[2], allow_write: false }, options),
+    ).toBe(false);
+  });
+
+  it('adds and removes workspace write option entries without leaving empty records', () => {
+    const enabled = getNextWorkspaceToolOptions({}, 'tool-a', true);
+    expect(enabled).toEqual({ 'tool-a': { write_access_enabled: true } });
+
+    const mixed = getNextWorkspaceToolOptions(
+      {
+        'tool-a': { write_access_enabled: true },
+        'tool-b': { write_access_enabled: true },
+      },
+      'tool-a',
+      false,
+    );
+    expect(mixed).toEqual({ 'tool-b': { write_access_enabled: true } });
+  });
+
+  it('omits workspace write management for globally read-only tools', () => {
+    expect(canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, true)).toBe(
+      true,
+    );
+    expect(canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true)).toBe(
+      false,
+    );
+    expect(canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, false)).toBe(
+      false,
+    );
   });
 });

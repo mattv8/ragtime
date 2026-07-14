@@ -1,5 +1,5 @@
 import { api } from '@/api';
-import type { ToolSelectionMode, UserSpaceAvailableTool } from '@/types';
+import type { ToolSelectionMode, UserSpaceAvailableTool, WorkspaceToolOptionState } from '@/types';
 
 export interface UserSpaceToolGroupInfo {
   id: string;
@@ -20,6 +20,44 @@ export interface UserSpaceToolSelection {
 }
 
 export type UserSpaceToolGroupCheckState = 'all' | 'some' | 'none';
+
+export function isUserSpaceToolWriteEnabledForWorkspace(
+  tool: UserSpaceAvailableTool,
+  toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
+): boolean {
+  return tool.allow_write === true && toolOptions?.[tool.id]?.write_access_enabled === true;
+}
+
+export function canManageUserSpaceToolWriteForWorkspace(
+  tool: UserSpaceAvailableTool,
+  canManageWorkspace: boolean,
+): boolean {
+  return canManageWorkspace && tool.allow_write === true;
+}
+
+export function getNextWorkspaceToolOptions(
+  toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
+  toolId: string,
+  enabled: boolean,
+): Record<string, WorkspaceToolOptionState> {
+  const nextOptions = { ...(toolOptions ?? {}) };
+  if (enabled) {
+    nextOptions[toolId] = { ...(nextOptions[toolId] ?? {}), write_access_enabled: true };
+    return nextOptions;
+  }
+
+  const current = nextOptions[toolId];
+  if (!current) {
+    return nextOptions;
+  }
+  const { write_access_enabled: _removed, ...rest } = current;
+  if (Object.keys(rest).length === 0) {
+    delete nextOptions[toolId];
+  } else {
+    nextOptions[toolId] = rest;
+  }
+  return nextOptions;
+}
 
 export async function fetchUserSpaceToolCatalog(): Promise<UserSpaceToolCatalog> {
   const [toolsResult, groupsResult] = await Promise.allSettled([

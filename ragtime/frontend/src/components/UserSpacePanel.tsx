@@ -71,7 +71,10 @@ import {
 import { useCodeMirrorLanguageExtension } from '@/utils/codemirrorLanguage';
 import type { InterruptChatStateSnapshot } from '@/utils/cookies';
 import {
+  canManageUserSpaceToolWriteForWorkspace,
   fetchUserSpaceToolCatalog,
+  getNextWorkspaceToolOptions,
+  isUserSpaceToolWriteEnabledForWorkspace,
   resolveDefaultSelectedToolIds,
   type UserSpaceToolSelection,
 } from '@/utils/userSpaceTools';
@@ -906,6 +909,7 @@ export function UserSpacePanel({
     workspaceId: string;
     selection: UserSpaceToolSelection;
   } | null>(null);
+  const [savingWorkspaceToolOptions, setSavingWorkspaceToolOptions] = useState(false);
   const workspaceToolSelectionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workspaceToolSelectionSaveSeqRef = useRef(0);
 
@@ -1750,6 +1754,7 @@ export function UserSpacePanel({
     pendingWorkspaceToolSelection.workspaceId === activeWorkspace?.id
       ? pendingWorkspaceToolSelection.selection
       : activeWorkspaceToolSelection;
+  const workspaceToolOptions = activeWorkspace?.tool_options ?? {};
 
   const resolvedSelectedToolIds = useMemo(
     () =>
@@ -4325,6 +4330,79 @@ export function UserSpacePanel({
     workspaceToolFocusRequestIdRef.current += 1;
     setWorkspaceToolFocusRequest({ toolId, requestId: workspaceToolFocusRequestIdRef.current });
   }, []);
+
+  const handleToggleWorkspaceToolWriteAccess = useCallback(
+    async (toolId: string, enabled: boolean) => {
+      if (!activeWorkspace || !isOwner) return;
+      const workspaceId = activeWorkspace.id;
+      const previousOptions = activeWorkspace.tool_options;
+      const nextOptions = getNextWorkspaceToolOptions(previousOptions, toolId, enabled);
+
+      setSavingWorkspaceToolOptions(true);
+      setWorkspaces((current) =>
+        current.map((workspace) =>
+          workspace.id === workspaceId ? { ...workspace, tool_options: nextOptions } : workspace,
+        ),
+      );
+      try {
+        const updated = await api.updateUserSpaceWorkspace(workspaceId, {
+          tool_options: nextOptions,
+        });
+        setWorkspaces((current) =>
+          current.map((workspace) => (workspace.id === updated.id ? updated : workspace)),
+        );
+      } catch (err) {
+        setWorkspaces((current) =>
+          current.map((workspace) =>
+            workspace.id === workspaceId
+              ? { ...workspace, tool_options: previousOptions }
+              : workspace,
+          ),
+        );
+        setError(err instanceof Error ? err.message : 'Failed to update workspace tool options');
+      } finally {
+        setSavingWorkspaceToolOptions(false);
+      }
+    },
+    [activeWorkspace, isOwner],
+  );
+
+  const getWorkspaceToolMenuItems = useCallback(
+    (tool: UserSpaceAvailableTool) => {
+      if (!activeWorkspace || !canManageUserSpaceToolWriteForWorkspace(tool, isOwner)) return [];
+      const checked = isUserSpaceToolWriteEnabledForWorkspace(tool, workspaceToolOptions);
+      return [
+        {
+          label: 'Enable write access for this workspace',
+          description:
+            'Allow the workspace backend to make changes with this tool. Applies to all backend calls in this workspace.',
+          checked,
+          disabled: savingWorkspaceToolOptions,
+          onChange: () => void handleToggleWorkspaceToolWriteAccess(tool.id, !checked),
+        },
+      ];
+    },
+    [
+      activeWorkspace,
+      handleToggleWorkspaceToolWriteAccess,
+      isOwner,
+      savingWorkspaceToolOptions,
+      workspaceToolOptions,
+    ],
+  );
+
+  const getWorkspaceToolStatusBadge = useCallback(
+    (tool: UserSpaceAvailableTool) => {
+      if (!isUserSpaceToolWriteEnabledForWorkspace(tool, workspaceToolOptions)) return null;
+      return {
+        label: 'Write',
+        tone: 'write' as const,
+        scope: 'workspace' as const,
+        title: 'Write access enabled for this workspace',
+      };
+    },
+    [workspaceToolOptions],
+  );
 
   const handleWorkspaceBuiltInToolsChange = useCallback(
     (controls: WorkspaceBuiltInToolControls | null) => {
@@ -8857,10 +8935,16 @@ export function UserSpacePanel({
               toolGroups={toolGroups}
               disabled={!activeWorkspaceId}
               readOnly={!canEditWorkspace || workspaceBuiltInToolControls?.readOnly === true}
-              saving={savingWorkspaceTools || workspaceBuiltInToolControls?.saving === true}
+              saving={
+                savingWorkspaceTools ||
+                savingWorkspaceToolOptions ||
+                workspaceBuiltInToolControls?.saving === true
+              }
               title="Workspace Tools"
               workspaceBuiltInSectionLabel="Built-in"
               focusRequest={workspaceToolFocusRequest}
+              getToolMenuItems={getWorkspaceToolMenuItems}
+              getToolStatusBadge={getWorkspaceToolStatusBadge}
             />
             <button
               className={`btn btn-sm btn-icon userspace-toolbar-action-btn ${sqliteHasTables ? 'btn-primary' : 'btn-secondary'}`}

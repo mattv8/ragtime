@@ -244,10 +244,16 @@ from ragtime.userspace.models import (
     WorkspaceScmRemoteRole,
     WorkspaceShareSlugAvailabilityResponse,
     WorkspaceSqliteImportTaskPhase,
+    WorkspaceToolOptionState,
 )
 from ragtime.userspace.preview_host import invalidate_preview_sessions_for_workspace
 from ragtime.userspace.sqlite_import import SqlImportResult
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
+from ragtime.userspace.workspace_tool_options import (
+    load_workspace_tool_options,
+    normalize_workspace_tool_options,
+    resolve_workspace_tool_write_access,
+)
 
 logger = get_logger(__name__)
 
@@ -294,6 +300,97 @@ class _ExecutionProofRecord:
         self.row_count = row_count
         self.timestamp = timestamp
         self.query_hash = query_hash
+
+
+class _ResolvedComponentExecutionConfig:
+    __slots__ = (
+        "resolved_id",
+        "tool_type",
+        "conn_config",
+        "tool_config",
+        "effective_allow_write",
+        "access_mode",
+    )
+
+    def __init__(
+        self,
+        *,
+        resolved_id: str,
+        tool_type: str,
+        conn_config: dict[str, Any],
+        tool_config: Any,
+        effective_allow_write: bool,
+        access_mode: str,
+    ) -> None:
+        self.resolved_id = resolved_id
+        self.tool_type = tool_type
+        self.conn_config = conn_config
+        self.tool_config = tool_config
+        self.effective_allow_write = effective_allow_write
+        self.access_mode = access_mode
+
+
+class _ExecuteComponentExecutionResult:
+    __slots__ = ("response", "proof_input", "access_mode", "tool_type")
+
+    def __init__(
+        self,
+        *,
+        response: ExecuteComponentResponse,
+        proof_input: str,
+        access_mode: str,
+        tool_type: str | None,
+    ) -> None:
+        self.response = response
+        self.proof_input = proof_input
+        self.access_mode = access_mode
+        self.tool_type = tool_type
+
+
+def _coerce_execute_component_execution_result(
+    result: _ExecuteComponentExecutionResult | tuple[ExecuteComponentResponse, str],
+    *,
+    access_mode: str = "read_only",
+    tool_type: str | None = None,
+) -> _ExecuteComponentExecutionResult:
+    if isinstance(result, _ExecuteComponentExecutionResult):
+        return result
+    response, proof_input = result
+    return _ExecuteComponentExecutionResult(
+        response=response,
+        proof_input=proof_input,
+        access_mode=access_mode,
+        tool_type=tool_type,
+    )
+
+
+_GENERIC_TOOL_ERROR_STATUSES = {"command_failed", "rejected", "failed", "error"}
+
+
+def _classify_generic_tool_output_error(output: Any) -> str | None:
+    payload = output
+    if isinstance(output, str):
+        trimmed = output.strip()
+        if trimmed.startswith("Error:"):
+            return trimmed
+        if not trimmed:
+            return None
+        try:
+            payload = json.loads(trimmed)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in _GENERIC_TOOL_ERROR_STATUSES:
+        return None
+
+    error_message = str(payload.get("error") or "").strip()
+    if error_message:
+        return error_message
+    return f"Tool execution {status.replace('_', ' ')}."
 
 
 class _LiveDataExecutionWarningRecord:
@@ -899,6 +996,7 @@ _SNAPSHOT_BRANCH_REF_PREFIX = "userspace/"
 _GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf899d8e13f7beb2c"
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
+_USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES = _USPACE_EXEC_SUPPORTED_SQL_TOOLS | {"odoo_shell", "ssh_shell"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_WORKSPACE_DASHBOARD_CONTENT = (
     "export function render(container: HTMLElement) {\n"
@@ -3118,6 +3216,7 @@ class UserSpaceService:
                             "sqlite_persistence_mode": source_workspace.sqlite_persistence_mode,
                             "selected_tool_ids": list(source_workspace.selected_tool_ids),
                             "selected_tool_group_ids": list(source_workspace.selected_tool_group_ids),
+                            "tool_options": dict(source_workspace.tool_options),
                         }
                     )
 
@@ -3944,6 +4043,31 @@ class UserSpaceService:
             resolution_warnings,
         ) = await self._resolve_workspace_archive_selection_id_sets(manifest)
         warnings.extend(resolution_warnings)
+        selected_tool_ids = self._filter_workspace_archive_selection_ids(
+            workspace_meta.get("selected_tool_ids"),
+            allowed_tool_ids,
+        )
+        selected_tool_group_ids = self._filter_workspace_archive_selection_ids(
+            workspace_meta.get("selected_tool_group_ids"),
+            allowed_tool_group_ids,
+        )
+        raw_tool_options = cast(dict[str, Any], workspace_meta.get("tool_options") or {})
+        normalized_tool_options = (
+            await self._normalize_workspace_tool_options_for_request(
+                raw_tool_options,
+                tool_selection_mode="custom",
+                selected_tool_ids=selected_tool_ids,
+                selected_tool_group_ids=selected_tool_group_ids,
+            )
+            if raw_tool_options
+            else {}
+        )
+        request_tool_options = {
+            tool_id: WorkspaceToolOptionState(
+                write_access_enabled=bool(options.get("write_access_enabled")),
+            )
+            for tool_id, options in normalized_tool_options.items()
+        }
         update_request = UpdateWorkspaceRequest(
             name=None,
             description=workspace_meta.get("description"),
@@ -3951,14 +4075,9 @@ class UserSpaceService:
                 SqlitePersistenceMode,
                 str(workspace_meta.get("sqlite_persistence_mode") or "include"),
             ),
-            selected_tool_ids=self._filter_workspace_archive_selection_ids(
-                workspace_meta.get("selected_tool_ids"),
-                allowed_tool_ids,
-            ),
-            selected_tool_group_ids=self._filter_workspace_archive_selection_ids(
-                workspace_meta.get("selected_tool_group_ids"),
-                allowed_tool_group_ids,
-            ),
+            selected_tool_ids=selected_tool_ids,
+            selected_tool_group_ids=selected_tool_group_ids,
+            tool_options=request_tool_options,
         )
         await self.update_workspace(workspace_id, update_request, user_id, is_admin=is_admin)
 
@@ -4035,6 +4154,9 @@ class UserSpaceService:
                     "sqlite_persistence_mode": workspace.sqlite_persistence_mode,
                     "selected_tool_ids": list(workspace.selected_tool_ids),
                     "selected_tool_group_ids": list(workspace.selected_tool_group_ids),
+                    "tool_options": {
+                        tool_id: {"write_access_enabled": bool(tool_option.write_access_enabled)} for tool_id, tool_option in workspace.tool_options.items()
+                    },
                 },
                 "env_vars": await self._serialize_workspace_env_var_placeholders(workspace_id),
                 "mounts": [self._serialize_workspace_mount_placeholder(mount) for mount in mounts],
@@ -7452,6 +7574,38 @@ class UserSpaceService:
         if not recorded:
             logger.debug("Failed to persist env-var audit event for workspace %s", workspace_id)
 
+    async def _record_runtime_bridge_audit(
+        self,
+        *,
+        workspace_id: str,
+        session_id: str,
+        component_id: str,
+        query_digest: str,
+        error: str | None,
+        access_mode: str | None = None,
+        tool_type: str | None = None,
+    ) -> None:
+        try:
+            recorded = await self._record_runtime_audit_event(
+                workspace_id,
+                None,
+                "runtime_bridge_execute",
+                {
+                    "workspace_id": workspace_id,
+                    "session_id": session_id,
+                    "component_id": component_id,
+                    "query_digest": query_digest,
+                    "error": error,
+                    "access_mode": access_mode,
+                    "tool_type": tool_type,
+                },
+                session_id=session_id,
+            )
+            if not recorded:
+                logger.debug("Failed to persist runtime bridge audit event for workspace %s", workspace_id)
+        except Exception:  # noqa: BLE001 - audit must not break execution
+            logger.exception("Failed to record runtime bridge audit event for workspace %s", workspace_id)
+
     @staticmethod
     def _sanitize_workspace_env_map(raw_items: list[Any]) -> dict[str, str]:
         resolved: dict[str, str] = {}
@@ -7599,7 +7753,7 @@ class UserSpaceService:
         db = await get_db()
         workspace = await db.workspace.find_unique(
             where={"id": workspace_id},
-            include={"toolSelections": True},
+            include={"toolSelections": True, "toolOptions": True},
         )
         if not workspace:
             return _build_bridge_content()
@@ -10679,6 +10833,21 @@ class UserSpaceService:
         tool_rows = list(getattr(record, "toolSelections", []) or [])
         selected_tool_ids = [getattr(tool_row, "toolConfigId", "") for tool_row in tool_rows if getattr(tool_row, "toolConfigId", None)]
 
+        option_rows = list(getattr(record, "toolOptions", []) or [])
+        tool_options: dict[str, WorkspaceToolOptionState] = {}
+        for option_row in option_rows:
+            tool_config_id = getattr(option_row, "toolConfigId", "")
+            if not tool_config_id:
+                continue
+            raw_options = getattr(option_row, "options", None)
+            if isinstance(raw_options, Json):
+                raw_options = raw_options.data
+            options = load_workspace_tool_options(cast(dict[str, Any] | None, raw_options))
+            if options:
+                tool_options[tool_config_id] = WorkspaceToolOptionState(
+                    write_access_enabled=bool(options.get("write_access_enabled")),
+                )
+
         group_rows = list(getattr(record, "toolGroupSelections", []) or [])
         selected_tool_group_ids = [getattr(row, "toolGroupId", "") for row in group_rows if getattr(row, "toolGroupId", None)]
         raw_tool_selection_mode = str(getattr(record, "toolSelectionMode", "") or "").strip()
@@ -10778,6 +10947,7 @@ class UserSpaceService:
             tool_selection_mode=cast(Any, tool_selection_mode),
             selected_tool_ids=selected_tool_ids,
             selected_tool_group_ids=selected_tool_group_ids,
+            tool_options=tool_options,
             conversation_ids=conversation_ids,
             members=members,
             scm=scm,
@@ -12457,6 +12627,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "toolOptions": True,
                 "owner": True,
             },
         )
@@ -12508,6 +12679,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "toolOptions": True,
                 "owner": True,
             },
         )
@@ -12536,6 +12708,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "toolOptions": True,
                 "owner": True,
             },
             order={"updatedAt": "desc"},
@@ -12628,6 +12801,69 @@ class UserSpaceService:
                 }
             )
 
+    async def _normalize_workspace_tool_options_for_request(
+        self,
+        tool_options: dict[str, Any] | None,
+        *,
+        tool_selection_mode: str,
+        selected_tool_ids: list[str] | None,
+        selected_tool_group_ids: list[str] | None,
+    ) -> dict[str, dict[str, bool]]:
+        tool_configs = await repository.list_tool_configs(enabled_only=True)
+        enabled_tool_ids = {
+            str(getattr(tool_config, "id", "") or "")
+            for tool_config in tool_configs
+            if getattr(tool_config, "enabled", True) and getattr(tool_config, "id", None)
+        }
+        try:
+            healthy_tool_ids = set(await repository.list_healthy_enabled_tool_ids())
+        except Exception:
+            healthy_tool_ids = enabled_tool_ids
+        allowed_tool_ids = enabled_tool_ids & healthy_tool_ids
+
+        if tool_selection_mode == "default_all":
+            effective_selected_tool_ids = allowed_tool_ids
+        else:
+            expanded_group_tool_ids = await repository.get_tool_ids_for_groups(selected_tool_group_ids or []) if selected_tool_group_ids else []
+            candidate_tool_ids = _dedupe_preserve_order([*(selected_tool_ids or []), *expanded_group_tool_ids])
+            effective_selected_tool_ids = {tool_id for tool_id in candidate_tool_ids if tool_id in allowed_tool_ids}
+
+        write_capable_tool_ids = {
+            str(getattr(tool_config, "id", "") or "")
+            for tool_config in tool_configs
+            if getattr(tool_config, "allow_write", False) and getattr(tool_config, "enabled", True) and getattr(tool_config, "id", None)
+        }
+        return normalize_workspace_tool_options(
+            tool_options,
+            selected_tool_ids=effective_selected_tool_ids,
+            write_capable_tool_ids=write_capable_tool_ids,
+        )
+
+    async def _persist_workspace_tool_options(
+        self,
+        db: Any,
+        workspace_id: str,
+        tool_options: dict[str, dict[str, bool]] | None,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
+        if tool_options is None:
+            return
+
+        if replace_existing:
+            await db.workspacetooloption.delete_many(where={"workspaceId": workspace_id})
+
+        for tool_id, options in tool_options.items():
+            if not options:
+                continue
+            await db.workspacetooloption.create(
+                data={
+                    "workspaceId": workspace_id,
+                    "toolConfigId": tool_id,
+                    "options": options,
+                }
+            )
+
     async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
         db = await get_db()
 
@@ -12667,6 +12903,7 @@ class UserSpaceService:
                     "members": True,
                     "toolSelections": True,
                     "toolGroupSelections": True,
+                    "toolOptions": True,
                 },
             )
         except Exception as exc:
@@ -12692,6 +12929,13 @@ class UserSpaceService:
         if requested_tool_ids is None and tool_selection_mode == "custom":
             requested_tool_ids = await repository.list_healthy_enabled_tool_ids()
 
+        normalized_tool_options = await self._normalize_workspace_tool_options_for_request(
+            cast(dict[str, Any] | None, request.tool_options),
+            tool_selection_mode=tool_selection_mode,
+            selected_tool_ids=requested_tool_ids,
+            selected_tool_group_ids=request.selected_tool_group_ids,
+        )
+
         await self._persist_workspace_tool_selections(
             db,
             workspace_id,
@@ -12702,6 +12946,12 @@ class UserSpaceService:
             db,
             workspace_id,
             request.selected_tool_group_ids,
+        )
+
+        await self._persist_workspace_tool_options(
+            db,
+            workspace_id,
+            normalized_tool_options,
         )
 
         self._workspace_files_dir(workspace_id).mkdir(parents=True, exist_ok=True)
@@ -12716,6 +12966,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "toolOptions": True,
                 "owner": True,
             },
         )
@@ -13911,8 +14162,12 @@ class UserSpaceService:
         is_admin: bool = False,
     ) -> UserSpaceWorkspace:
         current_ws = await self._enforce_workspace_access(workspace_id, user_id, required_role="editor", is_admin=is_admin)
-        db = await get_db()
+        has_tool_options_update = "tool_options" in request.model_fields_set
 
+        if has_tool_options_update and not is_admin:
+            await self._enforce_workspace_access(workspace_id, user_id, required_role="owner")
+
+        db = await get_db()
         update_data: dict[str, Any] = {"updatedAt": utc_now()}
 
         if request.owner_user_id is not None:
@@ -13966,6 +14221,20 @@ class UserSpaceService:
         if request.tool_selection_mode is not None:
             update_data["toolSelectionMode"] = request.tool_selection_mode
 
+        next_tool_selection_mode = request.tool_selection_mode or current_ws.tool_selection_mode
+        next_selected_tool_ids = request.selected_tool_ids if request.selected_tool_ids is not None else current_ws.selected_tool_ids
+        next_selected_tool_group_ids = request.selected_tool_group_ids if request.selected_tool_group_ids is not None else current_ws.selected_tool_group_ids
+        normalized_tool_options = (
+            await self._normalize_workspace_tool_options_for_request(
+                cast(dict[str, Any] | None, request.tool_options),
+                tool_selection_mode=next_tool_selection_mode,
+                selected_tool_ids=next_selected_tool_ids,
+                selected_tool_group_ids=next_selected_tool_group_ids,
+            )
+            if has_tool_options_update
+            else None
+        )
+
         try:
             await db.workspace.update(where={"id": workspace_id}, data=cast(Any, update_data))
         except Exception as exc:
@@ -13992,12 +14261,21 @@ class UserSpaceService:
                 replace_existing=True,
             )
 
+        if has_tool_options_update:
+            await self._persist_workspace_tool_options(
+                db,
+                workspace_id,
+                normalized_tool_options,
+                replace_existing=True,
+            )
+
         refreshed = await db.workspace.find_unique(
             where={"id": workspace_id},
             include={
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "toolOptions": True,
                 "owner": True,
             },
         )
@@ -14052,6 +14330,7 @@ class UserSpaceService:
                 "members": True,
                 "toolSelections": True,
                 "toolGroupSelections": True,
+                "toolOptions": True,
                 "owner": True,
             },
         )
@@ -19299,6 +19578,44 @@ class UserSpaceService:
                     ),
                 )
 
+            if normalized_path == "dashboard/main.ts":
+                from ragtime.rag.components import (
+                    LIVE_DATA_BINDING_MISSING_MESSAGE,
+                    LIVE_DATA_CONTEXT_ACCESS_MISSING_MESSAGE,
+                    load_workspace_server_delegation_sources,
+                    validate_live_data_binding,
+                    validate_server_delegated_live_data,
+                )
+
+                binding = await validate_live_data_binding(
+                    request.content,
+                    relative_path,
+                    declared_component_ids=connected_ids or None,
+                )
+                if binding.get("validator_available", False):
+                    has_execute = binding.get("has_execute_calls", False)
+                    has_imports = binding.get("has_local_imports", False)
+                    has_access = binding.get("has_context_components_access", False)
+                    server_delegated_ok = False
+
+                    if not has_execute and not has_imports and connected_ids:
+                        server_sources = await load_workspace_server_delegation_sources(workspace_id, user_id)
+                        server_delegated_ok, _missing_server_ids = validate_server_delegated_live_data(
+                            server_sources,
+                            sorted(connected_ids),
+                        )
+
+                    if not has_execute and not has_imports and not server_delegated_ok:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=LIVE_DATA_BINDING_MISSING_MESSAGE,
+                        )
+                    if not has_access and not has_imports and not server_delegated_ok:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=LIVE_DATA_CONTEXT_ACCESS_MISSING_MESSAGE,
+                        )
+
         file_path = await self._resolve_workspace_tree_file_path(
             workspace_id,
             normalized_path,
@@ -20630,9 +20947,63 @@ class UserSpaceService:
         if isinstance(payload, str):
             return payload
         if isinstance(payload, dict):
-            value = payload.get("query") or payload.get("sql") or payload.get("command")
+            value = payload.get("query") or payload.get("sql") or payload.get("code") or payload.get("command")
             return str(value or "")
         return ""
+
+    @staticmethod
+    def _serialize_request_payload(payload: dict[str, Any] | str) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return str(payload)
+
+    def _compute_runtime_bridge_query_digest(
+        self,
+        payload: dict[str, Any] | str,
+        *,
+        tool_type: str | None,
+    ) -> str:
+        if tool_type in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
+            basis = self._extract_query_text(payload)
+        else:
+            basis = self._serialize_request_payload(payload)
+        return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _tool_config_runtime_dict(tool_config: Any, *, allow_write: bool) -> dict[str, Any]:
+        model_dump = getattr(tool_config, "model_dump", None)
+        if callable(model_dump):
+            config = model_dump()
+            if isinstance(config, dict):
+                config["allow_write"] = allow_write
+                return config
+        return {
+            "id": getattr(tool_config, "id", None),
+            "name": getattr(tool_config, "name", None),
+            "enabled": getattr(tool_config, "enabled", True),
+            "tool_type": getattr(getattr(tool_config, "tool_type", None), "value", getattr(tool_config, "tool_type", None)),
+            "connection_config": getattr(tool_config, "connection_config", {}) or {},
+            "timeout_max_seconds": getattr(tool_config, "timeout_max_seconds", 300) or 300,
+            "max_results": getattr(tool_config, "max_results", 100) or 100,
+            "allow_write": allow_write,
+        }
+
+    @staticmethod
+    def _build_runtime_bridge_tool_request(
+        tool_type: str,
+        payload: dict[str, Any] | str,
+    ) -> dict[str, Any] | str:
+        if tool_type == "odoo_shell":
+            if isinstance(payload, dict):
+                return payload
+            return {"code": payload}
+        if tool_type == "ssh_shell":
+            if isinstance(payload, dict):
+                return payload
+            return {"command": payload}
+        return payload
 
     async def _lookup_sidecar_query(
         self,
@@ -20742,6 +21113,58 @@ class UserSpaceService:
             record_diagnostics=False,
         )
 
+    async def execute_component_from_runtime_bridge(
+        self,
+        workspace_id: str,
+        request: ExecuteComponentRequest,
+        session_id: str,
+    ) -> ExecuteComponentResponse:
+        workspace = await self._load_workspace_for_component_execution(workspace_id)
+        audit_context = await self._resolve_runtime_bridge_audit_context(workspace, request.component_id)
+        query_digest = self._compute_runtime_bridge_query_digest(
+            request.request,
+            tool_type=cast(str | None, audit_context.get("tool_type")),
+        )
+        try:
+            result = await self._execute_component_for_workspace_result(
+                workspace,
+                request,
+                error_log_prefix="Runtime bridge execute failed",
+                allow_workspace_write=True,
+            )
+        except HTTPException as exc:
+            await self._record_runtime_bridge_audit(
+                workspace_id=workspace.id,
+                session_id=session_id,
+                component_id=request.component_id,
+                query_digest=query_digest,
+                error=str(exc.detail),
+                access_mode=cast(str | None, audit_context.get("access_mode")),
+                tool_type=cast(str | None, audit_context.get("tool_type")),
+            )
+            raise
+        except Exception as exc:
+            await self._record_runtime_bridge_audit(
+                workspace_id=workspace.id,
+                session_id=session_id,
+                component_id=request.component_id,
+                query_digest=query_digest,
+                error=str(exc),
+                access_mode=cast(str | None, audit_context.get("access_mode")),
+                tool_type=cast(str | None, audit_context.get("tool_type")),
+            )
+            raise
+        await self._record_runtime_bridge_audit(
+            workspace_id=workspace.id,
+            session_id=session_id,
+            component_id=request.component_id,
+            query_digest=query_digest,
+            error=result.response.error,
+            access_mode=result.access_mode,
+            tool_type=result.tool_type,
+        )
+        return result.response
+
     async def _execute_shared_component_for_workspace_id(
         self,
         workspace_id: str,
@@ -20773,12 +21196,39 @@ class UserSpaceService:
         *,
         error_log_prefix: str,
         record_diagnostics: bool = True,
+        allow_workspace_write: bool = False,
     ) -> ExecuteComponentResponse:
+        result = await self._execute_component_for_workspace_result(
+            workspace,
+            request,
+            error_log_prefix=error_log_prefix,
+            record_diagnostics=record_diagnostics,
+            allow_workspace_write=allow_workspace_write,
+        )
+        return result.response
+
+    async def _execute_component_for_workspace_result(
+        self,
+        workspace: UserSpaceWorkspace,
+        request: ExecuteComponentRequest,
+        *,
+        error_log_prefix: str,
+        record_diagnostics: bool = True,
+        allow_workspace_write: bool = False,
+    ) -> _ExecuteComponentExecutionResult:
         http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
         selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
+        resolved_config: _ResolvedComponentExecutionConfig | None = None
+        if allow_workspace_write:
+            resolved_config = await self._resolve_component_execution_config_for_tool_ids(
+                selected_tool_ids,
+                request.component_id,
+                workspace_tool_options=getattr(workspace, "tool_options", {}),
+                allow_runtime_bridge_tools=True,
+            )
         started_at = _time.monotonic()
         try:
-            response, query = await asyncio.wait_for(
+            raw_result = await asyncio.wait_for(
                 self._execute_component_for_selected_tool_ids(
                     selected_tool_ids=selected_tool_ids,
                     component_id=request.component_id,
@@ -20787,8 +21237,14 @@ class UserSpaceService:
                     sidecar_workspace_id=workspace.id,
                     require_result_limit=False,
                     enforce_result_limit=False,
+                    resolved_config=resolved_config,
                 ),
                 timeout=http_timeout_seconds,
+            )
+            result = _coerce_execute_component_execution_result(
+                raw_result,
+                access_mode=resolved_config.access_mode if resolved_config else "read_only",
+                tool_type=resolved_config.tool_type if resolved_config else None,
             )
         except asyncio.TimeoutError:
             # The synchronous request exceeded the HTTP-level cap (kept below
@@ -20833,15 +21289,21 @@ class UserSpaceService:
                         )
                     ],
                 )
-            return response
+            return _ExecuteComponentExecutionResult(
+                response=response,
+                proof_input=self._extract_query_text(request.request),
+                access_mode=resolved_config.access_mode if resolved_config else "read_only",
+                tool_type=resolved_config.tool_type if resolved_config else "unknown",
+            )
 
         # Mint server-side execution proof for live-data contract verification.
+        response = result.response
         if not response.error:
             self.record_execution_proof(
                 workspace.id,
                 request.component_id,
                 response.row_count,
-                query,
+                result.proof_input,
             )
             self.clear_live_data_execution_warning(workspace.id)
         else:
@@ -20865,7 +21327,7 @@ class UserSpaceService:
                 ],
             )
 
-        return response
+        return result
 
     async def execute_component_for_selected_tools(
         self,
@@ -20882,7 +21344,7 @@ class UserSpaceService:
         path used by User Space previews. It intentionally does not read or
         write User Space sidecars/proofs.
         """
-        response, _query = await self._execute_component_for_selected_tool_ids(
+        raw_result = await self._execute_component_for_selected_tool_ids(
             selected_tool_ids=list(selected_tool_ids),
             component_id=request.component_id,
             request_payload=request.request,
@@ -20891,7 +21353,8 @@ class UserSpaceService:
             require_result_limit=require_result_limit,
             enforce_result_limit=enforce_result_limit,
         )
-        return response
+        result = _coerce_execute_component_execution_result(raw_result)
+        return result.response
 
     async def _execute_component_for_selected_tool_ids(
         self,
@@ -20903,34 +21366,58 @@ class UserSpaceService:
         sidecar_workspace_id: str | None = None,
         require_result_limit: bool = True,
         enforce_result_limit: bool = True,
-    ) -> tuple[ExecuteComponentResponse, str]:
-        tool_type, conn_config, tool_config = await self._resolve_component_execution_config_for_tool_ids(selected_tool_ids, component_id)
+        resolved_config: _ResolvedComponentExecutionConfig | None = None,
+    ) -> _ExecuteComponentExecutionResult:
+        config = resolved_config or await self._resolve_component_execution_config_for_tool_ids(selected_tool_ids, component_id)
 
         query = self._extract_query_text(request_payload)
-        if not query.strip() and sidecar_workspace_id:
+        if config.tool_type in _USPACE_EXEC_SUPPORTED_SQL_TOOLS and not query.strip() and sidecar_workspace_id:
             # Fallback: look up default query from live_data_connections sidecar.
             # Try the resolved tool config ID first, then the original component_id.
-            resolved_tool_id = str(getattr(tool_config, "id", "") or "").strip()
+            resolved_tool_id = config.resolved_id
             sidecar_query = await self._lookup_sidecar_query(sidecar_workspace_id, resolved_tool_id)
             if not sidecar_query and resolved_tool_id != component_id:
                 sidecar_query = await self._lookup_sidecar_query(sidecar_workspace_id, component_id)
             if sidecar_query:
                 query = sidecar_query
-        if not query.strip():
+        proof_input = query if config.tool_type in _USPACE_EXEC_SUPPORTED_SQL_TOOLS else self._serialize_request_payload(request_payload)
+        if not query.strip() and config.tool_type in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
             raise HTTPException(
                 status_code=400,
                 detail="No query/command found in request payload.",
             )
 
         try:
-            raw_output = await self._dispatch_tool_query(
-                tool_type,
-                conn_config,
-                tool_config,
-                query,
-                require_result_limit=require_result_limit,
-                enforce_result_limit=enforce_result_limit,
-            )
+            if config.tool_type in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
+                raw_output = await self._dispatch_tool_query(
+                    config.tool_type,
+                    config.conn_config,
+                    config.tool_config,
+                    query,
+                    allow_write=config.effective_allow_write,
+                    require_result_limit=require_result_limit,
+                    enforce_result_limit=enforce_result_limit,
+                )
+                response = self._build_execute_component_response(
+                    component_id=component_id,
+                    raw_output=raw_output,
+                )
+            else:
+                output = await self._invoke_runtime_bridge_tool(
+                    config.tool_type,
+                    config.tool_config,
+                    request_payload,
+                    allow_write=config.effective_allow_write,
+                )
+                generic_error = _classify_generic_tool_output_error(output)
+                response = ExecuteComponentResponse(
+                    component_id=component_id,
+                    rows=[],
+                    columns=[],
+                    row_count=0,
+                    output=output,
+                    error=generic_error,
+                )
         except Exception as exc:
             logger.error(
                 "%s for %s: %s",
@@ -20938,29 +21425,36 @@ class UserSpaceService:
                 component_id,
                 exc,
             )
-            return (
-                ExecuteComponentResponse(
+            return _ExecuteComponentExecutionResult(
+                response=ExecuteComponentResponse(
                     component_id=component_id,
                     rows=[],
                     columns=[],
                     row_count=0,
                     error=str(exc),
                 ),
-                query,
+                proof_input=proof_input,
+                access_mode=config.access_mode,
+                tool_type=config.tool_type,
             )
-        response = self._build_execute_component_response(
-            component_id=component_id,
-            raw_output=raw_output,
+        return _ExecuteComponentExecutionResult(
+            response=response,
+            proof_input=proof_input,
+            access_mode=config.access_mode,
+            tool_type=config.tool_type,
         )
-        return response, query
 
     async def _resolve_component_execution_config(
         self,
         workspace: UserSpaceWorkspace,
         component_id: str,
-    ) -> tuple[str, dict[str, Any], Any]:
+    ) -> _ResolvedComponentExecutionConfig:
         selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
-        return await self._resolve_component_execution_config_for_tool_ids(selected_tool_ids, component_id)
+        return await self._resolve_component_execution_config_for_tool_ids(
+            selected_tool_ids,
+            component_id,
+            workspace_tool_options=getattr(workspace, "tool_options", {}),
+        )
 
     async def _resolve_effective_workspace_tool_ids(self, workspace: UserSpaceWorkspace) -> list[str]:
         return await resolve_effective_tool_ids(
@@ -20975,7 +21469,10 @@ class UserSpaceService:
         self,
         selected_tool_ids: list[str],
         component_id: str,
-    ) -> tuple[str, dict[str, Any], Any]:
+        *,
+        workspace_tool_options: dict[str, Any] | None = None,
+        allow_runtime_bridge_tools: bool = False,
+    ) -> _ResolvedComponentExecutionConfig:
         resolved_id = component_id
 
         if resolved_id not in selected_tool_ids:
@@ -20996,14 +21493,57 @@ class UserSpaceService:
             )
 
         tool_type = tool_config.tool_type.value
-        if tool_type not in _USPACE_EXEC_SUPPORTED_SQL_TOOLS:
+        supported_tool_types = _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES if allow_runtime_bridge_tools else _USPACE_EXEC_SUPPORTED_SQL_TOOLS
+        if tool_type not in supported_tool_types:
             raise HTTPException(
                 status_code=400,
-                detail=("Live preview execution supports SQL tools only (postgres, mysql, mssql, influxdb)."),
+                detail=(
+                    f"Runtime bridge execution does not support {tool_type} tools."
+                    if allow_runtime_bridge_tools
+                    else "Live preview execution supports SQL tools only (postgres, mysql, mssql, influxdb)."
+                ),
             )
 
         conn_config = tool_config.connection_config or {}
-        return tool_type, conn_config, tool_config
+        options = load_workspace_tool_options((workspace_tool_options or {}).get(resolved_id))
+        effective_allow_write = (
+            resolve_workspace_tool_write_access(bool(getattr(tool_config, "allow_write", False)), options) if allow_runtime_bridge_tools else False
+        )
+        return _ResolvedComponentExecutionConfig(
+            resolved_id=resolved_id,
+            tool_type=tool_type,
+            conn_config=conn_config,
+            tool_config=tool_config,
+            effective_allow_write=effective_allow_write,
+            access_mode="read_write" if effective_allow_write else "read_only",
+        )
+
+    async def _resolve_runtime_bridge_audit_context(
+        self,
+        workspace: UserSpaceWorkspace,
+        component_id: str,
+    ) -> dict[str, str | None]:
+        selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
+        try:
+            config = await self._resolve_component_execution_config_for_tool_ids(
+                selected_tool_ids,
+                component_id,
+                workspace_tool_options=getattr(workspace, "tool_options", {}),
+                allow_runtime_bridge_tools=True,
+            )
+            return {"access_mode": config.access_mode, "tool_type": config.tool_type}
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                tool_config = await repository.get_tool_config(component_id)
+                tool_type = None
+                if tool_config is not None and getattr(tool_config, "enabled", False):
+                    tool_type = getattr(getattr(tool_config, "tool_type", None), "value", None)
+                return {"access_mode": "denied", "tool_type": tool_type}
+            tool_config = await repository.get_tool_config(component_id)
+            tool_type = None
+            if tool_config is not None and getattr(tool_config, "enabled", False):
+                tool_type = getattr(getattr(tool_config, "tool_type", None), "value", None)
+            return {"access_mode": "read_only", "tool_type": tool_type}
 
     @staticmethod
     async def _resolve_component_id_by_name_for_tool_ids(
@@ -21059,6 +21599,7 @@ class UserSpaceService:
         tool_config: Any,
         query: str,
         *,
+        allow_write: bool,
         require_result_limit: bool,
         enforce_result_limit: bool,
     ) -> str:
@@ -21078,6 +21619,7 @@ class UserSpaceService:
                 query,
                 timeout,
                 max_results,
+                allow_write=allow_write,
                 require_result_limit=require_result_limit,
                 enforce_result_limit=enforce_result_limit,
             )
@@ -21094,7 +21636,7 @@ class UserSpaceService:
                 database=database,
                 timeout=timeout,
                 max_results=max_results,
-                allow_write=False,
+                allow_write=allow_write,
                 require_result_limit=require_result_limit,
                 enforce_result_limit=enforce_result_limit,
                 description="Preview component execution",
@@ -21117,7 +21659,7 @@ class UserSpaceService:
                 database=database,
                 timeout=timeout,
                 max_results=max_results,
-                allow_write=False,
+                allow_write=allow_write,
                 require_result_limit=require_result_limit,
                 enforce_result_limit=enforce_result_limit,
                 description="Preview component execution",
@@ -21150,7 +21692,7 @@ class UserSpaceService:
                 org=org,
                 timeout=timeout,
                 max_results=max_results,
-                allow_write=False,
+                allow_write=allow_write,
                 require_result_limit=require_result_limit,
                 enforce_result_limit=enforce_result_limit,
                 description="Preview component execution",
@@ -21163,6 +21705,21 @@ class UserSpaceService:
         else:
             raise ValueError(f"Unsupported tool type for preview execution: {tool_type}")
 
+    async def _invoke_runtime_bridge_tool(
+        self,
+        tool_type: str,
+        tool_config: Any,
+        request_payload: dict[str, Any] | str,
+        *,
+        allow_write: bool,
+    ) -> Any:
+        from ragtime.rag.components import rag
+
+        runtime_tool = await rag.build_primary_runtime_tool_from_config(self._tool_config_runtime_dict(tool_config, allow_write=allow_write))
+        if runtime_tool is None:
+            raise ValueError(f"Failed to build runtime bridge tool for {tool_type}")
+        return await runtime_tool.ainvoke(self._build_runtime_bridge_tool_request(tool_type, request_payload))
+
     async def _execute_postgres_query(
         self,
         conn_config: dict,
@@ -21170,13 +21727,14 @@ class UserSpaceService:
         timeout: int,
         max_results: int,
         *,
+        allow_write: bool = False,
         require_result_limit: bool,
         enforce_result_limit: bool = True,
     ) -> str:
-        """Execute a read-only postgres query using shared SQL utility helpers."""
+        """Execute a policy-validated PostgreSQL query using shared SQL helpers."""
         is_safe, reason = validate_sql_query(
             query,
-            enable_write=False,
+            enable_write=allow_write,
             db_type=DB_TYPE_POSTGRES,
             require_result_limit=require_result_limit,
         )

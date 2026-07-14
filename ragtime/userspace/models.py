@@ -223,6 +223,10 @@ class UserSpaceAvailableTool(BaseModel):
     disabled_reason: str | None = None
 
 
+class WorkspaceToolOptionState(BaseModel):
+    write_access_enabled: bool = False
+
+
 class UserSpaceWorkspace(BaseModel):
     id: str
     name: str
@@ -234,6 +238,7 @@ class UserSpaceWorkspace(BaseModel):
     tool_selection_mode: ToolSelectionMode = "custom"
     selected_tool_ids: list[str] = Field(default_factory=list)
     selected_tool_group_ids: list[str] = Field(default_factory=list)
+    tool_options: dict[str, WorkspaceToolOptionState] = Field(default_factory=dict)
     conversation_ids: list[str] = Field(default_factory=list)
     members: list[WorkspaceMember] = Field(default_factory=list)
     scm: "UserSpaceWorkspaceScmStatus | None" = None
@@ -421,6 +426,10 @@ class CreateWorkspaceRequest(BaseModel):
         default=None,
         description="Workspace-selected tool group IDs.",
     )
+    tool_options: dict[str, WorkspaceToolOptionState] | None = Field(
+        default=None,
+        description="Per-workspace per-tool options. Missing options remain read-only.",
+    )
 
 
 class DuplicateWorkspaceRequest(BaseModel):
@@ -469,6 +478,7 @@ class UpdateWorkspaceRequest(BaseModel):
     tool_selection_mode: ToolSelectionMode | None = None
     selected_tool_ids: list[str] | None = None
     selected_tool_group_ids: list[str] | None = None
+    tool_options: dict[str, WorkspaceToolOptionState] | None = None
     owner_user_id: str | None = Field(default=None, description="Transfer ownership to this user (admin only)")
 
 
@@ -868,6 +878,7 @@ class ExecuteComponentResponse(BaseModel):
     rows: list[dict[str, Any]]
     columns: list[str]
     row_count: int
+    output: Any | None = None
     error: str | None = None
     error_kind: Literal["timeout"] | None = None
     timeout_seconds: int | None = Field(default=None, ge=0)

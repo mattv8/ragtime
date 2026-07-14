@@ -1139,6 +1139,24 @@ _USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE = """
 - Do not create custom HTTP server files with inline HTML — serve static `index.html` via the devserver instead.
 """
 
+_USERSPACE_RUNTIME_BRIDGE_BLOCK = """
+## Server-side live data (preferred for this workspace)
+This workspace runs a real server entrypoint, so fetch live tool data from your
+SERVER code via the runtime bridge instead of wiring context.components[...] in
+browser modules:
+- Env vars available to the server process: RAGTIME_BRIDGE_URL, RAGTIME_BRIDGE_TOKEN.
+- Contract: POST {RAGTIME_BRIDGE_URL}/execute-component with header
+  `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
+  `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
+- Responses are `{rows, columns, row_count, error}` — same shape as the browser bridge.
+- Runtime bridge calls follow Workspace Tools access policy.
+- Tools default read-only unless a workspace owner/admin explicitly enables write access and the global tool config permits writes.
+- The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.
+- Browser/shared preview component execution stays read-only.
+- The browser bridge (`context.components[...]`) still works and remains correct
+  for static pages; prefer the server bridge for backend routes and data APIs.
+""".strip()
+
 # Nudge for missing/default entrypoint – lightweight suggestion style.
 _USERSPACE_ENTRYPOINT_MISSING_NUDGE = """
 
@@ -1189,11 +1207,14 @@ def build_userspace_entrypoint_nudge(
 
     # Valid entrypoint with a real framework choice -> compact prompt.
     framework_label = status.framework or "custom"
-    return _USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE.format(
+    prompt = _USERSPACE_ENTRYPOINT_LOCKED_TEMPLATE.format(
         framework=framework_label,
         command=status.command,
         cwd=status.cwd,
     )
+    if status.framework != "static":
+        prompt += "\n\n" + _USERSPACE_RUNTIME_BRIDGE_BLOCK
+    return prompt
 
 
 def build_index_system_prompt(index_metadata: List[dict]) -> str:

@@ -2515,6 +2515,10 @@ export interface ConversationToolOptionState {
   read_only_enabled?: boolean;
 }
 
+export interface WorkspaceToolOptionState {
+  write_access_enabled?: boolean;
+}
+
 export interface UpdateConversationToolsRequest {
   tool_config_ids: string[];
   tool_group_ids?: string[];
@@ -2655,6 +2659,7 @@ export interface UserSpaceWorkspace {
   tool_selection_mode?: ToolSelectionMode;
   selected_tool_ids: string[];
   selected_tool_group_ids: string[];
+  tool_options?: Record<string, WorkspaceToolOptionState>;
   conversation_ids: string[];
   members: UserSpaceWorkspaceMember[];
   scm?: UserSpaceWorkspaceScmStatus | null;
@@ -2931,6 +2936,7 @@ export interface UpdateUserSpaceWorkspaceRequest {
   tool_selection_mode?: ToolSelectionMode;
   selected_tool_ids?: string[];
   selected_tool_group_ids?: string[];
+  tool_options?: Record<string, WorkspaceToolOptionState>;
   owner_user_id?: string;
 }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest import mock
 
 from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
@@ -46,6 +47,17 @@ class _HangingExecuteService(UserSpaceService):
         await asyncio.Event().wait()  # never resolves; simulate slow SQL
         raise AssertionError("unreachable")
 
+    async def _resolve_component_execution_config_for_tool_ids(self, selected_tool_ids, component_id, **kwargs):  # type: ignore[no-untyped-def,override]
+        _ = selected_tool_ids, component_id, kwargs
+        return SimpleNamespace(
+            resolved_id="tool-1",
+            tool_type="postgres",
+            conn_config={},
+            tool_config=SimpleNamespace(max_results=100, timeout_max_seconds=300),
+            effective_allow_write=False,
+            access_mode="read_only",
+        )
+
     def record_live_data_execution_warning(self, workspace_id: str, component_id: str, error: str) -> None:  # type: ignore[override]
         self.warnings_recorded.append((workspace_id, component_id, error))
 
@@ -67,6 +79,17 @@ class _ImmediateExecuteService(UserSpaceService):
 
     async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
         return (self._response.model_copy(update={"component_id": str(kwargs.get("component_id") or "tool-1")}), "select 1")
+
+    async def _resolve_component_execution_config_for_tool_ids(self, selected_tool_ids, component_id, **kwargs):  # type: ignore[no-untyped-def,override]
+        _ = selected_tool_ids, component_id, kwargs
+        return SimpleNamespace(
+            resolved_id="tool-1",
+            tool_type="postgres",
+            conn_config={},
+            tool_config=SimpleNamespace(max_results=100, timeout_max_seconds=300),
+            effective_allow_write=False,
+            access_mode="read_only",
+        )
 
     async def _load_workspace_for_component_execution(self, workspace_id: str, user_id: str | None = None) -> UserSpaceWorkspace:  # type: ignore[override]
         return _make_workspace()

@@ -467,6 +467,7 @@ model ToolConfig {
 
   // Relation to User Space workspace tool selections
   workspaceToolSelections WorkspaceToolSelection[]
+  workspaceToolOptions    WorkspaceToolOption[]
 
   // Relation to MCP default route filter tool selections
   mcpDefaultRouteFilterTools McpDefaultRouteFilterToolSelection[]
@@ -1383,6 +1384,7 @@ model Workspace {
   members                     WorkspaceMember[]
   toolSelections              WorkspaceToolSelection[]
   toolGroupSelections         WorkspaceToolGroupSelection[]
+  toolOptions                 WorkspaceToolOption[]
   conversations               Conversation[]
   runtimeSessions             UserSpaceRuntimeSession[]
   runtimeAuditEvents          UserSpaceRuntimeAuditEvent[]
@@ -1860,6 +1862,25 @@ model WorkspaceToolGroupSelection {
   @@index([workspaceId])
   @@index([toolGroupId])
   @@map("workspace_tool_group_selections")
+}
+
+/// Per-workspace tool options (e.g. write access opt-in)
+model WorkspaceToolOption {
+  id           String @id @default(uuid())
+  workspaceId  String @map("workspace_id")
+  toolConfigId String @map("tool_config_id")
+  options      Json   @default("{}")
+
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  toolConfig ToolConfig @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, toolConfigId])
+  @@index([workspaceId])
+  @@index([toolConfigId])
+  @@map("workspace_tool_options")
 }
 
 /// Background chat task for async message processing

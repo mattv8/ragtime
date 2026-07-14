@@ -1305,6 +1305,12 @@ textarea:focus {
   color: var(--color-primary);
 }
 
+.userspace-tool-status-badge-workspace {
+  background: var(--color-success-light);
+  border-color: var(--color-success-border);
+  color: var(--color-success);
+}
+
 .userspace-tool-item:hover {
   background: var(--color-surface-hover);
 }

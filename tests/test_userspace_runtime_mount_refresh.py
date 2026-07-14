@@ -342,6 +342,7 @@ class UserSpaceRuntimeMountRefreshTests(unittest.IsolatedAsyncioTestCase):
         service._runtime_provider_start_session.assert_awaited_once_with(
             "workspace-1",
             "user-1",
+            "session-1",
             existing_provider_session_id="mgr-1",
         )
         self.assertEqual(session.state, "starting")

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ToolSelectorDropdown,
   type ToolSelectorFocusRequest,
+  type ToolSelectorStatusBadge,
   type ToolSelectorTool,
 } from './ToolSelectorDropdown';
 import {
@@ -50,6 +51,7 @@ interface ControlledDropdownProps {
   initialBuiltInToolIds?: string[];
   focusRequest?: ToolSelectorFocusRequest | null;
   onRequestEnableWorkspaceTool?: (toolId: string) => void;
+  getToolStatusBadge?: (tool: ToolSelectorTool) => ToolSelectorStatusBadge | null;
 }
 
 function ControlledDropdown({
@@ -63,6 +65,7 @@ function ControlledDropdown({
   initialBuiltInToolIds = [builtInTool.id],
   focusRequest = null,
   onRequestEnableWorkspaceTool,
+  getToolStatusBadge,
 }: ControlledDropdownProps) {
   const availableTools = useMemo(() => availableToolsProp, [availableToolsProp]);
   const [selection, setSelection] = useState<UserSpaceToolSelection>({
@@ -106,6 +109,7 @@ function ControlledDropdown({
         title="Conversation Tools"
         focusRequest={focusRequest}
         onRequestEnableWorkspaceTool={onRequestEnableWorkspaceTool}
+        getToolStatusBadge={getToolStatusBadge}
       />
       <output data-testid="selection-state">{JSON.stringify(selection)}</output>
     </>
@@ -360,5 +364,28 @@ describe('ToolSelectorDropdown bulk selection', () => {
     const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
     expect(titleRow).not.toBeNull();
     expect(titleRow?.textContent).toContain('Write');
+  });
+
+  it('renders a workspace-scope write badge without the global icon', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        availableTools={[{ ...ungroupedTool, allow_write: true }]}
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolStatusBadge={() => ({
+          label: 'Write',
+          tone: 'write',
+          scope: 'workspace',
+          title: 'Write access enabled for this workspace',
+        })}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
+
+    const badge = screen.getByTitle('Write access enabled for this workspace');
+    expect(badge.classList.contains('userspace-tool-status-badge-workspace')).toBe(true);
+    expect(badge.querySelector('svg')).toBeNull();
   });
 });

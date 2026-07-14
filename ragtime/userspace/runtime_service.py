@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -70,6 +71,12 @@ _RUNTIME_PREVIEW_DEFAULT_BASE = f"http://127.0.0.1:{_RUNTIME_DEVSERVER_PORT}"
 _RUNTIME_PROVIDER_MANAGER = "microvm_pool_v1"
 _RUNTIME_PREVIEW_GRANT_KIND = "userspace_preview_grant"
 _RUNTIME_PREVIEW_SESSION_KIND = "userspace_preview_session"
+_RUNTIME_BRIDGE_TOKEN_KIND = "userspace_runtime_bridge"
+_RUNTIME_BRIDGE_TOKEN_TTL_SECONDS = 14400
+_RUNTIME_BRIDGE_ACTIVE_SESSION_STATES = {"starting", "running"}
+# Full mounted base path for the runtime-bridge execute route in
+# ragtime/userspace/runtime_routes.py.
+_RUNTIME_BRIDGE_ROUTE_BASE = "/indexes/userspace/runtime-bridge"
 _DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN = "userspace-preview.lvh.me"
 _RUNTIME_PREVIEW_UPSTREAM_CACHE_TTL_SECONDS = 300
 _RUNTIME_PROVIDER_STATUS_CACHE_TTL_SECONDS = 2.0
@@ -167,6 +174,59 @@ class UserSpaceRuntimeService:
         default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
         netloc = host if default_port else f"{host}:{port}"
         return f"{scheme}://{netloc}"
+
+    @staticmethod
+    def _runtime_bridge_control_plane_origin() -> str:
+        public_origin = UserSpaceRuntimeService._default_public_control_plane_origin()
+        public_parts = urlsplit(public_origin)
+        public_scheme = public_parts.scheme or "http"
+        public_port = public_parts.port or int(getattr(settings, "port", 8000) or 8000)
+        if not UserSpaceRuntimeService._is_loopback_host(public_parts.hostname):
+            return public_origin
+
+        manager_base_url = str(getattr(get_runtime_manager_request_config(), "base_url", "") or "").strip()
+        manager_parts = urlsplit(manager_base_url)
+        manager_host = manager_parts.hostname
+        if not manager_host or UserSpaceRuntimeService._is_loopback_host(manager_host):
+            return public_origin
+
+        manager_port = manager_parts.port or 80
+        bridge_host = UserSpaceRuntimeService._discover_runtime_bridge_host(manager_host, manager_port)
+        if not bridge_host:
+            bridge_host = "ragtime-dev"
+        return UserSpaceRuntimeService._build_origin_with_host(public_scheme, bridge_host, public_port)
+
+    @staticmethod
+    def _is_loopback_host(hostname: str | None) -> bool:
+        normalized = str(hostname or "").strip().strip(".").strip("[]").lower()
+        if not normalized:
+            return False
+        if normalized == "localhost" or normalized.endswith(".localhost"):
+            return True
+        try:
+            return ipaddress.ip_address(normalized).is_loopback
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _discover_runtime_bridge_host(manager_host: str, manager_port: int) -> str | None:
+        socket_family = socket.AF_INET6 if ":" in str(manager_host).strip().strip("[]") else socket.AF_INET
+        try:
+            with socket.socket(socket_family, socket.SOCK_DGRAM) as probe_socket:
+                probe_socket.connect((manager_host, manager_port))
+                local_host = str(probe_socket.getsockname()[0] or "").strip()
+        except OSError:
+            return None
+        if not local_host or UserSpaceRuntimeService._is_loopback_host(local_host):
+            return None
+        return local_host
+
+    @staticmethod
+    def _build_origin_with_host(scheme: str, host: str, port: int) -> str:
+        normalized_host = str(host or "").strip()
+        if ":" in normalized_host and not normalized_host.startswith("["):
+            normalized_host = f"[{normalized_host}]"
+        return f"{scheme}://{normalized_host}:{port}"
 
     @staticmethod
     def _preview_host_label(workspace_id: str) -> str:
@@ -454,9 +514,27 @@ class UserSpaceRuntimeService:
             ttl_seconds=_RUNTIME_PREVIEW_SESSION_TTL_SECONDS,
         )
 
-    def verify_preview_token(self, token: str, *, expected_kind: str) -> dict[str, Any]:
+    def build_runtime_bridge_token(self, workspace_id: str, session_id: str) -> str:
+        now = int(_time.time())
+        payload = {
+            "kind": _RUNTIME_BRIDGE_TOKEN_KIND,
+            "workspace_id": workspace_id,
+            "session_id": session_id,
+            "iat": now,
+            "exp": now + _RUNTIME_BRIDGE_TOKEN_TTL_SECONDS,
+        }
+        return jwt.encode(payload, settings.encryption_key, algorithm=settings.jwt_algorithm)
+
+    def _build_runtime_bridge_env(self, workspace_id: str, session_id: str) -> dict[str, str]:
+        origin = self._runtime_bridge_control_plane_origin().rstrip("/")
+        return {
+            "RAGTIME_BRIDGE_URL": f"{origin}{_RUNTIME_BRIDGE_ROUTE_BASE}",
+            "RAGTIME_BRIDGE_TOKEN": self.build_runtime_bridge_token(workspace_id, session_id),
+        }
+
+    def _decode_signed_token(self, token: str, *, invalid_detail: str) -> dict[str, Any]:
         try:
-            claims = cast(
+            return cast(
                 dict[str, Any],
                 jwt.decode(
                     token,
@@ -465,13 +543,52 @@ class UserSpaceRuntimeService:
                 ),
             )
         except JWTError as exc:
-            raise HTTPException(status_code=401, detail="Invalid preview token") from exc
+            raise HTTPException(status_code=401, detail=invalid_detail) from exc
+
+    def _finalize_workspace_env(
+        self,
+        workspace_id: str,
+        session_id: str,
+        base_env: dict[str, str],
+    ) -> dict[str, str]:
+        return {
+            **base_env,
+            **self._build_runtime_bridge_env(workspace_id, session_id),
+        }
+
+    def verify_preview_token(self, token: str, *, expected_kind: str) -> dict[str, Any]:
+        claims = self._decode_signed_token(token, invalid_detail="Invalid preview token")
 
         if str(claims.get("kind") or "").strip() != expected_kind:
             raise HTTPException(status_code=401, detail="Invalid preview token")
         workspace_id = str(claims.get("workspace_id") or "").strip()
         if not workspace_id:
             raise HTTPException(status_code=401, detail="Invalid preview token")
+        return claims
+
+    async def _get_runtime_session_record(self, session_id: str) -> Any:
+        db = await get_db()
+        model = self._runtime_session_model(db)
+        return await model.find_unique(where={"id": session_id})
+
+    async def verify_runtime_bridge_token(self, token: str | None) -> dict[str, Any]:
+        if not token:
+            raise HTTPException(status_code=401, detail="Runtime bridge token required")
+        claims = self._decode_signed_token(token, invalid_detail="Invalid runtime bridge token")
+
+        workspace_id = str(claims.get("workspace_id") or "").strip()
+        session_id = str(claims.get("session_id") or "").strip()
+        if claims.get("kind") != _RUNTIME_BRIDGE_TOKEN_KIND or not workspace_id or not session_id:
+            raise HTTPException(status_code=401, detail="Invalid runtime bridge token")
+
+        session = await self._get_runtime_session_record(session_id)
+        if (
+            session is None
+            or str(getattr(session, "workspaceId", "") or "") != workspace_id
+            or str(getattr(session, "state", "") or "") not in _RUNTIME_BRIDGE_ACTIVE_SESSION_STATES
+        ):
+            raise HTTPException(status_code=401, detail="Runtime bridge session is not active")
+
         return claims
 
     async def consume_preview_grant(self, claims: dict[str, Any]) -> None:
@@ -1163,6 +1280,7 @@ class UserSpaceRuntimeService:
         self,
         workspace_id: str,
         leased_by_user_id: str,
+        session_id: str,
         existing_provider_session_id: str | None = None,
     ) -> dict[str, Any]:
         self._require_runtime_manager()
@@ -1172,6 +1290,7 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
             userspace_service.resolve_workspace_mounts_for_runtime(workspace_id),
         )
+        workspace_env = self._finalize_workspace_env(workspace_id, session_id, workspace_env)
         payload: dict[str, Any] = {
             "workspace_id": workspace_id,
             "leased_by_user_id": leased_by_user_id,
@@ -1532,6 +1651,7 @@ class UserSpaceRuntimeService:
             provider_data = await self._runtime_provider_start_session(
                 workspace_id,
                 session.leased_by_user_id or leased_by_user_id,
+                session.id,
                 existing_provider_session_id=(session.provider_session_id if session.runtime_provider == target_provider_name else None),
             )
             delta = self._merge_provider_status(session, provider_data)
@@ -1575,15 +1695,17 @@ class UserSpaceRuntimeService:
             )
 
         now = utc_now()
+        session_id = str(uuid4())
         provider_data = await self._runtime_provider_start_session(
             workspace_id,
             leased_by_user_id,
+            session_id,
         )
         try:
             row = await self._runtime_session_create_row(
                 model,
                 {
-                    "id": str(uuid4()),
+                    "id": session_id,
                     "workspaceId": workspace_id,
                     "leasedByUserId": leased_by_user_id,
                     "state": str(provider_data.get("state") or "running"),
@@ -2036,6 +2158,7 @@ class UserSpaceRuntimeService:
             provider_status = await self._runtime_provider_start_session(
                 workspace_id,
                 session.leased_by_user_id or user_id,
+                session.id,
                 existing_provider_session_id=session.provider_session_id,
             )
 
@@ -2254,6 +2377,7 @@ class UserSpaceRuntimeService:
             userspace_service.get_workspace_runtime_environment(workspace_id),
             userspace_service.get_workspace_runtime_environment_visibility(workspace_id),
         )
+        workspace_env = self._finalize_workspace_env(workspace_id, session.id, workspace_env)
         await self._runtime_provider_restart_devserver(
             session.provider_session_id,
             workspace_env=workspace_env,
