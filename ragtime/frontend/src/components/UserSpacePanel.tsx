@@ -180,6 +180,11 @@ import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageE
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
+import {
+  UserSpaceStatusOverlay,
+  type UserSpaceStatusOverlayItem,
+  type UserSpaceStatusOverlayTone,
+} from './UserSpaceStatusOverlay';
 import { useWorkspaceScmWizardActivity, WorkspaceScmWizard } from './WorkspaceScmWizard';
 
 interface UserSpacePanelProps {
@@ -204,8 +209,6 @@ interface CachedUserSpaceFile {
 }
 
 type ShareLinkType = 'named' | 'anonymous' | 'subdomain';
-type UserSpaceOverlayTone = 'status' | 'success' | 'warning' | 'error';
-
 function SearchHighlightedText({ text, query }: { text: string; query: string }) {
   const needle = query.trim();
   if (!needle) return <>{text}</>;
@@ -873,10 +876,10 @@ export function UserSpacePanel({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [_success, setSuccess] = useState<string | null>(null);
-  const [statusOverlayVisible, setStatusOverlayVisible] = useState(false);
-  const [statusOverlayFading, setStatusOverlayFading] = useState(false);
-  const [statusOverlayPinned, setStatusOverlayPinned] = useState(false);
-  const [statusOverlayInteracting, setStatusOverlayInteracting] = useState(false);
+  const [dismissedLiveDataWarningSignature, setDismissedLiveDataWarningSignature] = useState<
+    string | null
+  >(null);
+  const [dismissedErrorSignature, setDismissedErrorSignature] = useState<string | null>(null);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [activeWorkspaceConversationId, setActiveWorkspaceConversationId] = useState<string | null>(
@@ -939,7 +942,7 @@ export function UserSpacePanel({
   const [previewNotice, setPreviewNotice] = useState<{
     id: number;
     message: string;
-    tone?: Exclude<UserSpaceOverlayTone, 'status'>;
+    tone?: Exclude<UserSpaceStatusOverlayTone, 'status'>;
   } | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<UserSpaceRuntimeStatusResponse | null>(null);
   const [runtimeBusy, setRuntimeBusy] = useState(false);
@@ -1197,7 +1200,6 @@ export function UserSpacePanel({
   const browserSurfaceAuthExpiryRef = useRef<Partial<Record<UserSpaceBrowserSurface, number>>>({});
   const previewLaunchExpiresAtMsRef = useRef(0);
   const previousRuntimeDisplayStateRef = useRef<string | null>(null);
-  const statusOverlayDismissedSignatureRef = useRef<string | null>(null);
   const refreshRuntimeStatusPendingRef = useRef(false);
   const refreshRuntimeStatusPendingIncludeRef = useRef<boolean>(true);
   const latestQueuedWorkspaceCreateTaskIdRef = useRef<string | null>(null);
@@ -4582,7 +4584,7 @@ export function UserSpacePanel({
   );
 
   const handlePreviewOverlayMessage = useCallback(
-    (message: string, tone: Exclude<UserSpaceOverlayTone, 'status'> = 'error') => {
+    (message: string, tone: Exclude<UserSpaceStatusOverlayTone, 'status'> = 'error') => {
       const normalized = message.trim();
       if (!normalized) return;
       setPreviewNotice({
@@ -8043,208 +8045,149 @@ export function UserSpacePanel({
     liveDataWarningMessage && previewNotice?.message.trim() !== liveDataWarningMessage
       ? liveDataWarningMessage
       : null;
-  const hasStatusOverlayContent = Boolean(
-    loading ||
-    creatingWorkspace ||
-    duplicatingWorkspaceSourceId ||
-    deletingWorkspaceId ||
-    runtimeOverlayStatus ||
-    previewNotice ||
-    visibleLiveDataWarningMessage ||
-    (formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId),
-  );
-  const statusOverlaySignature = useMemo(
-    () =>
-      JSON.stringify({
-        loading,
-        creatingWorkspace,
-        creatingWorkspaceStatus,
-        duplicatingWorkspaceSourceId,
-        duplicatingWorkspaceStatus,
-        deletingWorkspaceId,
-        deletingWorkspaceStatus,
-        runtimeOverlayStatus,
-        previewNotice,
-        liveDataWarning: visibleLiveDataWarningMessage,
-        formattedError:
-          formattedError &&
-          !creatingWorkspace &&
-          !duplicatingWorkspaceSourceId &&
-          !deletingWorkspaceId
-            ? formattedError
-            : null,
-      }),
-    [
-      loading,
-      creatingWorkspace,
-      creatingWorkspaceStatus,
-      duplicatingWorkspaceSourceId,
-      duplicatingWorkspaceStatus,
-      deletingWorkspaceId,
-      deletingWorkspaceStatus,
-      runtimeOverlayStatus,
-      previewNotice,
-      visibleLiveDataWarningMessage,
-      formattedError,
-    ],
-  );
+  const liveDataWarningSignature = visibleLiveDataWarningMessage ?? null;
+  const errorSignature =
+    formattedError && !creatingWorkspace && !duplicatingWorkspaceSourceId && !deletingWorkspaceId
+      ? formattedError
+      : null;
+  const visibleDismissibleLiveDataWarningMessage =
+    visibleLiveDataWarningMessage &&
+    visibleLiveDataWarningMessage !== dismissedLiveDataWarningSignature
+      ? visibleLiveDataWarningMessage
+      : null;
+  const visibleDismissibleError =
+    errorSignature && errorSignature !== dismissedErrorSignature ? errorSignature : null;
 
   useEffect(() => {
-    if (!previewNotice) return;
-    const timer = window.setTimeout(() => {
-      setPreviewNotice((current) => (current?.id === previewNotice.id ? null : current));
-    }, 6000);
+    if (liveDataWarningSignature === null && dismissedLiveDataWarningSignature !== null) {
+      setDismissedLiveDataWarningSignature(null);
+    }
+  }, [dismissedLiveDataWarningSignature, liveDataWarningSignature]);
 
-    return () => {
-      window.clearTimeout(timer);
+  useEffect(() => {
+    if (errorSignature === null && dismissedErrorSignature !== null) {
+      setDismissedErrorSignature(null);
+    }
+  }, [dismissedErrorSignature, errorSignature]);
+
+  const overlayItems = useMemo<UserSpaceStatusOverlayItem[]>(() => {
+    const items: UserSpaceStatusOverlayItem[] = [];
+
+    const pushItem = (
+      id: string,
+      tone: UserSpaceStatusOverlayTone,
+      content: ReactNode,
+      dismissLabel?: string,
+    ) => {
+      items.push({ id, tone, content, dismissLabel });
     };
-  }, [previewNotice]);
 
-  useEffect(() => {
-    if (!hasStatusOverlayContent) {
-      setStatusOverlayVisible(false);
-      setStatusOverlayFading(false);
-      setStatusOverlayPinned(false);
-      setStatusOverlayInteracting(false);
-      statusOverlayDismissedSignatureRef.current = null;
-      return;
+    if (loading) {
+      pushItem('loading', 'status', 'Loading workspaces...');
     }
-
-    if (statusOverlayDismissedSignatureRef.current !== statusOverlaySignature) {
-      setStatusOverlayVisible(true);
-      setStatusOverlayFading(false);
-      statusOverlayDismissedSignatureRef.current = null;
+    if (creatingWorkspace) {
+      pushItem(
+        'creating-workspace',
+        'status',
+        <>
+          <MiniLoadingSpinner variant="icon" size={14} />{' '}
+          {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
+        </>,
+      );
     }
-  }, [hasStatusOverlayContent, statusOverlaySignature]);
-
-  useEffect(() => {
+    if (duplicatingWorkspaceSourceId) {
+      pushItem(
+        'duplicating-workspace',
+        'status',
+        <>
+          <MiniLoadingSpinner variant="icon" size={14} />{' '}
+          {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
+        </>,
+      );
+    }
+    if (deletingWorkspaceId) {
+      pushItem(
+        'deleting-workspace',
+        'status',
+        <>
+          <MiniLoadingSpinner variant="icon" size={14} />{' '}
+          {deletingWorkspaceStatus || 'Deleting workspace...'}
+        </>,
+      );
+    }
     if (
-      !hasStatusOverlayContent ||
-      !statusOverlayVisible ||
-      statusOverlayPinned ||
-      statusOverlayInteracting ||
-      runtimeOverlayStatus
+      runtimeOverlayStatus &&
+      !creatingWorkspace &&
+      !duplicatingWorkspaceSourceId &&
+      !deletingWorkspaceId
     ) {
-      setStatusOverlayFading(false);
-      return;
+      pushItem(
+        'runtime-status',
+        'status',
+        <>
+          <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
+        </>,
+      );
+    }
+    if (previewNotice) {
+      pushItem(
+        'preview-notice',
+        previewNotice.tone ?? 'success',
+        previewNotice.message,
+        'Dismiss preview notice',
+      );
+    }
+    if (visibleDismissibleLiveDataWarningMessage) {
+      pushItem(
+        'live-data-warning',
+        'warning',
+        `Possible live data query issue: ${visibleDismissibleLiveDataWarningMessage}`,
+        'Dismiss live data warning',
+      );
+    }
+    if (visibleDismissibleError) {
+      pushItem('error-message', 'error', visibleDismissibleError, 'Dismiss error message');
     }
 
-    setStatusOverlayFading(true);
-    const timer = window.setTimeout(() => {
-      if (statusOverlayPinned || statusOverlayInteracting || !hasStatusOverlayContent) {
-        return;
-      }
-      setStatusOverlayVisible(false);
-      setStatusOverlayFading(false);
-      statusOverlayDismissedSignatureRef.current = statusOverlaySignature;
-    }, 2000);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
+    return items;
   }, [
-    hasStatusOverlayContent,
-    statusOverlayVisible,
-    statusOverlayPinned,
-    statusOverlayInteracting,
+    creatingWorkspace,
+    creatingWorkspaceStatus,
+    deletingWorkspaceId,
+    deletingWorkspaceStatus,
+    duplicatingWorkspaceSourceId,
+    duplicatingWorkspaceStatus,
+    loading,
     runtimeOverlayStatus,
-    statusOverlaySignature,
+    visibleDismissibleError,
+    visibleDismissibleLiveDataWarningMessage,
+    previewNotice,
   ]);
 
-  const handleStatusOverlayClick = useCallback(() => {
-    setStatusOverlayPinned((current) => {
-      const next = !current;
-      if (!next) {
-        setStatusOverlayVisible(true);
+  const handleDismissOverlayItem = useCallback(
+    (id: string) => {
+      if (id === 'preview-notice') {
+        setPreviewNotice(null);
+        return;
       }
-      setStatusOverlayFading(false);
-      statusOverlayDismissedSignatureRef.current = null;
-      return next;
-    });
-  }, []);
-
-  const renderOverlayItem = (tone: UserSpaceOverlayTone, content: ReactNode) => {
-    const toneClass = tone === 'status' ? '' : ` userspace-${tone}`;
-    return (
-      <p className={`userspace-status userspace-status-overlay-item${toneClass}`}>{content}</p>
-    );
-  };
+      if (id === 'live-data-warning' && liveDataWarningSignature) {
+        setDismissedLiveDataWarningSignature(liveDataWarningSignature);
+        return;
+      }
+      if (id === 'error-message' && errorSignature) {
+        setDismissedErrorSignature(errorSignature);
+      }
+    },
+    [errorSignature, liveDataWarningSignature],
+  );
 
   const renderUserspaceOverlay = (extraClassName = '') =>
-    hasStatusOverlayContent && statusOverlayVisible ? (
-      <div
-        className={`userspace-status-overlay${extraClassName}${statusOverlayFading ? ' is-fading' : ''}${statusOverlayPinned ? ' is-pinned' : ''}`}
-        role="status"
-        aria-live="polite"
-        onMouseEnter={() => {
-          setStatusOverlayInteracting(true);
-          setStatusOverlayFading(false);
-        }}
-        onMouseLeave={() => setStatusOverlayInteracting(false)}
-        onFocusCapture={() => {
-          setStatusOverlayInteracting(true);
-          setStatusOverlayFading(false);
-        }}
-        onBlurCapture={(event) => {
-          if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-            return;
-          }
-          setStatusOverlayInteracting(false);
-        }}
-        onClick={handleStatusOverlayClick}
-        title={
-          statusOverlayPinned
-            ? 'Pinned. Click to unpin and restore fade behavior.'
-            : 'Click to pin this notification. Click again to unpin.'
-        }
-      >
-        {loading && renderOverlayItem('status', 'Loading workspaces...')}
-        {creatingWorkspace &&
-          renderOverlayItem(
-            'status',
-            <>
-              <MiniLoadingSpinner variant="icon" size={14} />{' '}
-              {creatingWorkspaceStatus || 'Bootstrapping workspace...'}
-            </>,
-          )}
-        {duplicatingWorkspaceSourceId &&
-          renderOverlayItem(
-            'status',
-            <>
-              <MiniLoadingSpinner variant="icon" size={14} />{' '}
-              {duplicatingWorkspaceStatus || 'Duplicating workspace...'}
-            </>,
-          )}
-        {deletingWorkspaceId &&
-          renderOverlayItem(
-            'status',
-            <>
-              <MiniLoadingSpinner variant="icon" size={14} />{' '}
-              {deletingWorkspaceStatus || 'Deleting workspace...'}
-            </>,
-          )}
-        {runtimeOverlayStatus &&
-          !creatingWorkspace &&
-          !duplicatingWorkspaceSourceId &&
-          !deletingWorkspaceId &&
-          renderOverlayItem(
-            'status',
-            <>
-              <MiniLoadingSpinner variant="icon" size={14} /> {runtimeOverlayStatus}
-            </>,
-          )}
-        {previewNotice && renderOverlayItem(previewNotice.tone ?? 'success', previewNotice.message)}
-        {visibleLiveDataWarningMessage &&
-          renderOverlayItem(
-            'warning',
-            `Possible live data query issue: ${visibleLiveDataWarningMessage}`,
-          )}
-        {formattedError &&
-          !creatingWorkspace &&
-          !duplicatingWorkspaceSourceId &&
-          !deletingWorkspaceId &&
-          renderOverlayItem('error', formattedError)}
-      </div>
+    overlayItems.length > 0 ? (
+      <UserSpaceStatusOverlay
+        items={overlayItems}
+        extraClassName={extraClassName}
+        onDismiss={handleDismissOverlayItem}
+      />
     ) : null;
 
   return (
