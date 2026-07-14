@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ToolSelectorDropdown,
   type ToolSelectorFocusRequest,
+  type ToolSelectorStatusBadgeContext,
   type ToolSelectorMenuItem,
   type ToolSelectorStatusBadge,
   type ToolSelectorTool,
@@ -81,7 +82,10 @@ interface ControlledDropdownProps {
   focusRequest?: ToolSelectorFocusRequest | null;
   onRequestEnableWorkspaceTool?: (toolId: string) => void;
   getToolMenuItems?: (tool: ToolSelectorTool) => ToolSelectorMenuItem[];
-  getToolStatusBadge?: (tool: ToolSelectorTool) => ToolSelectorStatusBadge | null;
+  getToolStatusBadge?: (
+    tool: ToolSelectorTool,
+    context: ToolSelectorStatusBadgeContext,
+  ) => ToolSelectorStatusBadge | null;
 }
 
 function ControlledDropdown({
@@ -419,6 +423,73 @@ describe('ToolSelectorDropdown bulk selection', () => {
     const badge = screen.getByTitle('Write access enabled for this workspace');
     expect(badge.classList.contains('userspace-tool-status-badge-workspace')).toBe(true);
     expect(badge.querySelector('svg')).toBeNull();
+  });
+
+  it('lets status badges depend on selected workspace tool state', async () => {
+    const user = userEvent.setup();
+    const otherTool: ToolSelectorTool = {
+      id: 'tool-other',
+      name: 'Other Tool',
+      tool_type: 'postgres',
+      available: true,
+    };
+    render(
+      <ControlledDropdown
+        availableTools={[ungroupedTool, otherTool]}
+        initialSelection={{ mode: 'custom', toolIds: [ungroupedTool.id], toolGroupIds: [] }}
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolStatusBadge={(_tool, context) =>
+          context.selected
+            ? {
+                label: 'WORKSPACE READ',
+                tone: 'read',
+                scope: 'workspace',
+                title: 'Selected for this workspace with read access',
+              }
+            : null
+        }
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (1/2 selected)'));
+
+    const selectedTitleRow = screen
+      .getByText('Ungrouped Tool')
+      .closest('.userspace-tool-item-title-row');
+    const unselectedTitleRow = screen
+      .getByText('Other Tool')
+      .closest('.userspace-tool-item-title-row');
+    expect(selectedTitleRow?.textContent).toContain('WORKSPACE READ');
+    expect(unselectedTitleRow?.querySelector('.userspace-tool-status-badge')).toBeNull();
+  });
+
+  it('omits status badges for unavailable workspace tools', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        availableTools={[
+          { ...ungroupedTool, available: false, disabled_reason: 'No recent heartbeat' },
+        ]}
+        initialSelection={{ mode: 'custom', toolIds: [ungroupedTool.id], toolGroupIds: [] }}
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolStatusBadge={(_tool, context) =>
+          context.available
+            ? {
+                label: 'WORKSPACE READ',
+                tone: 'read',
+                scope: 'workspace',
+              }
+            : null
+        }
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (0/0 selected)'));
+
+    const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
+    expect(titleRow?.querySelector('.userspace-tool-status-badge')).toBeNull();
   });
 
   it('shows a disabled context-menu item and does not fire onChange when clicked', async () => {

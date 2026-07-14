@@ -91,6 +91,7 @@ import {
   type ToolGroupInfo,
   type ToolSelectorFocusRequest,
   type ToolSelectorStatusBadge,
+  type ToolSelectorStatusBadgeContext,
 } from './shared/ToolSelectorDropdown';
 import {
   defaultScheduleStartMinute,
@@ -907,17 +908,18 @@ export function getWorkspaceToolStatusBadgeForState(
 ): ToolSelectorStatusBadge | null {
   if (state === 'enabled') {
     return {
-      label: 'Workspace write',
-      tone: 'write',
+      label: 'WORKSPACE WRITE',
+      tone: 'warning',
       scope: 'workspace',
       title: 'Workspace write enabled for this workspace',
     };
   }
   if (state === 'eligible') {
     return {
-      label: 'Workspace write',
+      label: 'WORKSPACE READ',
       tone: 'read',
-      title: 'Workspace write can be enabled for this workspace. Right-click to enable.',
+      scope: 'workspace',
+      title: 'Selected for this workspace with read access. Right-click to enable write access.',
     };
   }
   return null;
@@ -4514,9 +4516,10 @@ export function UserSpacePanel({
   );
 
   const getWorkspaceToolStatusBadge = useCallback(
-    (tool: UserSpaceAvailableTool) => {
+    (tool: UserSpaceAvailableTool, context: ToolSelectorStatusBadgeContext) => {
+      if (!context.selected || !context.available) return null;
       const state = getUserSpaceToolWorkspaceWriteState(tool, workspaceToolOptions);
-      return getWorkspaceToolStatusBadgeForState(state);
+      return getWorkspaceToolStatusBadgeForState(state === 'enabled' ? 'enabled' : 'eligible');
     },
     [workspaceToolOptions],
   );

@@ -39,14 +39,16 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(getWorkspaceToolStatusBadgeForState('ineligible')).toBeNull();
   });
 
-  it('labels workspace write states explicitly', () => {
+  it('labels selected workspace tool access explicitly', () => {
     expect(getWorkspaceToolStatusBadgeForState('enabled')).toMatchObject({
-      label: 'Workspace write',
+      label: 'WORKSPACE WRITE',
+      tone: 'warning',
       title: 'Workspace write enabled for this workspace',
     });
     expect(getWorkspaceToolStatusBadgeForState('eligible')).toMatchObject({
-      label: 'Workspace write',
-      title: 'Workspace write can be enabled for this workspace. Right-click to enable.',
+      label: 'WORKSPACE READ',
+      tone: 'read',
+      title: 'Selected for this workspace with read access. Right-click to enable write access.',
     });
   });
 });

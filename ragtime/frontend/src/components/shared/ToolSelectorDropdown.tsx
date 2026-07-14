@@ -54,9 +54,14 @@ export interface ToolSelectorMenuItem {
 
 export interface ToolSelectorStatusBadge {
   label: string;
-  tone: 'read' | 'write';
+  tone: 'read' | 'write' | 'warning';
   scope?: 'global' | 'conversation' | 'workspace';
   title?: string;
+}
+
+export interface ToolSelectorStatusBadgeContext {
+  selected: boolean;
+  available: boolean;
 }
 
 interface ToolSelectorDropdownProps {
@@ -86,7 +91,10 @@ interface ToolSelectorDropdownProps {
   /** Generic right-click menu generator for configured tool groups. */
   getToolGroupMenuItems?: (group: ToolSelectorToolGroup) => ToolSelectorMenuItem[];
   /** Optional status badge for configured tool rows. Defaults to global read/write when available. */
-  getToolStatusBadge?: (tool: ToolSelectorTool) => ToolSelectorStatusBadge | null;
+  getToolStatusBadge?: (
+    tool: ToolSelectorTool,
+    context: ToolSelectorStatusBadgeContext,
+  ) => ToolSelectorStatusBadge | null;
   focusRequest?: ToolSelectorFocusRequest | null;
   onRequestEnableWorkspaceTool?: (toolId: string) => void;
 }
@@ -492,7 +500,7 @@ export function ToolSelectorDropdown({
       focusRequest?.toolId === tool.id && focusRequest.requestId === highlightedFocusRequestId;
     const checked = toolAvailable && effectiveToolIds.has(tool.id);
     const statusBadge = getToolStatusBadge
-      ? getToolStatusBadge(tool)
+      ? getToolStatusBadge(tool, { selected: checked, available: toolAvailable })
       : tool.allow_write === true
         ? {
             label: 'Write',

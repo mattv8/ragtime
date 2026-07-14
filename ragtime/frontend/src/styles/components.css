@@ -1293,6 +1293,12 @@ textarea:focus {
   color: var(--color-primary);
 }
 
+.userspace-tool-status-badge-warning {
+  background: var(--color-warning-light);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning);
+}
+
 .userspace-tool-status-badge-global {
   background: var(--color-warning-light);
   border-color: var(--color-warning-border);
@@ -1309,6 +1315,18 @@ textarea:focus {
   background: var(--color-success-light);
   border-color: var(--color-success-border);
   color: var(--color-success);
+}
+
+.userspace-tool-status-badge-read.userspace-tool-status-badge-workspace {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.userspace-tool-status-badge-warning.userspace-tool-status-badge-workspace {
+  background: var(--color-warning-light);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning);
 }
 
 .userspace-tool-item:hover {
