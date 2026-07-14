@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -123,6 +124,48 @@ class ToolExportImportHelpersTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
+    def _capturing_import_repo(
+        self,
+        *,
+        existing_configs: list[object] | None = None,
+        result_builder: Callable[[ToolConfig], ToolConfig] | None = None,
+    ) -> tuple[mock.AsyncMock, dict[str, ToolConfig | None]]:
+        mock_repo = mock.AsyncMock()
+        mock_repo.list_tool_configs = mock.AsyncMock(return_value=existing_configs or [])
+        created: dict[str, ToolConfig | None] = {"config": None}
+
+        async def fake_create(config: ToolConfig) -> ToolConfig:
+            created["config"] = config
+            if result_builder is not None:
+                return result_builder(config)
+            return config
+
+        mock_repo.create_tool_config = fake_create
+        return mock_repo, created
+
+    async def _import_with_capturing_repo(
+        self,
+        envelope: dict,
+        *,
+        existing_configs: list[object] | None = None,
+        result_builder: Callable[[ToolConfig], ToolConfig] | None = None,
+    ) -> ToolConfig:
+        mock_repo, created = self._capturing_import_repo(
+            existing_configs=existing_configs,
+            result_builder=result_builder,
+        )
+
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
+            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+        ):
+            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+
+        self.assertIsNotNone(created["config"])
+        return cast(ToolConfig, created["config"])
+
     async def test_export_then_import_roundtrip(self) -> None:
         original = ToolConfig(
             id="tool-abc",
@@ -186,30 +229,17 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         existing = SimpleNamespace(name="Existing Tool")
-        mock_repo = mock.AsyncMock()
-        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[existing])
 
-        created: ToolConfig | None = None
-
-        async def fake_create(config: ToolConfig) -> ToolConfig:
-            nonlocal created
-            created = config
+        def build_created_tool(config: ToolConfig) -> ToolConfig:
             data = config.model_dump()
             data["id"] = "imported-1"
             return ToolConfig(**data)
 
-        mock_repo.create_tool_config = fake_create
-
-        with (
-            mock.patch("ragtime.indexer.routes.repository", mock_repo),
-            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
-            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
-            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
-        ):
-            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
-
-        self.assertIsNotNone(created)
-        created_config = cast(ToolConfig, created)
+        created_config = await self._import_with_capturing_repo(
+            envelope,
+            existing_configs=[existing],
+            result_builder=build_created_tool,
+        )
         self.assertEqual(created_config.name, "Existing Tool Copy")
 
     async def test_import_clears_schema_index_freshness_markers(self) -> None:
@@ -227,27 +257,7 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
             ),
             EXPORT_PASSWORD,
         )
-        mock_repo = mock.AsyncMock()
-        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[])
-        created: ToolConfig | None = None
-
-        async def fake_create(config: ToolConfig) -> ToolConfig:
-            nonlocal created
-            created = config
-            return config
-
-        mock_repo.create_tool_config = fake_create
-
-        with (
-            mock.patch("ragtime.indexer.routes.repository", mock_repo),
-            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
-            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
-            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
-        ):
-            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
-
-        self.assertIsNotNone(created)
-        imported_config = cast(ToolConfig, created).connection_config
+        imported_config = (await self._import_with_capturing_repo(envelope)).connection_config
         self.assertEqual(imported_config["schema_index_enabled"], True)
         self.assertEqual(imported_config["schema_index_interval_hours"], 12)
         self.assertEqual(imported_config["schema_index_timezone"], "UTC")
@@ -269,27 +279,7 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
             ),
             EXPORT_PASSWORD,
         )
-        mock_repo = mock.AsyncMock()
-        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[])
-        created: ToolConfig | None = None
-
-        async def fake_create(config: ToolConfig) -> ToolConfig:
-            nonlocal created
-            created = config
-            return config
-
-        mock_repo.create_tool_config = fake_create
-
-        with (
-            mock.patch("ragtime.indexer.routes.repository", mock_repo),
-            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
-            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
-            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
-        ):
-            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
-
-        self.assertIsNotNone(created)
-        imported_config = cast(ToolConfig, created).connection_config
+        imported_config = (await self._import_with_capturing_repo(envelope)).connection_config
         self.assertEqual(imported_config["reindex_interval_hours"], 12)
         self.assertNotIn("last_indexed_at", imported_config)
 

@@ -363,6 +363,56 @@ def resolve_model_family_from_metadata(
     return None
 
 
+def coerce_positive_int(value: Any) -> int | None:
+    """Return a positive integer parsed from common scalar payload values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            parsed = int(stripped)
+            return parsed if parsed > 0 else None
+    return None
+
+
+def extract_openai_embedding_dimension(payload: dict[str, Any]) -> int | None:
+    """Extract embedding vector length from an OpenAI-compatible response."""
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        return None
+    first = data[0]
+    if not isinstance(first, dict):
+        return None
+    embedding = first.get("embedding")
+    if isinstance(embedding, list):
+        return len(embedding)
+    return None
+
+
+def extract_http_error_message(response: Any) -> str:
+    """Extract a short human-readable error from an HTTP response-like object."""
+    try:
+        payload = response.json()
+    except Exception:
+        return response.text[:500] or f"HTTP {response.status_code}"
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("type") or payload)[:500]
+        if isinstance(error, str):
+            return error[:500]
+        message = payload.get("message")
+        if message:
+            return str(message)[:500]
+    return str(payload)[:500]
+
+
 def get_provider_connection(
     provider: str | None,
     role: ProviderRole,

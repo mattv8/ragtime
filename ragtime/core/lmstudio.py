@@ -15,6 +15,15 @@ from typing import Any, Optional
 import httpx
 
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import (
+    coerce_positive_int as _coerce_positive_int,
+)
+from ragtime.core.model_providers import (
+    extract_http_error_message as _extract_error_message,
+)
+from ragtime.core.model_providers import (
+    extract_openai_embedding_dimension as extract_embedding_dimension,
+)
 
 logger = get_logger(__name__)
 
@@ -47,22 +56,6 @@ def normalize_base_url(base_url: str | None, default: str = DEFAULT_BASE_URL) ->
     """Normalize an LM Studio base URL for endpoint joins."""
     value = str(base_url or "").strip() or default
     return value.rstrip("/")
-
-
-def _coerce_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.isdigit():
-            parsed = int(stripped)
-            return parsed if parsed > 0 else None
-    return None
 
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
@@ -138,24 +131,6 @@ def parse_model_row(row: dict[str, Any]) -> LmStudioModelInfo | None:
     )
 
 
-def _extract_error_message(response: httpx.Response) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return response.text[:500] or f"HTTP {response.status_code}"
-
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict):
-            return str(error.get("message") or error.get("type") or payload)[:500]
-        if isinstance(error, str):
-            return error[:500]
-        message = payload.get("message")
-        if message:
-            return str(message)[:500]
-    return str(payload)[:500]
-
-
 async def is_reachable(base_url: str, timeout: float = 5.0) -> tuple[bool, Optional[str]]:
     """Check LM Studio reachability using native endpoints first."""
     normalized_base = normalize_base_url(base_url)
@@ -222,20 +197,6 @@ async def list_chat_models(base_url: str, api_key: str | None = None) -> list[Lm
     """List LM Studio chat-capable models."""
     models = await list_native_models(base_url, api_key=api_key)
     return [model for model in models if model.model_type in CHAT_MODEL_TYPES]
-
-
-def extract_embedding_dimension(payload: dict[str, Any]) -> int | None:
-    """Extract embedding vector length from an OpenAI-compatible response."""
-    data = payload.get("data")
-    if not isinstance(data, list) or not data:
-        return None
-    first = data[0]
-    if not isinstance(first, dict):
-        return None
-    embedding = first.get("embedding")
-    if isinstance(embedding, list):
-        return len(embedding)
-    return None
 
 
 async def probe_embedding_dimension(base_url: str, model: str, api_key: str | None = None) -> int | None:

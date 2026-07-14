@@ -9,6 +9,55 @@ import {
   WebAuthnCancelledError,
 } from './webauthn';
 
+const createPasskeyOptions = {
+  challenge: 'Y2hhbGxlbmdl',
+  rp: { name: 'Ragtime' },
+  user: { id: 'dXNlcg', name: 'u', displayName: 'u' },
+  pubKeyCredParams: [{ alg: -7, type: 'public-key' as const }],
+};
+
+const getPasskeyOptions = {
+  challenge: 'Y2hhbGxlbmdl',
+  allowCredentials: [{ id: 'Y3JlZA', type: 'public-key' as const }],
+};
+
+const webAuthnOriginals = {
+  navigator: globalThis.navigator,
+  PublicKeyCredential: globalThis.PublicKeyCredential,
+};
+
+function installWebAuthnMocks() {
+  const credentials = {
+    create: vi.fn(),
+    get: vi.fn(),
+  };
+
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { credentials },
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, 'PublicKeyCredential', {
+    value: function () {
+      // no-op constructor
+    },
+    configurable: true,
+  });
+
+  return credentials;
+}
+
+function restoreWebAuthnMocks() {
+  Object.defineProperty(globalThis, 'navigator', {
+    value: webAuthnOriginals.navigator,
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, 'PublicKeyCredential', {
+    value: webAuthnOriginals.PublicKeyCredential,
+    configurable: true,
+  });
+  vi.restoreAllMocks();
+}
+
 describe('isWebAuthnSupported', () => {
   it('returns false in the jsdom test environment', () => {
     expect(isWebAuthnSupported()).toBe(false);
@@ -65,60 +114,26 @@ describe('base64url encoding helpers', () => {
 });
 
 describe('createPasskeyCredential cancellation mapping', () => {
-  const originalNavigator = globalThis.navigator;
-  const originalPublicKeyCredential = globalThis.PublicKeyCredential;
+  let credentials: ReturnType<typeof installWebAuthnMocks>;
 
   beforeEach(() => {
     // jsdom does not expose navigator.credentials.create; install a mock.
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        credentials: {
-          create: vi.fn(),
-          get: vi.fn(),
-        },
-      },
-      configurable: true,
-    });
-    Object.defineProperty(globalThis, 'PublicKeyCredential', {
-      value: function () {
-        // no-op constructor
-      },
-      configurable: true,
-    });
+    credentials = installWebAuthnMocks();
   });
 
   afterEach(() => {
-    Object.defineProperty(globalThis, 'navigator', {
-      value: originalNavigator,
-      configurable: true,
-    });
-    Object.defineProperty(globalThis, 'PublicKeyCredential', {
-      value: originalPublicKeyCredential,
-      configurable: true,
-    });
-    vi.restoreAllMocks();
+    restoreWebAuthnMocks();
   });
 
   it('throws WebAuthnCancelledError when create() rejects with NotAllowedError', async () => {
-    const credentials = navigator.credentials as unknown as {
-      create: ReturnType<typeof vi.fn>;
-    };
     credentials.create.mockRejectedValue(new DOMException('User cancelled', 'NotAllowedError'));
 
-    await expect(
-      createPasskeyCredential({
-        challenge: 'Y2hhbGxlbmdl',
-        rp: { name: 'Ragtime' },
-        user: { id: 'dXNlcg', name: 'u', displayName: 'u' },
-        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-      }),
-    ).rejects.toBeInstanceOf(WebAuthnCancelledError);
+    await expect(createPasskeyCredential(createPasskeyOptions)).rejects.toBeInstanceOf(
+      WebAuthnCancelledError,
+    );
   });
 
   it('throws WebAuthnCancelledError when native create() rejects with NotAllowedError', async () => {
-    const credentials = navigator.credentials as unknown as {
-      create: ReturnType<typeof vi.fn>;
-    };
     Object.defineProperty(globalThis.PublicKeyCredential, 'parseCreationOptionsFromJSON', {
       value: vi.fn(() => ({
         challenge: new TextEncoder().encode('challenge').buffer,
@@ -130,53 +145,27 @@ describe('createPasskeyCredential cancellation mapping', () => {
     });
     credentials.create.mockRejectedValue(new DOMException('User cancelled', 'NotAllowedError'));
 
-    await expect(
-      createPasskeyCredential({
-        challenge: 'Y2hhbGxlbmdl',
-        rp: { name: 'Ragtime' },
-        user: { id: 'dXNlcg', name: 'u', displayName: 'u' },
-        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-      }),
-    ).rejects.toBeInstanceOf(WebAuthnCancelledError);
+    await expect(createPasskeyCredential(createPasskeyOptions)).rejects.toBeInstanceOf(
+      WebAuthnCancelledError,
+    );
   });
 
   it('throws WebAuthnCancelledError when create() rejects with AbortError', async () => {
-    const credentials = navigator.credentials as unknown as {
-      create: ReturnType<typeof vi.fn>;
-    };
     credentials.create.mockRejectedValue(new DOMException('Operation aborted', 'AbortError'));
 
-    await expect(
-      createPasskeyCredential({
-        challenge: 'Y2hhbGxlbmdl',
-        rp: { name: 'Ragtime' },
-        user: { id: 'dXNlcg', name: 'u', displayName: 'u' },
-        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-      }),
-    ).rejects.toBeInstanceOf(WebAuthnCancelledError);
+    await expect(createPasskeyCredential(createPasskeyOptions)).rejects.toBeInstanceOf(
+      WebAuthnCancelledError,
+    );
   });
 
   it('re-throws non-cancellation errors unchanged', async () => {
-    const credentials = navigator.credentials as unknown as {
-      create: ReturnType<typeof vi.fn>;
-    };
     const otherError = new Error('Some other failure');
     credentials.create.mockRejectedValue(otherError);
 
-    await expect(
-      createPasskeyCredential({
-        challenge: 'Y2hhbGxlbmdl',
-        rp: { name: 'Ragtime' },
-        user: { id: 'dXNlcg', name: 'u', displayName: 'u' },
-        pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
-      }),
-    ).rejects.toBe(otherError);
+    await expect(createPasskeyCredential(createPasskeyOptions)).rejects.toBe(otherError);
   });
 
   it('returns a JSON credential from create() when native parse helpers are unavailable', async () => {
-    const credentials = navigator.credentials as unknown as {
-      create: ReturnType<typeof vi.fn>;
-    };
     const rawId = new Uint8Array([1, 2, 3, 4]).buffer;
     const clientDataJSON = new TextEncoder().encode('{"a":1}').buffer;
     const attestationObject = new Uint8Array([5, 6, 7, 8]).buffer;
@@ -195,10 +184,7 @@ describe('createPasskeyCredential cancellation mapping', () => {
     } as unknown as Credential);
 
     const result = await createPasskeyCredential({
-      challenge: 'Y2hhbGxlbmdl',
-      rp: { name: 'Ragtime' },
-      user: { id: 'dXNlcg', name: 'u', displayName: 'u' },
-      pubKeyCredParams: [{ alg: -7, type: 'public-key' }],
+      ...createPasskeyOptions,
       excludeCredentials: [{ id: 'aWQ', type: 'public-key' }],
     });
 
@@ -232,57 +218,25 @@ describe('createPasskeyCredential cancellation mapping', () => {
 });
 
 describe('getPasskeyAssertion cancellation mapping', () => {
-  const originalNavigator = globalThis.navigator;
-  const originalPublicKeyCredential = globalThis.PublicKeyCredential;
+  let credentials: ReturnType<typeof installWebAuthnMocks>;
 
   beforeEach(() => {
-    Object.defineProperty(globalThis, 'navigator', {
-      value: {
-        credentials: {
-          create: vi.fn(),
-          get: vi.fn(),
-        },
-      },
-      configurable: true,
-    });
-    Object.defineProperty(globalThis, 'PublicKeyCredential', {
-      value: function () {
-        // no-op constructor
-      },
-      configurable: true,
-    });
+    credentials = installWebAuthnMocks();
   });
 
   afterEach(() => {
-    Object.defineProperty(globalThis, 'navigator', {
-      value: originalNavigator,
-      configurable: true,
-    });
-    Object.defineProperty(globalThis, 'PublicKeyCredential', {
-      value: originalPublicKeyCredential,
-      configurable: true,
-    });
-    vi.restoreAllMocks();
+    restoreWebAuthnMocks();
   });
 
   it('throws WebAuthnCancelledError when get() rejects with NotAllowedError', async () => {
-    const credentials = navigator.credentials as unknown as {
-      get: ReturnType<typeof vi.fn>;
-    };
     credentials.get.mockRejectedValue(new DOMException('User cancelled', 'NotAllowedError'));
 
-    await expect(
-      getPasskeyAssertion({
-        challenge: 'Y2hhbGxlbmdl',
-        allowCredentials: [{ id: 'Y3JlZA', type: 'public-key' }],
-      }),
-    ).rejects.toBeInstanceOf(WebAuthnCancelledError);
+    await expect(getPasskeyAssertion(getPasskeyOptions)).rejects.toBeInstanceOf(
+      WebAuthnCancelledError,
+    );
   });
 
   it('throws WebAuthnCancelledError when native get() rejects with NotAllowedError', async () => {
-    const credentials = navigator.credentials as unknown as {
-      get: ReturnType<typeof vi.fn>;
-    };
     Object.defineProperty(globalThis.PublicKeyCredential, 'parseRequestOptionsFromJSON', {
       value: vi.fn(() => ({
         challenge: new TextEncoder().encode('challenge').buffer,
@@ -292,18 +246,12 @@ describe('getPasskeyAssertion cancellation mapping', () => {
     });
     credentials.get.mockRejectedValue(new DOMException('User cancelled', 'NotAllowedError'));
 
-    await expect(
-      getPasskeyAssertion({
-        challenge: 'Y2hhbGxlbmdl',
-        allowCredentials: [{ id: 'Y3JlZA', type: 'public-key' }],
-      }),
-    ).rejects.toBeInstanceOf(WebAuthnCancelledError);
+    await expect(getPasskeyAssertion(getPasskeyOptions)).rejects.toBeInstanceOf(
+      WebAuthnCancelledError,
+    );
   });
 
   it('returns a JSON assertion from get() when native parse helpers are unavailable', async () => {
-    const credentials = navigator.credentials as unknown as {
-      get: ReturnType<typeof vi.fn>;
-    };
     const rawId = new Uint8Array([9, 10, 11, 12]).buffer;
     const clientDataJSON = new TextEncoder().encode('{"type":"get"}').buffer;
     const authenticatorData = new Uint8Array([13, 14, 15, 16]).buffer;
@@ -324,10 +272,7 @@ describe('getPasskeyAssertion cancellation mapping', () => {
       getClientExtensionResults: () => ({}),
     } as unknown as Credential);
 
-    const result = await getPasskeyAssertion({
-      challenge: 'Y2hhbGxlbmdl',
-      allowCredentials: [{ id: 'Y3JlZA', type: 'public-key' }],
-    });
+    const result = await getPasskeyAssertion(getPasskeyOptions);
 
     expect(result).toEqual({
       id: 'CQoLDA',

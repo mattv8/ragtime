@@ -57,13 +57,68 @@ def _make_tool_config(
     )
 
 
-class _RuntimeBridgeSuccessService(UserSpaceService):
+def _make_runtime_bridge_tool_service(*, write_enabled: bool = False) -> _RuntimeBridgeWorkspaceService:
+    workspace = _make_workspace()
+    if write_enabled:
+        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
+    return _RuntimeBridgeWorkspaceService(workspace)
+
+
+async def _execute_runtime_bridge_tool_request(
+    *,
+    tool_type: str,
+    output: object,
+    request_input: str | dict[str, object],
+    write_enabled: bool = False,
+) -> tuple[_RuntimeBridgeWorkspaceService, ExecuteComponentResponse, SimpleNamespace, mock.AsyncMock]:
+    service = _make_runtime_bridge_tool_service(write_enabled=write_enabled)
+    tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value=output))
+
+    with (
+        mock.patch.object(
+            userspace_service_module.repository,
+            "get_tool_config",
+            mock.AsyncMock(return_value=_make_tool_config(tool_type=tool_type, allow_write=True)),
+        ),
+        mock.patch(
+            "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
+            mock.AsyncMock(return_value=tool),
+        ) as build_tool,
+    ):
+        response = await service.execute_component_from_runtime_bridge(
+            "workspace-1",
+            ExecuteComponentRequest(component_id="tool-1", request=request_input),
+            session_id="sess-1",
+        )
+
+    return service, response, tool, build_tool
+
+
+class _RuntimeBridgeRecordingMixin:
+    def _init_runtime_bridge_recording(self) -> None:
+        self.proofs_recorded: list[tuple[str, str, int, str]] = []
+        self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
+        self.bridge_audit_calls: list[dict[str, object | None]] = []
+
+    def record_execution_proof(self, workspace_id: str, component_id: str, row_count: int, query: str) -> None:  # type: ignore[override]
+        self.proofs_recorded.append((workspace_id, component_id, row_count, query))
+
+    def clear_live_data_execution_warning(self, workspace_id: str) -> None:  # type: ignore[override]
+        pass
+
+    async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
+        self.diagnostic_events.append((workspace_id, events))
+        return len(events)
+
+    async def _record_runtime_bridge_audit(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.bridge_audit_calls.append(kwargs)
+
+
+class _RuntimeBridgeSuccessService(_RuntimeBridgeRecordingMixin, UserSpaceService):
     def __init__(self) -> None:
         super().__init__()
         self.bridge_workspace_calls: list[tuple[str, ExecuteComponentRequest, dict[str, object]]] = []
-        self.proofs_recorded: list[tuple[str, str, int, str]] = []
-        self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
-        self.bridge_audit_calls: list[dict[str, str | None]] = []
+        self._init_runtime_bridge_recording()
 
     async def _load_workspace_for_component_execution(self, workspace_id: str, user_id: str | None = None) -> UserSpaceWorkspace:  # type: ignore[override]
         return _make_workspace()
@@ -97,46 +152,18 @@ class _RuntimeBridgeSuccessService(UserSpaceService):
             "select 1",
         )
 
-    def record_execution_proof(self, workspace_id: str, component_id: str, row_count: int, query: str) -> None:  # type: ignore[override]
-        self.proofs_recorded.append((workspace_id, component_id, row_count, query))
 
-    def clear_live_data_execution_warning(self, workspace_id: str) -> None:  # type: ignore[override]
-        pass
-
-    async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
-        self.diagnostic_events.append((workspace_id, events))
-        return len(events)
-
-    async def _record_runtime_bridge_audit(self, **kwargs):  # type: ignore[no-untyped-def]
-        self.bridge_audit_calls.append(kwargs)
-
-
-class _RuntimeBridgeWorkspaceService(UserSpaceService):
+class _RuntimeBridgeWorkspaceService(_RuntimeBridgeRecordingMixin, UserSpaceService):
     def __init__(self, workspace: UserSpaceWorkspace | None = None) -> None:
         super().__init__()
         self.workspace = workspace or _make_workspace()
-        self.proofs_recorded: list[tuple[str, str, int, str]] = []
-        self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
-        self.bridge_audit_calls: list[dict[str, object | None]] = []
+        self._init_runtime_bridge_recording()
 
     async def _load_workspace_for_component_execution(self, workspace_id: str, user_id: str | None = None) -> UserSpaceWorkspace:  # type: ignore[override]
         return self.workspace
 
     async def _resolve_effective_workspace_tool_ids(self, workspace: UserSpaceWorkspace) -> list[str]:  # type: ignore[override]
         return list(workspace.selected_tool_ids)
-
-    def record_execution_proof(self, workspace_id: str, component_id: str, row_count: int, query: str) -> None:  # type: ignore[override]
-        self.proofs_recorded.append((workspace_id, component_id, row_count, query))
-
-    def clear_live_data_execution_warning(self, workspace_id: str) -> None:  # type: ignore[override]
-        pass
-
-    async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
-        self.diagnostic_events.append((workspace_id, events))
-        return len(events)
-
-    async def _record_runtime_bridge_audit(self, **kwargs):  # type: ignore[no-untyped-def]
-        self.bridge_audit_calls.append(kwargs)
 
 
 class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
@@ -382,27 +409,12 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.proofs_recorded, [])
 
     async def test_runtime_bridge_odoo_builder_uses_effective_allow_write_and_returns_output(self) -> None:
-        workspace = _make_workspace()
-        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
-        service = _RuntimeBridgeWorkspaceService(workspace)
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value={"ok": True}))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="odoo_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ) as build_tool,
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request="env['res.partner'].search([], limit=1).read(['name'])"),
-                session_id="sess-1",
-            )
+        service, response, tool, build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="odoo_shell",
+            output={"ok": True},
+            request_input="env['res.partner'].search([], limit=1).read(['name'])",
+            write_enabled=True,
+        )
 
         self.assertEqual(response.output, {"ok": True})
         self.assertEqual(response.rows, [])
@@ -418,25 +430,11 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_write")
 
     async def test_runtime_bridge_ssh_builder_uses_read_only_mode_without_workspace_opt_in(self) -> None:
-        service = _RuntimeBridgeWorkspaceService()
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value="ok"))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="ssh_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ) as build_tool,
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request={"command": "ls -la"}),
-                session_id="sess-1",
-            )
+        service, response, tool, build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="ssh_shell",
+            output="ok",
+            request_input={"command": "ls -la"},
+        )
 
         self.assertEqual(response.output, "ok")
         build_tool_args = build_tool.await_args
@@ -446,26 +444,12 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_only")
 
     async def test_runtime_bridge_ssh_command_failed_json_sets_error_and_skips_proof(self) -> None:
-        service = _RuntimeBridgeWorkspaceService()
         raw_output = '{"status":"command_failed","error":"Permission denied","stderr":"ssh: denied"}'
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value=raw_output))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="ssh_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ),
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request={"command": "ls -la"}),
-                session_id="sess-1",
-            )
+        service, response, _tool, _build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="ssh_shell",
+            output=raw_output,
+            request_input={"command": "ls -la"},
+        )
 
         self.assertEqual(response.output, raw_output)
         self.assertEqual(response.error, "Permission denied")
@@ -473,26 +457,12 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.bridge_audit_calls[-1]["error"], "Permission denied")
 
     async def test_runtime_bridge_ssh_rejected_json_sets_status_error_and_skips_proof(self) -> None:
-        service = _RuntimeBridgeWorkspaceService()
         raw_output = '{"status":"rejected"}'
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value=raw_output))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="ssh_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ),
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request={"command": "rm -rf /tmp/x"}),
-                session_id="sess-1",
-            )
+        service, response, _tool, _build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="ssh_shell",
+            output=raw_output,
+            request_input={"command": "rm -rf /tmp/x"},
+        )
 
         self.assertEqual(response.output, raw_output)
         self.assertEqual(response.error, "Tool execution rejected.")
@@ -500,25 +470,11 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.bridge_audit_calls[-1]["error"], "Tool execution rejected.")
 
     async def test_runtime_bridge_odoo_error_string_sets_error_and_skips_proof(self) -> None:
-        service = _RuntimeBridgeWorkspaceService()
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value="  Error: access denied"))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="odoo_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ),
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request="env['res.partner'].search([])"),
-                session_id="sess-1",
-            )
+        service, response, _tool, _build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="odoo_shell",
+            output="  Error: access denied",
+            request_input="env['res.partner'].search([])",
+        )
 
         self.assertEqual(response.output, "  Error: access denied")
         self.assertEqual(response.error, "Error: access denied")
@@ -526,26 +482,12 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.bridge_audit_calls[-1]["error"], "Error: access denied")
 
     async def test_runtime_bridge_completed_json_with_stderr_stays_successful(self) -> None:
-        service = _RuntimeBridgeWorkspaceService()
         raw_output = '{"status":"completed","stderr":"warning only","stdout":"done"}'
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value=raw_output))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="ssh_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ),
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request={"command": "ls -la"}),
-                session_id="sess-1",
-            )
+        service, response, _tool, _build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="ssh_shell",
+            output=raw_output,
+            request_input={"command": "ls -la"},
+        )
 
         self.assertEqual(response.output, raw_output)
         self.assertIsNone(response.error)
@@ -553,26 +495,12 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(service.bridge_audit_calls[-1]["error"])
 
     async def test_runtime_bridge_failed_dict_output_sets_error_and_skips_proof(self) -> None:
-        service = _RuntimeBridgeWorkspaceService()
         raw_output = {"status": "failed", "error": "upstream failure"}
-        tool = SimpleNamespace(ainvoke=mock.AsyncMock(return_value=raw_output))
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(tool_type="odoo_shell", allow_write=True)),
-            ),
-            mock.patch(
-                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
-                mock.AsyncMock(return_value=tool),
-            ),
-        ):
-            response = await service.execute_component_from_runtime_bridge(
-                "workspace-1",
-                ExecuteComponentRequest(component_id="tool-1", request="env['res.partner'].search([])"),
-                session_id="sess-1",
-            )
+        service, response, _tool, _build_tool = await _execute_runtime_bridge_tool_request(
+            tool_type="odoo_shell",
+            output=raw_output,
+            request_input="env['res.partner'].search([])",
+        )
 
         self.assertEqual(response.output, raw_output)
         self.assertEqual(response.error, "upstream failure")

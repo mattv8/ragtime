@@ -15,6 +15,12 @@ from typing import Any, Optional
 import httpx
 
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import (
+    coerce_positive_int as _coerce_positive_int,
+)
+from ragtime.core.model_providers import (
+    extract_openai_embedding_dimension as extract_embedding_dimension,
+)
 
 logger = get_logger(__name__)
 
@@ -53,22 +59,6 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [row for row in payload if isinstance(row, dict)]
     return []
-
-
-def _coerce_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.isdigit():
-            parsed = int(stripped)
-            return parsed if parsed > 0 else None
-    return None
 
 
 def extract_props_context(payload: dict[str, Any]) -> int | None:
@@ -137,20 +127,6 @@ def extract_model_capabilities(row: dict[str, Any]) -> list[str]:
         seen.add(capability)
         deduped.append(capability)
     return deduped
-
-
-def extract_embedding_dimension(payload: dict[str, Any]) -> int | None:
-    """Extract embedding vector length from an OpenAI-compatible response."""
-    data = payload.get("data")
-    if not isinstance(data, list) or not data:
-        return None
-    first = data[0]
-    if not isinstance(first, dict):
-        return None
-    embedding = first.get("embedding")
-    if isinstance(embedding, list):
-        return len(embedding)
-    return None
 
 
 async def is_reachable(base_url: str, timeout: float = 5.0) -> tuple[bool, Optional[str]]:

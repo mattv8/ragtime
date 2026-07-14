@@ -1,12 +1,12 @@
 import time
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest import mock
 
 from starlette.requests import Request
 
-import ragtime.api.auth
-from ragtime.api.auth import get_auth_status
+from ragtime.api import auth as api_auth
 from ragtime.core import mfa
 
 
@@ -93,6 +93,29 @@ class PendingMfaTokenTests(unittest.TestCase):
 
 
 class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
+    def _first_factor_db(self):
+        class FactorDelegate:
+            async def find_unique(self, where):
+                return None
+
+            async def upsert(self, where, data):
+                self.created_factor = data["create"]
+                return SimpleNamespace(id="factor-1")
+
+        class RecoveryCodeDelegate:
+            async def delete_many(self, where):
+                return None
+
+            async def create(self, data):
+                return SimpleNamespace(id="recovery-1")
+
+        factor_delegate = FactorDelegate()
+        db = SimpleNamespace(
+            usermfafactor=factor_delegate,
+            usermfarecoverycode=RecoveryCodeDelegate(),
+        )
+        return db, factor_delegate
+
     async def test_begin_enrollment_does_not_persist_unconfirmed_factor(self) -> None:
         class FactorDelegate:
             async def find_unique(self, where):
@@ -131,28 +154,7 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
                 await mfa.begin_totp_enrollment(SimpleNamespace(id="user-1", username="alice"))
 
     async def test_complete_enrollment_persists_factor_after_valid_token_code(self) -> None:
-        created_factor: dict | None = None
-
-        class FactorDelegate:
-            async def find_unique(self, where):
-                return None
-
-            async def upsert(self, where, data):
-                nonlocal created_factor
-                created_factor = data["create"]
-                return SimpleNamespace(id="factor-1")
-
-        class RecoveryCodeDelegate:
-            async def delete_many(self, where):
-                return None
-
-            async def create(self, data):
-                return SimpleNamespace(id="recovery-1")
-
-        db = SimpleNamespace(
-            usermfafactor=FactorDelegate(),
-            usermfarecoverycode=RecoveryCodeDelegate(),
-        )
+        db, factor_delegate = self._first_factor_db()
         user = SimpleNamespace(id="user-1", username="alice", role="user")
         secret = mfa.generate_totp_secret()
         enrollment_token = mfa.create_totp_enrollment_token(
@@ -179,10 +181,9 @@ class TotpEnrollmentSafetyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(success)
         self.assertEqual(len(recovery_codes), mfa.RECOVERY_CODE_COUNT)
-        self.assertIsNotNone(created_factor)
-        assert created_factor is not None
-        self.assertTrue(created_factor["enabled"])
-        self.assertEqual(created_factor["factorType"], "totp")
+        self.assertIsNotNone(factor_delegate.created_factor)
+        self.assertTrue(factor_delegate.created_factor["enabled"])
+        self.assertEqual(factor_delegate.created_factor["factorType"], "totp")
 
     async def test_complete_enrollment_rejects_token_for_different_user(self) -> None:
         class FactorDelegate:
@@ -493,10 +494,18 @@ class ResolvePreferredMfaMethodTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DebugTotpPrefillTests(unittest.IsolatedAsyncioTestCase):
-    async def test_debug_mode_exposes_local_admin_totp_code(self) -> None:
-        secret = mfa.generate_totp_secret()
-        expected_code = mfa.generate_totp_code(secret)
+    def _build_auth_status_request(self) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/auth/status",
+                "headers": [(b"host", b"ragtime.dev")],
+                "scheme": "https",
+            }
+        )
 
+    def _build_debug_totp_db(self, secret: str) -> SimpleNamespace:
         admin_user = SimpleNamespace(id="local-admin-user-id")
 
         class UserDelegate:
@@ -513,79 +522,39 @@ class DebugTotpPrefillTests(unittest.IsolatedAsyncioTestCase):
                     secretEncrypted=secret,
                 )
 
-        db = SimpleNamespace(
+        return SimpleNamespace(
             user=UserDelegate(),
             usermfafactor=FactorDelegate(),
         )
 
-        request = Request(
-            {
-                "type": "http",
-                "method": "GET",
-                "path": "/auth/status",
-                "headers": [(b"host", b"ragtime.dev")],
-                "scheme": "https",
-            }
-        )
+    def _debug_auth_status_patches(self, db: SimpleNamespace, *, debug_mode: bool) -> ExitStack:
+        stack = ExitStack()
+        stack.enter_context(mock.patch("ragtime.api.auth.get_db", new=mock.AsyncMock(return_value=db)))
+        stack.enter_context(mock.patch("ragtime.core.mfa.get_db", new=mock.AsyncMock(return_value=db)))
+        stack.enter_context(mock.patch("ragtime.api.auth.build_auth_method_statuses", new=mock.AsyncMock(return_value=[])))
+        stack.enter_context(mock.patch("ragtime.api.auth.get_app_settings", new=mock.AsyncMock(return_value={})))
+        stack.enter_context(mock.patch.object(api_auth.settings, "debug_mode", debug_mode))
+        stack.enter_context(mock.patch.object(api_auth.settings, "local_admin_user", "debugadmin"))
+        stack.enter_context(mock.patch.object(api_auth.settings, "local_admin_password", "debugpassword"))
+        return stack
 
-        with (
-            mock.patch("ragtime.api.auth.get_db", new=mock.AsyncMock(return_value=db)),
-            mock.patch("ragtime.core.mfa.get_db", new=mock.AsyncMock(return_value=db)),
-            mock.patch("ragtime.api.auth.build_auth_method_statuses", new=mock.AsyncMock(return_value=[])),
-            mock.patch("ragtime.api.auth.get_app_settings", new=mock.AsyncMock(return_value={})),
-            mock.patch.object(ragtime.api.auth.settings, "debug_mode", True),
-            mock.patch.object(ragtime.api.auth.settings, "local_admin_user", "debugadmin"),
-            mock.patch.object(ragtime.api.auth.settings, "local_admin_password", "debugpassword"),
-        ):
-            status = await get_auth_status(request, None)
+    async def test_debug_mode_exposes_local_admin_totp_code(self) -> None:
+        secret = mfa.generate_totp_secret()
+        expected_code = mfa.generate_totp_code(secret)
+        db = self._build_debug_totp_db(secret)
+
+        with self._debug_auth_status_patches(db, debug_mode=True):
+            status = await api_auth.get_auth_status(self._build_auth_status_request(), None)
 
         self.assertEqual(status.debug_totp_code, expected_code)
         self.assertRegex(status.debug_totp_code or "", r"^\d{6}$")
 
     async def test_non_debug_mode_hides_totp_code(self) -> None:
         secret = mfa.generate_totp_secret()
+        db = self._build_debug_totp_db(secret)
 
-        admin_user = SimpleNamespace(id="local-admin-user-id")
-
-        class UserDelegate:
-            async def find_unique(self, where):
-                if where.get("username") == "local:debugadmin":
-                    return admin_user
-                return None
-
-        class FactorDelegate:
-            async def find_unique(self, where):
-                return SimpleNamespace(
-                    id="factor-1",
-                    enabled=True,
-                    secretEncrypted=secret,
-                )
-
-        db = SimpleNamespace(
-            user=UserDelegate(),
-            usermfafactor=FactorDelegate(),
-        )
-
-        request = Request(
-            {
-                "type": "http",
-                "method": "GET",
-                "path": "/auth/status",
-                "headers": [(b"host", b"ragtime.dev")],
-                "scheme": "https",
-            }
-        )
-
-        with (
-            mock.patch("ragtime.api.auth.get_db", new=mock.AsyncMock(return_value=db)),
-            mock.patch("ragtime.core.mfa.get_db", new=mock.AsyncMock(return_value=db)),
-            mock.patch("ragtime.api.auth.build_auth_method_statuses", new=mock.AsyncMock(return_value=[])),
-            mock.patch("ragtime.api.auth.get_app_settings", new=mock.AsyncMock(return_value={})),
-            mock.patch.object(ragtime.api.auth.settings, "debug_mode", False),
-            mock.patch.object(ragtime.api.auth.settings, "local_admin_user", "debugadmin"),
-            mock.patch.object(ragtime.api.auth.settings, "local_admin_password", "debugpassword"),
-        ):
-            status = await get_auth_status(request, None)
+        with self._debug_auth_status_patches(db, debug_mode=False):
+            status = await api_auth.get_auth_status(self._build_auth_status_request(), None)
 
         self.assertIsNone(status.debug_totp_code)
 

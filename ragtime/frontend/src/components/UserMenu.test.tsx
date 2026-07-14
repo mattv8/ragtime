@@ -80,6 +80,17 @@ const oldCredential: WebauthnCredentialSummary = {
   transports: [],
 };
 
+async function openPasskeysTab(userInteraction: ReturnType<typeof userEvent.setup>) {
+  await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
+  await userInteraction.click(screen.getByRole('button', { name: /manage 2fa/i }));
+  await userInteraction.click(await screen.findByRole('tab', { name: /passkeys/i }));
+}
+
+async function deleteOldPasskey(userInteraction: ReturnType<typeof userEvent.setup>) {
+  await screen.findByText('Old passkey');
+  await userInteraction.click(screen.getByRole('button', { name: 'Delete' }));
+}
+
 describe('UserMenu passkey management', () => {
   beforeEach(() => {
     installLocalStorageStub();
@@ -118,9 +129,7 @@ describe('UserMenu passkey management', () => {
     apiMock.listWebauthnCredentials.mockResolvedValueOnce({ credentials: [oldCredential] });
     render(<UserMenu user={user} onLogout={vi.fn()} />);
 
-    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
-    await userInteraction.click(screen.getByRole('button', { name: /manage 2fa/i }));
-    await userInteraction.click(await screen.findByRole('tab', { name: /passkeys/i }));
+    await openPasskeysTab(userInteraction);
     await screen.findByText('Old passkey');
 
     const overlay = document.querySelector('.modal-overlay');
@@ -135,9 +144,7 @@ describe('UserMenu passkey management', () => {
     apiMock.listWebauthnCredentials.mockReturnValueOnce(new Promise(() => {}));
     // Clicking a tab (a userEvent mousedown) closes the user-menu dropdown, so
     // reopen it before reopening the modal.
-    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
-    await userInteraction.click(screen.getByRole('button', { name: /manage 2fa/i }));
-    await userInteraction.click(await screen.findByRole('tab', { name: /passkeys/i }));
+    await openPasskeysTab(userInteraction);
 
     await waitFor(() => {
       expect(screen.queryByText('Loading passkeys...')).not.toBeNull();
@@ -155,12 +162,8 @@ describe('UserMenu passkey management', () => {
     );
     render(<UserMenu user={user} onLogout={vi.fn()} />);
 
-    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
-    await userInteraction.click(screen.getByRole('button', { name: /manage 2fa/i }));
-    await userInteraction.click(await screen.findByRole('tab', { name: /passkeys/i }));
-    await screen.findByText('Old passkey');
-
-    await userInteraction.click(screen.getByRole('button', { name: 'Delete' }));
+    await openPasskeysTab(userInteraction);
+    await deleteOldPasskey(userInteraction);
 
     await waitFor(() => {
       expect(screen.queryByText('Old passkey')).toBeNull();
@@ -177,12 +180,8 @@ describe('UserMenu passkey management', () => {
     apiMock.deleteWebauthnCredential.mockRejectedValueOnce(new Error('Delete failed'));
     render(<UserMenu user={user} onLogout={vi.fn()} />);
 
-    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
-    await userInteraction.click(screen.getByRole('button', { name: /manage 2fa/i }));
-    await userInteraction.click(await screen.findByRole('tab', { name: /passkeys/i }));
-    await screen.findByText('Old passkey');
-
-    await userInteraction.click(screen.getByRole('button', { name: 'Delete' }));
+    await openPasskeysTab(userInteraction);
+    await deleteOldPasskey(userInteraction);
 
     await screen.findByText('Delete failed');
     expect(screen.queryByText('Old passkey')).not.toBeNull();
@@ -198,12 +197,8 @@ describe('UserMenu passkey management', () => {
     );
     render(<UserMenu user={user} onLogout={vi.fn()} />);
 
-    await userInteraction.click(screen.getByRole('button', { name: /alice/i }));
-    await userInteraction.click(screen.getByRole('button', { name: /manage 2fa/i }));
-    await userInteraction.click(await screen.findByRole('tab', { name: /passkeys/i }));
-    await screen.findByText('Old passkey');
-
-    await userInteraction.click(screen.getByRole('button', { name: 'Delete' }));
+    await openPasskeysTab(userInteraction);
+    await deleteOldPasskey(userInteraction);
 
     await screen.findByText('Delete failed');
     expect(screen.queryByText('Old passkey')).not.toBeNull();

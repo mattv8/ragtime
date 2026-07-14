@@ -41,8 +41,36 @@ const builtInTool: ToolSelectorTool = {
   tool_type: 'built-in',
 };
 
+const disabledWriteAccessDescription =
+  'Ask an admin to enable Allow Write Operations for this tool.';
+
 function expectCheckbox(name: string | RegExp, checked: boolean) {
   expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(checked);
+}
+
+function renderDropdownWithDisabledContextMenu(onChange = vi.fn()) {
+  render(
+    <ControlledDropdown
+      builtInTools={[]}
+      initialBuiltInToolIds={[]}
+      getToolMenuItems={() => [
+        {
+          label: 'Write access unavailable',
+          description: disabledWriteAccessDescription,
+          checked: false,
+          disabled: true,
+          onChange,
+        },
+      ]}
+    />,
+  );
+
+  return { onChange };
+}
+
+async function openUngroupedToolContextMenu(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
+  fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
 }
 
 interface ControlledDropdownProps {
@@ -395,25 +423,9 @@ describe('ToolSelectorDropdown bulk selection', () => {
 
   it('shows a disabled context-menu item and does not fire onChange when clicked', async () => {
     const user = userEvent.setup();
-    const onChange = vi.fn();
-    render(
-      <ControlledDropdown
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolMenuItems={() => [
-          {
-            label: 'Write access unavailable',
-            description: 'Ask an admin to enable Allow Write Operations for this tool.',
-            checked: false,
-            disabled: true,
-            onChange,
-          },
-        ]}
-      />,
-    );
+    const { onChange } = renderDropdownWithDisabledContextMenu();
 
-    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
-    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    await openUngroupedToolContextMenu(user);
 
     const disabledItem = screen.getByText('Write access unavailable').closest('[role="button"]');
     expect(disabledItem?.classList.contains('disabled')).toBe(true);
@@ -428,24 +440,9 @@ describe('ToolSelectorDropdown bulk selection', () => {
 
   it('dismisses the context menu when clicking outside it', async () => {
     const user = userEvent.setup();
-    render(
-      <ControlledDropdown
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolMenuItems={() => [
-          {
-            label: 'Write access unavailable',
-            description: 'Ask an admin to enable Allow Write Operations for this tool.',
-            checked: false,
-            disabled: true,
-            onChange: vi.fn(),
-          },
-        ]}
-      />,
-    );
+    renderDropdownWithDisabledContextMenu();
 
-    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
-    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    await openUngroupedToolContextMenu(user);
     expect(screen.getByText('Write access unavailable')).toBeTruthy();
 
     await user.click(document.body);
@@ -455,24 +452,9 @@ describe('ToolSelectorDropdown bulk selection', () => {
 
   it('dismisses the context menu when clicking inside the dropdown but outside the menu', async () => {
     const user = userEvent.setup();
-    render(
-      <ControlledDropdown
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolMenuItems={() => [
-          {
-            label: 'Write access unavailable',
-            description: 'Ask an admin to enable Allow Write Operations for this tool.',
-            checked: false,
-            disabled: true,
-            onChange: vi.fn(),
-          },
-        ]}
-      />,
-    );
+    renderDropdownWithDisabledContextMenu();
 
-    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
-    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    await openUngroupedToolContextMenu(user);
     expect(screen.getByText('Write access unavailable')).toBeTruthy();
 
     await user.click(screen.getByLabelText('Filter tools'));
@@ -482,24 +464,9 @@ describe('ToolSelectorDropdown bulk selection', () => {
 
   it('dismisses the context menu when focus leaves the window', async () => {
     const user = userEvent.setup();
-    render(
-      <ControlledDropdown
-        builtInTools={[]}
-        initialBuiltInToolIds={[]}
-        getToolMenuItems={() => [
-          {
-            label: 'Write access unavailable',
-            description: 'Ask an admin to enable Allow Write Operations for this tool.',
-            checked: false,
-            disabled: true,
-            onChange: vi.fn(),
-          },
-        ]}
-      />,
-    );
+    renderDropdownWithDisabledContextMenu();
 
-    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
-    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    await openUngroupedToolContextMenu(user);
     expect(screen.getByText('Write access unavailable')).toBeTruthy();
 
     fireEvent.blur(window);

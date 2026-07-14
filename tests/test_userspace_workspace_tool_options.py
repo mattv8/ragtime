@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -185,36 +186,56 @@ class _WorkspaceUpdateService(UserSpaceService):
         )
 
 
+def _make_workspace_update_db() -> SimpleNamespace:
+    workspace_table = _FakeWorkspaceTable()
+    return SimpleNamespace(
+        workspace=workspace_table,
+        workspacetoolselection=_CaptureTable(),
+        workspacetoolgroupselection=_CaptureTable(),
+        workspacetooloption=_WorkspaceToolOptionTable(workspace_table),
+        user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=None)),
+    )
+
+
+@contextmanager
+def _patch_workspace_update_dependencies(
+    fake_db: SimpleNamespace,
+    *,
+    tool_configs: list[SimpleNamespace],
+    healthy_enabled_tool_ids: list[str],
+):
+    async def _fake_get_db() -> SimpleNamespace:
+        return fake_db
+
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db))
+        stack.enter_context(
+            mock.patch(
+                "ragtime.userspace.service.repository.list_tool_configs",
+                mock.AsyncMock(return_value=tool_configs),
+            )
+        )
+        stack.enter_context(
+            mock.patch(
+                "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=healthy_enabled_tool_ids),
+            )
+        )
+        yield
+
+
 class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
     async def test_owner_update_persists_true_rows_only(self) -> None:
         service = _WorkspaceUpdateService("owner")
-        workspace_table = _FakeWorkspaceTable()
-        fake_db = SimpleNamespace(
-            workspace=workspace_table,
-            workspacetoolselection=_CaptureTable(),
-            workspacetoolgroupselection=_CaptureTable(),
-            workspacetooloption=_WorkspaceToolOptionTable(workspace_table),
-            user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=None)),
-        )
+        fake_db = _make_workspace_update_db()
 
-        async def _fake_get_db() -> SimpleNamespace:
-            return fake_db
-
-        with (
-            mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db),
-            mock.patch(
-                "ragtime.userspace.service.repository.list_tool_configs",
-                mock.AsyncMock(
-                    return_value=[
-                        SimpleNamespace(id="tool-write", enabled=True, allow_write=True),
-                        SimpleNamespace(id="tool-read", enabled=True, allow_write=False),
-                    ]
-                ),
-            ),
-            mock.patch(
-                "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
-                mock.AsyncMock(return_value=["tool-write", "tool-read"]),
-            ),
+        with _patch_workspace_update_dependencies(
+            fake_db,
+            tool_configs=[
+                SimpleNamespace(id="tool-write", enabled=True, allow_write=True),
+                SimpleNamespace(id="tool-read", enabled=True, allow_write=False),
+            ],
+            healthy_enabled_tool_ids=["tool-write", "tool-read"],
         ):
             result = await service.update_workspace(
                 "ws-1",
@@ -251,28 +272,12 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_can_update_tool_options(self) -> None:
         service = _WorkspaceUpdateService("editor", owner_user_id="someone-else")
-        workspace_table = _FakeWorkspaceTable()
-        fake_db = SimpleNamespace(
-            workspace=workspace_table,
-            workspacetoolselection=_CaptureTable(),
-            workspacetoolgroupselection=_CaptureTable(),
-            workspacetooloption=_WorkspaceToolOptionTable(workspace_table),
-            user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=None)),
-        )
+        fake_db = _make_workspace_update_db()
 
-        async def _fake_get_db() -> SimpleNamespace:
-            return fake_db
-
-        with (
-            mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db),
-            mock.patch(
-                "ragtime.userspace.service.repository.list_tool_configs",
-                mock.AsyncMock(return_value=[SimpleNamespace(id="tool-write", enabled=True, allow_write=True)]),
-            ),
-            mock.patch(
-                "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
-                mock.AsyncMock(return_value=["tool-write"]),
-            ),
+        with _patch_workspace_update_dependencies(
+            fake_db,
+            tool_configs=[SimpleNamespace(id="tool-write", enabled=True, allow_write=True)],
+            healthy_enabled_tool_ids=["tool-write"],
         ):
             await service.update_workspace(
                 "ws-1",
@@ -285,28 +290,12 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_omitted_or_false_tool_options_delete_rows(self) -> None:
         service = _WorkspaceUpdateService("owner")
-        workspace_table = _FakeWorkspaceTable()
-        fake_db = SimpleNamespace(
-            workspace=workspace_table,
-            workspacetoolselection=_CaptureTable(),
-            workspacetoolgroupselection=_CaptureTable(),
-            workspacetooloption=_WorkspaceToolOptionTable(workspace_table),
-            user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=None)),
-        )
+        fake_db = _make_workspace_update_db()
 
-        async def _fake_get_db() -> SimpleNamespace:
-            return fake_db
-
-        with (
-            mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db),
-            mock.patch(
-                "ragtime.userspace.service.repository.list_tool_configs",
-                mock.AsyncMock(return_value=[SimpleNamespace(id="tool-write", enabled=True, allow_write=True)]),
-            ),
-            mock.patch(
-                "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
-                mock.AsyncMock(return_value=["tool-write"]),
-            ),
+        with _patch_workspace_update_dependencies(
+            fake_db,
+            tool_configs=[SimpleNamespace(id="tool-write", enabled=True, allow_write=True)],
+            healthy_enabled_tool_ids=["tool-write"],
         ):
             await service.update_workspace(
                 "ws-1",

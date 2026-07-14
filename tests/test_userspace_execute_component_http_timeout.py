@@ -34,51 +34,12 @@ def _make_workspace() -> UserSpaceWorkspace:
     )
 
 
-class _HangingExecuteService(UserSpaceService):
+class _ExecuteComponentRecordingService(UserSpaceService):
     def __init__(self) -> None:
         super().__init__()
         self.warnings_recorded: list[tuple[str, str, str]] = []
         self.proofs_recorded: list[tuple[str, str, int, str]] = []
         self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
-        self.dispatch_started = asyncio.Event()
-
-    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
-        self.dispatch_started.set()
-        await asyncio.Event().wait()  # never resolves; simulate slow SQL
-        raise AssertionError("unreachable")
-
-    async def _resolve_component_execution_config_for_tool_ids(self, selected_tool_ids, component_id, **kwargs):  # type: ignore[no-untyped-def,override]
-        _ = selected_tool_ids, component_id, kwargs
-        return SimpleNamespace(
-            resolved_id="tool-1",
-            tool_type="postgres",
-            conn_config={},
-            tool_config=SimpleNamespace(max_results=100, timeout_max_seconds=300),
-            effective_allow_write=False,
-            access_mode="read_only",
-        )
-
-    def record_live_data_execution_warning(self, workspace_id: str, component_id: str, error: str) -> None:  # type: ignore[override]
-        self.warnings_recorded.append((workspace_id, component_id, error))
-
-    def record_execution_proof(self, *args, **kwargs) -> None:  # type: ignore[override]
-        self.proofs_recorded.append(args)
-
-    async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
-        self.diagnostic_events.append((workspace_id, events))
-        return len(events)
-
-
-class _ImmediateExecuteService(UserSpaceService):
-    def __init__(self, response: ExecuteComponentResponse) -> None:
-        super().__init__()
-        self._response = response
-        self.warnings_recorded: list[tuple[str, str, str]] = []
-        self.proofs_recorded: list[tuple[str, str, int, str]] = []
-        self.diagnostic_events: list[tuple[str, list[UserSpacePreviewDiagnosticEvent]]] = []
-
-    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
-        return (self._response.model_copy(update={"component_id": str(kwargs.get("component_id") or "tool-1")}), "select 1")
 
     async def _resolve_component_execution_config_for_tool_ids(self, selected_tool_ids, component_id, **kwargs):  # type: ignore[no-untyped-def,override]
         _ = selected_tool_ids, component_id, kwargs
@@ -106,6 +67,26 @@ class _ImmediateExecuteService(UserSpaceService):
     async def record_workspace_preview_diagnostic_events(self, workspace_id: str, events: list[UserSpacePreviewDiagnosticEvent]) -> int:  # type: ignore[override]
         self.diagnostic_events.append((workspace_id, events))
         return len(events)
+
+
+class _HangingExecuteService(_ExecuteComponentRecordingService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dispatch_started = asyncio.Event()
+
+    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.dispatch_started.set()
+        await asyncio.Event().wait()  # never resolves; simulate slow SQL
+        raise AssertionError("unreachable")
+
+
+class _ImmediateExecuteService(_ExecuteComponentRecordingService):
+    def __init__(self, response: ExecuteComponentResponse) -> None:
+        super().__init__()
+        self._response = response
+
+    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
+        return (self._response.model_copy(update={"component_id": str(kwargs.get("component_id") or "tool-1")}), "select 1")
 
 
 class _CaptureSelectedToolsService(_ImmediateExecuteService):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -145,6 +146,50 @@ class WebauthnTestCase(unittest.IsolatedAsyncioTestCase):
 
         return WebauthnChallengeDelegate()
 
+    def _registration_replay_setup(self) -> tuple[SimpleNamespace, str, SimpleNamespace]:
+        db = SimpleNamespace(
+            authproviderconfig=self._config_delegate(methods=["webauthn"]),
+            userwebauthncredential=self._credential_delegate([]),
+            userwebauthnchallenge=self._challenge_delegate(),
+        )
+        token = webauthn_mfa._create_challenge_token(
+            user_id="user-1",
+            purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE,
+            challenge=b"challenge-bytes",
+        )
+        verification = SimpleNamespace(
+            credential_id=b"cred-id",
+            credential_public_key=b"pub-key",
+            sign_count=0,
+            aaguid=None,
+        )
+        return db, token, verification
+
+    @contextmanager
+    def _registration_replay_completion(self):
+        db, token, verification = self._registration_replay_setup()
+        user = SimpleNamespace(id="user-1", username="alice")
+        credential = {"response": {"transports": ["internal"]}}
+
+        async def complete_registration():
+            return await webauthn_mfa.complete_webauthn_registration(
+                user,
+                self._request(origin="https://ragtime.dev"),
+                token,
+                credential,
+                "My Passkey",
+            )
+
+        with (
+            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
+            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
+            mock.patch(
+                "ragtime.core.webauthn_mfa.verify_registration_response",
+                return_value=verification,
+            ),
+        ):
+            yield complete_registration
+
     def _factor_delegate(self, factor: SimpleNamespace | None):
         class MfaFactorDelegate:
             async def find_unique(self, where: dict) -> SimpleNamespace | None:
@@ -179,6 +224,68 @@ class WebauthnTestCase(unittest.IsolatedAsyncioTestCase):
                 return None
 
         return RecoveryCodeDelegate()
+
+    async def _complete_authentication_with_sign_count(self, *, stored_sign_count: int, new_sign_count: int):
+        credential = SimpleNamespace(
+            id="cred-1",
+            userId="user-1",
+            credentialId="cred-1",
+            publicKey=webauthn_mfa.bytes_to_base64url(b"pub-key"),
+            signCount=stored_sign_count,
+        )
+        delegate = self._credential_delegate([credential])
+        db = SimpleNamespace(
+            authproviderconfig=self._config_delegate(methods=["webauthn"]),
+            userwebauthncredential=delegate,
+        )
+        token = webauthn_mfa._create_challenge_token(
+            user_id="user-1",
+            purpose=webauthn_mfa.WEBAUTHN_AUTHN_PURPOSE,
+            challenge=b"auth-challenge",
+        )
+        verification = SimpleNamespace(new_sign_count=new_sign_count)
+        with (
+            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
+            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
+            mock.patch(
+                "ragtime.core.webauthn_mfa.verify_authentication_response",
+                return_value=verification,
+            ),
+        ):
+            await webauthn_mfa.complete_webauthn_authentication(
+                SimpleNamespace(id="user-1"),
+                self._request(origin="https://ragtime.dev"),
+                token,
+                {"id": "cred-1"},
+            )
+        return delegate
+
+
+class FactorNoExisting:
+    async def find_unique(self, where):
+        return None
+
+    async def upsert(self, where, data):
+        return SimpleNamespace(id="factor-1")
+
+
+class RecordingRecovery:
+    def __init__(self, id_template: str = "rc-1") -> None:
+        self.deleted = []
+        self.created = []
+        self._id_template = id_template
+
+    async def delete_many(self, where):
+        self.deleted.append(where)
+        return SimpleNamespace(count=0)
+
+    async def create(self, data):
+        self.created.append(data)
+        if "{index}" in self._id_template:
+            record_id = self._id_template.format(index=len(self.created))
+        else:
+            record_id = self._id_template
+        return SimpleNamespace(id=record_id)
 
 
 class ResolveRpTests(WebauthnTestCase):
@@ -286,98 +393,22 @@ class ChallengeTokenTests(WebauthnTestCase):
                 )
 
     async def test_registration_token_jti_replay_is_rejected(self) -> None:
-        challenge_delegate = self._challenge_delegate()
-        db = SimpleNamespace(
-            authproviderconfig=self._config_delegate(methods=["webauthn"]),
-            userwebauthncredential=self._credential_delegate([]),
-            userwebauthnchallenge=challenge_delegate,
-        )
-        token = webauthn_mfa._create_challenge_token(
-            user_id="user-1",
-            purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE,
-            challenge=b"challenge-bytes",
-        )
-        verification = SimpleNamespace(
-            credential_id=b"cred-id",
-            credential_public_key=b"pub-key",
-            sign_count=0,
-            aaguid=None,
-        )
-        with (
-            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
-            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
-            mock.patch(
-                "ragtime.core.webauthn_mfa.verify_registration_response",
-                return_value=verification,
-            ),
-        ):
-            user = SimpleNamespace(id="user-1", username="alice")
-            credential = {"response": {"transports": ["internal"]}}
-            result = await webauthn_mfa.complete_webauthn_registration(
-                user,
-                self._request(origin="https://ragtime.dev"),
-                token,
-                credential,
-                "My Passkey",
-            )
+        with self._registration_replay_completion() as complete_registration:
+            result = await complete_registration()
             self.assertEqual(getattr(result, "credentialId", None), "Y3JlZC1pZA")
 
             with self.assertRaises(webauthn_mfa.WebauthnError) as ctx:
-                await webauthn_mfa.complete_webauthn_registration(
-                    user,
-                    self._request(origin="https://ragtime.dev"),
-                    token,
-                    credential,
-                    "My Passkey",
-                )
+                await complete_registration()
             self.assertIn("already been used", str(ctx.exception))
 
     async def test_registration_token_jti_replay_is_rejected_after_memory_reset(self) -> None:
-        challenge_delegate = self._challenge_delegate()
-        db = SimpleNamespace(
-            authproviderconfig=self._config_delegate(methods=["webauthn"]),
-            userwebauthncredential=self._credential_delegate([]),
-            userwebauthnchallenge=challenge_delegate,
-        )
-        token = webauthn_mfa._create_challenge_token(
-            user_id="user-1",
-            purpose=webauthn_mfa.WEBAUTHN_REGISTER_PURPOSE,
-            challenge=b"challenge-bytes",
-        )
-        verification = SimpleNamespace(
-            credential_id=b"cred-id",
-            credential_public_key=b"pub-key",
-            sign_count=0,
-            aaguid=None,
-        )
-        with (
-            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
-            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
-            mock.patch(
-                "ragtime.core.webauthn_mfa.verify_registration_response",
-                return_value=verification,
-            ),
-        ):
-            user = SimpleNamespace(id="user-1", username="alice")
-            credential = {"response": {"transports": ["internal"]}}
-            await webauthn_mfa.complete_webauthn_registration(
-                user,
-                self._request(origin="https://ragtime.dev"),
-                token,
-                credential,
-                "My Passkey",
-            )
+        with self._registration_replay_completion() as complete_registration:
+            await complete_registration()
 
             webauthn_mfa._consumed_jtis.clear()
 
             with self.assertRaises(webauthn_mfa.WebauthnError) as ctx:
-                await webauthn_mfa.complete_webauthn_registration(
-                    user,
-                    self._request(origin="https://ragtime.dev"),
-                    token,
-                    credential,
-                    "My Passkey",
-                )
+                await complete_registration()
             self.assertIn("already been used", str(ctx.exception))
 
     async def test_consume_jti_translates_prisma_unique_violation(self) -> None:
@@ -516,76 +547,20 @@ class ResetUserMfaTests(WebauthnTestCase):
 
 class SignCountTests(WebauthnTestCase):
     async def test_complete_authentication_persists_new_sign_count(self) -> None:
-        credential = SimpleNamespace(
-            id="cred-1",
-            userId="user-1",
-            credentialId="cred-1",
-            publicKey=webauthn_mfa.bytes_to_base64url(b"pub-key"),
-            signCount=5,
+        delegate = await self._complete_authentication_with_sign_count(
+            stored_sign_count=5,
+            new_sign_count=42,
         )
-        delegate = self._credential_delegate([credential])
-        db = SimpleNamespace(
-            authproviderconfig=self._config_delegate(methods=["webauthn"]),
-            userwebauthncredential=delegate,
-        )
-        token = webauthn_mfa._create_challenge_token(
-            user_id="user-1",
-            purpose=webauthn_mfa.WEBAUTHN_AUTHN_PURPOSE,
-            challenge=b"auth-challenge",
-        )
-        verification = SimpleNamespace(new_sign_count=42)
-        with (
-            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
-            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
-            mock.patch(
-                "ragtime.core.webauthn_mfa.verify_authentication_response",
-                return_value=verification,
-            ),
-        ):
-            await webauthn_mfa.complete_webauthn_authentication(
-                SimpleNamespace(id="user-1"),
-                self._request(origin="https://ragtime.dev"),
-                token,
-                {"id": "cred-1"},
-            )
 
         self.assertEqual(len(delegate._updated), 1)
         self.assertEqual(delegate._updated[0][1]["signCount"], 42)
         self.assertIsNotNone(delegate._updated[0][1]["lastUsedAt"])
 
     async def test_complete_authentication_persists_zero_sign_count(self) -> None:
-        credential = SimpleNamespace(
-            id="cred-1",
-            userId="user-1",
-            credentialId="cred-1",
-            publicKey=webauthn_mfa.bytes_to_base64url(b"pub-key"),
-            signCount=0,
+        delegate = await self._complete_authentication_with_sign_count(
+            stored_sign_count=0,
+            new_sign_count=0,
         )
-        delegate = self._credential_delegate([credential])
-        db = SimpleNamespace(
-            authproviderconfig=self._config_delegate(methods=["webauthn"]),
-            userwebauthncredential=delegate,
-        )
-        token = webauthn_mfa._create_challenge_token(
-            user_id="user-1",
-            purpose=webauthn_mfa.WEBAUTHN_AUTHN_PURPOSE,
-            challenge=b"auth-challenge",
-        )
-        verification = SimpleNamespace(new_sign_count=0)
-        with (
-            mock.patch.object(settings, "external_base_url", "https://ragtime.dev"),
-            mock.patch("ragtime.core.webauthn_mfa.get_db", new=self._make_get_db(db)),
-            mock.patch(
-                "ragtime.core.webauthn_mfa.verify_authentication_response",
-                return_value=verification,
-            ),
-        ):
-            await webauthn_mfa.complete_webauthn_authentication(
-                SimpleNamespace(id="user-1"),
-                self._request(origin="https://ragtime.dev"),
-                token,
-                {"id": "cred-1"},
-            )
 
         self.assertEqual(delegate._updated[0][1]["signCount"], 0)
 
@@ -621,28 +596,7 @@ class MfaNeededForUserTests(WebauthnTestCase):
 
 
 class ConfirmTotpEnrollmentTests(WebauthnTestCase):
-    async def test_confirm_totp_does_not_regenerate_recovery_codes_when_webauthn_exists(self) -> None:
-        class FactorNoExisting:
-            async def find_unique(self, where):
-                return None
-
-            async def upsert(self, where, data):
-                return SimpleNamespace(id="factor-1")
-
-        class RecordingRecovery:
-            def __init__(self):
-                self.deleted = []
-                self.created = []
-
-            async def delete_many(self, where):
-                self.deleted.append(where)
-                return SimpleNamespace(count=0)
-
-            async def create(self, data):
-                self.created.append(data)
-                return SimpleNamespace(id="rc-1")
-
-        recovery = RecordingRecovery()
+    async def _confirm_totp_enrollment(self, *, has_webauthn: bool, recovery: RecordingRecovery):
         db = SimpleNamespace(
             usermfafactor=FactorNoExisting(),
             usermfarecoverycode=recovery,
@@ -654,50 +608,27 @@ class ConfirmTotpEnrollmentTests(WebauthnTestCase):
         with (
             mock.patch("ragtime.core.mfa.get_db", new=self._make_get_db(db)),
             mock.patch("ragtime.core.mfa.user_has_enabled_totp", return_value=False),
-            mock.patch("ragtime.core.mfa.user_has_enabled_webauthn", return_value=True),
+            mock.patch("ragtime.core.mfa.user_has_enabled_webauthn", return_value=has_webauthn),
         ):
-            success, recovery_codes = await mfa.confirm_totp_enrollment(user, code, enrollment_token)
+            return await mfa.confirm_totp_enrollment(user, code, enrollment_token)
+
+    async def test_confirm_totp_does_not_regenerate_recovery_codes_when_webauthn_exists(self) -> None:
+        recovery = RecordingRecovery()
+        success, recovery_codes = await self._confirm_totp_enrollment(
+            has_webauthn=True,
+            recovery=recovery,
+        )
         self.assertTrue(success)
         self.assertEqual(recovery_codes, [])
         self.assertEqual(recovery.deleted, [])
         self.assertEqual(recovery.created, [])
 
     async def test_confirm_totp_generates_recovery_codes_for_first_factor(self) -> None:
-        class FactorNoExisting:
-            async def find_unique(self, where):
-                return None
-
-            async def upsert(self, where, data):
-                return SimpleNamespace(id="factor-1")
-
-        class RecordingRecovery:
-            def __init__(self):
-                self.deleted = []
-                self.created = []
-
-            async def delete_many(self, where):
-                self.deleted.append(where)
-                return SimpleNamespace(count=0)
-
-            async def create(self, data):
-                self.created.append(data)
-                return SimpleNamespace(id=f"rc-{len(self.created)}")
-
-        recovery = RecordingRecovery()
-        db = SimpleNamespace(
-            usermfafactor=FactorNoExisting(),
-            usermfarecoverycode=recovery,
+        recovery = RecordingRecovery(id_template="rc-{index}")
+        success, recovery_codes = await self._confirm_totp_enrollment(
+            has_webauthn=False,
+            recovery=recovery,
         )
-        user = SimpleNamespace(id="user-1", username="alice", role="user")
-        secret = mfa.generate_totp_secret()
-        enrollment_token = mfa.create_totp_enrollment_token(user_id=user.id, username=user.username, role=user.role, secret=secret)
-        code = mfa.generate_totp_code(secret)
-        with (
-            mock.patch("ragtime.core.mfa.get_db", new=self._make_get_db(db)),
-            mock.patch("ragtime.core.mfa.user_has_enabled_totp", return_value=False),
-            mock.patch("ragtime.core.mfa.user_has_enabled_webauthn", return_value=False),
-        ):
-            success, recovery_codes = await mfa.confirm_totp_enrollment(user, code, enrollment_token)
         self.assertTrue(success)
         self.assertEqual(len(recovery_codes), mfa.RECOVERY_CODE_COUNT)
         self.assertEqual(len(recovery.deleted), 1)

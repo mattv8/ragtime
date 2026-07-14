@@ -56,7 +56,17 @@ class _CaptureComponentExecutionService(UserSpaceService):
         return (response, "select * from accounts")
 
 
-def _run_default_workspace_component_execution(service: _CaptureComponentExecutionService) -> None:
+def _run_default_workspace_component_execution(
+    service: _CaptureComponentExecutionService,
+    *,
+    captured_response: ExecuteComponentResponse | None = None,
+    warning_before_run: str | None = None,
+) -> None:
+    if warning_before_run is not None:
+        service.record_live_data_execution_warning("workspace-1", "tool-1", warning_before_run)
+    if captured_response is not None:
+        service.captured_response = captured_response
+
     now = datetime.now(timezone.utc)
     workspace = UserSpaceWorkspace(
         id="workspace-1",
@@ -419,42 +429,17 @@ class ChatLiveVisualizationRefreshTests(unittest.TestCase):
 
     def test_workspace_component_execution_clears_live_data_warning_on_success(self) -> None:
         service = _CaptureComponentExecutionService()
-        service.record_live_data_execution_warning(
-            "workspace-1",
-            "tool-1",
-            "old failure",
+        _run_default_workspace_component_execution(
+            service,
+            captured_response=ExecuteComponentResponse(
+                component_id="tool-1",
+                columns=["name"],
+                rows=[{"name": "A"}],
+                row_count=1,
+                error=None,
+            ),
+            warning_before_run="old failure",
         )
-        service.captured_response = ExecuteComponentResponse(
-            component_id="tool-1",
-            columns=["name"],
-            rows=[{"name": "A"}],
-            row_count=1,
-            error=None,
-        )
-        now = datetime.now(timezone.utc)
-        workspace = UserSpaceWorkspace(
-            id="workspace-1",
-            name="Workspace",
-            owner_user_id="user-1",
-            selected_tool_ids=["tool-1"],
-            created_at=now,
-            updated_at=now,
-        )
-
-        with patch(
-            "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
-            AsyncMock(return_value=["tool-1"]),
-        ):
-            asyncio.run(
-                service._execute_component_for_workspace(
-                    workspace,
-                    ExecuteComponentRequest(
-                        component_id="tool-1",
-                        request={"query": "select * from accounts"},
-                    ),
-                    error_log_prefix="test",
-                )
-            )
 
         self.assertIsNone(service.get_live_data_execution_warning("workspace-1"))
 

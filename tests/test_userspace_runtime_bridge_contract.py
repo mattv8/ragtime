@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -91,32 +92,37 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def _workspace_file_rows(self) -> list[SimpleNamespace]:
         return [SimpleNamespace(path=str(path.relative_to(self.files_dir))) for path in self.files_dir.rglob("*") if path.is_file()]
 
-    def _patch_service_environment(self) -> list[mock._patch]:
-        return [
-            mock.patch.object(userspace_service, "_base_dir", Path(self.temp_dir.name)),
-            mock.patch.object(userspace_service, "_workspaces_dir", self.workspaces_dir),
-            mock.patch.object(userspace_service, "_enforce_workspace_access", new=mock.AsyncMock(return_value=self._workspace())),
-            mock.patch.object(userspace_service, "_ensure_workspace_git_repo", new=mock.AsyncMock()),
-            mock.patch.object(
-                userspace_service,
-                "ensure_workspace_path_not_in_disabled_mount",
-                new=mock.AsyncMock(side_effect=lambda _workspace_id, normalized_path: normalized_path),
-            ),
-            mock.patch.object(userspace_service, "resolve_workspace_mounts_for_runtime", new=mock.AsyncMock(return_value=[])),
-            mock.patch.object(
-                userspace_service,
-                "list_workspace_files",
-                new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: self._workspace_file_rows()),
-            ),
-            mock.patch.object(userspace_service, "_resolve_effective_workspace_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
-            mock.patch.object(userspace_service, "clear_workspace_changed_file_acknowledgements_for_paths_for_all_users", new=mock.AsyncMock()),
-            mock.patch.object(userspace_service, "_touch_workspace", new=mock.AsyncMock()),
-            mock.patch.object(userspace_service, "_mark_workspace_code_index_dirty", new=mock.AsyncMock()),
-            mock.patch.object(userspace_service, "enforce_workspace_role", new=mock.AsyncMock()),
-            mock.patch.object(userspace_service, "get_workspace", new=mock.AsyncMock(return_value=self._workspace())),
-            mock.patch("ragtime.rag.components.repository.list_healthy_enabled_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
-            mock.patch("ragtime.rag.components.repository.get_tool_ids_for_groups", new=mock.AsyncMock(return_value=[])),
-        ]
+    @contextmanager
+    def _service_environment(self, *extra_patchers: mock._patch):
+        with ExitStack() as stack:
+            for patcher in (
+                mock.patch.object(userspace_service, "_base_dir", Path(self.temp_dir.name)),
+                mock.patch.object(userspace_service, "_workspaces_dir", self.workspaces_dir),
+                mock.patch.object(userspace_service, "_enforce_workspace_access", new=mock.AsyncMock(return_value=self._workspace())),
+                mock.patch.object(userspace_service, "_ensure_workspace_git_repo", new=mock.AsyncMock()),
+                mock.patch.object(
+                    userspace_service,
+                    "ensure_workspace_path_not_in_disabled_mount",
+                    new=mock.AsyncMock(side_effect=lambda _workspace_id, normalized_path: normalized_path),
+                ),
+                mock.patch.object(userspace_service, "resolve_workspace_mounts_for_runtime", new=mock.AsyncMock(return_value=[])),
+                mock.patch.object(
+                    userspace_service,
+                    "list_workspace_files",
+                    new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: self._workspace_file_rows()),
+                ),
+                mock.patch.object(userspace_service, "_resolve_effective_workspace_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
+                mock.patch.object(userspace_service, "clear_workspace_changed_file_acknowledgements_for_paths_for_all_users", new=mock.AsyncMock()),
+                mock.patch.object(userspace_service, "_touch_workspace", new=mock.AsyncMock()),
+                mock.patch.object(userspace_service, "_mark_workspace_code_index_dirty", new=mock.AsyncMock()),
+                mock.patch.object(userspace_service, "enforce_workspace_role", new=mock.AsyncMock()),
+                mock.patch.object(userspace_service, "get_workspace", new=mock.AsyncMock(return_value=self._workspace())),
+                mock.patch("ragtime.rag.components.repository.list_healthy_enabled_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
+                mock.patch("ragtime.rag.components.repository.get_tool_ids_for_groups", new=mock.AsyncMock(return_value=[])),
+                *extra_patchers,
+            ):
+                stack.enter_context(patcher)
+            yield
 
     def _dashboard_fetch_request(self) -> UpsertWorkspaceFileRequest:
         return UpsertWorkspaceFileRequest(
@@ -144,24 +150,7 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self._write_workspace_file("server.js", SERVER_SRC)
         userspace_service.record_execution_proof(self.workspace_id, "comp-1", 1, "SELECT 1 LIMIT 1")
 
-        patches = self._patch_service_environment()
-        with (
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
-            patches[9],
-            patches[10],
-            patches[11],
-            patches[12],
-            patches[13],
-            patches[14],
-        ):
+        with self._service_environment():
             tool = next(
                 tool for tool in await RAGComponents()._create_userspace_file_tools(self.workspace_id, self.user_id) if tool.name == "upsert_userspace_file"
             )
@@ -219,23 +208,7 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self._write_workspace_file(".ragtime/runtime-entrypoint.json", ENTRYPOINT_CONFIG)
         userspace_service.record_execution_proof(self.workspace_id, "comp-1", 1, "SELECT 1 LIMIT 1")
 
-        patches = self._patch_service_environment()
-        with (
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
-            patches[9],
-            patches[10],
-            patches[11],
-            patches[12],
-            patches[13],
-            patches[14],
+        with self._service_environment(
             mock.patch(
                 "ragtime.rag.components.validate_live_data_binding",
                 new=mock.AsyncMock(
@@ -270,24 +243,7 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self._write_workspace_file(".ragtime/runtime-entrypoint.json", ENTRYPOINT_CONFIG)
         self._write_workspace_file("server.js", SERVER_SRC)
 
-        patches = self._patch_service_environment()
-        with (
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
-            patches[9],
-            patches[10],
-            patches[11],
-            patches[12],
-            patches[13],
-            patches[14],
-        ):
+        with self._service_environment():
             with self.assertRaises(HTTPException) as exc_info:
                 await userspace_service.upsert_workspace_file(
                     self.workspace_id,
@@ -306,24 +262,7 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self._write_workspace_file("server.js", SERVER_SRC)
         userspace_service.record_execution_proof(self.workspace_id, "comp-1", 1, "SELECT 1 LIMIT 1")
 
-        patches = self._patch_service_environment()
-        with (
-            patches[0],
-            patches[1],
-            patches[2],
-            patches[3],
-            patches[4],
-            patches[5],
-            patches[6],
-            patches[7],
-            patches[8],
-            patches[9],
-            patches[10],
-            patches[11],
-            patches[12],
-            patches[13],
-            patches[14],
-        ):
+        with self._service_environment():
             result = await userspace_service.upsert_workspace_file(
                 self.workspace_id,
                 "dashboard/main.ts",

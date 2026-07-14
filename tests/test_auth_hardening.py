@@ -9,6 +9,7 @@ Tests for scoped auth hardening:
 import json
 import time
 import unittest
+from types import SimpleNamespace
 from typing import Optional, cast
 from unittest import mock
 
@@ -46,6 +47,29 @@ def _scope(
 
 def _json_response_body(response: Response) -> dict[str, object]:
     return json.loads(bytes(response.body))
+
+
+def _local_managed_user(*, user_id: str, display_name: str = "Alice") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=user_id,
+        username="local:alice",
+        authProvider="local_managed",
+        displayName=display_name,
+        email="alice@example.com",
+        role="user",
+        roleManuallySet=False,
+        themePack=None,
+        mfaPreferredMethod=None,
+        lastLoginAt=None,
+    )
+
+
+def _local_user_db() -> SimpleNamespace:
+    class UserDelegate:
+        async def find_unique(self, where: dict):
+            return _local_managed_user(user_id=where["id"])
+
+    return SimpleNamespace(user=UserDelegate())
 
 
 # ---------------------------------------------------------------------------
@@ -130,42 +154,12 @@ class ModelsEndpointAuthTests(unittest.TestCase):
 
 class CredentialSessionInvalidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_local_password_update_invalidates_existing_sessions(self) -> None:
-        class UserDelegate:
-            async def find_unique(self, where: dict):
-                return type(
-                    "User",
-                    (),
-                    {
-                        "id": where["id"],
-                        "username": "local:alice",
-                        "authProvider": "local_managed",
-                        "displayName": "Alice",
-                        "email": "alice@example.com",
-                        "role": "user",
-                    },
-                )()
-
-        db = type("Db", (), {"user": UserDelegate()})()
+        db = _local_user_db()
 
         async def fake_get_db():
             return db
 
-        updated_user = type(
-            "User",
-            (),
-            {
-                "id": "user-1",
-                "username": "local:alice",
-                "authProvider": "local_managed",
-                "displayName": "Alice",
-                "email": "alice@example.com",
-                "role": "user",
-                "roleManuallySet": False,
-                "themePack": None,
-                "mfaPreferredMethod": None,
-                "lastLoginAt": None,
-            },
-        )()
+        updated_user = _local_managed_user(user_id="user-1")
 
         with (
             mock.patch.object(api_auth, "get_db", new=fake_get_db),
@@ -181,42 +175,12 @@ class CredentialSessionInvalidationTests(unittest.IsolatedAsyncioTestCase):
         invalidate.assert_awaited_once_with("user-1")
 
     async def test_local_profile_update_does_not_invalidate_existing_sessions(self) -> None:
-        class UserDelegate:
-            async def find_unique(self, where: dict):
-                return type(
-                    "User",
-                    (),
-                    {
-                        "id": where["id"],
-                        "username": "local:alice",
-                        "authProvider": "local_managed",
-                        "displayName": "Alice",
-                        "email": "alice@example.com",
-                        "role": "user",
-                    },
-                )()
-
-        db = type("Db", (), {"user": UserDelegate()})()
+        db = _local_user_db()
 
         async def fake_get_db():
             return db
 
-        updated_user = type(
-            "User",
-            (),
-            {
-                "id": "user-1",
-                "username": "local:alice",
-                "authProvider": "local_managed",
-                "displayName": "Alice Renamed",
-                "email": "alice@example.com",
-                "role": "user",
-                "roleManuallySet": False,
-                "themePack": None,
-                "mfaPreferredMethod": None,
-                "lastLoginAt": None,
-            },
-        )()
+        updated_user = _local_managed_user(user_id="user-1", display_name="Alice Renamed")
 
         with (
             mock.patch.object(api_auth, "get_db", new=fake_get_db),

@@ -16,6 +16,15 @@ from typing import Any, Optional
 import httpx
 
 from ragtime.core.logging import get_logger
+from ragtime.core.model_providers import (
+    coerce_positive_int as _coerce_positive_int,
+)
+from ragtime.core.model_providers import (
+    extract_http_error_message as _extract_error_message,
+)
+from ragtime.core.model_providers import (
+    extract_openai_embedding_dimension as extract_embedding_dimension,
+)
 
 logger = get_logger(__name__)
 
@@ -148,54 +157,6 @@ def _parse_status_model_row(row: dict[str, Any]) -> OmlxModelInfo | None:
         return None
     model.context_limit = _coerce_positive_int(row.get("max_context_window") or row.get("max_tokens"))
     return model
-
-
-def _coerce_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value if value > 0 else None
-    if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed > 0 else None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.isdigit():
-            parsed = int(stripped)
-            return parsed if parsed > 0 else None
-    return None
-
-
-def extract_embedding_dimension(payload: dict[str, Any]) -> int | None:
-    """Extract embedding vector length from an OpenAI-compatible response."""
-    data = payload.get("data")
-    if not isinstance(data, list) or not data:
-        return None
-    first = data[0]
-    if not isinstance(first, dict):
-        return None
-    embedding = first.get("embedding")
-    if isinstance(embedding, list):
-        return len(embedding)
-    return None
-
-
-def _extract_error_message(response: httpx.Response) -> str:
-    try:
-        payload = response.json()
-    except Exception:
-        return response.text[:500] or f"HTTP {response.status_code}"
-
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict):
-            return str(error.get("message") or error.get("type") or payload)[:500]
-        if isinstance(error, str):
-            return error[:500]
-        message = payload.get("message")
-        if message:
-            return str(message)[:500]
-    return str(payload)[:500]
 
 
 def _is_invalid_request_error(response: httpx.Response, text: str) -> bool:

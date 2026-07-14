@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -62,43 +63,58 @@ async def _read_sse_chunks(response: Any, count: int) -> list[str]:
     return chunks
 
 
+@contextmanager
+def _token_share_launch_patches(*, share_record: SimpleNamespace, analytics_mock: mock.AsyncMock):
+    with ExitStack() as stack:
+        stack.enter_context(mock.patch.object(main_module, "_share_current_user_from_request", mock.AsyncMock(return_value=None)))
+        stack.enter_context(mock.patch.object(main_module, "share_auth_token_from_request", return_value=None))
+        stack.enter_context(mock.patch.object(main_module, "get_external_origin", return_value="https://ragtime.dev"))
+        stack.enter_context(
+            mock.patch.object(
+                main_module.userspace_service,
+                "get_share_prompt_metadata_by_token",
+                mock.AsyncMock(return_value=("Shared workspace", None)),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                main_module.userspace_service,
+                "_resolve_public_share_record_by_token",
+                mock.AsyncMock(return_value=("workspace", share_record)),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                main_module.userspace_service,
+                "resolve_shared_workspace_id",
+                mock.AsyncMock(return_value="workspace-1"),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                main_module.userspace_service,
+                "get_share_access_mode",
+                mock.AsyncMock(return_value="token"),
+            )
+        )
+        stack.enter_context(mock.patch.object(main_module.userspace_service, "record_public_share_hit", analytics_mock))
+        stack.enter_context(
+            mock.patch.object(
+                main_module.userspace_runtime_service,
+                "issue_shared_preview_launch",
+                mock.AsyncMock(return_value=SimpleNamespace(preview_url="https://preview.example/bootstrap")),
+            )
+        )
+        yield
+
+
 class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_token_root_redirect_records_single_workspace_hit(self) -> None:
         request = _build_request("/shared/token-123")
         share_record = SimpleNamespace(id="ws-share-1", workspaceId="workspace-1")
         record_hit = mock.AsyncMock()
 
-        with (
-            mock.patch.object(main_module, "_share_current_user_from_request", mock.AsyncMock(return_value=None)),
-            mock.patch.object(main_module, "share_auth_token_from_request", return_value=None),
-            mock.patch.object(main_module, "get_external_origin", return_value="https://ragtime.dev"),
-            mock.patch.object(
-                main_module.userspace_service,
-                "get_share_prompt_metadata_by_token",
-                mock.AsyncMock(return_value=("Shared workspace", None)),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "_resolve_public_share_record_by_token",
-                mock.AsyncMock(return_value=("workspace", share_record)),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "resolve_shared_workspace_id",
-                mock.AsyncMock(return_value="workspace-1"),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "get_share_access_mode",
-                mock.AsyncMock(return_value="token"),
-            ),
-            mock.patch.object(main_module.userspace_service, "record_public_share_hit", record_hit),
-            mock.patch.object(
-                main_module.userspace_runtime_service,
-                "issue_shared_preview_launch",
-                mock.AsyncMock(return_value=SimpleNamespace(preview_url="https://preview.example/bootstrap")),
-            ),
-        ):
+        with _token_share_launch_patches(share_record=share_record, analytics_mock=record_hit):
             response = await main_module._shared_launch_redirect_by_token("token-123", request, "")
 
         self.assertEqual(response.status_code, 302)
@@ -116,40 +132,9 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
         request = _build_request("/shared/token-123")
         share_record = SimpleNamespace(id="ws-share-1", workspaceId="workspace-1")
 
-        with (
-            mock.patch.object(main_module, "_share_current_user_from_request", mock.AsyncMock(return_value=None)),
-            mock.patch.object(main_module, "share_auth_token_from_request", return_value=None),
-            mock.patch.object(main_module, "get_external_origin", return_value="https://ragtime.dev"),
-            mock.patch.object(
-                main_module.userspace_service,
-                "get_share_prompt_metadata_by_token",
-                mock.AsyncMock(return_value=("Shared workspace", None)),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "_resolve_public_share_record_by_token",
-                mock.AsyncMock(return_value=("workspace", share_record)),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "resolve_shared_workspace_id",
-                mock.AsyncMock(return_value="workspace-1"),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "get_share_access_mode",
-                mock.AsyncMock(return_value="token"),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "record_public_share_hit",
-                mock.AsyncMock(side_effect=RuntimeError("analytics write failed")),
-            ),
-            mock.patch.object(
-                main_module.userspace_runtime_service,
-                "issue_shared_preview_launch",
-                mock.AsyncMock(return_value=SimpleNamespace(preview_url="https://preview.example/bootstrap")),
-            ),
+        with _token_share_launch_patches(
+            share_record=share_record,
+            analytics_mock=mock.AsyncMock(side_effect=RuntimeError("analytics write failed")),
         ):
             response = await main_module._shared_launch_redirect_by_token("token-123", request, "")
 
@@ -161,37 +146,7 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
         share_record = SimpleNamespace(id="ws-share-1", workspaceId="workspace-1")
         record_hit = mock.AsyncMock()
 
-        with (
-            mock.patch.object(main_module, "_share_current_user_from_request", mock.AsyncMock(return_value=None)),
-            mock.patch.object(main_module, "share_auth_token_from_request", return_value=None),
-            mock.patch.object(main_module, "get_external_origin", return_value="https://ragtime.dev"),
-            mock.patch.object(
-                main_module.userspace_service,
-                "get_share_prompt_metadata_by_token",
-                mock.AsyncMock(return_value=("Shared workspace", None)),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "_resolve_public_share_record_by_token",
-                mock.AsyncMock(return_value=("workspace", share_record)),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "resolve_shared_workspace_id",
-                mock.AsyncMock(return_value="workspace-1"),
-            ),
-            mock.patch.object(
-                main_module.userspace_service,
-                "get_share_access_mode",
-                mock.AsyncMock(return_value="token"),
-            ),
-            mock.patch.object(main_module.userspace_service, "record_public_share_hit", record_hit),
-            mock.patch.object(
-                main_module.userspace_runtime_service,
-                "issue_shared_preview_launch",
-                mock.AsyncMock(return_value=SimpleNamespace(preview_url="https://preview.example/bootstrap")),
-            ),
-        ):
+        with _token_share_launch_patches(share_record=share_record, analytics_mock=record_hit):
             response = await main_module._shared_launch_redirect_by_token("token-123", request, "assets/app.js")
 
         self.assertEqual(response.status_code, 302)

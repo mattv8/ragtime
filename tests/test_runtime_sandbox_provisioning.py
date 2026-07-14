@@ -3,8 +3,10 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from runtime.core.shared import RUNTIME_BOOTSTRAP_CONFIG_PATH
@@ -64,6 +66,36 @@ class SandboxProvisioningTests(unittest.TestCase):
     def _prepare_rootfs_dirs(rootfs: Path) -> None:
         for relative in ("bin", "usr", "lib", "sbin", "workspace", "dev", "dev/pts", "dev/shm", "proc"):
             (rootfs / relative).mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def _mount_materialization_case(
+        self,
+        *,
+        mode: str,
+        source_name: str | None = None,
+        mount_capable: bool,
+    ):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            files = tmp / "files"
+            rootfs = tmp / "rootfs"
+            files.mkdir()
+            source = None
+            if source_name is not None:
+                source = tmp / source_name
+                source.mkdir()
+            spec = self._pivot_root_spec(files, rootfs) if mode == "pivot_root" else self._chroot_spec(files, rootfs)
+            caps = (
+                self._pivot_root_caps()
+                if mode == "pivot_root"
+                else sandbox.SandboxCapabilities(
+                    has_cap_sys_admin=False,
+                    can_user_ns=False,
+                    can_mount=mount_capable,
+                    mode="chroot",
+                )
+            )
+            yield SimpleNamespace(tmp=tmp, source=source, files=files, rootfs=rootfs, spec=spec, caps=caps)
 
     def test_provision_rootfs_skips_workspace_copy_when_bind_mount_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -646,27 +678,20 @@ class SandboxProvisioningTests(unittest.TestCase):
         self.assertTrue(any(call.args[2] == "proc" for call in mount_call.call_args_list))
 
     def test_materialize_mounts_live_binds_filesystem_source_when_mount_available(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            source = tmp / "source"
-            files = tmp / "files"
-            rootfs = tmp / "rootfs"
-            source.mkdir()
-            files.mkdir()
-            (source / "ledger.txt").write_text("live\n", encoding="utf-8")
-            spec = self._pivot_root_spec(files, rootfs)
-            caps = self._pivot_root_caps()
+        with self._mount_materialization_case(mode="pivot_root", source_name="source", mount_capable=True) as case:
+            assert case.source is not None
+            (case.source / "ledger.txt").write_text("live\n", encoding="utf-8")
 
             with (
-                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "detect_capabilities", return_value=case.caps),
                 mock.patch.object(sandbox, "_syscall_mount") as mount_call,
                 mock.patch.object(sandbox.shutil, "copytree") as copytree,
             ):
                 sandbox.materialize_mounts(
-                    spec,
+                    case.spec,
                     [
                         {
-                            "source_local_path": str(source),
+                            "source_local_path": str(case.source),
                             "target_path": "/workspace/reconciliations",
                             "runtime_mount_mode": "live_bind",
                             "read_only": True,
@@ -675,31 +700,24 @@ class SandboxProvisioningTests(unittest.TestCase):
                 )
 
             copytree.assert_not_called()
-            self.assertTrue((files / "reconciliations").is_dir())
-            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(source), str(files / "reconciliations")))
+            self.assertTrue((case.files / "reconciliations").is_dir())
+            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(case.source), str(case.files / "reconciliations")))
 
     def test_materialize_mounts_uses_canonical_files_for_mount_capable_sync_mounts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            source = tmp / "source"
-            files = tmp / "files"
-            rootfs = tmp / "rootfs"
-            source.mkdir()
-            files.mkdir()
-            (source / "ledger.txt").write_text("synced\n", encoding="utf-8")
-            spec = self._pivot_root_spec(files, rootfs)
-            caps = self._pivot_root_caps()
+        with self._mount_materialization_case(mode="pivot_root", source_name="source", mount_capable=True) as case:
+            assert case.source is not None
+            (case.source / "ledger.txt").write_text("synced\n", encoding="utf-8")
 
             with (
-                mock.patch.object(sandbox, "detect_capabilities", return_value=caps),
+                mock.patch.object(sandbox, "detect_capabilities", return_value=case.caps),
                 mock.patch.object(sandbox, "_syscall_mount") as mount_call,
                 mock.patch.object(sandbox.shutil, "copytree") as copytree,
             ):
                 sandbox.materialize_mounts(
-                    spec,
+                    case.spec,
                     [
                         {
-                            "source_local_path": str(source),
+                            "source_local_path": str(case.source),
                             "target_path": "/workspace/reconciliations",
                             "read_only": True,
                         }
@@ -707,8 +725,8 @@ class SandboxProvisioningTests(unittest.TestCase):
                 )
 
             copytree.assert_not_called()
-            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(source), str(files / "reconciliations")))
-            self.assertFalse((rootfs / "workspace" / "reconciliations").exists())
+            self.assertEqual(mount_call.call_args_list[0].args[:2], (str(case.source), str(case.files / "reconciliations")))
+            self.assertFalse((case.rootfs / "workspace" / "reconciliations").exists())
 
     def test_materialize_mounts_live_bind_missing_source_fails_loudly(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -737,33 +755,16 @@ class SandboxProvisioningTests(unittest.TestCase):
                 )
 
     def test_materialize_mounts_live_bind_requires_mount_capability(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp = Path(tmpdir)
-            source = tmp / "source"
-            files = tmp / "files"
-            rootfs = tmp / "rootfs"
-            source.mkdir()
-            files.mkdir()
-            spec = sandbox.SandboxSpec(
-                workspace_id="workspace-1",
-                workspace_files_path=files,
-                rootfs_path=rootfs,
-                mode="chroot",
-            )
-            caps = sandbox.SandboxCapabilities(
-                has_cap_sys_admin=False,
-                can_user_ns=False,
-                can_mount=False,
-                mode="chroot",
-            )
+        with self._mount_materialization_case(mode="chroot", source_name="source", mount_capable=False) as case:
+            assert case.source is not None
 
-            with mock.patch.object(sandbox, "detect_capabilities", return_value=caps):
+            with mock.patch.object(sandbox, "detect_capabilities", return_value=case.caps):
                 with self.assertRaises(PermissionError):
                     sandbox.materialize_mounts(
-                        spec,
+                        case.spec,
                         [
                             {
-                                "source_local_path": str(source),
+                                "source_local_path": str(case.source),
                                 "target_path": "/workspace/reconciliations",
                                 "runtime_mount_mode": "live_bind",
                                 "read_only": True,
