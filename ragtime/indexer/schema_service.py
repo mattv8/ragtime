@@ -1045,7 +1045,7 @@ class SchemaIndexerService:
             result = await asyncio.to_thread(execute_docker_command_on_remote_host, docker_ssh_config, cmd)
             return result.exit_code, result.stdout, result.stderr
 
-        result = await asyncio.to_thread(
+        process_result = await asyncio.to_thread(
             subprocess.run,
             cmd,
             capture_output=True,
@@ -1053,7 +1053,7 @@ class SchemaIndexerService:
             env=env,
             timeout=timeout,
         )
-        return result.returncode, result.stdout, result.stderr
+        return process_result.returncode, process_result.stdout, process_result.stderr
 
     async def _execute_postgres_json_query(
         self,

@@ -214,6 +214,7 @@ function getToolConnectionSummary(tool: ToolConfig): string {
 
 interface ToolCardProps {
   tool: ToolConfig;
+  targetId?: string;
   heartbeat: HeartbeatStatus | null;
   showFooterActions: boolean;
   onEdit: (tool: ToolConfig) => void;
@@ -235,6 +236,7 @@ interface ToolCardProps {
 
 function ToolCard({
   tool,
+  targetId,
   heartbeat,
   showFooterActions,
   onEdit,
@@ -383,7 +385,7 @@ function ToolCard({
   };
 
   return (
-    <div className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
+    <div id={targetId} className={`tool-card ${!tool.enabled ? 'disabled' : ''}`}>
       <div className="tool-card-header">
         <div className="tool-card-icon">
           <Icon name={getToolIconType(typeInfo?.icon)} size={28} />
@@ -642,6 +644,13 @@ export function ToolsPanel({
   highlightSection,
   onHighlightComplete,
 }: ToolsPanelProps) {
+  const resolveHighlightTargetId = useCallback((section: string) => {
+    if (section.startsWith('tool:')) {
+      return `tools-tool-${section.slice('tool:'.length)}`;
+    }
+    return `tools-${section}`;
+  }, []);
+
   const [tools, setTools] = useState<ToolConfig[]>([]);
   const [groups, setGroups] = useState<ToolGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -924,10 +933,10 @@ export function ToolsPanel({
   // Scroll to and highlight section when navigated from another view
   useEffect(() => {
     if (highlightSection && !loading) {
-      const element = document.getElementById(`tools-${highlightSection}`);
+      const element = document.getElementById(resolveHighlightTargetId(highlightSection));
       if (element) {
         element.classList.add('highlight-setting');
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        element.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
         const timer = setTimeout(() => {
           element.classList.remove('highlight-setting');
           onHighlightComplete?.();
@@ -935,7 +944,7 @@ export function ToolsPanel({
         return () => clearTimeout(timer);
       }
     }
-  }, [highlightSection, loading, onHighlightComplete]);
+  }, [highlightSection, loading, onHighlightComplete, resolveHighlightTargetId]);
 
   // Load schema stats when tools change
   useEffect(() => {
@@ -2153,6 +2162,7 @@ export function ToolsPanel({
       >
         <ToolCard
           tool={tool}
+          targetId={`tools-tool-${tool.id}`}
           heartbeat={heartbeats[tool.id] || null}
           showFooterActions={showFooterActions}
           onEdit={handleEditTool}

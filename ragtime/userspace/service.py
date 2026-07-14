@@ -12971,7 +12971,7 @@ class UserSpaceService:
                 data={
                     "workspaceId": workspace_id,
                     "toolConfigId": tool_id,
-                    "options": options,
+                    "options": Json(options),
                 }
             )
 

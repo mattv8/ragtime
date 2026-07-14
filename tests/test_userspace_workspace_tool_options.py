@@ -10,6 +10,7 @@ from typing import Any, cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma import Json
 
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
@@ -150,7 +151,8 @@ class _WorkspaceToolOptionTable(_CaptureTable):
 
     async def create(self, *, data: dict[str, Any]) -> SimpleNamespace:
         row = await super().create(data=data)
-        self.workspace_table.workspace_record.toolOptions.append(row)
+        stored_options = row.options.data if isinstance(row.options, Json) else row.options
+        self.workspace_table.workspace_record.toolOptions.append(SimpleNamespace(**{**data, "options": stored_options}))
         return row
 
 
@@ -227,16 +229,12 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.tool_options, {"tool-write": WorkspaceToolOptionState(write_access_enabled=True)})
         self.assertEqual(fake_db.workspacetooloption.deleted, [{"workspaceId": "ws-1"}])
-        self.assertEqual(
-            fake_db.workspacetooloption.created,
-            [
-                {
-                    "workspaceId": "ws-1",
-                    "toolConfigId": "tool-write",
-                    "options": {"write_access_enabled": True},
-                }
-            ],
-        )
+        self.assertEqual(len(fake_db.workspacetooloption.created), 1)
+        created = fake_db.workspacetooloption.created[0]
+        self.assertEqual(created["workspaceId"], "ws-1")
+        self.assertEqual(created["toolConfigId"], "tool-write")
+        self.assertIsInstance(created["options"], Json)
+        self.assertEqual(created["options"].data, {"write_access_enabled": True})
 
     async def test_editor_cannot_update_tool_options(self) -> None:
         service = _WorkspaceUpdateService("editor")

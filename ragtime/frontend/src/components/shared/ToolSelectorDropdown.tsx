@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Settings, ChevronRight, X, Globe2 } from 'lucide-react';
 import { ContextMenu } from './ContextMenu';
@@ -47,7 +48,7 @@ export interface ToolSelectorMenuItem {
   label: string;
   checked: boolean;
   disabled?: boolean;
-  description?: string;
+  description?: ReactNode;
   onChange: () => void;
 }
 
@@ -320,12 +321,17 @@ export function ToolSelectorDropdown({
         setContextMenu(null);
       }
     }
+    function handleWindowBlur() {
+      setContextMenu(null);
+    }
     if (contextMenu) {
       document.addEventListener('mousedown', handlePointerDown);
       document.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('blur', handleWindowBlur);
       return () => {
         document.removeEventListener('mousedown', handlePointerDown);
         document.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('blur', handleWindowBlur);
       };
     }
   }, [contextMenu]);

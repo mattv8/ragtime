@@ -5,6 +5,7 @@ import {
   canManageUserSpaceToolWriteForWorkspace,
   getCappedUserSpaceToolIdSet,
   getNextWorkspaceToolOptions,
+  getUserSpaceToolWorkspaceWriteState,
   isUserSpaceToolWriteEnabledForWorkspace,
   type UserSpaceToolSelection,
 } from './userSpaceTools';
@@ -117,6 +118,30 @@ describe('userSpaceTools workspace capping', () => {
     expect(
       isUserSpaceToolWriteEnabledForWorkspace({ ...tools[2], allow_write: false }, options),
     ).toBe(false);
+  });
+
+  it('returns enabled when a globally writable tool is enabled for the workspace', () => {
+    expect(
+      getUserSpaceToolWorkspaceWriteState(
+        { ...tools[0], allow_write: true },
+        { 'tool-a': { write_access_enabled: true } },
+      ),
+    ).toBe('enabled');
+  });
+
+  it('returns eligible when a globally writable tool has no workspace opt-in', () => {
+    expect(getUserSpaceToolWorkspaceWriteState({ ...tools[0], allow_write: true }, {})).toBe(
+      'eligible',
+    );
+  });
+
+  it('returns ineligible when a globally read-only tool has a stale workspace opt-in', () => {
+    expect(
+      getUserSpaceToolWorkspaceWriteState(
+        { ...tools[0], allow_write: false },
+        { 'tool-a': { write_access_enabled: true } },
+      ),
+    ).toBe('ineligible');
   });
 
   it('adds and removes workspace write option entries without leaving empty records', () => {

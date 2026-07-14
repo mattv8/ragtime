@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
@@ -48,7 +49,7 @@ def _build_request(
 class _FakeShareModel:
     def __init__(self, rows: dict[str, SimpleNamespace]) -> None:
         self.rows = rows
-        self.update_calls: list[dict[str, object]] = []
+        self.update_calls: list[dict[str, Any]] = []
 
     async def find_unique(self, *, where):  # type: ignore[no-untyped-def]
         return self.rows.get(where["id"])

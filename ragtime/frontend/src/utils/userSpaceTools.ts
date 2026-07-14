@@ -28,6 +28,16 @@ export function isUserSpaceToolWriteEnabledForWorkspace(
   return tool.allow_write === true && toolOptions?.[tool.id]?.write_access_enabled === true;
 }
 
+export function getUserSpaceToolWorkspaceWriteState(
+  tool: UserSpaceAvailableTool,
+  toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
+): 'enabled' | 'eligible' | 'ineligible' {
+  if (tool.allow_write !== true) {
+    return 'ineligible';
+  }
+  return isUserSpaceToolWriteEnabledForWorkspace(tool, toolOptions) ? 'enabled' : 'eligible';
+}
+
 export function canManageUserSpaceToolWriteForWorkspace(
   tool: UserSpaceAvailableTool,
   canManageWorkspace: boolean,

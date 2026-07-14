@@ -415,6 +415,15 @@ describe('ToolsPanel', () => {
     expect(screen.getByText('/')).toBeTruthy();
   });
 
+  it('highlights the requested tool card when navigated to a tool-specific section target', async () => {
+    render(<ToolsPanel highlightSection="tool:tool-ungrouped" />);
+
+    const toolName = await screen.findByText('Ungrouped Tool');
+    const toolCard = toolName.closest('.tool-card');
+
+    await waitFor(() => expect(toolCard?.classList.contains('highlight-setting')).toBe(true));
+  });
+
   it('uses the next copy suffix when duplicating a tool with an existing copy', async () => {
     const user = userEvent.setup();
     const existingCopy: ToolConfig = {

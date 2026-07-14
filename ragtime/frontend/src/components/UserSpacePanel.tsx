@@ -74,6 +74,7 @@ import {
   canManageUserSpaceToolWriteForWorkspace,
   fetchUserSpaceToolCatalog,
   getNextWorkspaceToolOptions,
+  getUserSpaceToolWorkspaceWriteState,
   isUserSpaceToolWriteEnabledForWorkspace,
   resolveDefaultSelectedToolIds,
   type UserSpaceToolSelection,
@@ -89,6 +90,7 @@ import {
   ToolSelectorDropdown,
   type ToolGroupInfo,
   type ToolSelectorFocusRequest,
+  type ToolSelectorStatusBadge,
 } from './shared/ToolSelectorDropdown';
 import {
   defaultScheduleStartMinute,
@@ -898,6 +900,55 @@ function getWorkspaceRoleForUser(workspace: UserSpaceWorkspace, user: User): Wor
 function canEditUserSpaceWorkspace(workspace: UserSpaceWorkspace, user: User): boolean {
   const role = getWorkspaceRoleForUser(workspace, user);
   return role === 'owner' || role === 'editor';
+}
+
+export function getWorkspaceToolStatusBadgeForState(
+  state: ReturnType<typeof getUserSpaceToolWorkspaceWriteState>,
+): ToolSelectorStatusBadge | null {
+  if (state === 'enabled') {
+    return {
+      label: 'Workspace write',
+      tone: 'write',
+      scope: 'workspace',
+      title: 'Workspace write enabled for this workspace',
+    };
+  }
+  if (state === 'eligible') {
+    return {
+      label: 'Workspace write',
+      tone: 'read',
+      title: 'Workspace write can be enabled for this workspace. Right-click to enable.',
+    };
+  }
+  return null;
+}
+
+export function getWorkspaceToolReadOnlyDescription(
+  isAdmin: boolean,
+  toolId: string,
+  onNavigateToTools?: (section?: string) => void,
+): ReactNode {
+  if (!isAdmin) {
+    return 'Ask an admin to enable "Allow Write Operations" for this tool in Settings > Tools.';
+  }
+
+  return (
+    <>
+      Enable &quot;Allow Write Operations&quot; for this tool in{' '}
+      <a
+        href="?view=tools"
+        className="btn-link"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onNavigateToTools?.(`tool:${toolId}`);
+        }}
+      >
+        Settings &gt; Tools
+      </a>
+      .
+    </>
+  );
 }
 
 export function UserSpacePanel({
@@ -4411,8 +4462,35 @@ export function UserSpacePanel({
 
   const getWorkspaceToolMenuItems = useCallback(
     (tool: UserSpaceAvailableTool) => {
-      if (!activeWorkspace || !canManageUserSpaceToolWriteForWorkspace(tool, isOwner)) return [];
+      if (!activeWorkspace) return [];
+      const state = getUserSpaceToolWorkspaceWriteState(tool, workspaceToolOptions);
       const checked = isUserSpaceToolWriteEnabledForWorkspace(tool, workspaceToolOptions);
+      if (state === 'ineligible') {
+        return [
+          {
+            label: 'Write access unavailable',
+            description: getWorkspaceToolReadOnlyDescription(
+              currentUser.role === 'admin',
+              tool.id,
+              onNavigateToTools,
+            ),
+            checked: false,
+            disabled: true,
+            onChange: () => undefined,
+          },
+        ];
+      }
+      if (!canManageUserSpaceToolWriteForWorkspace(tool, isOwner)) {
+        return [
+          {
+            label: 'Enable write access for this workspace',
+            description: 'Only the workspace owner or an admin can change this.',
+            checked,
+            disabled: true,
+            onChange: () => undefined,
+          },
+        ];
+      }
       return [
         {
           label: 'Enable write access for this workspace',
@@ -4427,7 +4505,9 @@ export function UserSpacePanel({
     [
       activeWorkspace,
       handleToggleWorkspaceToolWriteAccess,
+      currentUser.role,
       isOwner,
+      onNavigateToTools,
       savingWorkspaceToolOptions,
       workspaceToolOptions,
     ],
@@ -4435,13 +4515,8 @@ export function UserSpacePanel({
 
   const getWorkspaceToolStatusBadge = useCallback(
     (tool: UserSpaceAvailableTool) => {
-      if (!isUserSpaceToolWriteEnabledForWorkspace(tool, workspaceToolOptions)) return null;
-      return {
-        label: 'Write',
-        tone: 'write' as const,
-        scope: 'workspace' as const,
-        title: 'Write access enabled for this workspace',
-      };
+      const state = getUserSpaceToolWorkspaceWriteState(tool, workspaceToolOptions);
+      return getWorkspaceToolStatusBadgeForState(state);
     },
     [workspaceToolOptions],
   );

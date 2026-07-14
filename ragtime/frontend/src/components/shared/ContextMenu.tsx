@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useMemo } from 'react';
-import type { MutableRefObject } from 'react';
+import type { MutableRefObject, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../Icon';
 import type { IconType } from '../Icon';
@@ -9,7 +9,7 @@ export interface ContextMenuItem {
   type?: 'default' | 'checkbox' | 'toggle';
   checked?: boolean;
   disabled?: boolean;
-  description?: string;
+  description?: ReactNode;
   icon?: IconType;
   onSelect: () => void;
 }

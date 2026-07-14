@@ -314,6 +314,73 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(shared_response.error)
         self.assertEqual(service.proofs_recorded, [])
 
+    async def test_browser_preview_execution_rejects_sql_mutations_even_with_workspace_opt_in(self) -> None:
+        workspace = _make_workspace()
+        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
+        service = _RuntimeBridgeWorkspaceService(workspace)
+
+        with mock.patch.object(
+            userspace_service_module.repository,
+            "get_tool_config",
+            mock.AsyncMock(return_value=_make_tool_config(allow_write=True)),
+        ):
+            for query in (
+                "INSERT INTO t VALUES (1)",
+                "UPDATE t SET a=1",
+                "DELETE FROM t",
+            ):
+                response = await service.execute_component(
+                    "workspace-1",
+                    ExecuteComponentRequest(component_id="tool-1", request={"query": query}),
+                    user_id="user-1",
+                )
+
+                self.assertEqual(response.component_id, "tool-1")
+                self.assertEqual(response.row_count, 0)
+                self.assertIn("Only SELECT queries are allowed", response.error or "")
+
+        self.assertEqual(service.proofs_recorded, [])
+
+    async def test_browser_preview_execution_rejects_non_sql_tool_types(self) -> None:
+        workspace = _make_workspace()
+        service = _RuntimeBridgeWorkspaceService(workspace)
+
+        for tool_type in ("odoo_shell", "ssh_shell"):
+            with mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_config",
+                mock.AsyncMock(return_value=_make_tool_config(tool_type=tool_type, allow_write=True)),
+            ):
+                with self.assertRaises(HTTPException) as ctx:
+                    await service.execute_component(
+                        "workspace-1",
+                        ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"}),
+                        user_id="user-1",
+                    )
+
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("Live preview execution supports SQL tools only", str(ctx.exception.detail))
+
+    async def test_shared_preview_execution_rejects_insert_even_with_workspace_opt_in(self) -> None:
+        workspace = _make_workspace()
+        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
+        service = _RuntimeBridgeWorkspaceService(workspace)
+
+        with mock.patch.object(
+            userspace_service_module.repository,
+            "get_tool_config",
+            mock.AsyncMock(return_value=_make_tool_config(allow_write=True)),
+        ):
+            response = await service.execute_component_from_authorized_shared_preview(
+                "workspace-1",
+                ExecuteComponentRequest(component_id="tool-1", request={"query": "INSERT INTO t VALUES (1)"}),
+            )
+
+        self.assertEqual(response.component_id, "tool-1")
+        self.assertEqual(response.row_count, 0)
+        self.assertIn("Only SELECT queries are allowed", response.error or "")
+        self.assertEqual(service.proofs_recorded, [])
+
     async def test_runtime_bridge_odoo_builder_uses_effective_allow_write_and_returns_output(self) -> None:
         workspace = _make_workspace()
         workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}

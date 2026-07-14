@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useMemo, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ToolSelectorDropdown,
   type ToolSelectorFocusRequest,
+  type ToolSelectorMenuItem,
   type ToolSelectorStatusBadge,
   type ToolSelectorTool,
 } from './ToolSelectorDropdown';
@@ -51,6 +52,7 @@ interface ControlledDropdownProps {
   initialBuiltInToolIds?: string[];
   focusRequest?: ToolSelectorFocusRequest | null;
   onRequestEnableWorkspaceTool?: (toolId: string) => void;
+  getToolMenuItems?: (tool: ToolSelectorTool) => ToolSelectorMenuItem[];
   getToolStatusBadge?: (tool: ToolSelectorTool) => ToolSelectorStatusBadge | null;
 }
 
@@ -65,6 +67,7 @@ function ControlledDropdown({
   initialBuiltInToolIds = [builtInTool.id],
   focusRequest = null,
   onRequestEnableWorkspaceTool,
+  getToolMenuItems,
   getToolStatusBadge,
 }: ControlledDropdownProps) {
   const availableTools = useMemo(() => availableToolsProp, [availableToolsProp]);
@@ -109,6 +112,7 @@ function ControlledDropdown({
         title="Conversation Tools"
         focusRequest={focusRequest}
         onRequestEnableWorkspaceTool={onRequestEnableWorkspaceTool}
+        getToolMenuItems={getToolMenuItems}
         getToolStatusBadge={getToolStatusBadge}
       />
       <output data-testid="selection-state">{JSON.stringify(selection)}</output>
@@ -387,5 +391,202 @@ describe('ToolSelectorDropdown bulk selection', () => {
     const badge = screen.getByTitle('Write access enabled for this workspace');
     expect(badge.classList.contains('userspace-tool-status-badge-workspace')).toBe(true);
     expect(badge.querySelector('svg')).toBeNull();
+  });
+
+  it('shows a disabled context-menu item and does not fire onChange when clicked', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ControlledDropdown
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolMenuItems={() => [
+          {
+            label: 'Write access unavailable',
+            description: 'Ask an admin to enable Allow Write Operations for this tool.',
+            checked: false,
+            disabled: true,
+            onChange,
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+
+    const disabledItem = screen.getByText('Write access unavailable').closest('[role="button"]');
+    expect(disabledItem?.classList.contains('disabled')).toBe(true);
+    expect(
+      (disabledItem?.querySelector('input[type="checkbox"]') as HTMLInputElement | null)?.disabled,
+    ).toBe(true);
+
+    await user.click(screen.getByText('Write access unavailable'));
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('dismisses the context menu when clicking outside it', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolMenuItems={() => [
+          {
+            label: 'Write access unavailable',
+            description: 'Ask an admin to enable Allow Write Operations for this tool.',
+            checked: false,
+            disabled: true,
+            onChange: vi.fn(),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    expect(screen.getByText('Write access unavailable')).toBeTruthy();
+
+    await user.click(document.body);
+
+    expect(screen.queryByText('Write access unavailable')).toBeNull();
+  });
+
+  it('dismisses the context menu when clicking inside the dropdown but outside the menu', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolMenuItems={() => [
+          {
+            label: 'Write access unavailable',
+            description: 'Ask an admin to enable Allow Write Operations for this tool.',
+            checked: false,
+            disabled: true,
+            onChange: vi.fn(),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    expect(screen.getByText('Write access unavailable')).toBeTruthy();
+
+    await user.click(screen.getByLabelText('Filter tools'));
+
+    expect(screen.queryByText('Write access unavailable')).toBeNull();
+  });
+
+  it('dismisses the context menu when focus leaves the window', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolMenuItems={() => [
+          {
+            label: 'Write access unavailable',
+            description: 'Ask an admin to enable Allow Write Operations for this tool.',
+            checked: false,
+            disabled: true,
+            onChange: vi.fn(),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+    expect(screen.getByText('Write access unavailable')).toBeTruthy();
+
+    fireEvent.blur(window);
+
+    expect(screen.queryByText('Write access unavailable')).toBeNull();
+  });
+
+  it('renders a link inside a disabled context-menu description and still lets the link handle clicks', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    render(
+      <ControlledDropdown
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolMenuItems={(tool) => [
+          {
+            label: 'Write access unavailable',
+            description: (
+              <>
+                Ask an admin to enable "Allow Write Operations" for this tool in{' '}
+                <a
+                  href="?view=tools"
+                  className="btn-link"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onNavigate(`tool:${tool.id}`);
+                  }}
+                >
+                  Settings &gt; Tools
+                </a>
+                .
+              </>
+            ),
+            checked: false,
+            disabled: true,
+            onChange: vi.fn(),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (2/2 selected)'));
+    fireEvent.contextMenu(screen.getByText('Ungrouped Tool').closest('.userspace-tool-item')!);
+
+    const link = screen.getByRole('link', { name: 'Settings > Tools' });
+    await user.click(link);
+
+    expect(onNavigate).toHaveBeenCalledWith('tool:tool-ungrouped');
+  });
+
+  it('renders a read-only status badge label from getToolStatusBadge', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        availableTools={[ungroupedTool]}
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolStatusBadge={() => ({
+          label: 'Read only',
+          tone: 'read',
+          title: 'Write access unavailable',
+        })}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
+
+    const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
+    expect(titleRow?.textContent).toContain('Read only');
+  });
+
+  it('omits status badges when getToolStatusBadge returns null', async () => {
+    const user = userEvent.setup();
+    render(
+      <ControlledDropdown
+        availableTools={[ungroupedTool]}
+        builtInTools={[]}
+        initialBuiltInToolIds={[]}
+        getToolStatusBadge={() => null}
+      />,
+    );
+
+    await user.click(screen.getByTitle('Conversation Tools (1/1 selected)'));
+
+    const titleRow = screen.getByText('Ungrouped Tool').closest('.userspace-tool-item-title-row');
+    expect(titleRow?.querySelector('.userspace-tool-status-badge')).toBeNull();
+    expect(titleRow?.textContent).toBe('Ungrouped Tool');
   });
 });
