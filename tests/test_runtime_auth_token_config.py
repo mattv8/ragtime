@@ -15,53 +15,46 @@ def _settings(env: dict[str, str]) -> Settings:
 
 
 class RuntimeAuthTokenSettingsTests(unittest.TestCase):
-    def test_shared_runtime_auth_token_is_used_directly(self) -> None:
-        settings = _settings({"RUNTIME_AUTH_TOKEN": "shared-token"})
+    def test_userspace_runtime_auth_token_resolution(self) -> None:
+        cases = [
+            ({"RUNTIME_AUTH_TOKEN": "shared-token"}, "shared-token"),
+            (
+                {
+                    "RUNTIME_AUTH_TOKEN": "shared-token",
+                    "RUNTIME_MANAGER_AUTH_TOKEN": "runtime-manager-token",
+                    "RUNTIME_WORKER_AUTH_TOKEN": "runtime-worker-token",
+                },
+                "shared-token",
+            ),
+            ({"RUNTIME_MANAGER_AUTH_TOKEN": "legacy-manager-token"}, "legacy-manager-token"),
+        ]
 
-        self.assertEqual(settings.userspace_runtime_auth_token, "shared-token")
-
-    def test_shared_runtime_auth_token_wins_over_stale_legacy_vars(self) -> None:
-        settings = _settings(
-            {
-                "RUNTIME_AUTH_TOKEN": "shared-token",
-                "RUNTIME_MANAGER_AUTH_TOKEN": "runtime-manager-token",
-                "RUNTIME_WORKER_AUTH_TOKEN": "runtime-worker-token",
-            }
-        )
-
-        self.assertEqual(settings.userspace_runtime_auth_token, "shared-token")
-
-    def test_legacy_manager_token_bridges_when_shared_token_unset(self) -> None:
-        settings = _settings({"RUNTIME_MANAGER_AUTH_TOKEN": "legacy-manager-token"})
-
-        self.assertEqual(settings.userspace_runtime_auth_token, "legacy-manager-token")
+        for env, expected in cases:
+            with self.subTest(env=env):
+                settings = _settings(env)
+                self.assertEqual(settings.userspace_runtime_auth_token, expected)
 
 
 class RuntimeAuthTokenWarningTests(unittest.TestCase):
-    def test_no_warning_for_custom_shared_token(self) -> None:
-        settings = _settings({"RUNTIME_AUTH_TOKEN": "a-strong-random-token"})
+    def test_runtime_auth_token_warning_cases(self) -> None:
+        cases = [
+            ("custom shared token", {"RUNTIME_AUTH_TOKEN": "a-strong-random-token"}, False),
+            ("empty token", {}, True),
+            ("generic shared token", {"RUNTIME_AUTH_TOKEN": "runtime-auth-token"}, True),
+            ("generic legacy manager token", {"RUNTIME_AUTH_TOKEN": "runtime-manager-token"}, True),
+            ("generic legacy worker token", {"RUNTIME_AUTH_TOKEN": "runtime-worker-token"}, True),
+            ("legacy bridge token", {"RUNTIME_MANAGER_AUTH_TOKEN": "custom-legacy-token"}, True),
+            (
+                "debug mode override",
+                {"DEBUG_MODE": "true", "RUNTIME_AUTH_TOKEN": "dev-runtime-auth-token"},
+                False,
+            ),
+        ]
 
-        self.assertFalse(settings.runtime_auth_token_warning())
-
-    def test_warning_when_token_is_empty(self) -> None:
-        settings = _settings({})
-
-        self.assertTrue(settings.runtime_auth_token_warning())
-
-    def test_warning_when_token_is_known_generic_default(self) -> None:
-        for generic in ("runtime-auth-token", "runtime-manager-token", "runtime-worker-token"):
-            settings = _settings({"RUNTIME_AUTH_TOKEN": generic})
-            self.assertTrue(settings.runtime_auth_token_warning(), generic)
-
-    def test_warning_when_token_resolved_via_legacy_bridge(self) -> None:
-        settings = _settings({"RUNTIME_MANAGER_AUTH_TOKEN": "custom-legacy-token"})
-
-        self.assertTrue(settings.runtime_auth_token_warning())
-
-    def test_no_warning_in_debug_mode(self) -> None:
-        settings = _settings({"DEBUG_MODE": "true", "RUNTIME_AUTH_TOKEN": "dev-runtime-auth-token"})
-
-        self.assertFalse(settings.runtime_auth_token_warning())
+        for label, env, expected in cases:
+            with self.subTest(label=label, env=env):
+                settings = _settings(env)
+                self.assertEqual(settings.runtime_auth_token_warning(), expected)
 
 
 class RuntimeAuthResolverTests(unittest.TestCase):
@@ -74,23 +67,21 @@ class RuntimeAuthResolverTests(unittest.TestCase):
             runtime_auth = importlib.reload(runtime_auth)
             return runtime_auth.get_runtime_auth_token()
 
-    def test_shared_runtime_auth_token_is_used_directly(self) -> None:
-        token = self._reload_runtime_auth(
-            {
-                "RUNTIME_AUTH_TOKEN": "shared-token",
-                "RUNTIME_MANAGER_AUTH_TOKEN": "runtime-manager-token",
-                "RUNTIME_WORKER_AUTH_TOKEN": "runtime-worker-token",
-            }
-        )
+    def test_runtime_auth_token_resolution(self) -> None:
+        cases = [
+            (
+                {
+                    "RUNTIME_AUTH_TOKEN": "shared-token",
+                    "RUNTIME_MANAGER_AUTH_TOKEN": "runtime-manager-token",
+                    "RUNTIME_WORKER_AUTH_TOKEN": "runtime-worker-token",
+                },
+                "shared-token",
+            ),
+            ({"RUNTIME_MANAGER_AUTH_TOKEN": "legacy-manager-token"}, "legacy-manager-token"),
+            ({}, ""),
+        ]
 
-        self.assertEqual(token, "shared-token")
-
-    def test_legacy_manager_token_bridges_when_shared_token_unset(self) -> None:
-        token = self._reload_runtime_auth({"RUNTIME_MANAGER_AUTH_TOKEN": "legacy-manager-token"})
-
-        self.assertEqual(token, "legacy-manager-token")
-
-    def test_token_is_empty_when_nothing_is_configured(self) -> None:
-        token = self._reload_runtime_auth({})
-
-        self.assertEqual(token, "")
+        for env, expected in cases:
+            with self.subTest(env=env):
+                token = self._reload_runtime_auth(env)
+                self.assertEqual(token, expected)

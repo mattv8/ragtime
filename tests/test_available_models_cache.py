@@ -268,30 +268,40 @@ class AvailableModelsCacheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, 2)
 
-    def test_is_cacheable_true(self) -> None:
-        resp = self._make_response(models=[self._make_valid_model()])
-        self.assertTrue(_is_available_models_response_cacheable(resp))
+    def test_is_available_models_response_cacheable_cases(self) -> None:
+        cases = [
+            (
+                "cacheable",
+                self._make_response(models=[self._make_valid_model()]),
+                True,
+            ),
+            (
+                "loading",
+                self._make_response(models=[self._make_valid_model()], models_loading=True),
+                False,
+            ),
+            (
+                "copilot refresh",
+                self._make_response(models=[self._make_valid_model()], copilot_refresh_in_progress=True),
+                False,
+            ),
+            ("empty models", self._make_response(models=[]), False),
+        ]
 
-    def test_is_cacheable_false_when_loading(self) -> None:
-        resp = self._make_response(models=[self._make_valid_model()], models_loading=True)
-        self.assertFalse(_is_available_models_response_cacheable(resp))
+        for label, response, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(_is_available_models_response_cacheable(response), expected)
 
-    def test_is_cacheable_false_when_refresh_in_progress(self) -> None:
-        resp = self._make_response(models=[self._make_valid_model()], copilot_refresh_in_progress=True)
-        self.assertFalse(_is_available_models_response_cacheable(resp))
-
-    def test_is_cacheable_false_when_empty_models(self) -> None:
-        resp = self._make_response(models=[])
-        self.assertFalse(_is_available_models_response_cacheable(resp))
-
-    def test_cache_key_with_updated_at(self) -> None:
+    def test_available_models_cache_key_cases(self) -> None:
         dt = datetime(2026, 7, 12, 10, 30, 0, tzinfo=timezone.utc)
-        settings = SimpleNamespace(updated_at=dt)
-        self.assertEqual(_available_models_cache_key(settings), dt.isoformat())
+        cases = [
+            ("with updated_at", SimpleNamespace(updated_at=dt), dt.isoformat()),
+            ("without updated_at", SimpleNamespace(), ""),
+        ]
 
-    def test_cache_key_without_updated_at(self) -> None:
-        settings = SimpleNamespace()
-        self.assertEqual(_available_models_cache_key(settings), "")
+        for label, settings, expected in cases:
+            with self.subTest(label=label):
+                self.assertEqual(_available_models_cache_key(settings), expected)
 
     def test_stale_allowlist_does_not_empty_discovered_models(self) -> None:
         models = [AvailableModel(id="Qwen3.6-27B-MLX-8bit", name="Qwen", provider="omlx")]

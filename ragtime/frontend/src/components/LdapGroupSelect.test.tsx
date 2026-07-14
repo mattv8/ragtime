@@ -9,42 +9,44 @@ afterEach(() => {
 });
 
 describe('LDAP group display helpers', () => {
-  it('prefers discovered display names before names and distinguished names', () => {
-    expect(
-      getLdapGroupDisplayName(
-        {
-          dn: 'cn=engineering,ou=groups,dc=example,dc=com',
-          name: 'engineering',
-          display_name: 'Engineering Team',
-        },
-        'fallback',
-      ),
-    ).toBe('Engineering Team');
-
-    expect(
-      getLdapGroupDisplayName(
-        {
-          dn: 'cn=sales,ou=groups,dc=example,dc=com',
-          name: 'sales',
-          displayName: 'Sales Team',
-        },
-        'fallback',
-      ),
-    ).toBe('Sales Team');
-
-    expect(
-      getLdapGroupDisplayName(
-        {
-          dn: 'cn=ops,ou=groups,dc=example,dc=com',
-          name: 'Operations',
-        },
-        'fallback',
-      ),
-    ).toBe('Operations');
-
-    expect(getLdapGroupDisplayName(undefined, 'cn=unknown,dc=example,dc=com')).toBe(
-      'cn=unknown,dc=example,dc=com',
-    );
+  it.each([
+    {
+      label: 'display_name',
+      group: {
+        dn: 'cn=engineering,ou=groups,dc=example,dc=com',
+        name: 'engineering',
+        display_name: 'Engineering Team',
+      },
+      fallback: 'fallback',
+      expected: 'Engineering Team',
+    },
+    {
+      label: 'displayName',
+      group: {
+        dn: 'cn=sales,ou=groups,dc=example,dc=com',
+        name: 'sales',
+        displayName: 'Sales Team',
+      },
+      fallback: 'fallback',
+      expected: 'Sales Team',
+    },
+    {
+      label: 'name',
+      group: {
+        dn: 'cn=ops,ou=groups,dc=example,dc=com',
+        name: 'Operations',
+      },
+      fallback: 'fallback',
+      expected: 'Operations',
+    },
+    {
+      label: 'fallback distinguished name',
+      group: undefined,
+      fallback: 'cn=unknown,dc=example,dc=com',
+      expected: 'cn=unknown,dc=example,dc=com',
+    },
+  ])('prefers $label when resolving LDAP group display names', ({ group, fallback, expected }) => {
+    expect(getLdapGroupDisplayName(group, fallback)).toBe(expected);
   });
 });
 

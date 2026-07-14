@@ -82,41 +82,23 @@ class FakeAsyncClient:
 
 
 class ModelResolutionTests(unittest.TestCase):
-    def test_parse_model_identifier_accepts_llama_cpp(self) -> None:
-        self.assertEqual(
-            _parse_model_identifier("llama_cpp::my-chat-model"),
-            ("llama_cpp", "my-chat-model"),
-        )
+    def test_parse_model_identifier_cases(self) -> None:
+        cases = [
+            ("llama_cpp::my-chat-model", ("llama_cpp", "my-chat-model")),
+            ("lmstudio::gemma-4-31b-it-mlx", ("lmstudio", "gemma-4-31b-it-mlx")),
+            ("omlx::qwen3-coder-next-8bit", ("omlx", "qwen3-coder-next-8bit")),
+            ("openrouter::anthropic/claude-sonnet-4.5", ("openrouter", "anthropic/claude-sonnet-4.5")),
+            ("or::openai/gpt-4o", ("openrouter", "openai/gpt-4o")),
+        ]
 
-    def test_parse_model_identifier_accepts_lmstudio(self) -> None:
-        self.assertEqual(
-            _parse_model_identifier("lmstudio::gemma-4-31b-it-mlx"),
-            ("lmstudio", "gemma-4-31b-it-mlx"),
-        )
+        for identifier, expected in cases:
+            with self.subTest(identifier=identifier):
+                self.assertEqual(_parse_model_identifier(identifier), expected)
 
-    def test_parse_model_identifier_accepts_omlx_from_registry(self) -> None:
-        self.assertEqual(
-            _parse_model_identifier("omlx::qwen3-coder-next-8bit"),
-            ("omlx", "qwen3-coder-next-8bit"),
-        )
-
-    def test_parse_model_identifier_accepts_openrouter_from_registry(self) -> None:
-        self.assertEqual(
-            _parse_model_identifier("openrouter::anthropic/claude-sonnet-4.5"),
-            ("openrouter", "anthropic/claude-sonnet-4.5"),
-        )
-
-    def test_parse_model_identifier_accepts_openrouter_short_alias(self) -> None:
-        self.assertEqual(
-            _parse_model_identifier("or::openai/gpt-4o"),
-            ("openrouter", "openai/gpt-4o"),
-        )
-
-    def test_conversation_model_provider_accepts_registered_omlx(self) -> None:
-        self.assertEqual(_normalize_conversation_model_provider("omlx"), "omlx")
-
-    def test_conversation_model_provider_accepts_registered_openrouter(self) -> None:
-        self.assertEqual(_normalize_conversation_model_provider("openrouter"), "openrouter")
+    def test_conversation_model_provider_accepts_registered_values(self) -> None:
+        for provider in ("omlx", "openrouter"):
+            with self.subTest(provider=provider):
+                self.assertEqual(_normalize_conversation_model_provider(provider), provider)
 
     def test_shared_provider_metadata_resolves_api_aliases_and_labels(self) -> None:
         self.assertEqual(normalize_provider_name("llama.cpp"), "llama_cpp")
@@ -211,29 +193,21 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("omlx", str(raised.exception.detail))
 
-    def test_openapi_normalization_uses_pretty_llama_cpp_id(self) -> None:
-        self.assertEqual(
-            _normalize_openapi_model_id("llama_cpp", "llama_cpp::my-chat-model"),
-            "llama.cpp My Chat Model",
-        )
+    def test_openapi_normalization_uses_pretty_ids(self) -> None:
+        cases = [
+            ("llama_cpp", "llama_cpp::my-chat-model", "llama.cpp My Chat Model"),
+            ("lmstudio", "lmstudio::gemma-4-31b-it-mlx", "LM Studio Gemma 4 31B It MLX"),
+            ("omlx", "omlx::qwen3-coder-next-8bit", "oMLX Qwen3 Coder Next 8bit"),
+            (
+                "openrouter",
+                "openrouter::anthropic/claude-sonnet-4.5",
+                "OpenRouter Claude Sonnet 4.5",
+            ),
+        ]
 
-    def test_openapi_normalization_uses_pretty_lmstudio_id(self) -> None:
-        self.assertEqual(
-            _normalize_openapi_model_id("lmstudio", "lmstudio::gemma-4-31b-it-mlx"),
-            "LM Studio Gemma 4 31B It MLX",
-        )
-
-    def test_openapi_normalization_uses_pretty_omlx_id(self) -> None:
-        self.assertEqual(
-            _normalize_openapi_model_id("omlx", "omlx::qwen3-coder-next-8bit"),
-            "oMLX Qwen3 Coder Next 8bit",
-        )
-
-    def test_openapi_normalization_uses_pretty_openrouter_id(self) -> None:
-        self.assertEqual(
-            _normalize_openapi_model_id("openrouter", "openrouter::anthropic/claude-sonnet-4.5"),
-            "OpenRouter Claude Sonnet 4.5",
-        )
+        for provider, model_id, expected in cases:
+            with self.subTest(provider=provider, model_id=model_id):
+                self.assertEqual(_normalize_openapi_model_id(provider, model_id), expected)
 
     def test_openapi_model_entry_uses_model_provider_label_for_display(self) -> None:
         entry = _build_openapi_model_entry(
@@ -544,18 +518,68 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(latest[0].id, "anthropic/claude-sonnet-4.6")
         self.assertTrue(all(model.group == "Claude Sonnet" for model in grouped))
 
-    def test_group_models_dynamic_claude_family_is_grouped_by_major(self) -> None:
-        models = [
-            LLMModel(id="claude-mythos-5", name="Claude Mythos 5", created=100),
-            LLMModel(id="claude-mythos-5.1", name="Claude Mythos 5.1", created=200),
+    def test_group_models_dynamic_family_cases(self) -> None:
+        cases = [
+            (
+                "dynamic claude major",
+                [
+                    LLMModel(id="claude-mythos-5", name="Claude Mythos 5", created=100),
+                    LLMModel(id="claude-mythos-5.1", name="Claude Mythos 5.1", created=200),
+                ],
+                "anthropic",
+                "claude-mythos-5.1",
+                {
+                    "claude-mythos-5": "Claude",
+                    "claude-mythos-5.1": "Claude",
+                },
+            ),
+            (
+                "dynamic gpt minor",
+                [
+                    LLMModel(id="gpt-5.5", name="GPT-5.5", created=100),
+                    LLMModel(id="gpt-5.5-mini", name="GPT-5.5 Mini", created=200),
+                ],
+                "openai",
+                "gpt-5.5-mini",
+                {"gpt-5.5": "GPT", "gpt-5.5-mini": "GPT"},
+            ),
+            (
+                "dynamic gpt major",
+                [
+                    LLMModel(id="gpt-6", name="GPT-6", created=100),
+                    LLMModel(id="gpt-6.0-mini", name="GPT-6.0 Mini", created=200),
+                ],
+                "openai",
+                "__skip_latest_assertion__",
+                {"gpt-6": "GPT", "gpt-6.0-mini": "GPT"},
+            ),
+            (
+                "dynamic gemini family",
+                [
+                    LLMModel(id="google/gemini-3", name="Gemini 3", created=100),
+                    LLMModel(id="google/gemini-3.1-flash", name="Gemini 3.1 Flash", created=200),
+                ],
+                "github_copilot",
+                "google/gemini-3.1-flash",
+                {
+                    "google/gemini-3": "Gemini 3",
+                    "google/gemini-3.1-flash": "Gemini 3",
+                },
+            ),
         ]
 
-        grouped = _group_models(models, "anthropic")
-        latest = [model for model in grouped if model.is_latest]
-
-        self.assertEqual(len(latest), 1)
-        self.assertEqual(latest[0].id, "claude-mythos-5.1")
-        self.assertTrue(all(model.group == "Claude" for model in grouped))
+        for label, models, provider, expected_latest_id, expected_groups in cases:
+            with self.subTest(label=label):
+                grouped = _group_models(models, provider)
+                latest = [model for model in grouped if model.is_latest]
+                self.assertEqual({model.id: model.group for model in grouped}, expected_groups)
+                if expected_latest_id == "__skip_latest_assertion__":
+                    continue
+                if expected_latest_id is None:
+                    self.assertEqual(latest, [])
+                else:
+                    self.assertEqual(len(latest), 1)
+                    self.assertEqual(latest[0].id, expected_latest_id)
 
     def test_group_models_keeps_legacy_claude_groups(self) -> None:
         models = [
@@ -591,9 +615,7 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "claude-opus-4.7")
 
-    def test_assign_model_groups_handles_dynamic_claude_families_for_copilot(
-        self,
-    ) -> None:
+    def test_assign_model_groups_handles_dynamic_claude_families_for_copilot(self) -> None:
         models = [
             AvailableModel(
                 id="anthropic/claude-mythos-5",
@@ -615,19 +637,6 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(len(latest), 1)
         self.assertEqual(latest[0].id, "anthropic/claude-mythos-5.1")
         self.assertTrue(all(model.group == "Claude" for model in grouped))
-
-    def test_group_models_dynamic_gpt_minor_family(self) -> None:
-        models = [
-            LLMModel(id="gpt-5.5", name="GPT-5.5", created=100),
-            LLMModel(id="gpt-5.5-mini", name="GPT-5.5 Mini", created=200),
-        ]
-
-        grouped = _group_models(models, "openai")
-        latest = [model for model in grouped if model.is_latest]
-
-        self.assertEqual(len(latest), 1)
-        self.assertEqual(latest[0].id, "gpt-5.5-mini")
-        self.assertTrue(all(model.group == "GPT" for model in grouped))
 
     def test_group_models_openrouter_without_metadata_uses_general_family(self) -> None:
         models = [
@@ -752,78 +761,84 @@ class ModelResolutionTests(unittest.TestCase):
         # which provider their token spend comes from, even when the same model
         # family is served by multiple providers (Anthropic API vs Claude Code,
         # OpenAI vs OpenAI Codex).
-        self.assertEqual(
-            resolve_model_provider_label("claude-sonnet-4-5", provider="anthropic"),
-            "Anthropic",
-        )
-        self.assertEqual(
-            resolve_model_provider_label("claude-sonnet-4-5", provider="claude_code"),
-            "Claude Code",
-        )
-        self.assertEqual(
-            resolve_model_provider_label("gpt-5.5", provider="openai"),
-            "OpenAI",
-        )
-        self.assertEqual(
-            resolve_model_provider_label("gpt-5.5", provider="openai_codex"),
-            "OpenAI Codex",
-        )
+        cases = [
+            ("claude-sonnet-4-5", None, "anthropic", None, "Anthropic"),
+            ("claude-sonnet-4-5", None, "claude_code", None, "Claude Code"),
+            ("gpt-5.5", None, "openai", None, "OpenAI"),
+            ("gpt-5.5", None, "openai_codex", None, "OpenAI Codex"),
+        ]
+
+        for model_id, name, provider, metadata, expected in cases:
+            with self.subTest(model_id=model_id, provider=provider):
+                self.assertEqual(
+                    resolve_model_provider_label(model_id, name, provider=provider, metadata=metadata),
+                    expected,
+                )
 
     def test_direct_provider_label_wins_over_id_and_metadata_heuristics(self) -> None:
         # The explicit provider is authoritative: a slashed id or catalog name
         # prefix must not collapse Claude Code back to Anthropic (or Codex to
         # OpenAI).
-        self.assertEqual(
-            resolve_model_provider_label(
+        cases: list[tuple[str, str, str, dict[str, object], str]] = [
+            (
                 "anthropic/claude-sonnet-4-5",
                 "Anthropic: Claude Sonnet 4.5",
-                provider="claude_code",
-                metadata={"name": "Anthropic: Claude Sonnet 4.5"},
+                "claude_code",
+                {"name": "Anthropic: Claude Sonnet 4.5"},
+                "Claude Code",
             ),
-            "Claude Code",
-        )
-        self.assertEqual(
-            resolve_model_provider_label(
+            (
                 "openai/gpt-5.5",
                 "OpenAI: GPT-5.5",
-                provider="openai_codex",
-                metadata={"name": "OpenAI: GPT-5.5"},
+                "openai_codex",
+                {"name": "OpenAI: GPT-5.5"},
+                "OpenAI Codex",
             ),
-            "OpenAI Codex",
-        )
+        ]
 
-    def test_model_variant_label_groups_gpt_date_aliases(self) -> None:
-        self.assertEqual(
-            clean_model_variant_label(
+        for model_id, name, provider, metadata, expected in cases:
+            with self.subTest(model_id=model_id, provider=provider):
+                self.assertEqual(
+                    resolve_model_provider_label(model_id, name, provider=provider, metadata=metadata),
+                    expected,
+                )
+
+    def test_model_variant_label_grouping_cases(self) -> None:
+        cases = [
+            (
                 "gpt-5.4-mini-2026-03-17",
-                model_id="gpt-5.4-mini-2026-03-17",
-                provider_label="OpenAI",
-                family_label="GPT",
+                "gpt-5.4-mini-2026-03-17",
+                "OpenAI",
+                "GPT",
+                "5.4 Mini",
             ),
-            "5.4 Mini",
-        )
-
-    def test_model_variant_label_groups_codex_versions(self) -> None:
-        self.assertEqual(
-            clean_model_variant_label(
+            (
                 "gpt-5.1-codex-mini",
-                model_id="gpt-5.1-codex-mini",
-                provider_label="OpenAI",
-                family_label="Codex",
+                "gpt-5.1-codex-mini",
+                "OpenAI",
+                "Codex",
+                "5.1 Mini",
             ),
-            "5.1 Mini",
-        )
-
-    def test_model_variant_label_groups_openrouter_codex_versions(self) -> None:
-        self.assertEqual(
-            clean_model_variant_label(
+            (
                 "OpenAI: GPT-5.3-Codex",
-                model_id="openai/gpt-5.3-codex",
-                provider_label="OpenAI",
-                family_label="Codex",
+                "openai/gpt-5.3-codex",
+                "OpenAI",
+                "Codex",
+                "5.3",
             ),
-            "5.3",
-        )
+        ]
+
+        for display_name, model_id, provider_label, family_label, expected in cases:
+            with self.subTest(model_id=model_id, family_label=family_label):
+                self.assertEqual(
+                    clean_model_variant_label(
+                        display_name,
+                        model_id=model_id,
+                        provider_label=provider_label,
+                        family_label=family_label,
+                    ),
+                    expected,
+                )
 
     def test_repeated_openrouter_patterns_get_specific_families(self) -> None:
         cases = [
@@ -1091,33 +1106,6 @@ class ModelResolutionTests(unittest.TestCase):
 
         self.assertEqual(context_limit, 262_144)
         self.assertEqual(output_limit, 65_536)
-
-    def test_group_models_dynamic_gpt_major_family(self) -> None:
-        models = [
-            LLMModel(id="gpt-6", name="GPT-6", created=100),
-            LLMModel(id="gpt-6.0-mini", name="GPT-6.0 Mini", created=200),
-        ]
-
-        grouped = _group_models(models, "openai")
-        groups = {model.id: model.group for model in grouped}
-
-        self.assertEqual(groups["gpt-6"], "GPT")
-        self.assertEqual(groups["gpt-6.0-mini"], "GPT")
-
-    def test_group_models_dynamic_gemini_family(self) -> None:
-        models = [
-            LLMModel(id="google/gemini-3", name="Gemini 3", created=100),
-            LLMModel(id="google/gemini-3.1-flash", name="Gemini 3.1 Flash", created=200),
-        ]
-
-        grouped = _group_models(models, "github_copilot")
-        latest = [model for model in grouped if model.is_latest]
-        groups = {model.id: model.group for model in grouped}
-
-        self.assertEqual(groups["google/gemini-3"], "Gemini 3")
-        self.assertEqual(groups["google/gemini-3.1-flash"], "Gemini 3")
-        self.assertEqual(len(latest), 1)
-        self.assertEqual(latest[0].id, "google/gemini-3.1-flash")
 
     def test_group_models_keeps_legacy_gemini_25_group(self) -> None:
         models = [

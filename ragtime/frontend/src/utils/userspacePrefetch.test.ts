@@ -3,67 +3,62 @@ import { describe, expect, it } from 'vitest';
 import { getWarmCacheCandidateFiles, runWithConcurrencyLimit } from './userspacePrefetch';
 
 describe('getWarmCacheCandidateFiles', () => {
-  it('skips unsupported binary and office files before warm-cache prefetch', () => {
-    const candidates = getWarmCacheCandidateFiles(
-      [
+  it.each([
+    {
+      label: 'unsupported binary and office files',
+      files: [
         { path: 'dashboard/main.ts', size_bytes: 100, updated_at: '1' },
         { path: 'reconciliations/11101.xlsx', size_bytes: 100, updated_at: '1' },
         { path: 'reconciliations/21407.xlsm', size_bytes: 100, updated_at: '1' },
         { path: 'docs/brief.docx', size_bytes: 100, updated_at: '1' },
         { path: 'slides/report.pptx', size_bytes: 100, updated_at: '1' },
       ],
-      {},
-    );
-
-    expect(candidates.map((file) => file.path)).toEqual(['dashboard/main.ts']);
-  });
-
-  it('matches skipped extensions case-insensitively and supports compound extensions', () => {
-    const candidates = getWarmCacheCandidateFiles(
-      [
+      cache: {},
+      options: undefined,
+      expectedPaths: ['dashboard/main.ts'],
+    },
+    {
+      label: 'case-insensitive and compound skipped extensions',
+      files: [
         { path: 'reports/REPORT.XLSX', size_bytes: 100, updated_at: '1' },
         { path: 'archives/source.tar.gz', size_bytes: 100, updated_at: '1' },
         { path: 'notes/README', size_bytes: 100, updated_at: '1' },
       ],
-      {},
-    );
-
-    expect(candidates.map((file) => file.path)).toEqual(['notes/README']);
-  });
-
-  it('skips unchanged, excluded, and oversized files', () => {
-    const candidates = getWarmCacheCandidateFiles(
-      [
+      cache: {},
+      options: undefined,
+      expectedPaths: ['notes/README'],
+    },
+    {
+      label: 'unchanged, excluded, and oversized files',
+      files: [
         { path: 'dashboard/current.ts', size_bytes: 100, updated_at: '1' },
         { path: 'dashboard/excluded.ts', size_bytes: 100, updated_at: '1' },
         { path: 'server/large.mjs', size_bytes: 513 * 1024, updated_at: '1' },
       ],
-      {
+      cache: {
         'dashboard/current.ts': { content: 'cached', updatedAt: '1', artifactType: null },
       },
-      { excludePaths: ['dashboard/excluded.ts'] },
-    );
-
-    expect(candidates).toEqual([]);
-  });
-
-  it('includes changed cached files and handles null metadata defaults', () => {
-    const candidates = getWarmCacheCandidateFiles(
-      [
+      options: { excludePaths: ['dashboard/excluded.ts'] },
+      expectedPaths: [],
+    },
+    {
+      label: 'changed cached files and null metadata defaults',
+      files: [
         { path: 'dashboard/changed.ts', size_bytes: 100, updated_at: '2' },
         { path: 'dashboard/null-metadata.ts', size_bytes: null, updated_at: null },
         { path: 'dashboard/null-unchanged.ts', size_bytes: null, updated_at: null },
       ],
-      {
+      cache: {
         'dashboard/changed.ts': { content: 'cached', updatedAt: '1', artifactType: null },
         'dashboard/null-unchanged.ts': { content: 'cached', updatedAt: '', artifactType: null },
       },
-    );
+      options: undefined,
+      expectedPaths: ['dashboard/changed.ts', 'dashboard/null-metadata.ts'],
+    },
+  ])('filters warm-cache candidates for $label', ({ files, cache, options, expectedPaths }) => {
+    const candidates = getWarmCacheCandidateFiles(files, cache, options);
 
-    expect(candidates.map((file) => file.path)).toEqual([
-      'dashboard/changed.ts',
-      'dashboard/null-metadata.ts',
-    ]);
+    expect(candidates.map((file) => file.path)).toEqual(expectedPaths);
   });
 });
 

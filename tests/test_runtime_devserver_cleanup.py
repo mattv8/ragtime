@@ -26,31 +26,13 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
         if worker_service is None:
             self.skipTest(f"runtime worker unavailable: {runtime_import_error}")
 
-    async def test_terminates_entire_process_group(self) -> None:
-        assert worker_service is not None
-        service = worker_service.WorkerService()
-        process = SimpleNamespace(
-            pid=1234,
-            returncode=None,
-            terminate=mock.Mock(),
-            kill=mock.Mock(),
-            wait=mock.AsyncMock(return_value=None),
-        )
-
-        with (
-            mock.patch("runtime.worker.service.os.getpgid", return_value=4321),
-            mock.patch("runtime.worker.service.os.killpg") as killpg,
-        ):
-            await service._terminate_devserver_process(process)
-
-        killpg.assert_called_once_with(4321, signal.SIGTERM)
-        process.terminate.assert_not_called()
-        process.kill.assert_not_called()
-        process.wait.assert_awaited_once()
-
-    async def test_escalates_process_group_after_timeout(self) -> None:
-        assert worker_service is not None
-        service = worker_service.WorkerService()
+    async def _assert_process_group_termination(
+        self,
+        *,
+        terminate,
+        expected_patch_base: str,
+        timeout: float | None = None,
+    ) -> None:
         process = SimpleNamespace(
             pid=1234,
             returncode=None,
@@ -62,27 +44,52 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
         async def wait() -> None:
             nonlocal wait_calls
             wait_calls += 1
-            if wait_calls == 1:
+            if timeout is not None and wait_calls == 1:
                 await asyncio.sleep(10)
 
-        process.wait = mock.AsyncMock(side_effect=wait)
+        if timeout is None:
+            process.wait = mock.AsyncMock(return_value=None)
+        else:
+            process.wait = mock.AsyncMock(side_effect=wait)
 
         with (
-            mock.patch("runtime.worker.service.os.getpgid", return_value=4321),
-            mock.patch("runtime.worker.service.os.killpg") as killpg,
+            mock.patch(f"{expected_patch_base}.os.getpgid", return_value=4321),
+            mock.patch(f"{expected_patch_base}.os.killpg") as killpg,
         ):
-            await service._terminate_devserver_process(process, timeout=0.01)
+            if timeout is None:
+                await terminate(process)
+                self.assertEqual(killpg.mock_calls, [mock.call(4321, signal.SIGTERM)])
+                process.wait.assert_awaited_once()
+            else:
+                await terminate(process, timeout=timeout)
+                self.assertEqual(
+                    killpg.mock_calls,
+                    [
+                        mock.call(4321, signal.SIGTERM),
+                        mock.call(4321, signal.SIGKILL),
+                    ],
+                )
+                self.assertEqual(process.wait.await_count, 2)
 
-        self.assertEqual(
-            killpg.mock_calls,
-            [
-                mock.call(4321, signal.SIGTERM),
-                mock.call(4321, signal.SIGKILL),
-            ],
-        )
         process.terminate.assert_not_called()
         process.kill.assert_not_called()
-        self.assertEqual(process.wait.await_count, 2)
+
+    async def test_terminates_entire_process_group(self) -> None:
+        assert worker_service is not None
+        service = worker_service.WorkerService()
+        await self._assert_process_group_termination(
+            terminate=service._terminate_devserver_process,
+            expected_patch_base="runtime.worker.service",
+        )
+
+    async def test_escalates_process_group_after_timeout(self) -> None:
+        assert worker_service is not None
+        service = worker_service.WorkerService()
+        await self._assert_process_group_termination(
+            terminate=service._terminate_devserver_process,
+            expected_patch_base="runtime.worker.service",
+            timeout=0.01,
+        )
 
     async def test_scheduling_startup_clears_stale_devserver_port(self) -> None:
         assert worker_service is not None

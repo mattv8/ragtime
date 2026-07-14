@@ -1,13 +1,35 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Conversation, ConversationSummary } from '@/types';
-import { ToolCallDisplay, type ActiveToolCall } from './ChatPanel';
+import type { Conversation, ConversationSummary, User, WorkspaceChatStateResponse } from '@/types';
+import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
+import { ChatPanel, ToolCallDisplay, type ActiveToolCall } from './ChatPanel';
 
 const apiMock = vi.hoisted(() => ({
   getConversation: vi.fn().mockResolvedValue(null),
+  getConversationBranchPoints: vi.fn().mockResolvedValue([]),
+  getConversationMembers: vi.fn().mockResolvedValue([]),
+  getConversationTaskState: vi
+    .fn()
+    .mockResolvedValue({ active_task: null, interrupted_task: null }),
+  getConversationTools: vi.fn().mockResolvedValue({
+    tool_selection_mode: 'default_all',
+    tool_config_ids: [],
+    tool_group_ids: [],
+    disabled_builtin_tool_ids: [],
+    tool_options: {},
+  }),
   getSubagentConversationSummaries: vi.fn().mockResolvedValue([] as ConversationSummary[]),
+  getConversationEventsUrl: vi.fn().mockReturnValue('/events'),
+  listUserSpaceAvailableTools: vi.fn().mockResolvedValue([]),
+  listUserSpaceToolGroups: vi.fn().mockResolvedValue([]),
+  subscribeToolHealthEvents: vi.fn().mockReturnValue({
+    addEventListener: vi.fn(),
+    close: vi.fn(),
+    onmessage: null,
+  }),
   streamChatTask: vi.fn().mockReturnValue(
     (async function* () {
       yield* [];
@@ -17,9 +39,149 @@ const apiMock = vi.hoisted(() => ({
 
 vi.mock('@/api', () => ({ api: apiMock }));
 
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+
+  url: string;
+  withCredentials: boolean;
+  onmessage: ((event: MessageEvent<string>) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  close = vi.fn();
+
+  constructor(url: string, init?: { withCredentials?: boolean }) {
+    this.url = url;
+    this.withCredentials = Boolean(init?.withCredentials);
+    MockEventSource.instances.push(this);
+  }
+
+  emitMessage(data: unknown) {
+    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent<string>);
+  }
+
+  static reset() {
+    MockEventSource.instances = [];
+  }
+}
+
+vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource);
+vi.stubGlobal(
+  'ResizeObserver',
+  class ResizeObserverMock {
+    observe() {}
+    disconnect() {}
+    unobserve() {}
+  },
+);
+vi.stubGlobal('localStorage', {
+  getItem: vi.fn().mockReturnValue(null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+});
+vi.stubGlobal('sessionStorage', {
+  getItem: vi.fn().mockReturnValue(null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+});
+vi.stubGlobal(
+  'fetch',
+  vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      models: [],
+      models_loading: false,
+      copilot_refresh_in_progress: false,
+      provider_states: [],
+      default_model: null,
+      current_model: null,
+      discovered_model_identifiers: [],
+      allowed_models: null,
+    }),
+  }),
+);
+
+window.HTMLElement.prototype.scrollIntoView = vi.fn();
+window.matchMedia = vi.fn().mockImplementation(() => ({
+  matches: false,
+  media: '',
+  onchange: null,
+  addListener: vi.fn(),
+  removeListener: vi.fn(),
+  addEventListener: vi.fn(),
+  removeEventListener: vi.fn(),
+  dispatchEvent: vi.fn(),
+}));
+
+const currentUser: User = {
+  id: 'user-1',
+  username: 'ada',
+  display_name: 'Ada Lovelace',
+  email: 'ada@example.com',
+  role: 'admin',
+  auth_provider: 'local',
+};
+
+function makeConversation(
+  id: string,
+  content: string,
+  overrides: Partial<Conversation> = {},
+): Conversation {
+  return {
+    id,
+    title: 'Recovered subagent conversation',
+    model: 'gpt-4o',
+    messages: [
+      {
+        role: 'user',
+        content: 'Do the work.',
+        timestamp: new Date().toISOString(),
+        message_id: 'msg-user-1',
+      },
+      {
+        role: 'assistant',
+        content,
+        timestamp: new Date().toISOString(),
+        message_id: 'msg-assistant-1',
+      },
+    ],
+    total_tokens: 12,
+    active_task_id: null,
+    tool_output_mode: 'show',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeWorkspaceChatState(conversation: Conversation): WorkspaceChatStateResponse {
+  return {
+    conversations: [conversation],
+    interrupted_conversation_ids: [],
+    selected_conversation_id: conversation.id,
+    active_task: {
+      id: 'task-parent-1',
+      conversation_id: conversation.id,
+      status: 'running',
+      user_message: 'Coordinate the subagents.',
+      streaming_state: null,
+      response_content: null,
+      error_message: null,
+      created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: null,
+      last_update_at: new Date().toISOString(),
+    },
+    interrupted_task: null,
+  };
+}
+
+function renderChatPanel(ui: ReactElement) {
+  return render(<AvailableModelsProvider>{ui}</AvailableModelsProvider>);
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  MockEventSource.reset();
 });
 
 describe('ToolCallDisplay screenshot rendering', () => {
@@ -196,36 +358,77 @@ describe('ToolCallDisplay subagent rendering', () => {
       screen.getByText('Confirmed the toolbar search input now filters results correctly.'),
     ).toBeDefined();
   });
+
+  it('dedupes repeated handoff tool segments inside the subagent transcript', async () => {
+    const user = userEvent.setup();
+    const toolCall: ActiveToolCall = {
+      tool: 'spawn_subagents',
+      status: 'complete',
+      input: {
+        subagents: [
+          {
+            name: 'Types update',
+            role: 'worker',
+            instructions: 'Update the type definitions and hand the result back once.',
+          },
+        ],
+      },
+      output: JSON.stringify({
+        subagents: [
+          {
+            name: 'Types update',
+            role: 'worker',
+            status: 'completed',
+            conversation_id: 'child-conversation-3',
+            task_id: 'task-3',
+            final_output: 'Final handoff from the child.',
+          },
+        ],
+      }),
+    };
+
+    apiMock.getConversation.mockResolvedValue(
+      makeConversation('child-conversation-3', 'Recovered child response', {
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString(),
+            message_id: 'msg-assistant-2',
+            events: [
+              {
+                type: 'tool',
+                channel: 'commentary',
+                tool: 'submit_subagent_handoff',
+                input: { final_output: 'First draft handoff.' },
+                output: 'First draft handoff.',
+              },
+              {
+                type: 'tool',
+                channel: 'commentary',
+                tool: 'submit_subagent_handoff',
+                input: { final_output: 'Final handoff from the child.' },
+                output: 'Final handoff from the child.',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const { container } = render(
+      <ToolCallDisplay toolCall={toolCall} defaultExpanded onOpenSubagentConversation={vi.fn()} />,
+    );
+
+    await user.click(screen.getByLabelText('Expand Types update subagent transcript'));
+
+    await screen.findByText('Final handoff from the child.');
+    expect(screen.queryByText('First draft handoff.')).toBeNull();
+    expect(container.querySelectorAll('.subagent-handoff-output')).toHaveLength(1);
+  });
 });
 
 describe('ToolCallDisplay truncated subagent recovery', () => {
-  function makeConversation(id: string, content: string): Conversation {
-    return {
-      id,
-      title: 'Recovered subagent conversation',
-      model: 'gpt-4o',
-      messages: [
-        {
-          role: 'user',
-          content: 'Do the work.',
-          timestamp: new Date().toISOString(),
-          message_id: 'msg-user-1',
-        },
-        {
-          role: 'assistant',
-          content,
-          timestamp: new Date().toISOString(),
-          message_id: 'msg-assistant-1',
-        },
-      ],
-      total_tokens: 12,
-      active_task_id: null,
-      tool_output_mode: 'show',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-  }
-
   it('recovers a child conversation id from parent summaries when spawn_subagents output is truncated', async () => {
     const user = userEvent.setup();
     const onOpenSubagentConversation = vi.fn();
@@ -383,5 +586,166 @@ describe('ToolCallDisplay truncated subagent recovery', () => {
     ).toBeDefined();
     expect(screen.queryByText('Loading subagent transcript...')).toBeNull();
     expect(apiMock.getSubagentConversationSummaries).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatPanel streaming subagent placement', () => {
+  it('keeps the active subagent run at the spawn position, skips parent handoff cards, and renders parent final content after it', async () => {
+    const parentConversation = makeConversation('parent-1', '', {
+      title: 'Parent conversation',
+      workspace_id: 'ws-1',
+      messages: [],
+      active_task_id: 'task-parent-1',
+    });
+
+    let releaseStream: (() => void) | null = null;
+    apiMock.streamChatTask.mockImplementation((taskId: string) => {
+      if (taskId === 'child-task-1') {
+        return (async function* () {
+          yield {
+            type: 'state',
+            state: {
+              content: '',
+              version: 1,
+              content_length: 0,
+              tool_calls: [],
+              events: [
+                {
+                  type: 'tool',
+                  channel: 'commentary',
+                  tool: 'submit_subagent_handoff',
+                  input: {
+                    final_output: 'Child handoff that should stay out of the parent tool list.',
+                  },
+                  output: 'Child handoff that should stay out of the parent tool list.',
+                },
+              ],
+            },
+          };
+        })();
+      }
+
+      return (async function* () {
+        yield {
+          type: 'state',
+          state: {
+            content: '',
+            version: 1,
+            content_length: 0,
+            tool_calls: [],
+            events: [
+              {
+                type: 'tool',
+                channel: 'commentary',
+                tool: 'spawn_subagents',
+                input: {
+                  subagents: [
+                    {
+                      name: 'Analyzer',
+                      role: 'worker',
+                      instructions: 'Inspect the toolbar search input behavior.',
+                    },
+                  ],
+                },
+                output: JSON.stringify({
+                  subagents: [
+                    {
+                      name: 'Analyzer',
+                      role: 'worker',
+                      status: 'running',
+                      conversation_id: 'child-live-1',
+                      task_id: 'child-task-1',
+                    },
+                  ],
+                }),
+              },
+              {
+                type: 'content',
+                channel: 'final',
+                content: 'Parent final summary after the active handoff anchor.',
+              },
+              {
+                type: 'tool',
+                channel: 'commentary',
+                tool: 'submit_subagent_handoff',
+                input: {
+                  final_output: 'Child handoff that should stay out of the parent tool list.',
+                },
+                output: 'Child handoff that should stay out of the parent tool list.',
+              },
+            ],
+          },
+        };
+        await new Promise<void>((resolve) => {
+          releaseStream = resolve;
+        });
+      })();
+    });
+
+    const { container, unmount } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={makeWorkspaceChatState(parentConversation)}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => {
+      expect(apiMock.streamChatTask).toHaveBeenCalledWith(
+        'task-parent-1',
+        0,
+        expect.anything(),
+        'ws-1',
+      );
+    });
+
+    await waitFor(() => {
+      expect(MockEventSource.instances).toHaveLength(1);
+    });
+
+    MockEventSource.instances[0].emitMessage({
+      event: 'subagent_spawned',
+      conversation_id: 'child-live-1',
+      task_id: 'child-task-1',
+      name: 'Analyzer',
+      role: 'worker',
+      index: 0,
+    });
+
+    const activeRuns = await screen.findByLabelText('Subagents');
+    const finalContent = await screen.findByText(
+      'Parent final summary after the active handoff anchor.',
+    );
+
+    const chatMessageContent = container.querySelector(
+      '.chat-message-streaming-active .chat-message-content',
+    );
+
+    expect(chatMessageContent?.firstElementChild).toBe(activeRuns);
+    expect(chatMessageContent?.contains(finalContent)).toBe(true);
+    expect(
+      activeRuns.compareDocumentPosition(finalContent) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const parentStandaloneHandoff = Array.from(chatMessageContent?.children ?? []).find(
+      (child) => child !== activeRuns && child.querySelector('.subagent-handoff-output'),
+    );
+
+    expect(parentStandaloneHandoff).toBeUndefined();
+
+    await waitFor(() => {
+      expect(activeRuns.querySelector('.subagent-handoff-output')?.textContent).toContain(
+        'Child handoff that should stay out of the parent tool list.',
+      );
+    });
+
+    const release = releaseStream as unknown as (() => void) | null;
+    unmount();
+    if (typeof release === 'function') {
+      release();
+    }
   });
 });

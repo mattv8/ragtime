@@ -85,10 +85,21 @@ describe('settingsAccordionState', () => {
       expect(next).not.toBe(current);
     });
 
-    it('accepts any iterable of section ids', () => {
+    it.each([
+      {
+        label: 'array input',
+        sections: ['appearance'] as SettingsAccordionSectionId[],
+        expectedOpen: 'appearance' as SettingsAccordionSectionId,
+      },
+      {
+        label: 'set input',
+        sections: new Set<SettingsAccordionSectionId>(['security']),
+        expectedOpen: 'security' as SettingsAccordionSectionId,
+      },
+    ])('accepts section ids from any iterable (%s)', ({ sections, expectedOpen }) => {
       const current = getDefaultSettingsAccordionState();
-      const next = openSettingsAccordionSections(current, new Set(['security']));
-      expect(next.security).toBe(true);
+      const next = openSettingsAccordionSections(current, sections);
+      expect(next[expectedOpen]).toBe(true);
     });
   });
 
@@ -110,12 +121,11 @@ describe('settingsAccordionState', () => {
       expect(restored).not.toBe(snapshot);
     });
 
-    it('returns the default state when given null', () => {
-      expect(restoreSettingsAccordionState(null)).toEqual(getDefaultSettingsAccordionState());
-    });
-
-    it('returns the default state when given undefined', () => {
-      expect(restoreSettingsAccordionState(undefined)).toEqual(getDefaultSettingsAccordionState());
+    it.each([
+      { label: 'null', snapshot: null },
+      { label: 'undefined', snapshot: undefined },
+    ])('returns the default state when given $label', ({ snapshot }) => {
+      expect(restoreSettingsAccordionState(snapshot)).toEqual(getDefaultSettingsAccordionState());
     });
   });
 });

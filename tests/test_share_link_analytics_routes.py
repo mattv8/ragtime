@@ -191,75 +191,72 @@ class PublicShareAnalyticsRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ShareLinkAnalyticsSseRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_workspace_share_link_events_emit_changed_payload_then_keepalive(self) -> None:
-        stream_route = getattr(userspace_routes_module, "stream_workspace_share_link_events")
-        payload = UserSpaceWorkspaceShareLinkListResponse(
-            workspace_id="workspace-1",
-            owner_username="alice",
-            links=[
-                UserSpaceWorkspaceShareLinkStatus(
-                    id="ws-share-1",
-                    workspace_id="workspace-1",
-                    has_share_link=True,
-                    owner_username="alice",
-                    public_hit_count=3,
-                )
-            ],
-        )
-
-        with (
-            mock.patch.object(
-                userspace_routes_module.userspace_service,
+    async def test_share_link_events_emit_changed_payload_then_keepalive(self) -> None:
+        cases = [
+            (
+                "workspace",
+                getattr(userspace_routes_module, "stream_workspace_share_link_events"),
+                mock.patch.object,
+                userspace_routes_module,
                 "list_workspace_share_links",
-                mock.AsyncMock(side_effect=[payload, payload, payload]),
-            ),
-            mock.patch.object(userspace_routes_module.asyncio, "sleep", mock.AsyncMock(return_value=None)),
-        ):
-            response = await stream_route(
-                "workspace-1",
-                _DisconnectingRequest([False, False, True]),
-                user=SimpleNamespace(id="user-1", role="editor"),
-            )
-            chunks = await _read_sse_chunks(response, 2)
-
-        payload_json = json.dumps(payload.model_dump(mode="json"))
-        self.assertEqual(chunks[0], f"event: share_links\ndata: {payload_json}\n\n")
-        self.assertEqual(chunks[1], ": keepalive\n\n")
-
-    async def test_conversation_share_link_events_emit_changed_payload_then_keepalive(self) -> None:
-        stream_route = getattr(indexer_routes_module, "stream_conversation_share_link_events")
-        payload = ConversationShareLinkListResponse(
-            conversation_id="conversation-1",
-            owner_username="alice",
-            links=[
-                ConversationShareLinkStatus(
-                    id="conv-share-1",
-                    conversation_id="conversation-1",
-                    has_share_link=True,
+                UserSpaceWorkspaceShareLinkListResponse(
+                    workspace_id="workspace-1",
                     owner_username="alice",
-                    public_hit_count=4,
-                )
-            ],
-        )
-
-        with (
-            mock.patch.object(
-                indexer_routes_module.userspace_service,
-                "list_conversation_share_links",
-                mock.AsyncMock(side_effect=[payload, payload, payload]),
+                    links=[
+                        UserSpaceWorkspaceShareLinkStatus(
+                            id="ws-share-1",
+                            workspace_id="workspace-1",
+                            has_share_link=True,
+                            owner_username="alice",
+                            public_hit_count=3,
+                        )
+                    ],
+                ),
+                "workspace-1",
             ),
-            mock.patch.object(indexer_routes_module.asyncio, "sleep", mock.AsyncMock(return_value=None)),
-        ):
-            response = await stream_route(
+            (
+                "conversation",
+                getattr(indexer_routes_module, "stream_conversation_share_link_events"),
+                mock.patch.object,
+                indexer_routes_module,
+                "list_conversation_share_links",
+                ConversationShareLinkListResponse(
+                    conversation_id="conversation-1",
+                    owner_username="alice",
+                    links=[
+                        ConversationShareLinkStatus(
+                            id="conv-share-1",
+                            conversation_id="conversation-1",
+                            has_share_link=True,
+                            owner_username="alice",
+                            public_hit_count=4,
+                        )
+                    ],
+                ),
                 "conversation-1",
-                _DisconnectingRequest([False, False, True]),
-                user=SimpleNamespace(id="user-1", role="editor"),
-            )
-            chunks = await _read_sse_chunks(response, 2)
+            ),
+        ]
 
-        payload_json = json.dumps(payload.model_dump(mode="json"))
-        self.assertEqual(chunks[0], f"event: share_links\ndata: {payload_json}\n\n")
-        self.assertEqual(chunks[1], ": keepalive\n\n")
+        for label, stream_route, _patch_object, module, list_method, payload, resource_id in cases:
+            with self.subTest(label=label):
+                with (
+                    mock.patch.object(
+                        module.userspace_service,
+                        list_method,
+                        mock.AsyncMock(side_effect=[payload, payload, payload]),
+                    ),
+                    mock.patch.object(module.asyncio, "sleep", mock.AsyncMock(return_value=None)),
+                ):
+                    response = await stream_route(
+                        resource_id,
+                        _DisconnectingRequest([False, False, True]),
+                        user=SimpleNamespace(id="user-1", role="editor"),
+                    )
+                    chunks = await _read_sse_chunks(response, 2)
+
+                payload_json = json.dumps(payload.model_dump(mode="json"))
+                self.assertEqual(chunks[0], f"event: share_links\ndata: {payload_json}\n\n")
+                self.assertEqual(chunks[1], ": keepalive\n\n")
 
     async def test_workspace_share_link_events_reject_unauthorized_management_user(self) -> None:
         stream_route = getattr(userspace_routes_module, "stream_workspace_share_link_events")

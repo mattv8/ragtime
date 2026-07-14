@@ -2,7 +2,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from ragtime.userspace.cloud_mounts import (
     GOOGLE_DRIVE_SCOPE,
@@ -30,84 +30,98 @@ class _StubCloudMountProvider(CloudMountProvider):
         return self.responses.pop(0)
 
 
+class _CloudListCase(TypedDict):
+    label: str
+    provider: str
+    responses: list[dict[str, Any]]
+    path: str
+    expected_names: list[str]
+    expected_paths: list[str]
+    expected_url: str
+    expected_params: dict[str, str] | None
+
+
 class CloudMountProviderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_microsoft_root_lists_available_drives(self) -> None:
-        provider = _StubCloudMountProvider(
-            "microsoft_drive",
-            [
-                {
-                    "value": [
-                        {"id": "drive-b", "name": "Shared Docs"},
-                        {"id": "drive-a", "name": "OneDrive"},
-                    ]
-                }
-            ],
-        )
+    async def test_cloud_listing_happy_path_cases(self) -> None:
+        cases: list[_CloudListCase] = [
+            {
+                "label": "microsoft root",
+                "provider": "microsoft_drive",
+                "responses": [
+                    {
+                        "value": [
+                            {"id": "drive-b", "name": "Shared Docs"},
+                            {"id": "drive-a", "name": "OneDrive"},
+                        ]
+                    }
+                ],
+                "path": ".",
+                "expected_names": ["OneDrive", "Shared Docs"],
+                "expected_paths": ["drives/drive-a", "drives/drive-b"],
+                "expected_url": "https://graph.microsoft.com/v1.0/me/drives",
+                "expected_params": None,
+            },
+            {
+                "label": "microsoft drive children",
+                "provider": "microsoft_drive",
+                "responses": [{"value": [{"name": "Projects", "folder": {}, "size": 0}]}],
+                "path": "drives/drive-a",
+                "expected_names": ["Projects"],
+                "expected_paths": ["drives/drive-a/Projects"],
+                "expected_url": "https://graph.microsoft.com/v1.0/drives/drive-a/root/children",
+                "expected_params": None,
+            },
+            {
+                "label": "google root",
+                "provider": "google_drive",
+                "responses": [
+                    {
+                        "drives": [
+                            {"id": "shared-b", "name": "Team B"},
+                            {"id": "shared-a", "name": "Team A"},
+                        ]
+                    }
+                ],
+                "path": ".",
+                "expected_names": ["My Drive", "Team A", "Team B"],
+                "expected_paths": ["my-drive", "drives/shared-a", "drives/shared-b"],
+                "expected_url": "https://www.googleapis.com/drive/v3/drives",
+                "expected_params": None,
+            },
+            {
+                "label": "google shared drive children",
+                "provider": "google_drive",
+                "responses": [
+                    {
+                        "files": [
+                            {
+                                "id": "folder-1",
+                                "name": "Projects",
+                                "mimeType": "application/vnd.google-apps.folder",
+                            }
+                        ]
+                    }
+                ],
+                "path": "drives/shared-a",
+                "expected_names": ["Projects"],
+                "expected_paths": ["drives/shared-a/Projects"],
+                "expected_url": "https://www.googleapis.com/drive/v3/files",
+                "expected_params": {"corpora": "drive", "driveId": "shared-a"},
+            },
+        ]
 
-        entries = await provider.list_dir(".")
+        for case in cases:
+            with self.subTest(label=case["label"]):
+                provider = _StubCloudMountProvider(case["provider"], case["responses"])
+                entries = await provider.list_dir(case["path"])
 
-        self.assertEqual([entry.name for entry in entries], ["OneDrive", "Shared Docs"])
-        self.assertEqual([entry.path for entry in entries], ["drives/drive-a", "drives/drive-b"])
-        self.assertEqual(provider.requests[0][0], "https://graph.microsoft.com/v1.0/me/drives")
-
-    async def test_microsoft_discovered_drive_children_preserve_drive_prefix(self) -> None:
-        provider = _StubCloudMountProvider(
-            "microsoft_drive",
-            [
-                {
-                    "value": [
-                        {"name": "Projects", "folder": {}, "size": 0},
-                    ]
-                }
-            ],
-        )
-
-        entries = await provider.list_dir("drives/drive-a")
-
-        self.assertEqual(provider.requests[0][0], "https://graph.microsoft.com/v1.0/drives/drive-a/root/children")
-        self.assertEqual(entries[0].path, "drives/drive-a/Projects")
-
-    async def test_google_root_lists_my_drive_and_shared_drives(self) -> None:
-        provider = _StubCloudMountProvider(
-            "google_drive",
-            [
-                {
-                    "drives": [
-                        {"id": "shared-b", "name": "Team B"},
-                        {"id": "shared-a", "name": "Team A"},
-                    ]
-                }
-            ],
-        )
-
-        entries = await provider.list_dir(".")
-
-        self.assertEqual([entry.name for entry in entries], ["My Drive", "Team A", "Team B"])
-        self.assertEqual([entry.path for entry in entries], ["my-drive", "drives/shared-a", "drives/shared-b"])
-        self.assertEqual(provider.requests[0][0], "https://www.googleapis.com/drive/v3/drives")
-
-    async def test_google_shared_drive_children_use_drive_corpus(self) -> None:
-        provider = _StubCloudMountProvider(
-            "google_drive",
-            [
-                {
-                    "files": [
-                        {
-                            "id": "folder-1",
-                            "name": "Projects",
-                            "mimeType": "application/vnd.google-apps.folder",
-                        }
-                    ]
-                }
-            ],
-        )
-
-        entries = await provider.list_dir("drives/shared-a")
-
-        request_params = provider.requests[0][1]["params"]
-        self.assertEqual(request_params["corpora"], "drive")
-        self.assertEqual(request_params["driveId"], "shared-a")
-        self.assertEqual(entries[0].path, "drives/shared-a/Projects")
+                self.assertEqual([entry.name for entry in entries], case["expected_names"])
+                self.assertEqual([entry.path for entry in entries], case["expected_paths"])
+                self.assertEqual(provider.requests[0][0], case["expected_url"])
+                if case["expected_params"] is not None:
+                    request_params = provider.requests[0][1]["params"]
+                    for key, expected in case["expected_params"].items():
+                        self.assertEqual(request_params[key], expected)
 
     async def test_google_missing_drive_scope_fails_before_provider_request(self) -> None:
         provider = CloudMountProvider(
