@@ -101,6 +101,7 @@ from ragtime.core.model_limits import (
     clean_model_variant_label,
     compose_model_display_label,
     ensure_model_metadata_loaded,
+    format_model_display_label,
     get_context_limit,
     get_model_freshness_rank,
     get_output_limit,
@@ -7771,7 +7772,7 @@ def _enrich_model_metadata(
         name=model.name,
         metadata=metadata,
     )
-    model.display_name = clean_model_display_name(
+    model.display_name = format_model_display_label(
         model.name,
         model_id=model.id,
         provider_label=model.model_provider_label,

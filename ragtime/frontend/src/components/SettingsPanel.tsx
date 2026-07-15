@@ -1812,13 +1812,9 @@ export function SettingsPanel({
         const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
         const nonGithubModels = models.filter((m) => m.provider !== 'github_copilot');
         const githubModels: AvailableModel[] = githubResponse.models.map((m) => ({
-          id: m.id,
-          name: m.name,
+          ...m,
           provider: 'github_copilot',
           context_limit: contextLimitById.get(m.id) ?? 200000,
-          max_output_tokens: m.max_output_tokens,
-          group: m.group,
-          is_latest: m.is_latest,
         }));
         models = [...nonGithubModels, ...githubModels];
       }
@@ -1830,13 +1826,9 @@ export function SettingsPanel({
         const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
         const nonCodexModels = models.filter((m) => m.provider !== 'openai_codex');
         const codexModels: AvailableModel[] = codexResponse.models.map((m) => ({
-          id: m.id,
-          name: m.name,
+          ...m,
           provider: 'openai_codex',
           context_limit: contextLimitById.get(m.id) ?? m.context_limit ?? 200000,
-          max_output_tokens: m.max_output_tokens,
-          group: m.group,
-          is_latest: m.is_latest,
         }));
         models = [...nonCodexModels, ...codexModels];
       }
@@ -1848,13 +1840,9 @@ export function SettingsPanel({
         const contextLimitById = new Map(models.map((m) => [m.id, m.context_limit]));
         const nonClaudeCodeModels = models.filter((m) => m.provider !== 'claude_code');
         const claudeCodeModels: AvailableModel[] = claudeCodeResponse.models.map((m) => ({
-          id: m.id,
-          name: m.name,
+          ...m,
           provider: 'claude_code',
           context_limit: contextLimitById.get(m.id) ?? m.context_limit ?? 200000,
-          max_output_tokens: m.max_output_tokens,
-          group: m.group,
-          is_latest: m.is_latest,
         }));
         models = [...nonClaudeCodeModels, ...claudeCodeModels];
       }

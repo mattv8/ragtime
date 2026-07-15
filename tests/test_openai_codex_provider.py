@@ -204,6 +204,67 @@ class OpenAICodexProviderTests(unittest.IsolatedAsyncioTestCase):
         finally:
             model_limits.invalidate_cache()
 
+    async def test_live_codex_model_catalog_compacts_gpt_56_variant_display_names(self) -> None:
+        model_limits.invalidate_cache()
+        try:
+            payload = {
+                "models": [
+                    {
+                        "slug": "gpt-5.6-terra",
+                        "context_window": 272000,
+                        "input_modalities": ["text", "image"],
+                        "support_verbosity": True,
+                    },
+                    {
+                        "slug": "gpt-5.6-luna",
+                        "context_window": 272000,
+                        "input_modalities": ["text", "image"],
+                        "support_verbosity": True,
+                    },
+                    {
+                        "slug": "gpt-5.6-sol",
+                        "context_window": 272000,
+                        "input_modalities": ["text", "image"],
+                        "support_verbosity": True,
+                    },
+                ]
+            }
+
+            settings = SimpleNamespace(openai_codex_account_id="acct_123")
+            with (
+                mock.patch(
+                    "ragtime.indexer.routes.ensure_openai_codex_token_fresh",
+                    new=mock.AsyncMock(return_value="codex-token"),
+                ),
+                mock.patch(
+                    "ragtime.indexer.routes.httpx.AsyncClient",
+                    partial(_CapturingAsyncClient, {}, "backend-api/codex/models", payload),
+                ),
+            ):
+                result = await indexer_routes._fetch_openai_codex_models(settings)
+
+            self.assertTrue(result.success)
+            label_by_id = {model.id: model.display_name for model in result.models}
+            self.assertEqual(
+                label_by_id,
+                {
+                    "gpt-5.6-terra": "5.6 Terra",
+                    "gpt-5.6-luna": "5.6 Luna",
+                    "gpt-5.6-sol": "5.6 Sol",
+                },
+            )
+
+            for slug in ("gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"):
+                with self.subTest(slug=slug):
+                    codex_model = next(model for model in result.models if model.id == slug)
+                    self.assertEqual(codex_model.model_provider, "openai_codex")
+                    self.assertEqual(codex_model.host_provider_label, "OpenAI Codex")
+                    self.assertEqual(codex_model.model_provider_label, "OpenAI Codex")
+                    self.assertEqual(codex_model.supported_endpoints, ["/responses"])
+                    self.assertTrue(codex_model.reasoning_supported)
+        finally:
+            model_limits.invalidate_cache()
+
     async def test_codex_model_catalog_reports_live_fetch_failure(self) -> None:
         model_limits.invalidate_cache()
         try:
