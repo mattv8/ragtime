@@ -180,6 +180,7 @@ import { useToast, ToastContainer } from './shared/Toast';
 import { UserSpaceEnvVarsModal } from './shared/UserSpaceEnvVarsModal';
 import { WorkspaceSqliteInspectorModal } from './shared/WorkspaceSqliteInspectorModal';
 import { WorkspaceObjectStorageExplorer } from './shared/WorkspaceObjectStorageExplorer';
+import { AgentAccessSection } from './shared/AgentAccessSection';
 import { ShareLinkModal } from './shared/ShareLinkModal';
 import type { LdapGroup } from './LdapGroupSelect';
 import { Popover, DisabledPopover } from './Popover';
@@ -1849,7 +1850,10 @@ export function UserSpacePanel({
     pendingWorkspaceToolSelection.workspaceId === activeWorkspace?.id
       ? pendingWorkspaceToolSelection.selection
       : activeWorkspaceToolSelection;
-  const workspaceToolOptions = activeWorkspace?.tool_options ?? {};
+  const workspaceToolOptions = useMemo(
+    () => activeWorkspace?.tool_options ?? {},
+    [activeWorkspace?.tool_options],
+  );
 
   const resolvedSelectedToolIds = useMemo(
     () =>
@@ -11845,6 +11849,11 @@ export function UserSpacePanel({
         creatingShareLink={sharingWorkspace}
         updatingShareLabel={savingShareLabel}
         deletingSelectedShareLink={deletingSelectedShareLink}
+        agentAccessSection={
+          isOwner && activeWorkspace ? (
+            <AgentAccessSection workspaceId={activeWorkspace.id} />
+          ) : undefined
+        }
         onClose={() => setShowShareModal(false)}
         onSelectShare={handleSelectShare}
         onCreateShareLink={() => {

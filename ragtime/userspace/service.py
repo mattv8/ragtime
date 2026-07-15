@@ -19493,8 +19493,9 @@ class UserSpaceService:
         workspace_id: str,
         user_id: str,
         include_dirs: bool = False,
+        is_admin: bool = False,
     ) -> list[UserSpaceFileInfo]:
-        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
         await self._ensure_workspace_git_repo(workspace_id)
         cached = self._file_list_cache.get(workspace_id)
         if cached is not None:
@@ -19773,8 +19774,9 @@ class UserSpaceService:
         relative_path: str,
         user_id: str,
         decode_errors: Literal["strict", "replace"] = "strict",
+        is_admin: bool = False,
     ) -> UserSpaceFileResponse:
-        await self._enforce_workspace_access(workspace_id, user_id)
+        await self._enforce_workspace_access(workspace_id, user_id, is_admin=is_admin)
         await self._ensure_workspace_git_repo(workspace_id)
         normalized_path = self._normalize_workspace_relative_path(relative_path)
         if self._is_reserved_internal_path(normalized_path):

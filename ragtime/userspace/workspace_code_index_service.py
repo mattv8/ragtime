@@ -1171,6 +1171,77 @@ class WorkspaceCodeIndexService:
             """
         )
 
+    async def _search_workspace_code_rows(
+        self,
+        *,
+        db: Any,
+        workspace_id: str,
+        index_name: str,
+        query: str,
+        mode: Literal["semantic", "symbols", "hybrid"],
+        max_results: int,
+        max_chars_per_result: int,
+        best_effort_semantic: bool,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        results: list[dict[str, Any]] = []
+        if mode in {"symbols", "hybrid"}:
+            escaped_query = _escape_like(query)
+            symbol_rows = await db.query_raw(
+                f"""
+                SELECT path, kind, name, signature FROM workspace_code_symbols
+                WHERE workspace_id = {_sql(workspace_id)}
+                  AND (name ILIKE {_sql("%" + escaped_query + "%")} ESCAPE '\\'
+                       OR signature ILIKE {_sql("%" + escaped_query + "%")} ESCAPE '\\')
+                ORDER BY path ASC, name ASC
+                LIMIT {max_results}
+                """
+            )
+            results.extend(
+                {
+                    "path": row.get("path"),
+                    "kind": row.get("kind"),
+                    "symbol": row.get("name"),
+                    "snippet": row.get("signature"),
+                    "score": 1.0,
+                    "source": "symbol",
+                }
+                for row in symbol_rows
+            )
+        if mode in {"semantic", "hybrid"} and len(results) < max_results:
+            app_settings = await get_app_settings()
+            embeddings_model = await get_embeddings_model(app_settings, logger_override=logger)
+            if embeddings_model is None:
+                if not best_effort_semantic:
+                    raise ValueError("Embeddings model is not configured")
+                return results[:max_results], "semantic search unavailable"
+            query_embedding = await asyncio.to_thread(embeddings_model.embed_query, query)
+            semantic_rows = await search_pgvector_embeddings(
+                "filesystem_embeddings",
+                query_embedding,
+                index_name=index_name,
+                max_results=max_results,
+                logger_override=logger,
+            )
+            seen = {(str(item.get("path")), str(item.get("snippet"))) for item in results}
+            for row in semantic_rows:
+                snippet = str(row.get("content") or "")[:max_chars_per_result]
+                key = (str(row.get("file_path") or ""), snippet)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(
+                    {
+                        "path": row.get("file_path"),
+                        "chunk_index": row.get("chunk_index"),
+                        "snippet": snippet,
+                        "score": row.get("similarity"),
+                        "source": "semantic",
+                    }
+                )
+                if len(results) >= max_results:
+                    break
+        return results[:max_results], None
+
     async def search_workspace_code(
         self,
         *,
@@ -1201,71 +1272,86 @@ class WorkspaceCodeIndexService:
         db = await get_db()
         state_rows = await db.query_raw(f"SELECT status, last_error FROM workspace_code_index_states WHERE workspace_id = {_sql(workspace_id)} LIMIT 1")
         status = str(state_rows[0].get("status") if state_rows else "pending")
-        results: list[dict[str, Any]] = []
-
-        if mode in {"symbols", "hybrid"}:
-            escaped_query = _escape_like(query)
-            symbol_rows = await db.query_raw(
-                f"""
-                SELECT path, kind, name, signature FROM workspace_code_symbols
-                WHERE workspace_id = {_sql(workspace_id)}
-                  AND (name ILIKE {_sql("%" + escaped_query + "%")} ESCAPE '\\' OR signature ILIKE {_sql("%" + escaped_query + "%")} ESCAPE '\\')
-                ORDER BY path ASC, name ASC
-                LIMIT {max_results}
-                """
-            )
-            for row in symbol_rows:
-                results.append(
-                    {
-                        "path": row.get("path"),
-                        "kind": row.get("kind"),
-                        "symbol": row.get("name"),
-                        "snippet": row.get("signature"),
-                        "score": 1.0,
-                        "source": "symbol",
-                    }
-                )
-
-        if mode in {"semantic", "hybrid"} and len(results) < max_results:
-            app_settings = await get_app_settings()
-            embeddings_model = await get_embeddings_model(app_settings, logger_override=logger)
-            if embeddings_model is None:
-                raise ValueError("Embeddings model is not configured")
-            query_embedding = await asyncio.to_thread(embeddings_model.embed_query, query)
-            semantic_rows = await search_pgvector_embeddings(
-                "filesystem_embeddings",
-                query_embedding,
-                index_name=index_name,
-                max_results=max_results,
-                logger_override=logger,
-            )
-            seen = {(str(item.get("path")), str(item.get("snippet"))) for item in results}
-            for row in semantic_rows:
-                snippet = str(row.get("content") or "")[:max_chars_per_result]
-                key = (str(row.get("file_path") or ""), snippet)
-                if key in seen:
-                    continue
-                seen.add(key)
-                results.append(
-                    {
-                        "path": row.get("file_path"),
-                        "chunk_index": row.get("chunk_index"),
-                        "snippet": snippet,
-                        "score": row.get("similarity"),
-                        "source": "semantic",
-                    }
-                )
-                if len(results) >= max_results:
-                    break
+        results, _error = await self._search_workspace_code_rows(
+            db=db,
+            workspace_id=workspace_id,
+            index_name=index_name,
+            query=query,
+            mode=mode,
+            max_results=max_results,
+            max_chars_per_result=max_chars_per_result,
+            best_effort_semantic=False,
+        )
 
         return {
             "status": status,
             "workspace_id": workspace_id,
             "mode": mode,
             "query": query,
-            "results": results[:max_results],
-            "result_count": min(len(results), max_results),
+            "results": results,
+            "result_count": len(results),
         }
+
+    async def search_workspace_code_read_only(
+        self,
+        *,
+        workspace_id: str,
+        query: str,
+        mode: Literal["semantic", "symbols", "hybrid"] = "hybrid",
+        max_results: int = 8,
+        max_chars_per_result: int = 1200,
+    ) -> dict[str, Any]:
+        query = str(query or "").strip()
+        max_results = max(1, min(int(max_results or 8), _MAX_SEARCH_RESULTS))
+        max_chars_per_result = max(200, min(int(max_chars_per_result or 1200), 6000))
+        if not query:
+            return {"status": "rejected", "results": [], "error": "query is required"}
+
+        if not await self._enabled():
+            return {
+                "status": "disabled",
+                "workspace_id": workspace_id,
+                "mode": mode,
+                "query": query,
+                "results": [],
+                "result_count": 0,
+                "error": "User Space code indexing is disabled",
+            }
+
+        db = await get_db()
+        state_rows = await db.query_raw(f"SELECT status FROM workspace_code_index_states WHERE workspace_id = {_sql(workspace_id)} LIMIT 1")
+        status = str(state_rows[0].get("status") if state_rows else "missing")
+        if status == "missing":
+            return {
+                "status": status,
+                "workspace_id": workspace_id,
+                "mode": mode,
+                "query": query,
+                "results": [],
+                "result_count": 0,
+            }
+
+        results, error = await self._search_workspace_code_rows(
+            db=db,
+            workspace_id=workspace_id,
+            index_name=self.index_name_for_workspace(workspace_id),
+            query=query,
+            mode=mode,
+            max_results=max_results,
+            max_chars_per_result=max_chars_per_result,
+            best_effort_semantic=True,
+        )
+        payload: dict[str, Any] = {
+            "status": status,
+            "workspace_id": workspace_id,
+            "mode": mode,
+            "query": query,
+            "results": results,
+            "result_count": len(results),
+        }
+        if error:
+            payload["error"] = error
+        return payload
 
 
 workspace_code_index_service = WorkspaceCodeIndexService()

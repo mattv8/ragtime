@@ -37,6 +37,7 @@ export default defineConfig({
     outDir: resolve(__dirname, 'dist'),
     emptyOutDir: true,
     sourcemap: false,
+    chunkSizeWarningLimit: 3500,
   },
   server: {
     host: '0.0.0.0',

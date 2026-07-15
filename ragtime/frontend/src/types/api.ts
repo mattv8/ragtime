@@ -3569,6 +3569,17 @@ export interface ExecuteComponentResponse {
   admin_action?: string | null;
 }
 
+export interface WorkspaceAgentAccessStatus {
+  workspace_id: string;
+  enabled: boolean;
+  allow_task_submission: boolean;
+  token: string | null;
+  agent_url: string | null;
+  created_at: string | null;
+  last_used_at: string | null;
+  hit_count: number;
+}
+
 export interface UserSpaceWorkspaceShareLink {
   id: string;
   workspace_id: string;

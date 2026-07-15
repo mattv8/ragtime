@@ -58,7 +58,7 @@ from ragtime.core.auth import (
     validate_session_and_fetch_user,
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
-from ragtime.core.logging import get_logger, setup_logging
+from ragtime.core.logging import get_logger, redact_agent_access_path, setup_logging
 from ragtime.core.mfa import (
     MFA_TRUST_COOKIE_NAME,
     create_pending_mfa_token,
@@ -94,6 +94,11 @@ from ragtime.mcp.routes import router as mcp_router
 from ragtime.mcp.server import notify_tools_changed
 from ragtime.oauth_redirects import DEFAULT_ALLOWED_ORIGINS, build_allowed_origins
 from ragtime.rag import rag
+from ragtime.userspace.agent_routes import (
+    agent_management_router,
+    agent_router,
+    should_apply_agent_no_store,
+)
 from ragtime.userspace.html_templates import render_share_unlock_prompt_html
 from ragtime.userspace.preview_host import PreviewHostDispatchMiddleware
 from ragtime.userspace.routes import router as userspace_router
@@ -313,7 +318,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     Authorization tokens, cookies, or other secrets to container logs.
     The response never echoes back the request body.
     """
-    logger.error(f"Validation error on {request.method} {request.url.path}: {exc.errors()}")
+    redacted_path = redact_agent_access_path(request.url.path)
+    logger.error(f"Validation error on {request.method} {redacted_path}: {exc.errors()}")
 
     if settings.debug_mode:
         # Only log body/headers in debug mode; redact sensitive headers
@@ -373,6 +379,30 @@ app.add_middleware(PreviewHostDispatchMiddleware)
 
 
 @app.middleware("http")
+async def _apply_agent_route_no_store(request: Request, call_next):
+    is_agent_path = should_apply_agent_no_store(request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        if not is_agent_path:
+            raise
+        logger.error(
+            "Unexpected agent route error for %s %s (%s)",
+            request.method,
+            redact_agent_access_path(request.url.path),
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+            headers={"Cache-Control": "no-store"},
+        )
+    if is_agent_path:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.middleware("http")
 async def _log_slow_requests(request: Request, call_next):
     """Log requests that take longer than one second to start responding."""
     start = time.perf_counter()
@@ -382,7 +412,7 @@ async def _log_slow_requests(request: Request, call_next):
         logger.warning(
             "Slow request: %s %s took %.3fs (status %d)",
             request.method,
-            request.url.path,
+            redact_agent_access_path(request.url.path),
             duration,
             response.status_code,
         )
@@ -403,6 +433,8 @@ app.include_router(auth_router)
 app.include_router(indexer_router)
 app.include_router(userspace_router)
 app.include_router(userspace_runtime_router)
+app.include_router(agent_router)  # Public workspace agent surface at /agent/w/{token}
+app.include_router(agent_management_router)  # Agent access management under /indexes/userspace
 # Mount static files for indexer UI assets at root
 # Ensure assets directory exists so static file mount always works
 INDEXER_ASSETS_DIR.mkdir(parents=True, exist_ok=True)

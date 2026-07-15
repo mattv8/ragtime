@@ -22,6 +22,13 @@ RED = "\033[0;31m"
 BOLD_RED = "\033[1;31m"
 RESET = "\033[0m"
 
+_AGENT_ACCESS_PATH_RE = re.compile(r"(/agent/w/)([^/?#]+)")
+
+
+def redact_agent_access_path(value: str) -> str:
+    """Redact only the bearer segment in /agent/w/{token} paths."""
+    return _AGENT_ACCESS_PATH_RE.sub(r"\1[redacted]", str(value or ""))
+
 
 class ColoredFormatter(logging.Formatter):
     """Custom formatter that adds colors to log records based on level."""
@@ -136,11 +143,29 @@ class UvicornAccessFilter(logging.Filter):
         "/workspaces/state-summary",  # Batched workspace state summary polling
     }
 
+    @staticmethod
+    def _contains_quiet_path_segment(message: str, path: str) -> bool:
+        start = message.find(path)
+        while start != -1:
+            end = start + len(path)
+            if path.endswith("/"):
+                return True
+            if end >= len(message) or message[end] in {'"', " ", "/", "?"}:
+                return True
+            start = message.find(path, start + 1)
+        return False
+
     def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = redact_agent_access_path(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact_agent_access_path(arg) if isinstance(arg, str) else arg for arg in record.args)
+        elif isinstance(record.args, list):
+            record.args = tuple(redact_agent_access_path(arg) if isinstance(arg, str) else arg for arg in record.args)
         message = record.getMessage()
         # Only downgrade GET requests to noisy polling endpoints
         if '"GET ' in message:
-            if any(path in message for path in self.QUIET_PATHS):
+            if any(self._contains_quiet_path_segment(message, path) for path in self.QUIET_PATHS):
                 record.levelno = logging.DEBUG
                 record.levelname = "DEBUG"
                 # If we are not in debug mode, suppress these now-debug logs

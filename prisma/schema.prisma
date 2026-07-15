@@ -1405,6 +1405,7 @@ model Workspace {
   messageSnapshotLinks        ConversationMessageSnapshotLink[]
   shares                      WorkspaceShare[]
   previewDiagnostics          WorkspacePreviewDiagnostic[]
+  agentAccess                 WorkspaceAgentAccess?
 
   @@unique([ownerUserId, nameNormalized])
   @@index([ownerUserId])
@@ -1544,6 +1545,45 @@ model WorkspaceShare {
   @@index([ownerUserId, shareSlug])
   @@index([workspaceId, shareToken])
   @@map("workspace_shares")
+}
+
+/// External-agent collaboration access token for a workspace.
+/// All agent-surface actions execute as `createdByUserId` under normal
+/// workspace ACL enforcement; the token alone grants nothing extra.
+model WorkspaceAgentAccess {
+  id                  String    @id @default(uuid())
+  workspaceId         String    @unique @map("workspace_id")
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdByUserId     String    @map("created_by_user_id")
+  token               String    @unique
+  label               String?
+  enabled             Boolean   @default(true)
+  allowTaskSubmission Boolean   @default(true) @map("allow_task_submission")
+  lastUsedAt          DateTime? @map("last_used_at")
+  hitCount            Int       @default(0) @map("hit_count")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@map("workspace_agent_access")
+}
+
+/// Idempotency ledger for externally submitted build tasks.
+/// Intentionally no relations: plain columns keep the hot Conversation model untouched.
+model ExternalBuildRequest {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  source         String   @default("workspace_agent")
+  requestId      String   @map("request_id")
+  payloadHash    String   @map("payload_hash")
+  workspaceId    String   @map("workspace_id")
+  conversationId String   @default("") @map("conversation_id")
+  taskId         String?  @map("task_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, source, requestId])
+  @@index([workspaceId, createdAt])
+  @@index([userId, source, workspaceId, taskId])
+  @@map("external_build_requests")
 }
 
 model ShareLinkRequestLog {

@@ -151,6 +151,7 @@ import type {
   UserSpaceWorkspaceArchiveExportListResponse,
   DeleteUserSpaceWorkspaceArchiveExportResponse,
   UserSpaceRuntimeRestartBatchTask,
+  WorkspaceAgentAccessStatus,
   UserSpaceWorkspaceShareLink,
   UserSpaceWorkspaceShareLinkStatus,
   UserSpaceWorkspaceShareLinkListResponse,
@@ -4901,6 +4902,45 @@ export const api = {
       },
     );
     return handleResponse<import('@/types').SwitchVisualizationBranchResponse>(response);
+  },
+
+  async getWorkspaceAgentAccess(workspaceId: string): Promise<WorkspaceAgentAccessStatus> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/agent-access`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<WorkspaceAgentAccessStatus>(response);
+  },
+
+  async enableWorkspaceAgentAccess(
+    workspaceId: string,
+    allowTaskSubmission = true,
+  ): Promise<WorkspaceAgentAccessStatus> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/agent-access/enable`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allow_task_submission: allowTaskSubmission }),
+      },
+    );
+    return handleResponse<WorkspaceAgentAccessStatus>(response);
+  },
+
+  async disableWorkspaceAgentAccess(workspaceId: string): Promise<WorkspaceAgentAccessStatus> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/agent-access/disable`,
+      { method: 'POST' },
+    );
+    return handleResponse<WorkspaceAgentAccessStatus>(response);
+  },
+
+  async rotateWorkspaceAgentAccess(workspaceId: string): Promise<WorkspaceAgentAccessStatus> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/agent-access/rotate`,
+      { method: 'POST' },
+    );
+    return handleResponse<WorkspaceAgentAccessStatus>(response);
   },
 
   async listUserSpaceWorkspaceShareLinks(

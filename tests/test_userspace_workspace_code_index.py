@@ -705,6 +705,205 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("cancel_requested = TRUE" in q for q in fake_db.queries))
         relink.assert_not_awaited()
 
+    async def test_read_only_search_does_not_create_missing_state(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(return_value=[]),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_db",
+                mock.AsyncMock(return_value=fake_db),
+            ),
+        ):
+            result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="symbols")
+
+        self.assertEqual(result["status"], "missing")
+        self.assertEqual(result["results"], [])
+        fake_db.execute_raw.assert_not_awaited()
+
+    async def test_read_only_searches_existing_rows_without_writes_for_all_states(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        for status in ("pending", "indexing", "stale", "failed", "ready"):
+            with self.subTest(status=status):
+                fake_db = SimpleNamespace(
+                    query_raw=mock.AsyncMock(
+                        side_effect=[
+                            [{"status": status}],
+                            [
+                                {
+                                    "path": "app.py",
+                                    "kind": "function",
+                                    "name": "revenue",
+                                    "signature": "def revenue():",
+                                }
+                            ],
+                        ]
+                    ),
+                    execute_raw=mock.AsyncMock(),
+                )
+                service = WorkspaceCodeIndexService()
+
+                with (
+                    mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+                    mock.patch(
+                        "ragtime.userspace.workspace_code_index_service.get_db",
+                        mock.AsyncMock(return_value=fake_db),
+                    ),
+                ):
+                    result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="symbols")
+
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result["result_count"], 1)
+                self.assertEqual(result["results"][0]["source"], "symbol")
+                fake_db.execute_raw.assert_not_awaited()
+
+    async def test_read_only_hybrid_returns_symbols_when_embeddings_unavailable(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(
+                side_effect=[
+                    [{"status": "stale"}],
+                    [{"path": "app.py", "kind": "function", "name": "revenue", "signature": "def revenue():"}],
+                ]
+            ),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_db",
+                mock.AsyncMock(return_value=fake_db),
+            ),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
+                mock.AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="hybrid")
+
+        self.assertEqual(result["status"], "stale")
+        self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["results"][0]["source"], "symbol")
+        self.assertEqual(result["error"], "semantic search unavailable")
+        fake_db.execute_raw.assert_not_awaited()
+
+    async def test_read_only_semantic_returns_empty_with_generic_error_when_embeddings_unavailable(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(return_value=[{"status": "ready"}]),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_db",
+                mock.AsyncMock(return_value=fake_db),
+            ),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
+                mock.AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.search_workspace_code_read_only(workspace_id="workspace-1", query="revenue", mode="semantic")
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["results"], [])
+        self.assertEqual(result["error"], "semantic search unavailable")
+        fake_db.execute_raw.assert_not_awaited()
+
+    async def test_search_workspace_code_semantic_still_ensures_state_and_raises_without_embeddings(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(return_value=[{"status": "ready", "last_error": None}]),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        ensure_state_mock = mock.AsyncMock(return_value="userspace_workspace_workspace_1")
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "ensure_state", ensure_state_mock),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_db",
+                mock.AsyncMock(return_value=fake_db),
+            ),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_app_settings",
+                mock.AsyncMock(return_value={}),
+            ),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_embeddings_model",
+                mock.AsyncMock(return_value=None),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "Embeddings model is not configured"):
+                await service.search_workspace_code(workspace_id="workspace-1", query="revenue", mode="semantic")
+
+        ensure_state_mock.assert_awaited_once_with("workspace-1")
+        fake_db.execute_raw.assert_not_awaited()
+
+    async def test_search_workspace_code_symbols_preserves_raw_signature_values(self) -> None:
+        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
+
+        long_signature = "def revenue(" + ("x" * 300) + "):"
+        fake_db = SimpleNamespace(
+            query_raw=mock.AsyncMock(
+                side_effect=[
+                    [{"status": "ready", "last_error": None}],
+                    [
+                        {
+                            "path": "app.py",
+                            "kind": "function",
+                            "name": "revenue",
+                            "signature": long_signature,
+                        },
+                        {
+                            "path": "other.py",
+                            "kind": "function",
+                            "name": "empty_signature",
+                            "signature": None,
+                        },
+                    ],
+                ]
+            ),
+            execute_raw=mock.AsyncMock(),
+        )
+        service = WorkspaceCodeIndexService()
+        ensure_state_mock = mock.AsyncMock(return_value="userspace_workspace_workspace_1")
+
+        with (
+            mock.patch.object(service, "_enabled", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "ensure_state", ensure_state_mock),
+            mock.patch(
+                "ragtime.userspace.workspace_code_index_service.get_db",
+                mock.AsyncMock(return_value=fake_db),
+            ),
+        ):
+            result = await service.search_workspace_code(
+                workspace_id="workspace-1",
+                query="revenue",
+                mode="symbols",
+                max_chars_per_result=200,
+            )
+
+        self.assertEqual(result["results"][0]["snippet"], long_signature)
+        self.assertIsNone(result["results"][1]["snippet"])
+        ensure_state_mock.assert_awaited_once_with("workspace-1")
+
     def test_userspace_code_context_tools_are_hidden_from_ui_presentation(self) -> None:
         for tool_name in ("search_userspace_code", "assay_userspace_code"):
             with self.subTest(tool_name=tool_name):

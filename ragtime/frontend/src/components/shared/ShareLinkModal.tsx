@@ -51,6 +51,7 @@ interface ShareLinkModalProps {
   shareTargetLabel?: string;
   openActionLabel?: string;
   extraAccessControls?: ReactNode;
+  agentAccessSection?: ReactNode;
   onClose: () => void;
   onSelectShare?: (shareId: string) => void;
   onCreateShareLink?: () => void;
@@ -141,6 +142,7 @@ export function ShareLinkModal({
   shareTargetLabel = 'workspace',
   openActionLabel = 'Open Preview',
   extraAccessControls,
+  agentAccessSection,
   onClose,
   onSelectShare,
   onCreateShareLink,
@@ -656,11 +658,27 @@ export function ShareLinkModal({
                   </table>
                 </div>
               </div>
+              <div className="userspace-share-actions userspace-share-actions-single">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    pendingEditAfterCreateRef.current = true;
+                    previousSelectedShareIdRef.current = selectedShareId;
+                    onCreateShareLink?.();
+                  }}
+                  disabled={listBusy || loadingShareStatus}
+                >
+                  <Plus size={14} />
+                  <span>{creatingShareLink ? 'Creating...' : 'New Link'}</span>
+                </button>
+              </div>
+              {agentAccessSection}
             </>
           )}
         </div>
-        <div className="modal-footer userspace-share-modal-footer">
-          {isEditView ? (
+        {isEditView && (
+          <div className="modal-footer userspace-share-modal-footer">
             <div className="userspace-share-actions userspace-share-actions-edit">
               <button
                 className="btn btn-secondary"
@@ -687,24 +705,8 @@ export function ShareLinkModal({
                 {openActionLabel}
               </button>
             </div>
-          ) : (
-            <div className="userspace-share-actions userspace-share-actions-single">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  pendingEditAfterCreateRef.current = true;
-                  previousSelectedShareIdRef.current = selectedShareId;
-                  onCreateShareLink?.();
-                }}
-                disabled={listBusy || loadingShareStatus}
-              >
-                <Plus size={14} />
-                <span>{creatingShareLink ? 'Creating...' : 'New Link'}</span>
-              </button>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
 const modalState = vi.hoisted(() => ({
-  latestAllowedChatModelsProps: null as null | { title?: string; allModels?: Array<Record<string, unknown>> },
+  latestAllowedChatModelsProps: null as null | {
+    title?: string;
+    allModels?: Array<Record<string, unknown>>;
+  },
 }));
 
 const apiMock = vi.hoisted(() => ({
@@ -93,8 +96,15 @@ beforeEach(() => {
   apiMock.getUserSpacePreviewSettings.mockResolvedValue({});
   apiMock.getAuthProviderConfig.mockResolvedValue({ provider: 'local_managed' });
   apiMock.listAuthGroups.mockResolvedValue([]);
-  apiMock.getCopilotAuthStatus.mockResolvedValue({ connected: false, base_url: '', enterprise_url: null });
-  apiMock.getOpenAICodexAuthStatus.mockResolvedValue({ connected: true, base_url: 'https://codex.example.com' });
+  apiMock.getCopilotAuthStatus.mockResolvedValue({
+    connected: false,
+    base_url: '',
+    enterprise_url: null,
+  });
+  apiMock.getOpenAICodexAuthStatus.mockResolvedValue({
+    connected: true,
+    base_url: 'https://codex.example.com',
+  });
   apiMock.getClaudeCodeAuthStatus.mockResolvedValue({ connected: true });
   apiMock.getAvailableModels.mockResolvedValue({ automatic_default_model: null });
   apiMock.getAllModels.mockResolvedValue({

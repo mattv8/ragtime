@@ -480,6 +480,10 @@ Core concepts that affect how Ragtime is deployed and used.
 - Password-protected shares are handled server-side with a full-page prompt.
 - When the runtime lacks `CAP_SYS_ADMIN`, previews run in a `chroot` compatibility mode instead of full `pivot_root` isolation. Transitioning between `chroot` and `pivot_root` can cause loss of snapshot history! It is recommended to take a full backup before transitioning.
 
+#### External Agent Collaboration
+
+Workspace owners and admins can open **Share Workspace**, enable **External Agent Access**, and copy the generated instructions into Claude Cowork, Codex, ChatGPT, or another compatible agent to collaborate on the workspace.
+
 ### Vector Store Abstraction
 
 Ragtime uses **two vector backends**: **FAISS** (in-memory, loaded at startup) and **pgvector** (PostgreSQL, persistent). Upload, Git, and Filesystem indexes can use either backend.
@@ -590,6 +594,7 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 - **Restrict `ALLOWED_ORIGINS`** to trusted domains. The application default is loopback-only when unset; avoid using `*` in network-accessible deployments because it is permissive with `allow_credentials=True`.
 - **Enable MCP route authentication** via Settings UI if `/mcp` is network-accessible. MCP is disabled by default; when MCP is enabled, the default route is open unless you turn on route authentication.
 - MCP authentication supports password-based headers (including `MCP-Password` and bearer form) and OAuth2/client_credentials route modes.
+- **Protect workspace external-agent URLs.** These URLs contain revocable bearer tokens. Use them only in private sessions with trusted agents, keep them out of generated files and public issue trackers, and rotate or disable a URL when access is no longer needed.
 - Set a strong `LOCAL_ADMIN_PASSWORD` when deploying.
 - **Review trusted external redirects carefully.** OAuth callbacks and other external redirect allowlists should only include destinations you control. Redirecting users to third-party domains can expose authorization codes, tokens, or sensitive workflow context if those destinations are compromised or misconfigured.
 
