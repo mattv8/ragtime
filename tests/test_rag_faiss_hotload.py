@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
-from ragtime.indexer.models import IndexStatus
+from ragtime.indexer.models import IndexJobPhase, IndexStatus
 from ragtime.indexer.service import IndexerService
 from ragtime.rag.components import RAGComponents
 from ragtime.rag.components import rag as global_rag
@@ -139,6 +139,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 await service._process_git(cast(Any, job))
 
             self.assertEqual(order[-2:], ["hot-load", "update:completed"])
+            self.assertEqual(job.phase, IndexJobPhase.COMPLETED)
 
     async def test_failed_git_job_sets_completed_at(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -173,6 +174,7 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
                 await service._process_git(cast(Any, job))
 
             self.assertEqual(job.status, IndexStatus.FAILED)
+            self.assertEqual(job.phase, IndexJobPhase.FAILED)
             self.assertEqual(job.error_message, "boom")
             self.assertIsNotNone(job.completed_at)
 

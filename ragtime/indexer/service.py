@@ -84,6 +84,7 @@ from ragtime.indexer.models import (
     IndexConfig,
     IndexInfo,
     IndexJob,
+    IndexJobPhase,
     IndexStatus,
     MemoryEstimate,
     OcrMode,
@@ -327,6 +328,7 @@ class IndexerService:
         self._processing_tasks: Dict[str, asyncio.Task] = {}
         # Cancellation flags for cooperative cancellation
         self._cancellation_flags: Dict[str, bool] = {}
+        self._git_job_creation_lock = asyncio.Lock()
 
     def _compute_clone_timeout_minutes(self, config: IndexConfig) -> int:
         """Derive clone timeout from depth unless explicitly overridden by user."""
@@ -428,6 +430,7 @@ class IndexerService:
                 except Exception as e:
                     logger.error(f"Failed to recover job {job.id}: {e}")
                     job.status = IndexStatus.FAILED
+                    job.phase = IndexJobPhase.FAILED
                     job.error_message = f"Recovery failed: {e}"
                     job.completed_at = utc_now()
                     await repository.update_job(job)
@@ -603,6 +606,7 @@ class IndexerService:
 
         # Reset progress - we'll reprocess from scratch for simplicity
         job.status = IndexStatus.PENDING
+        job.phase = IndexJobPhase.PREPARING
         job.processed_files = 0
         job.processed_chunks = 0
         job.error_message = None
@@ -648,6 +652,7 @@ class IndexerService:
 
             # No tmp file - mark as failed
             job.status = IndexStatus.FAILED
+            job.phase = IndexJobPhase.FAILED
             job.error_message = "Upload file lost during restart - please re-upload"
             job.completed_at = utc_now()
             await repository.update_job(job)
@@ -835,6 +840,7 @@ class IndexerService:
 
         # Update status in database
         job.status = IndexStatus.FAILED
+        job.phase = IndexJobPhase.CANCELLED
         job.error_message = "Job cancelled by user"
         job.completed_at = utc_now()
         await repository.update_job(job)
@@ -854,6 +860,7 @@ class IndexerService:
             self._cancellation_flags[job_id] = True
             if job.status in (IndexStatus.PENDING, IndexStatus.PROCESSING):
                 job.status = IndexStatus.FAILED
+                job.phase = IndexJobPhase.CANCELLED
                 job.error_message = "Job cancelled due to server shutdown"
                 job.completed_at = utc_now()
                 try:
@@ -1065,6 +1072,7 @@ class IndexerService:
         """
         # Get metadata from database - this is the source of truth for document indexes
         db_metadata = await repository.list_index_metadata()
+        active_index_names = await repository.list_active_index_names()
 
         async def _build_index_info(meta) -> Optional[IndexInfo]:
             """Build IndexInfo for a single index. Returns None if index should be skipped."""
@@ -1083,10 +1091,11 @@ class IndexerService:
 
             # Check if this is an optimistic/in-progress index (0 documents means job hasn't completed yet)
             is_optimistic = meta.documentCount == 0
+            is_active = meta.name in active_index_names
 
             # Skip if directory doesn't exist on disk (for FAISS indexes)
             # But allow optimistic indexes through so they show in UI while job is processing
-            if vector_store_type == VectorStoreType.FAISS and not is_optimistic:
+            if vector_store_type == VectorStoreType.FAISS and not is_optimistic and not is_active:
                 if not path.exists() or not path.is_dir():
                     logger.warning(f"Index {meta.name} in database but not on disk: {path}")
                     return None
@@ -1873,6 +1882,7 @@ class IndexerService:
 
         except Exception as e:
             job.status = IndexStatus.FAILED
+            job.phase = IndexJobPhase.FAILED
             job.error_message = str(e)
             job.completed_at = utc_now()
             await repository.update_job(job)
@@ -1952,37 +1962,43 @@ class IndexerService:
         git_token: str | None = None,
     ) -> IndexJob:
         """Create an index from a git repository."""
-        job_id = str(uuid.uuid4())[:8]
+        async with self._git_job_creation_lock:
+            active_job = await repository.get_active_job_for_index(config.name)
+            if active_job is not None:
+                logger.info(f"Reusing active git indexing job {active_job.id} for index '{config.name}'")
+                return active_job
 
-        job = IndexJob(
-            id=job_id,
-            name=config.name,
-            config=config,
-            source_type="git",
-            git_url=git_url,
-            git_branch=branch,
-            git_token=git_token,  # Kept in memory only, not persisted
-        )
+            job_id = str(uuid.uuid4())[:8]
 
-        # Persist to database
-        await repository.create_job(job)
+            job = IndexJob(
+                id=job_id,
+                name=config.name,
+                config=config,
+                source_type="git",
+                git_url=git_url,
+                git_branch=branch,
+                git_token=git_token,  # Kept in memory only, not persisted
+            )
 
-        # Create optimistic metadata so index shows up in UI immediately
-        await self._create_optimistic_index_metadata(
-            config=config,
-            source_type="git",
-            source=git_url,
-            git_branch=branch,
-            git_token=git_token,
-        )
+            # Persist to database
+            await repository.create_job(job)
 
-        # Cache for active processing
-        self._active_jobs[job_id] = job
+            # Create optimistic metadata so index shows up in UI immediately
+            await self._create_optimistic_index_metadata(
+                config=config,
+                source_type="git",
+                source=git_url,
+                git_branch=branch,
+                git_token=git_token,
+            )
 
-        # Start processing in background — hold strong reference to prevent GC
-        self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job))
+            # Cache for active processing
+            self._active_jobs[job_id] = job
 
-        return job
+            # Start processing in background — hold strong reference to prevent GC
+            self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job))
+
+            return job
 
     async def _process_upload(self, job: IndexJob, archive_path: Path, temp_dir: Path):
         """Process an uploaded archive file (zip, tar, tar.gz, tar.bz2)."""
@@ -2022,11 +2038,17 @@ class IndexerService:
             # Only mark completed if not cancelled
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
+                job.phase = IndexJobPhase.COMPLETED
                 job.completed_at = utc_now()
 
         except asyncio.CancelledError:
-            # Job was cancelled - status already set by cancel_job()
             logger.info(f"Job {job.id} processing stopped due to cancellation")
+            job.status = IndexStatus.FAILED
+            job.phase = IndexJobPhase.CANCELLED
+            if not job.error_message:
+                job.error_message = "Job cancelled by user"
+            if job.completed_at is None:
+                job.completed_at = utc_now()
             # Clean up optimistic metadata for cancelled new indexes
             await self._cleanup_failed_index_metadata(job.name)
 
@@ -2034,6 +2056,7 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 logger.exception(f"Failed to process upload for job {job.id}")
                 job.status = IndexStatus.FAILED
+                job.phase = IndexJobPhase.FAILED
                 job.error_message = str(e) or repr(e)
                 job.completed_at = utc_now()
                 # Clean up optimistic metadata for failed new indexes
@@ -2121,10 +2144,6 @@ class IndexerService:
                 clone_complete_marker.parent.mkdir(parents=True, exist_ok=True)
                 clone_complete_marker.touch()
 
-            # Clear cloning status, update to scanning phase
-            job.error_message = None
-            await repository.update_job(job)
-
             # Check for cancellation after clone/fetch
             if self._is_cancelled(job.id):
                 logger.info(f"Job {job.id} was cancelled after cloning")
@@ -2136,11 +2155,17 @@ class IndexerService:
             # Only mark completed if not cancelled
             if not self._is_cancelled(job.id):
                 job.status = IndexStatus.COMPLETED
+                job.phase = IndexJobPhase.COMPLETED
                 job.completed_at = utc_now()
 
         except asyncio.CancelledError:
-            # Job was cancelled - status already set by cancel_job()
             logger.info(f"Job {job.id} processing stopped due to cancellation")
+            job.status = IndexStatus.FAILED
+            job.phase = IndexJobPhase.CANCELLED
+            if not job.error_message:
+                job.error_message = "Job cancelled by user"
+            if job.completed_at is None:
+                job.completed_at = utc_now()
             # Clean up optimistic metadata for cancelled new indexes
             await self._cleanup_failed_index_metadata(job.name)
 
@@ -2148,6 +2173,7 @@ class IndexerService:
             if not self._is_cancelled(job.id):
                 logger.exception(f"Failed to process git for job {job.id}")
                 job.status = IndexStatus.FAILED
+                job.phase = IndexJobPhase.FAILED
                 job.error_message = str(e) or repr(e)
                 job.completed_at = utc_now()
                 # Clean up optimistic metadata for failed new indexes
@@ -2191,7 +2217,8 @@ class IndexerService:
         """
         logger.info(f"Cloning {job.git_url} branch {job.git_branch}")
 
-        job.error_message = "Cloning repository..."
+        job.phase = IndexJobPhase.CLONING
+        job.error_message = None
         await repository.update_job(job)
 
         if not job.git_url:
@@ -2302,7 +2329,8 @@ class IndexerService:
             )
 
         logger.info(f"Fetching updates for {job.git_url} branch {job.git_branch}")
-        job.error_message = "Fetching latest changes..."
+        job.phase = IndexJobPhase.CLONING
+        job.error_message = None
         await repository.update_job(job)
 
         # Update remote URL with current token (in case token changed)
@@ -2481,7 +2509,6 @@ class IndexerService:
                     if current_time - last_update_time >= update_interval:
                         if last_fraction != (job.clone_progress or 0.0):
                             job.clone_progress = last_fraction
-                            job.error_message = f"Cloning: {round(last_fraction * 100)}%"
                             await repository.update_job(job)
                             last_update_time = current_time
 
@@ -2505,7 +2532,6 @@ class IndexerService:
 
         # Clear the cloning state once the clone finishes.
         job.clone_progress = None
-        job.error_message = None
         await repository.update_job(job)
 
         return "".join(stderr_chunks)
@@ -2683,7 +2709,8 @@ class IndexerService:
 
         # Collect all files to process (run in thread pool as rglob can be slow on large repos)
         logger.info(f"Job {job.id}: Scanning directory for matching files (this may take a while for large repos)...")
-        job.error_message = "Scanning files..."
+        job.phase = IndexJobPhase.SCANNING
+        job.error_message = None
         await repository.update_job(job)
 
         def collect_files_sync() -> List[Path]:
@@ -2702,7 +2729,7 @@ class IndexerService:
         all_files = await asyncio.to_thread(collect_files_sync)
 
         job.total_files = len(all_files)
-        job.error_message = None  # Clear "Scanning files..." message
+        job.phase = IndexJobPhase.LOADING
         await repository.update_job(job)
         logger.info(f"Found {len(all_files)} files to index")
 
@@ -2867,10 +2894,11 @@ class IndexerService:
         # Split into chunks using parallel process pool
         # This runs CPU-intensive tiktoken work in separate processes,
         # leaving the main event loop responsive for API/UI/MCP
-        # Set total_chunks to an upper bound (one chunk per doc) so the
-        # progress indicator can move while chunking runs. The exact
-        # value is overwritten once chunking completes.
-        job.total_chunks = max(len(documents), 1)
+        job.phase = IndexJobPhase.CHUNKING
+        job.error_message = None
+        job.total_chunks = len(documents)
+        job.processed_chunks = 0
+        await repository.update_job(job)
 
         async def _chunking_progress(processed_docs: int, _total_docs: int) -> None:
             # Track per-document progress so the UI is not stuck at
@@ -2883,13 +2911,16 @@ class IndexerService:
             chunk_size=config.chunk_size,
             chunk_overlap=config.chunk_overlap,
             use_tokens=use_tokens,
-            batch_size=100,  # Larger batches for efficiency
+            batch_size=10,  # Smaller batches bound chunking progress latency per wave.
             progress_callback=_chunking_progress,
             is_cancelled=lambda: self._is_cancelled(job.id),
             pool_key=job.id,
         )
 
+        job.phase = IndexJobPhase.EMBEDDING
         job.total_chunks = len(chunks)
+        job.processed_chunks = 0
+        job.error_message = None
         await repository.update_job(job)
 
         logger.info(f"Created {len(chunks)} chunks, generating embeddings...")
@@ -3105,6 +3136,10 @@ class IndexerService:
         # This avoids O(n^2) merge_from overhead entirely.
         # Run list construction + FAISS build together in thread to avoid
         # blocking the event loop when zipping 200K+ items.
+        job.phase = IndexJobPhase.FINALIZING
+        job.error_message = None
+        await repository.update_job(job)
+
         logger.info(f"Building FAISS index from {len(all_embeddings)} pre-computed embeddings...")
 
         _texts = all_texts

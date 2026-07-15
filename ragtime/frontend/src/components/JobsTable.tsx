@@ -4,6 +4,7 @@ import { api } from '@/api';
 import { formatElapsedTime } from '@/utils';
 import type {
   IndexJob,
+  IndexJobPhase,
   FilesystemIndexJob,
   SchemaIndexJob,
   PdmIndexJob,
@@ -101,54 +102,43 @@ function getCommonIndexingJobPhase(
 /**
  * Get a human-readable status message for a processing job
  */
+function getDocumentJobPhaseLabel(phase: IndexJobPhase): string {
+  switch (phase) {
+    case 'preparing':
+      return 'Preparing';
+    case 'cloning':
+      return 'Cloning repository';
+    case 'scanning':
+      return 'Scanning files';
+    case 'loading':
+      return 'Loading files';
+    case 'chunking':
+      return 'Chunking';
+    case 'embedding':
+      return 'Embedding';
+    case 'finalizing':
+      return 'Finalizing';
+    case 'completed':
+      return 'Complete';
+    case 'failed':
+      return 'Failed';
+    case 'cancelled':
+      return 'Cancelled';
+    default:
+      return 'Processing';
+  }
+}
+
 function getProcessingPhase(job: IndexJob): string {
   if (job.status !== 'processing') return '';
-
-  // Check for cloning phase (error_message used as status hint during clone)
-  if (job.error_message?.includes('Cloning')) {
-    return 'Cloning repository';
-  }
-  // Check for scanning phase
-  if (job.error_message?.includes('Scanning')) {
-    return 'Scanning files';
-  }
-  // If no files found yet, we're still scanning
-  if (job.total_files === 0) {
-    return 'Scanning files';
-  }
-  // If we're still loading files
-  if (job.processed_files < job.total_files) {
-    return 'Loading files';
-  }
-  // If files are loaded but no chunks yet, we're chunking
-  if (job.total_chunks === 0) {
-    return 'Chunking';
-  }
-  // If we have chunks but haven't started embedding yet
-  if (job.processed_chunks === 0) {
-    return 'Preparing embeddings';
-  }
-  // Actively embedding
-  if (job.processed_chunks < job.total_chunks) {
-    return 'Embedding';
-  }
-  return 'Finalizing';
+  return getDocumentJobPhaseLabel(job.phase);
 }
 
 /**
  * Calculate overall progress percentage for a document job
  */
 function calculateProgress(job: IndexJob): number {
-  if (job.status === 'completed') return 100;
-  if (job.status === 'pending') return 0;
-  if (job.status === 'failed') return 0;
-
-  // Processing: weight file loading at 30%, embedding at 70%
-  const fileProgress = job.total_files > 0 ? (job.processed_files / job.total_files) * 30 : 0;
-
-  const chunkProgress = job.total_chunks > 0 ? (job.processed_chunks / job.total_chunks) * 70 : 0;
-
-  return Math.min(fileProgress + chunkProgress, 99); // Cap at 99 until completed
+  return clampProgressPercent(job.progress_percent);
 }
 
 /**
@@ -898,7 +888,13 @@ export function JobsTable({
                                     {job.processedChunks.toLocaleString()}/
                                     {job.totalChunks.toLocaleString()} chunks
                                   </>
-                                ) : job.phase === 'Loading files' ? (
+                                ) : job.phase === 'Chunking' ? (
+                                  <>
+                                    {job.processedChunks.toLocaleString()}/
+                                    {job.totalChunks.toLocaleString()} documents
+                                  </>
+                                ) : job.phase === 'Loading files' ||
+                                  job.phase === 'Scanning files' ? (
                                   <>
                                     {job.processedFiles.toLocaleString()}/
                                     {job.totalFiles.toLocaleString()} files

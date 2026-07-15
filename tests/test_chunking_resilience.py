@@ -686,6 +686,99 @@ class PerJobChunkingTests(unittest.IsolatedAsyncioTestCase):
         release_mock.assert_called_once_with("job-retry", terminate_workers=True)
         get_or_create_mock.assert_called_once_with("job-retry", 1)
 
+    async def test_timeout_falls_back_for_entire_wave_in_original_order(self) -> None:
+        pool = self._install_inproc_pool("job-timeout")
+        docs = [Document(page_content=name, metadata={"source": f"{name}.txt"}) for name in ("alpha", "beta", "gamma")]
+        progress_calls: list[tuple[int, int]] = []
+
+        async def record_progress(processed_docs: int, total_docs: int) -> None:
+            progress_calls.append((processed_docs, total_docs))
+
+        fallback_chunks = [(name, {"source": f"{name}.txt", "chunker": "fallback"}) for name in ("alpha", "beta", "gamma")]
+
+        with (
+            mock.patch.object(
+                chunking,
+                "_await_pool_futures_or_closed",
+                side_effect=asyncio.TimeoutError,
+            ),
+            mock.patch.object(pool_manager, "release", return_value=True) as release_mock,
+            mock.patch.object(pool_manager, "get_or_create", return_value=pool) as get_or_create_mock,
+            mock.patch.object(
+                chunking,
+                "_chunk_document_batch_recursive_sync",
+                return_value=(fallback_chunks, {"chonkie_recursive_pool_fallback": 3}),
+            ) as fallback_mock,
+        ):
+            results = await chunking.chunk_documents_parallel(
+                documents=docs,
+                chunk_size=50,
+                chunk_overlap=0,
+                use_tokens=False,
+                batch_size=3,
+                progress_callback=record_progress,
+                pool_key="job-timeout",
+            )
+
+        self.assertEqual([doc.page_content for doc in results], ["alpha", "beta", "gamma"])
+        release_mock.assert_called_once_with("job-timeout", terminate_workers=True)
+        fallback_mock.assert_called_once()
+        self.assertEqual([item[0] for item in fallback_mock.call_args.args[0]], ["alpha", "beta", "gamma"])
+        self.assertEqual(progress_calls, [(3, 3)])
+        self.assertEqual(get_or_create_mock.call_args_list[-1], mock.call("job-timeout", 1))
+        pool.executor.shutdown(wait=True)
+
+    async def test_timeout_recreates_pool_for_later_waves(self) -> None:
+        loop = asyncio.get_running_loop()
+        original_pool = ChunkingPool(key="job-timeout-later", executor=mock.Mock(name="original-executor"), max_workers=1)
+        recycled_pool = ChunkingPool(key="job-timeout-later", executor=mock.Mock(name="recycled-executor"), max_workers=1)
+        docs = [Document(page_content=f"doc-{idx}", metadata={"source": f"doc-{idx}.txt"}) for idx in range(6)]
+        executor_calls = []
+
+        def fake_run_in_executor(executor, func, *args):
+            if executor is None:
+                future = loop.create_future()
+                future.set_result(func())
+                return future
+            batch, chunk_size, chunk_overlap, use_tokens = args
+            executor_calls.append(executor)
+            future = loop.create_future()
+            future.set_result(([(content, {**metadata, "chunker": "worker"}) for content, metadata in batch], {"worker": len(batch)}))
+            return future
+
+        async def fake_await_pool_futures_or_closed(futures, pool):
+            if len(executor_calls) == 1:
+                raise asyncio.TimeoutError
+            return [future.result() for future in futures]
+
+        fallback_chunks = [(f"doc-{idx}", {"source": f"doc-{idx}.txt", "chunker": "fallback"}) for idx in range(3)]
+
+        with (
+            mock.patch.object(loop, "run_in_executor", side_effect=fake_run_in_executor),
+            mock.patch.object(pool_manager, "get", return_value=original_pool),
+            mock.patch.object(pool_manager, "get_or_create", side_effect=[original_pool, recycled_pool]),
+            mock.patch.object(pool_manager, "release", return_value=True) as release_mock,
+            mock.patch.object(chunking, "_await_pool_futures_or_closed", side_effect=fake_await_pool_futures_or_closed),
+            mock.patch.object(
+                chunking,
+                "_chunk_document_batch_recursive_sync",
+                return_value=(fallback_chunks, {"chonkie_recursive_pool_fallback": 3}),
+            ) as fallback_mock,
+        ):
+            results = await chunking.chunk_documents_parallel(
+                documents=docs,
+                chunk_size=50,
+                chunk_overlap=0,
+                use_tokens=False,
+                batch_size=3,
+                pool_key="job-timeout-later",
+            )
+
+        self.assertEqual([doc.page_content for doc in results], [f"doc-{idx}" for idx in range(6)])
+        self.assertEqual(executor_calls, [original_pool.executor, recycled_pool.executor])
+        release_mock.assert_called_once_with("job-timeout-later", terminate_workers=True)
+        fallback_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

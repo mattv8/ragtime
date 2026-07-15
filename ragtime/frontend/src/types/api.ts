@@ -433,6 +433,17 @@ export interface LdapBindDnLookupResponse {
 // =============================================================================
 
 export type IndexStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'interrupted';
+export type IndexJobPhase =
+  | 'preparing'
+  | 'cloning'
+  | 'scanning'
+  | 'loading'
+  | 'chunking'
+  | 'embedding'
+  | 'finalizing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 export type OcrMode = 'disabled' | 'tesseract' | 'vision';
 export type OcrProvider = 'ollama' | 'openai' | 'openrouter' | 'omlx' | 'lmstudio' | 'llama_cpp';
 
@@ -460,7 +471,7 @@ export interface IndexJob {
   id: string;
   name: string;
   status: IndexStatus;
-  phase?: string; // preparing|cloning|loading|chunking|embedding|finalizing|completed|failed|cancelled
+  phase: IndexJobPhase;
   progress_percent: number;
   clone_progress?: number | null; // 0.0-1.0 git clone progress while cloning
   total_files: number;

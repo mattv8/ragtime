@@ -26,6 +26,19 @@ enum IndexStatus {
   failed
 }
 
+enum IndexJobPhase {
+  preparing
+  cloning
+  scanning
+  loading
+  chunking
+  embedding
+  finalizing
+  completed
+  failed
+  cancelled
+}
+
 /// OCR mode for extracting text from images
 enum OcrMode {
   disabled // No OCR - skip image files
@@ -70,6 +83,7 @@ model IndexJob {
   processedFiles  Int     @default(0) @map("processed_files")
   totalChunks     Int     @default(0) @map("total_chunks")
   processedChunks Int     @default(0) @map("processed_chunks")
+  phase           IndexJobPhase @default(preparing)
   errorMessage    String? @map("error_message")
 
   // Timestamps

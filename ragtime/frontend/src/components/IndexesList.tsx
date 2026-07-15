@@ -298,6 +298,10 @@ export function IndexesList({
   };
 
   const handleGitJobCreated = () => {
+    onJobCreated?.();
+  };
+
+  const handleCompletedCreate = () => {
     setShowCreateWizard(false);
     onJobCreated?.();
   };
@@ -562,7 +566,7 @@ export function IndexesList({
             />
           ) : activeSource === 'upload' ? (
             <UploadForm
-              onJobCreated={handleGitJobCreated}
+              onJobCreated={handleCompletedCreate}
               onCancel={handleCancelWizard}
               onAnalysisStart={() => setIsAnalyzing(true)}
               onAnalysisComplete={() => setIsAnalyzing(false)}
@@ -571,7 +575,7 @@ export function IndexesList({
           ) : (
             <ImportFaissForm
               onImported={() => {
-                handleGitJobCreated();
+                handleCompletedCreate();
               }}
               onCancel={handleCancelWizard}
             />
@@ -614,6 +618,7 @@ export function IndexesList({
             const activeJob = indexJobs.find(
               (j) => j.status === 'pending' || j.status === 'processing',
             );
+            const hasActiveGitJob = idx.source_type === 'git' && Boolean(activeJob);
             // Check if this is an optimistic index (0 documents = not yet indexed or re-index in progress)
             const isOptimistic = idx.document_count === 0;
             // Only show incomplete if the latest job failed/interrupted and no job is active.
@@ -714,9 +719,13 @@ export function IndexesList({
                 {!aggregateSearch && (
                   <span
                     className={`meta-pill weight ${idx.search_weight !== 1.0 ? 'weight-modified' : ''}`}
-                    title="Search weight: Higher values prioritize this index in results. Click to edit."
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => setWeightEditIndex(idx)}
+                    title={
+                      hasActiveGitJob
+                        ? 'Search weight is unavailable while git indexing is active.'
+                        : 'Search weight: Higher values prioritize this index in results. Click to edit.'
+                    }
+                    style={hasActiveGitJob ? undefined : { cursor: 'pointer' }}
+                    onClick={hasActiveGitJob ? undefined : () => setWeightEditIndex(idx)}
                   >
                     Weight: {idx.search_weight.toFixed(1)}
                   </span>
@@ -747,7 +756,7 @@ export function IndexesList({
                 // So we can remove the Edit button for non-git indexes.
                 null}
                 {/* Only show Download for completed indexes */}
-                {!isFailedOrInterrupted && (
+                {!hasActiveGitJob && !isFailedOrInterrupted && (
                   <button
                     className="btn btn-sm btn-secondary"
                     onClick={() => handleDownload(idx.name)}
@@ -758,7 +767,7 @@ export function IndexesList({
                   </button>
                 )}
                 {/* Retry button for failed/interrupted indexes (git or upload) */}
-                {isFailedOrInterrupted && (
+                {!hasActiveGitJob && isFailedOrInterrupted && (
                   <button
                     className="btn btn-sm btn-primary"
                     onClick={() => handleRetryIndex(idx)}
@@ -768,21 +777,26 @@ export function IndexesList({
                   </button>
                 )}
                 {/* Pull & Re-index for completed git indexes */}
-                {!isFailedOrInterrupted && idx.source_type === 'git' && idx.source && (
-                  <button
-                    className="btn btn-sm btn-primary"
-                    onClick={() => setReindexingIndex(idx)}
-                    title="Pull latest changes from git and re-index"
-                  >
-                    Pull &amp; Re-index
-                  </button>
+                {!hasActiveGitJob &&
+                  !isFailedOrInterrupted &&
+                  idx.source_type === 'git' &&
+                  idx.source && (
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => setReindexingIndex(idx)}
+                      title="Pull latest changes from git and re-index"
+                    >
+                      Pull &amp; Re-index
+                    </button>
+                  )}
+                {!hasActiveGitJob && (
+                  <DeleteConfirmButton
+                    onDelete={() => handleDeleteIndex(idx.name)}
+                    deleting={deleting === idx.name}
+                    className="btn btn-sm btn-danger"
+                    title="Delete index"
+                  />
                 )}
-                <DeleteConfirmButton
-                  onDelete={() => handleDeleteIndex(idx.name)}
-                  deleting={deleting === idx.name}
-                  className="btn btn-sm btn-danger"
-                  title="Delete index"
-                />
               </>
             );
 
@@ -792,9 +806,16 @@ export function IndexesList({
                 title={idx.display_name || idx.name}
                 description={idx.description}
                 enabled={effectiveEnabled}
+                toggleDisabled={hasActiveGitJob}
                 onToggle={() => handleToggle(idx.name, idx.enabled, hasError)}
-                onEditTitle={(newName) => handleRename(idx.name, newName)}
-                onEditDescription={(newDesc) => handleSaveDescription(idx.name, newDesc)}
+                onEditTitle={
+                  hasActiveGitJob ? undefined : (newName) => handleRename(idx.name, newName)
+                }
+                onEditDescription={
+                  hasActiveGitJob
+                    ? undefined
+                    : (newDesc) => handleSaveDescription(idx.name, newDesc)
+                }
                 metaPills={metaPills}
                 actions={actions}
                 toggleTitle={

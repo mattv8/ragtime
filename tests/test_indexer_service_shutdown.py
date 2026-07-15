@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from ragtime.indexer.models import IndexConfig, IndexJob, IndexStatus
+from ragtime.indexer.models import IndexConfig, IndexJob, IndexJobPhase, IndexStatus
 from ragtime.indexer.service import IndexerService
 
 
@@ -38,6 +38,7 @@ class IndexerServiceShutdownTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(cancelled.is_set())
             self.assertTrue(task.done())
             self.assertEqual(job.status, IndexStatus.FAILED)
+            self.assertEqual(job.phase, IndexJobPhase.CANCELLED)
             self.assertIn("shutdown", job.error_message or "")
             self.assertIsNotNone(job.completed_at)
             self.assertEqual(service._active_jobs, {})

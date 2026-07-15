@@ -120,9 +120,10 @@ function isIndexJobTerminal(job: IndexJob | null): boolean {
 }
 
 function formatIndexJobPhase(job: IndexJob): string {
-  const labels: Record<string, string> = {
+  const labels: Record<IndexJob['phase'], string> = {
     preparing: 'Preparing',
     cloning: 'Cloning repository',
+    scanning: 'Scanning files',
     loading: 'Loading files',
     chunking: 'Chunking',
     embedding: 'Embedding',
@@ -131,7 +132,7 @@ function formatIndexJobPhase(job: IndexJob): string {
     failed: 'Failed',
     cancelled: 'Cancelled',
   };
-  return labels[job.phase || ''] || 'Processing';
+  return labels[job.phase] || 'Processing';
 }
 
 /**
@@ -491,11 +492,13 @@ export function GitIndexWizard({
   }, [fetchBranches, gitToken, gitUrl, isPrivateRepo, isEditMode]);
 
   // Poll the indexing job so the wizard can show live clone/indexing progress.
+  const indexingJobId = indexingJob?.id ?? null;
+  const indexingJobStatus = indexingJob?.status ?? null;
   useEffect(() => {
-    if (!indexingJob || isIndexJobTerminal(indexingJob)) {
+    if (!indexingJobId || indexingJobStatus === 'completed' || indexingJobStatus === 'failed') {
       return;
     }
-    const jobId = indexingJob.id;
+    const jobId = indexingJobId;
     let cancelled = false;
     let pollInFlight = false;
 
@@ -508,16 +511,8 @@ export function GitIndexWizard({
         setIndexingJob(nextJob);
         if (nextJob.status === 'completed') {
           setStatus({ type: 'success', message: `Indexing complete: ${nextJob.name}` });
-          if (!notifiedJobCreatedRef.current) {
-            notifiedJobCreatedRef.current = true;
-            onJobCreated?.();
-          }
         } else if (nextJob.status === 'failed') {
           setStatus({ type: 'error', message: nextJob.error_message || 'Indexing failed.' });
-          if (!notifiedJobCreatedRef.current) {
-            notifiedJobCreatedRef.current = true;
-            onJobCreated?.();
-          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -539,7 +534,7 @@ export function GitIndexWizard({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [indexingJob, onJobCreated]);
+  }, [indexingJobId, indexingJobStatus]);
 
   const handleAnalyze = async () => {
     if (!gitUrl) {
@@ -666,6 +661,8 @@ export function GitIndexWizard({
       // Keep the job in state and poll it so the wizard shows live
       // clone + indexing progress instead of dismissing immediately.
       setIndexingJob(job);
+      notifiedJobCreatedRef.current = true;
+      onJobCreated?.();
       setStatus({ type: 'info', message: 'Cloning repository...' });
     } catch (err) {
       setStatus({
@@ -1525,6 +1522,15 @@ export function GitIndexWizard({
   const jobDone = isIndexJobTerminal(indexingJob);
   const jobFailed = indexingJob?.status === 'failed';
   const displayPercent = indexingJob ? getIndexJobDisplayPercent(indexingJob) : 0;
+  const progressSummary = indexingJob
+    ? indexingJob.phase === 'loading' || indexingJob.phase === 'scanning'
+      ? `${indexingJob.processed_files}/${indexingJob.total_files} files`
+      : indexingJob.phase === 'chunking'
+        ? `${indexingJob.processed_chunks}/${indexingJob.total_chunks} documents`
+        : indexingJob.phase !== 'cloning' && indexingJob.total_files > 0
+          ? `${indexingJob.processed_files}/${indexingJob.total_files} files${indexingJob.total_chunks > 0 ? ` · ${indexingJob.processed_chunks}/${indexingJob.total_chunks} chunks` : ''}`
+          : null
+    : null;
 
   return (
     <div style={{ padding: '24px' }}>
@@ -1576,7 +1582,7 @@ export function GitIndexWizard({
                   }}
                 />
               </div>
-              {indexingJob.phase !== 'cloning' && indexingJob.total_files > 0 && (
+              {progressSummary && (
                 <small
                   style={{
                     color: 'var(--color-text-muted)',
@@ -1585,10 +1591,7 @@ export function GitIndexWizard({
                     marginTop: '6px',
                   }}
                 >
-                  {indexingJob.processed_files}/{indexingJob.total_files} files
-                  {indexingJob.total_chunks > 0
-                    ? ` · ${indexingJob.processed_chunks}/${indexingJob.total_chunks} chunks`
-                    : ''}
+                  {progressSummary}
                 </small>
               )}
             </div>
@@ -1608,7 +1611,9 @@ export function GitIndexWizard({
         </div>
       )}
 
-      {status.type && <div className={`status-message ${status.type}`}>{status.message}</div>}
+      {status.type === 'error' && (
+        <div className={`status-message ${status.type}`}>{status.message}</div>
+      )}
     </div>
   );
 }

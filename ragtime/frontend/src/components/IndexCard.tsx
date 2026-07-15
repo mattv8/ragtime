@@ -16,6 +16,7 @@ interface IndexCardProps {
   id?: string;
   toggleTitle?: string;
   titleChildren?: ReactNode; // Elements to render alongside the title
+  toggleDisabled?: boolean;
 }
 
 export function IndexCard({
@@ -33,6 +34,7 @@ export function IndexCard({
   id,
   toggleTitle,
   titleChildren,
+  toggleDisabled = false,
 }: IndexCardProps) {
   const Component = as;
 
@@ -178,6 +180,7 @@ export function IndexCard({
                 <input
                   type="checkbox"
                   checked={enabled}
+                  disabled={toggleDisabled}
                   onChange={(e) => onToggle(e.target.checked)}
                 />
                 <span className="toggle-slider"></span>

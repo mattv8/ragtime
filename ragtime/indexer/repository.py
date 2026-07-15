@@ -17,6 +17,7 @@ from typing import Any, List, Optional, cast
 
 from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
+from prisma.enums import IndexJobPhase as PrismaIndexJobPhase
 from prisma.enums import IndexStatus as PrismaIndexStatus
 from prisma.enums import ToolType as PrismaToolType
 from prisma.enums import VectorStoreType as PrismaVectorStoreType
@@ -129,6 +130,7 @@ from ragtime.indexer.models import (
     ConversationSummaryResponse,
     IndexConfig,
     IndexJob,
+    IndexJobPhase,
     IndexStatus,
     MessageSnapshotRestore,
     OcrMode,
@@ -507,6 +509,11 @@ def _to_prisma_index_status(status: IndexStatus) -> PrismaIndexStatus:
     return PrismaIndexStatus(status.value)
 
 
+def _to_prisma_index_job_phase(phase: IndexJobPhase) -> PrismaIndexJobPhase:
+    """Convert model IndexJobPhase to Prisma IndexJobPhase."""
+    return PrismaIndexJobPhase(phase.value)
+
+
 def _to_prisma_tool_type(tool_type: ToolType) -> PrismaToolType:
     """Convert model ToolType to Prisma ToolType."""
     return PrismaToolType(tool_type.value)
@@ -571,6 +578,7 @@ class IndexerRepository:
             "id": job.id,
             "name": job.name,
             "status": _to_prisma_index_status(job.status),
+            "phase": _to_prisma_index_job_phase(job.phase),
             "sourceType": job.source_type,
             "sourcePath": job.source_path,
             "gitUrl": job.git_url,
@@ -619,6 +627,7 @@ class IndexerRepository:
             where={"id": job.id},
             data={  # type: ignore[arg-type]
                 "status": _to_prisma_index_status(job.status),
+                "phase": _to_prisma_index_job_phase(job.phase),
                 "totalFiles": job.total_files,
                 "processedFiles": job.processed_files,
                 "totalChunks": job.total_chunks,
@@ -655,6 +664,20 @@ class IndexerRepository:
         if prisma_job:
             return self._prisma_job_to_model(prisma_job)
         return None
+
+    async def list_active_index_names(self) -> set[str]:
+        """List index names with pending or processing jobs."""
+        db = await self._get_db()
+        rows = await db.indexjob.find_many(
+            where={
+                "OR": [
+                    {"status": PrismaIndexStatus.pending},
+                    {"status": PrismaIndexStatus.processing},
+                ]
+            },
+            distinct=["name"],
+        )
+        return {row.name for row in rows}
 
     async def count_completed_jobs(self, name: str) -> int:
         """Count how many successfully completed jobs exist for an index name."""
@@ -712,6 +735,7 @@ class IndexerRepository:
             id=prisma_job.id,
             name=prisma_job.name,
             status=IndexStatus(prisma_job.status),
+            phase=IndexJobPhase(prisma_job.phase),
             config=config,
             source_type=prisma_job.sourceType,
             source_path=prisma_job.sourcePath,

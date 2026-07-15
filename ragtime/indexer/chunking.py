@@ -83,6 +83,10 @@ _WORKER_SIGKILL_GRACE_SECONDS = 0.5
 # Smaller values react faster to cancellation but add wakeup overhead.
 _POOL_CLOSED_POLL_SECONDS = 0.5
 
+# Bound how long one submitted wave may wait before falling back to recursive
+# chunking for that entire wave and recreating the per-job pool.
+_CHUNKING_WAVE_TIMEOUT_SECONDS = 300.0
+
 
 class ChunkingPoolError(RuntimeError):
     """Raised when a chunking pool is unavailable (closed, terminated, or its
@@ -1138,13 +1142,34 @@ async def chunk_documents_parallel(
 
         # Await all futures in this wave concurrently, with shutdown detection.
         try:
-            results = await _await_pool_futures_or_closed(futures, pool)
+            results = await asyncio.wait_for(
+                _await_pool_futures_or_closed(futures, pool),
+                timeout=_CHUNKING_WAVE_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
             for future in futures:
                 future.cancel()
             logger.info(f"Chunking cancelled; terminating active workers for pool '{pool.key}'")
             pool_manager.release(pool.key, terminate_workers=True)
             raise
+        except asyncio.TimeoutError:
+            for future in futures:
+                if not future.done():
+                    future.cancel()
+            logger.warning(
+                f"Chunking pool '{pool.key}' timed out after {_CHUNKING_WAVE_TIMEOUT_SECONDS:.1f}s while processing {len(wave_doc_data)} document(s); "
+                "terminating that pool, falling back to recursive chunking for the entire wave, and recreating the pool for later waves"
+            )
+            pool_manager.release(pool.key, terminate_workers=True)
+            fallback_result = await asyncio.to_thread(
+                _chunk_document_batch_recursive_sync,
+                wave_doc_data,
+                chunk_size,
+                chunk_overlap,
+                use_tokens,
+            )
+            results = [fallback_result]
+            pool = pool_manager.get_or_create(pool.key, pool.max_workers)
         except ChunkingPoolError:
             logger.warning(f"Chunking pool '{pool.key}' was terminated mid-wave")
             raise
