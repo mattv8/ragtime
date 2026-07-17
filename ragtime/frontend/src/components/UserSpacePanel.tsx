@@ -7706,25 +7706,54 @@ export function UserSpacePanel({
         setSavingShareLabel(false);
       }
     },
-    [activeShareLinkStatus?.id, activeWorkspaceId, applyWorkspaceShareStatus, canEditWorkspace],
+    [
+      activeShareLinkStatus?.id,
+      activeWorkspaceId,
+      applyWorkspaceShareStatus,
+      canEditWorkspace,
+    ],
   );
 
   const handleDeleteSelectedShareLink = useCallback(
     async (shareId: string) => {
       if (!activeWorkspaceId || !shareId || !canEditWorkspace) return;
 
+      const previousLinks = shareLinks;
+      const previousSelectedShareId = selectedShareId;
+      const ownerUsername =
+        previousLinks[0]?.owner_username ??
+        activeShareLinkStatus?.owner_username ??
+        shareLinkStatus?.owner_username ??
+        currentUser.username;
+      const remainingLinks = previousLinks.filter((link) => link.id !== shareId);
+
       setDeletingSelectedShareLink(true);
       try {
+        syncWorkspaceShareSelection(activeWorkspaceId, remainingLinks, ownerUsername);
         await api.deleteUserSpaceWorkspaceShareLink(activeWorkspaceId, shareId);
-        await loadShareLinkStatus();
         setError(null);
       } catch (err) {
+        syncWorkspaceShareSelection(
+          activeWorkspaceId,
+          previousLinks,
+          ownerUsername,
+          previousSelectedShareId,
+        );
         setError(err instanceof Error ? err.message : 'Failed to delete share link');
       } finally {
         setDeletingSelectedShareLink(false);
       }
     },
-    [activeWorkspaceId, canEditWorkspace, loadShareLinkStatus],
+    [
+      activeShareLinkStatus?.owner_username,
+      activeWorkspaceId,
+      canEditWorkspace,
+      currentUser.username,
+      selectedShareId,
+      shareLinkStatus?.owner_username,
+      shareLinks,
+      syncWorkspaceShareSelection,
+    ],
   );
 
   const shareSelectableUsers = useMemo(() => {

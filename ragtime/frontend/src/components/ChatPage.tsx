@@ -102,6 +102,7 @@ export function ChatPage({
   const [shareAnchorMessageIdx, setShareAnchorMessageIdx] = useState<number | null>(null);
   const [shareScopeDirection, setShareScopeDirection] = useState<'forward' | 'backward'>('forward');
   const shareSlugCheckRequestRef = useRef(0);
+  const selectedShareIdRef = useRef<string | null>(null);
 
   const formatUserLabel = useCallback(
     (user?: Pick<User, 'username' | 'display_name'> | null, fallbackId?: string) => {
@@ -139,7 +140,9 @@ export function ChatPage({
     ) => {
       const nextSelected =
         (preferredShareId ? links.find((candidate) => candidate.id === preferredShareId) : null) ||
-        (selectedShareId ? links.find((candidate) => candidate.id === selectedShareId) : null) ||
+        (selectedShareIdRef.current
+          ? links.find((candidate) => candidate.id === selectedShareIdRef.current)
+          : null) ||
         links[0] ||
         null;
 
@@ -171,8 +174,12 @@ export function ChatPage({
         },
       );
     },
-    [applyShareStatus, selectedShareId],
+    [applyShareStatus],
   );
+
+  useEffect(() => {
+    selectedShareIdRef.current = selectedShareId;
+  }, [selectedShareId]);
 
   const loadShareStatus = useCallback(
     async (conversationId: string, preferredShareId?: string | null) => {
@@ -610,12 +617,27 @@ export function ChatPage({
       if (!activeConversationId || !shareId) {
         return;
       }
+      const previousLinks = shareLinks;
+      const previousSelectedShareId = selectedShareId;
+      const previousShareStatus = shareStatus;
+      const ownerUsername =
+        previousShareStatus?.owner_username ||
+        previousLinks[0]?.owner_username ||
+        currentUser.username;
+      const remainingLinks = previousLinks.filter((link) => link.id !== shareId);
+
       setDeletingSelectedShareLink(true);
+      syncShareSelection(activeConversationId, remainingLinks, ownerUsername);
       try {
         await api.deleteConversationShareLink(activeConversationId, shareId);
-        await loadShareStatus(activeConversationId);
         showSuccessToast('Conversation share link deleted');
       } catch (error) {
+        syncShareSelection(
+          activeConversationId,
+          previousLinks,
+          ownerUsername,
+          previousSelectedShareId,
+        );
         const message =
           error instanceof Error ? error.message : 'Failed to delete conversation share link';
         showErrorToast(message);
@@ -623,7 +645,16 @@ export function ChatPage({
         setDeletingSelectedShareLink(false);
       }
     },
-    [activeConversationId, loadShareStatus, showErrorToast, showSuccessToast],
+    [
+      activeConversationId,
+      currentUser.username,
+      selectedShareId,
+      shareLinks,
+      shareStatus,
+      showErrorToast,
+      showSuccessToast,
+      syncShareSelection,
+    ],
   );
 
   const handleOpenShareLink = useCallback(async () => {

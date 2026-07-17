@@ -42,6 +42,7 @@ const apiMock = vi.hoisted(() => ({
   listConversationShareLinks: vi.fn(),
   listUsersDirectory: vi.fn().mockResolvedValue([]),
   createConversationShareLink: vi.fn(),
+  deleteConversationShareLink: vi.fn(),
   subscribeConversationShareLinkAnalytics: vi.fn(() => sseMock.createSource()),
 }));
 
@@ -74,6 +75,191 @@ afterEach(() => {
 });
 
 describe('ChatPage share link analytics', () => {
+  it('removes a deleted share link without reloading the list', async () => {
+    const user = userEvent.setup();
+    apiMock.listConversationShareLinks.mockResolvedValue({
+      conversation_id: 'conv-1',
+      owner_username: 'owner',
+      links: [
+        {
+          id: 'share-1',
+          conversation_id: 'conv-1',
+          has_share_link: true,
+          owner_username: 'owner',
+          label: 'Alpha link',
+          share_slug: 'alpha-link',
+          share_token: 'token-1',
+          share_url: 'https://example.com/owner/alpha-link',
+          anonymous_share_url: 'https://example.com/shared/token-1',
+          created_at: '2026-07-14T00:00:00Z',
+          share_access_mode: 'token',
+          selected_user_ids: [],
+          selected_ldap_groups: [],
+          has_password: false,
+          granted_role: 'viewer',
+          scope_anchor_message_idx: null,
+          scope_direction: null,
+          active_share_style: 'named',
+          public_hit_count: 0,
+          last_public_hit_at: null,
+        },
+        {
+          id: 'share-2',
+          conversation_id: 'conv-1',
+          has_share_link: true,
+          owner_username: 'owner',
+          label: 'Beta link',
+          share_slug: 'beta-link',
+          share_token: 'token-2',
+          share_url: 'https://example.com/owner/beta-link',
+          anonymous_share_url: 'https://example.com/shared/token-2',
+          created_at: '2026-07-14T00:05:00Z',
+          share_access_mode: 'token',
+          selected_user_ids: [],
+          selected_ldap_groups: [],
+          has_password: false,
+          granted_role: 'viewer',
+          scope_anchor_message_idx: null,
+          scope_direction: null,
+          active_share_style: 'named',
+          public_hit_count: 0,
+          last_public_hit_at: null,
+        },
+      ],
+    });
+    apiMock.deleteConversationShareLink.mockResolvedValue(undefined);
+
+    render(
+      <ChatPage
+        currentUser={{
+          id: 'user-1',
+          username: 'local:admin',
+          display_name: 'Admin',
+          email: null,
+          role: 'admin',
+          auth_provider: 'local',
+        }}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Open share modal' }));
+
+    expect(await screen.findByText('Alpha link')).toBeDefined();
+    expect(screen.getByText('Beta link')).toBeDefined();
+
+    await user.click(screen.getAllByRole('button', { name: 'Delete link' })[0]);
+    await user.click(await screen.findByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Alpha link')).toBeNull();
+      expect(screen.getByText('Beta link')).toBeDefined();
+    });
+
+    expect(apiMock.deleteConversationShareLink).toHaveBeenCalledWith('conv-1', 'share-1');
+    expect(apiMock.listConversationShareLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the original share links and shows an error when delete rolls back', async () => {
+    const user = userEvent.setup();
+    let rejectDelete: (reason?: unknown) => void = () => {
+      throw new Error('Delete promise was not initialized');
+    };
+    const deletePromise = new Promise<void>((_, reject) => {
+      rejectDelete = reject;
+    });
+
+    apiMock.listConversationShareLinks.mockResolvedValue({
+      conversation_id: 'conv-1',
+      owner_username: 'owner',
+      links: [
+        {
+          id: 'share-1',
+          conversation_id: 'conv-1',
+          has_share_link: true,
+          owner_username: 'owner',
+          label: 'Alpha link',
+          share_slug: 'alpha-link',
+          share_token: 'token-1',
+          share_url: 'https://example.com/owner/alpha-link',
+          anonymous_share_url: 'https://example.com/shared/token-1',
+          created_at: '2026-07-14T00:00:00Z',
+          share_access_mode: 'token',
+          selected_user_ids: [],
+          selected_ldap_groups: [],
+          has_password: false,
+          granted_role: 'viewer',
+          scope_anchor_message_idx: null,
+          scope_direction: null,
+          active_share_style: 'named',
+          public_hit_count: 0,
+          last_public_hit_at: null,
+        },
+        {
+          id: 'share-2',
+          conversation_id: 'conv-1',
+          has_share_link: true,
+          owner_username: 'owner',
+          label: 'Beta link',
+          share_slug: 'beta-link',
+          share_token: 'token-2',
+          share_url: 'https://example.com/owner/beta-link',
+          anonymous_share_url: 'https://example.com/shared/token-2',
+          created_at: '2026-07-14T00:05:00Z',
+          share_access_mode: 'token',
+          selected_user_ids: [],
+          selected_ldap_groups: [],
+          has_password: false,
+          granted_role: 'viewer',
+          scope_anchor_message_idx: null,
+          scope_direction: null,
+          active_share_style: 'named',
+          public_hit_count: 0,
+          last_public_hit_at: null,
+        },
+      ],
+    });
+    apiMock.deleteConversationShareLink.mockReturnValue(deletePromise);
+
+    render(
+      <ChatPage
+        currentUser={{
+          id: 'user-1',
+          username: 'local:admin',
+          display_name: 'Admin',
+          email: null,
+          role: 'admin',
+          auth_provider: 'local',
+        }}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Open share modal' }));
+
+    expect(await screen.findByText('Alpha link')).toBeDefined();
+    expect(screen.getByText('Beta link')).toBeDefined();
+
+    await user.click(screen.getAllByRole('button', { name: 'Delete link' })[0]);
+    await user.click(await screen.findByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Alpha link')).toBeNull();
+      expect(screen.getByText('Beta link')).toBeDefined();
+    });
+
+    rejectDelete(new Error('Delete failed'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Alpha link')).toBeDefined();
+      expect(screen.getByText('Beta link')).toBeDefined();
+      expect(
+        screen.getAllByRole('alert').some((alert) => alert.textContent?.includes('Delete failed')),
+      ).toBe(true);
+    });
+
+    expect(apiMock.deleteConversationShareLink).toHaveBeenCalledWith('conv-1', 'share-1');
+    expect(apiMock.listConversationShareLinks).toHaveBeenCalledTimes(1);
+  });
+
   it('renders click counts and merges analytics updates without clobbering local drafts', async () => {
     const user = userEvent.setup();
     apiMock.listConversationShareLinks.mockResolvedValue({

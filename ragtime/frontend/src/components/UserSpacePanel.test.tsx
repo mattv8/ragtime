@@ -27,6 +27,12 @@ const { previewApiMock } = vi.hoisted(() => ({
     authorizeUserSpaceBrowserSurfaces: vi.fn(),
     launchUserSpacePreview: vi.fn(),
     subscribeWorkspaceEvents: vi.fn(),
+    listUsersDirectory: vi.fn(),
+    getLdapConfig: vi.fn(),
+    discoverLdapWithStoredCredentials: vi.fn(),
+    listUserSpaceWorkspaceShareLinks: vi.fn(),
+    deleteUserSpaceWorkspaceShareLink: vi.fn(),
+    subscribeUserSpaceWorkspaceShareLinkAnalytics: vi.fn(),
   },
 }));
 
@@ -83,7 +89,32 @@ vi.mock('./shared/WorkspaceObjectStorageExplorer', () => ({
   WorkspaceObjectStorageExplorer: () => null,
 }));
 vi.mock('./shared/ShareLinkModal', () => ({
-  ShareLinkModal: () => null,
+  ShareLinkModal: ({
+    isOpen,
+    shareLinks,
+    onDeleteSelectedShareLink,
+  }: {
+    isOpen: boolean;
+    shareLinks: Array<{ id: string; label: string | null }>;
+    onDeleteSelectedShareLink: (shareId: string) => void;
+  }) =>
+    isOpen ? (
+      <div data-testid="share-link-modal">
+        {shareLinks.map((link) => (
+          <div key={link.id}>{link.label}</div>
+        ))}
+        <button
+          type="button"
+          onClick={() => {
+            if (shareLinks[0]) {
+              onDeleteSelectedShareLink(shareLinks[0].id);
+            }
+          }}
+        >
+          Delete first share
+        </button>
+      </div>
+    ) : null,
 }));
 vi.mock('./WorkspaceScmWizard', () => ({
   useWorkspaceScmWizardActivity: () => ({ hasActivity: false, syncState: null }),
@@ -150,6 +181,56 @@ const DEFAULT_CHAT_STATE = {
   has_live: false,
   has_interrupted: false,
 };
+
+const SHARE_LINKS_RESPONSE = {
+  owner_username: 'ada',
+  links: [
+    {
+      id: 'share-1',
+      workspace_id: 'ws-1',
+      has_share_link: true,
+      owner_username: 'ada',
+      label: 'Share one',
+      share_slug: 'share-one',
+      share_token: 'token-1',
+      share_url: 'https://example.test/share-one',
+      anonymous_share_url: 'https://example.test/a/share-one',
+      subdomain_share_url: null,
+      subdomain_share_enabled: false,
+      subdomain_share_disabled_reason: null,
+      created_at: '2026-07-14T00:00:00Z',
+      public_hit_count: 0,
+      last_public_hit_at: null,
+      share_access_mode: 'token',
+      selected_user_ids: [],
+      selected_ldap_groups: [],
+      has_password: false,
+      active_share_style: 'anonymous',
+    },
+    {
+      id: 'share-2',
+      workspace_id: 'ws-1',
+      has_share_link: true,
+      owner_username: 'ada',
+      label: 'Share two',
+      share_slug: 'share-two',
+      share_token: 'token-2',
+      share_url: 'https://example.test/share-two',
+      anonymous_share_url: 'https://example.test/a/share-two',
+      subdomain_share_url: null,
+      subdomain_share_enabled: false,
+      subdomain_share_disabled_reason: null,
+      created_at: '2026-07-14T00:00:00Z',
+      public_hit_count: 0,
+      last_public_hit_at: null,
+      share_access_mode: 'token',
+      selected_user_ids: [],
+      selected_ldap_groups: [],
+      has_password: false,
+      active_share_style: 'anonymous',
+    },
+  ],
+} as const;
 
 function setLayoutCookie(rightPaneCollapsed: boolean): void {
   document.cookie = `userspace_layout_${encodeURIComponent(CURRENT_USER.id)}=${encodeURIComponent(
@@ -275,6 +356,22 @@ beforeEach(() => {
     onmessage: null,
     onerror: null,
   });
+  previewApiMock.listUsersDirectory.mockResolvedValue([]);
+  previewApiMock.getLdapConfig.mockResolvedValue({ discovered_groups: [] });
+  previewApiMock.discoverLdapWithStoredCredentials.mockResolvedValue({
+    success: true,
+    groups: [],
+  });
+  previewApiMock.listUserSpaceWorkspaceShareLinks.mockResolvedValue({
+    owner_username: SHARE_LINKS_RESPONSE.owner_username,
+    links: SHARE_LINKS_RESPONSE.links.map((link) => ({ ...link })),
+  });
+  previewApiMock.deleteUserSpaceWorkspaceShareLink.mockResolvedValue(undefined);
+  previewApiMock.subscribeUserSpaceWorkspaceShareLinkAnalytics.mockReturnValue({
+    close: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
 });
 
 afterEach(() => {
@@ -344,4 +441,87 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     const previewSection = document.querySelector('.userspace-preview-section');
     expect(previewSection?.querySelector('.userspace-status-overlay')).toBeNull();
   });
+
+  it('removes the deleted share locally without reloading the share list', async () => {
+    await renderPanelWithRuntimeOverlay(false);
+
+    const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageShareButton).not.toBeNull();
+
+    (manageShareButton as HTMLButtonElement).click();
+
+    await waitFor(() => {
+      const modal = document.querySelector('[data-testid="share-link-modal"]');
+      expect(modal?.textContent?.includes('Share one')).toBe(true);
+      expect(modal?.textContent?.includes('Share two')).toBe(true);
+    });
+
+    const modal = document.querySelector('[data-testid="share-link-modal"]');
+    expect(modal).not.toBeNull();
+
+    const deleteFirstShareButton = Array.from(
+      (modal as HTMLElement).querySelectorAll('button'),
+    ).find((button) => button.textContent === 'Delete first share');
+    expect(deleteFirstShareButton).not.toBeNull();
+
+    (deleteFirstShareButton as HTMLButtonElement).click();
+
+    await waitFor(() => {
+      const currentModal = document.querySelector('[data-testid="share-link-modal"]');
+      expect(currentModal?.textContent?.includes('Share one')).toBe(false);
+    });
+
+    expect(
+      document
+        .querySelector('[data-testid="share-link-modal"]')
+        ?.textContent?.includes('Share two'),
+    ).toBe(true);
+    expect(previewApiMock.deleteUserSpaceWorkspaceShareLink).toHaveBeenCalledWith(
+      'ws-1',
+      'share-1',
+    );
+    expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores share links when delete fails without reloading the share list', async () => {
+    previewApiMock.deleteUserSpaceWorkspaceShareLink.mockRejectedValueOnce(
+      new Error('Delete share failed'),
+    );
+
+    await renderPanelWithRuntimeOverlay(false);
+
+    const manageShareButton = document.querySelector('[title="Manage share link"]');
+    expect(manageShareButton).not.toBeNull();
+
+    (manageShareButton as HTMLButtonElement).click();
+
+    await waitFor(() => {
+      const modal = document.querySelector('[data-testid="share-link-modal"]');
+      expect(modal?.textContent?.includes('Share one')).toBe(true);
+      expect(modal?.textContent?.includes('Share two')).toBe(true);
+    });
+
+    const modal = document.querySelector('[data-testid="share-link-modal"]');
+    expect(modal).not.toBeNull();
+
+    const deleteFirstShareButton = Array.from(
+      (modal as HTMLElement).querySelectorAll('button'),
+    ).find((button) => button.textContent === 'Delete first share');
+    expect(deleteFirstShareButton).not.toBeNull();
+
+    (deleteFirstShareButton as HTMLButtonElement).click();
+
+    await waitFor(() => {
+      const currentModal = document.querySelector('[data-testid="share-link-modal"]');
+      expect(currentModal?.textContent?.includes('Share one')).toBe(true);
+      expect(currentModal?.textContent?.includes('Share two')).toBe(true);
+    });
+
+    expect(previewApiMock.deleteUserSpaceWorkspaceShareLink).toHaveBeenCalledWith(
+      'ws-1',
+      'share-1',
+    );
+    expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
+  });
+
 });
