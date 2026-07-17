@@ -3,6 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
+const searchFilterBarSpy = vi.hoisted(() => vi.fn());
 const modalState = vi.hoisted(() => ({
   latestAllowedChatModelsProps: null as null | {
     title?: string;
@@ -46,7 +47,14 @@ vi.mock('./settings/ChatModelsSettingsSection', () => ({
 vi.mock('./settings/ServerBackupRestoreSettingsSection', () => ({
   ServerBackupRestoreSettingsSection: (props: unknown) => {
     serverBackupSectionSpy(props);
-    return <div>Server backup section</div>;
+    return (
+      <fieldset>
+        <legend>Server Backup & Restore</legend>
+        <div className="form-group">
+          <label>Encrypt backup archive</label>
+        </div>
+      </fieldset>
+    );
   },
 }));
 
@@ -73,12 +81,48 @@ vi.mock('./shared/Toast', () => ({
   useToast: () => [[], { success: vi.fn(), error: vi.fn(), clear: vi.fn() }] as const,
 }));
 
-vi.mock('./settings/SearchSettingsSection', () => ({ SearchSettingsSection: () => null }));
-vi.mock('./settings/AppearanceSettingsSection', () => ({ AppearanceSettingsSection: () => null }));
-vi.mock('./settings/SecuritySettingsSection', () => ({ SecuritySettingsSection: () => null }));
+vi.mock('./settings/SearchSettingsSection', () => ({
+  SearchSettingsSection: () => (
+    <fieldset>
+      <legend>Search Configuration</legend>
+      <div className="form-group">
+        <label>Results per Search (k)</label>
+      </div>
+      <details>
+        <summary>Advanced Settings</summary>
+        <div className="form-group">
+          <label>Archive Max Size</label>
+        </div>
+      </details>
+    </fieldset>
+  ),
+}));
+vi.mock('./settings/AppearanceSettingsSection', () => ({
+  AppearanceSettingsSection: () => (
+    <fieldset>
+      <legend>Appearance</legend>
+      <div className="form-group">
+        <label>Theme pack</label>
+      </div>
+    </fieldset>
+  ),
+}));
+vi.mock('./settings/SecuritySettingsSection', () => ({
+  SecuritySettingsSection: () => (
+    <fieldset>
+      <legend>Security</legend>
+      <div className="form-group">
+        <label>Minimum Password Length</label>
+      </div>
+    </fieldset>
+  ),
+}));
 vi.mock('./settings/McpSettingsSection', () => ({ McpSettingsSection: () => null }));
 vi.mock('./shared/SearchFilterBar', () => ({
-  SearchFilterBar: () => null,
+  SearchFilterBar: (props: unknown) => {
+    searchFilterBarSpy(props);
+    return null;
+  },
   normalizeSearchFilterText: (value: string) => value,
   searchFilterTextMatchesQuery: () => true,
   useUrlSearchFilterState: () => ({ queries: [] }),
@@ -87,6 +131,7 @@ vi.mock('./shared/AuthAdminModals', () => ({ AuthAdminModalHost: () => null }));
 
 beforeEach(() => {
   modalRenderSpy.mockClear();
+  searchFilterBarSpy.mockClear();
   serverBackupSectionSpy.mockClear();
   modalState.latestAllowedChatModelsProps = null;
 
@@ -149,7 +194,19 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('SettingsPanel server backup section wiring', () => {
+describe('SettingsPanel', () => {
+  it('renders the authentication provider selector as a form field, not an action row', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    const selector = await screen.findByDisplayValue('Internal Users');
+    const wrapper = selector.closest('div');
+
+    expect(wrapper?.classList.contains('form-group')).toBe(true);
+    expect(wrapper?.classList.contains('form-actions')).toBe(false);
+  });
+
   it('does not render an API-key warning from a stale unauthenticated status', async () => {
     const { SettingsPanel } = await import('./SettingsPanel');
 
@@ -267,6 +324,9 @@ describe('SettingsPanel server backup section wiring', () => {
 
   it('passes the server-backup accordion state and reminder callback through to the dedicated section', async () => {
     const onEncryptedArtifactDelivered = vi.fn();
+    const onServerBackupJobObserved = vi.fn();
+    const onServerRestoreJobObserved = vi.fn();
+    const onServerOperationError = vi.fn();
     const { SettingsPanel } = await import('./SettingsPanel');
 
     render(
@@ -280,6 +340,9 @@ describe('SettingsPanel server backup section wiring', () => {
           role: 'admin',
         }}
         onEncryptedArtifactDelivered={onEncryptedArtifactDelivered}
+        onServerBackupJobObserved={onServerBackupJobObserved}
+        onServerRestoreJobObserved={onServerRestoreJobObserved}
+        onServerOperationError={onServerOperationError}
       />,
     );
 
@@ -288,8 +351,45 @@ describe('SettingsPanel server backup section wiring', () => {
         expect.objectContaining({
           open: false,
           onEncryptedArtifactDelivered,
+          onServerBackupJobObserved,
+          onServerRestoreJobObserved,
+          onServerOperationError,
         }),
       );
+    });
+  });
+
+  it('passes deduplicated rendered settings search candidates into the shared search bar', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+    await screen.findByRole('button', { name: 'Open chat models' });
+
+    await waitFor(() => {
+      const latestCall = searchFilterBarSpy.mock.calls[
+        searchFilterBarSpy.mock.calls.length - 1
+      ]?.[0] as {
+        completionCandidates?: string[];
+      };
+
+      expect(latestCall?.completionCandidates).toEqual(
+        expect.arrayContaining([
+          'Search Configuration',
+          'Results per Search (k)',
+          'Advanced Settings',
+          'Appearance',
+          'Theme pack',
+          'Security',
+          'Minimum Password Length',
+          'Server Backup & Restore',
+          'Encrypt backup archive',
+          'OpenAI-Compatible API',
+          'Cloud Drive OAuth',
+        ]),
+      );
+      expect(
+        latestCall?.completionCandidates?.filter((value) => value === 'Search Configuration'),
+      ).toHaveLength(1);
     });
   });
 });

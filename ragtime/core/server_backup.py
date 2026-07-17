@@ -6,12 +6,14 @@ import getpass
 import json
 import os
 import shutil
+import string
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -28,7 +30,45 @@ DATA_DIR = Path(os.environ.get("INDEX_DATA_PATH", settings.index_data_path))
 PRISMA_DIR = Path("/ragtime/prisma")
 LOCK_PATH = Path(tempfile.gettempdir()) / "ragtime-server-backup.lock"
 MANIFEST_NAME = "backup-meta.json"
+DEPLOYMENT_ENV_NAME = "deployment-env.json"
 RESTORE_CONFIRMATION_PREFIX = "RESTORE"
+_DEPLOYMENT_ENV_IGNORED_NAMES = frozenset(
+    {
+        "_",
+        "HOME",
+        "HOSTNAME",
+        "PATH",
+        "PWD",
+        "OLDPWD",
+        "SHLVL",
+        "TERM",
+        "LANG",
+        "GPG_KEY",
+        "VIRTUAL_ENV",
+        "RAGTIME_VERSION",
+        "RAGTIME_LEGACY_CPU",
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITHUB_TOKEN",
+        "GITLAB_CI",
+        "CI_JOB_TOKEN",
+        "SSH_AUTH_SOCK",
+        "AWS_SESSION_TOKEN",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    }
+)
+_DEPLOYMENT_ENV_IGNORED_PREFIXES = (
+    "LC_",
+    "PYTHON",
+    "PIP_",
+    "UV_",
+    "RUNNER_",
+    "KUBERNETES_",
+    "RAGTIME_BRIDGE_",
+)
+_DEPLOYMENT_ENV_MAX_BYTES = 1024 * 1024
 
 
 class BackupError(RuntimeError):
@@ -96,6 +136,7 @@ class BackupManifest:
     schema_version: str
     encrypted: bool
     includes_managed_key: bool
+    deployment_environment_variables: list[str] = field(default_factory=list)
     legacy_embedded_key: bool = False
 
     def to_dict(self) -> dict[str, object]:
@@ -117,19 +158,87 @@ class BackupManifest:
             schema_version=str(payload.get("schema_version", "unknown")),
             encrypted=bool(payload.get("encrypted", False)),
             includes_managed_key=bool(payload.get("includes_managed_key", False)),
+            deployment_environment_variables=sorted(str(name) for name in payload.get("deployment_environment_variables", []) if isinstance(name, str)),
             legacy_embedded_key=bool(payload.get("legacy_embedded_key", False)),
         )
+
+
+@dataclass
+class DeploymentEnvironmentRecovery:
+    variables: dict[str, str]
+    variable_names: list[str]
+    warnings: list[str]
 
 
 ProgressCallback = Callable[[dict[str, object]], None]
 
 
-def _emit_progress(progress: Optional[ProgressCallback], phase: str, **details: object) -> None:
-    if progress is None:
+def _emit_progress(callback: Optional[ProgressCallback], phase: str, **details: object) -> None:
+    if callback is None:
         return
     event: dict[str, object] = {"phase": phase}
     event.update(details)
-    progress(event)
+    try:
+        callback(event)
+    except Exception as exc:
+        logger.warning("Backup progress callback failed during %s: %s", phase, exc)
+
+
+class _ItemProgressReporter:
+    def __init__(
+        self,
+        callback: Optional[ProgressCallback],
+        phase: str,
+        *,
+        start: int,
+        end: int,
+        total: int,
+        message: str,
+        min_interval: float = 0.25,
+    ) -> None:
+        self._callback = callback
+        self._phase = phase
+        self._start = start
+        self._end = end
+        self._total = total
+        self._message = message
+        self._min_interval = min_interval
+        self._last_emitted_at: Optional[float] = None
+
+    def update(self, item: str, processed: int, *, force: bool = False) -> None:
+        if self._callback is None or self._total <= 0:
+            return
+        now = time.monotonic()
+        should_emit = self._last_emitted_at is None or force
+        if not should_emit and self._last_emitted_at is not None:
+            should_emit = (now - self._last_emitted_at) >= self._min_interval
+        if not should_emit:
+            return
+
+        safe_item = item[2:] if item.startswith("./") else item
+        bounded_processed = max(0, min(processed, self._total))
+        if bounded_processed >= self._total:
+            progress_value = self._end
+        else:
+            span = max(self._end - self._start, 0)
+            progress_value = self._start + int((span * bounded_processed) / self._total)
+            if progress_value >= self._end:
+                progress_value = max(self._start, self._end - 1)
+
+        _emit_progress(
+            self._callback,
+            self._phase,
+            progress=progress_value,
+            message=self._message,
+            current_item=safe_item,
+            processed_items=bounded_processed,
+            total_items=self._total,
+        )
+        self._last_emitted_at = now
+
+
+def _iter_tree_entries(root: Path) -> list[Path]:
+    return sorted(root.rglob("*"))
 
 
 def _get_ragtime_version() -> str:
@@ -563,11 +672,18 @@ def _validate_member(member: tarfile.TarInfo) -> Path:
     return path
 
 
+def _is_relative_subpath(relative: Path, root_name: str) -> bool:
+    parts = relative.parts
+    return bool(parts) and parts[0] == root_name
+
+
 def _should_skip_data_path(relative: Path) -> bool:
     path = relative.as_posix()
     if path in {".encryption_key", ".jwt_secret"}:
         return True
     if path.startswith("_tmp"):
+        return True
+    if _is_relative_subpath(relative, "_server_backups"):
         return True
     if path.startswith("_userspace/workspaces/") and "/rootfs" in path:
         return True
@@ -580,37 +696,104 @@ def _write_manifest(tempdir: Path, manifest: BackupManifest) -> None:
     (tempdir / MANIFEST_NAME).write_text(json.dumps(manifest.to_dict(), sort_keys=True), encoding="utf-8")
 
 
-def _build_tarball(tempdir: Path, archive_path: Path) -> None:
+def _collect_deployment_environment_variables() -> dict[str, str]:
+    return {name: value for name, value in sorted(os.environ.items()) if _should_include_deployment_environment_name(name)}
+
+
+def _is_valid_environment_name(name: str) -> bool:
+    if not name or not name.isascii():
+        return False
+    allowed_start = string.ascii_letters + "_"
+    allowed_rest = allowed_start + string.digits
+    return name[0] in allowed_start and all(character in allowed_rest for character in name[1:])
+
+
+def _should_include_deployment_environment_name(name: str) -> bool:
+    return _is_valid_environment_name(name) and name not in _DEPLOYMENT_ENV_IGNORED_NAMES and not name.startswith(_DEPLOYMENT_ENV_IGNORED_PREFIXES)
+
+
+def _write_deployment_environment(tempdir: Path, variables: dict[str, str]) -> None:
+    payload = {"version": 1, "variables": variables}
+    (tempdir / DEPLOYMENT_ENV_NAME).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+
+def _build_tarball(
+    tempdir: Path,
+    archive_path: Path,
+    *,
+    progress: Optional[ProgressCallback] = None,
+    progress_start: int = 0,
+    progress_end: int = 0,
+    progress_message: str = "",
+) -> int:
+    eligible_children = [child for child in _iter_tree_entries(tempdir) if (child.is_symlink() or not child.is_dir()) and child != archive_path]
+    reporter = _ItemProgressReporter(
+        progress,
+        "archive_build_start",
+        start=progress_start,
+        end=progress_end,
+        total=len(eligible_children),
+        message=progress_message,
+    )
+    item_count = 0
     with tarfile.open(archive_path, "w:gz") as archive:
-        for child in sorted(tempdir.rglob("*")):
-            if child.is_dir():
-                continue
+        for child in eligible_children:
             archive.add(child, arcname=child.relative_to(tempdir).as_posix(), recursive=False)
+            item_count += 1
+            reporter.update(child.relative_to(tempdir).as_posix(), item_count, force=item_count == len(eligible_children))
+    return item_count
 
 
-def _extract_archive(archive_path: Path, destination_dir: Path) -> tuple[BackupManifest, set[str]]:
+def _extract_archive(
+    archive_path: Path,
+    destination_dir: Path,
+    *,
+    progress: Optional[ProgressCallback] = None,
+    progress_phase: str = "archive_extract_start",
+    progress_start: int = 0,
+    progress_end: int = 0,
+    progress_message: str = "",
+) -> tuple[BackupManifest, set[str], dict[str, int]]:
     with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        reporter = _ItemProgressReporter(
+            progress,
+            progress_phase,
+            start=progress_start,
+            end=progress_end,
+            total=len(members),
+            message=progress_message,
+        )
         names: set[str] = set()
-        for member in archive.getmembers():
+        member_count = 0
+        data_item_count = 0
+        for member in members:
             relative = _validate_member(member)
             names.add(relative.as_posix())
+            member_count += 1
+            if relative.parts and relative.parts[0] in {"data", "faiss"} and not member.isdir():
+                data_item_count += 1
             target = destination_dir / relative
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
+                reporter.update(relative.as_posix(), member_count, force=member_count == len(members))
                 continue
             if member.issym():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists() or target.is_symlink():
                     target.unlink()
                 target.symlink_to(member.linkname)
+                reporter.update(relative.as_posix(), member_count, force=member_count == len(members))
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             extracted = archive.extractfile(member)
             if extracted is None:
                 target.touch()
+                reporter.update(relative.as_posix(), member_count, force=member_count == len(members))
                 continue
             with extracted, target.open("wb") as handle:
                 shutil.copyfileobj(extracted, handle)
+            reporter.update(relative.as_posix(), member_count, force=member_count == len(members))
 
     manifest_path = destination_dir / MANIFEST_NAME
     if manifest_path.exists():
@@ -631,6 +814,7 @@ def _extract_archive(archive_path: Path, destination_dir: Path) -> tuple[BackupM
             schema_version="unknown",
             encrypted=False,
             includes_managed_key=legacy_key,
+            deployment_environment_variables=[],
             legacy_embedded_key=legacy_key,
         )
 
@@ -638,7 +822,7 @@ def _extract_archive(archive_path: Path, destination_dir: Path) -> tuple[BackupM
     if not manifest.encrypted and legacy_key:
         manifest.legacy_embedded_key = True
         manifest.includes_managed_key = True
-    return manifest, names
+    return manifest, names, {"member_count": member_count, "data_item_count": data_item_count}
 
 
 def _spool_stream(stream: BinaryIO, destination: Path) -> None:
@@ -674,18 +858,30 @@ def _prepare_archive(source: Optional[Path], stream: Optional[BinaryIO], passwor
         raise
 
 
-def _snapshot_directory(target: Path, snapshot_root: Path) -> Path:
+def _snapshot_directory(
+    target: Path,
+    snapshot_root: Path,
+    *,
+    progress: Optional[ProgressCallback] = None,
+    progress_start: int = 0,
+    progress_end: int = 0,
+    progress_message: str = "",
+) -> tuple[Path, int]:
     snapshot_path = snapshot_root / "data-snapshot"
     snapshot_path.mkdir(parents=True, exist_ok=True)
     if not target.exists():
-        return snapshot_path
-    for child in target.iterdir():
-        destination = snapshot_path / child.name
-        if child.is_dir() and not child.is_symlink():
-            shutil.copytree(child, destination, symlinks=True)
-        else:
-            shutil.copy2(child, destination, follow_symlinks=False)
-    return snapshot_path
+        return snapshot_path, 0
+    item_count = _copy_tree_contents(
+        target,
+        snapshot_path,
+        replace=False,
+        progress=progress,
+        progress_phase="data_snapshot_start",
+        progress_start=progress_start,
+        progress_end=progress_end,
+        progress_message=progress_message,
+    )
+    return snapshot_path, item_count
 
 
 def _restore_snapshot(snapshot_path: Path, target: Path) -> None:
@@ -705,15 +901,36 @@ def _restore_snapshot(snapshot_path: Path, target: Path) -> None:
             shutil.copy2(child, destination, follow_symlinks=False)
 
 
-def _copy_tree_contents(source_dir: Path, destination_dir: Path, *, replace: bool) -> None:
+def _copy_tree_contents(
+    source_dir: Path,
+    destination_dir: Path,
+    *,
+    replace: bool,
+    progress: Optional[ProgressCallback] = None,
+    progress_phase: str = "files_restore_start",
+    progress_start: int = 0,
+    progress_end: int = 0,
+    progress_message: str = "",
+) -> int:
     destination_dir.mkdir(parents=True, exist_ok=True)
+    all_children = _iter_tree_entries(source_dir)
+    total_items = sum(1 for child in all_children if not child.is_dir() or child.is_symlink())
+    reporter = _ItemProgressReporter(
+        progress,
+        progress_phase,
+        start=progress_start,
+        end=progress_end,
+        total=total_items,
+        message=progress_message,
+    )
+    item_count = 0
     if replace:
         for child in list(destination_dir.iterdir()):
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
                 child.unlink()
-    for child in source_dir.rglob("*"):
+    for child in all_children:
         relative = child.relative_to(source_dir)
         target = destination_dir / relative
         if child.is_dir() and not child.is_symlink():
@@ -723,9 +940,55 @@ def _copy_tree_contents(source_dir: Path, destination_dir: Path, *, replace: boo
             if target.exists() or target.is_symlink():
                 target.unlink()
             target.symlink_to(os.readlink(child))
+            item_count += 1
+            reporter.update(relative.as_posix(), item_count, force=item_count == total_items)
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(child, target)
+            item_count += 1
+            reporter.update(relative.as_posix(), item_count, force=item_count == total_items)
+    return item_count
+
+
+def _copy_backup_data_tree(
+    source_dir: Path,
+    destination_dir: Path,
+    *,
+    progress: Optional[ProgressCallback] = None,
+    progress_start: int = 0,
+    progress_end: int = 0,
+    progress_message: str = "",
+) -> int:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    all_children = [child for child in _iter_tree_entries(source_dir) if not _should_skip_data_path(child.relative_to(source_dir))]
+    total_items = sum(1 for child in all_children if not child.is_dir() or child.is_symlink())
+    reporter = _ItemProgressReporter(
+        progress,
+        "files_collect_start",
+        start=progress_start,
+        end=progress_end,
+        total=total_items,
+        message=progress_message,
+    )
+    item_count = 0
+    for child in all_children:
+        relative = child.relative_to(source_dir)
+        target = destination_dir / relative
+        if child.is_dir() and not child.is_symlink():
+            target.mkdir(parents=True, exist_ok=True)
+        elif child.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            target.symlink_to(os.readlink(child))
+            item_count += 1
+            reporter.update(relative.as_posix(), item_count, force=item_count == total_items)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(child, target)
+            item_count += 1
+            reporter.update(relative.as_posix(), item_count, force=item_count == total_items)
+    return item_count
 
 
 def _resolve_data_source(extract_dir: Path) -> Optional[Path]:
@@ -736,38 +999,101 @@ def _resolve_data_source(extract_dir: Path) -> Optional[Path]:
     return None
 
 
+def _parse_deployment_environment_payload(payload: object) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        raise BackupValidationError("Deployment environment payload is invalid")
+    version = payload.get("version")
+    if version != 1:
+        raise BackupValidationError("Deployment environment payload version is invalid")
+    variables = payload.get("variables")
+    if not isinstance(variables, dict):
+        raise BackupValidationError("Deployment environment variables are invalid")
+    parsed: dict[str, str] = {}
+    for name, value in variables.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise BackupValidationError("Deployment environment variables are invalid")
+        if not _is_valid_environment_name(name):
+            raise BackupValidationError("Deployment environment variable has an invalid name")
+        parsed[name] = value
+    return {name: parsed[name] for name in sorted(parsed)}
+
+
+def _load_deployment_environment_payload(payload_bytes: bytes) -> dict[str, str]:
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BackupValidationError("Backup archive contains an invalid deployment environment payload") from exc
+    return _parse_deployment_environment_payload(payload)
+
+
+def _managed_key_source_path(extract_dir: Path) -> Optional[Path]:
+    for candidate in (extract_dir / "data" / ".encryption_key", extract_dir / ".encryption_key", extract_dir / "faiss" / ".encryption_key"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _install_database_only_managed_key(extract_dir: Path) -> None:
+    source = _managed_key_source_path(extract_dir)
+    if source is None:
+        raise BackupValidationError("Backup archive does not contain a managed encryption key")
+    if source.is_symlink() or not source.is_file():
+        raise BackupValidationError("Backup archive contains an invalid managed encryption key")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    destination = DATA_DIR / ".encryption_key"
+    with tempfile.NamedTemporaryFile(dir=DATA_DIR, prefix=".encryption_key.", delete=False) as handle:
+        temp_path = Path(handle.name)
+    try:
+        shutil.copyfile(source, temp_path)
+        temp_path.chmod(0o600)
+        os.replace(temp_path, destination)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] = None) -> BackupManifest:
     password = _read_password(options.password_fd, prompt="Backup password: ") if options.encrypt else None
     with _locked_operation(), tempfile.TemporaryDirectory(prefix="ragtime-server-backup-build-") as tmpdir:
         root = Path(tmpdir)
-        _emit_progress(progress, "start", scope=options.scope.value, encrypted=options.encrypt)
+        _emit_progress(progress, "start", progress=5, message="Preparing backup", scope=options.scope.value, encrypted=options.encrypt)
 
         if options.scope in {BackupScope.FULL, BackupScope.DATABASE}:
-            _emit_progress(progress, "database_dump")
+            _emit_progress(progress, "database_dump_start", progress=15, message="Dumping database")
             _dump_database(root / "database.dump")
+            _emit_progress(progress, "database_dump_complete", progress=25, message="Database dump complete", item_count=1)
 
         includes_managed_key = options.encrypt and ENCRYPTION_KEY_FILE.exists()
+        copied_data_items = 0
         if options.scope in {BackupScope.FULL, BackupScope.FILES} or includes_managed_key:
             data_root = root / "data"
             data_root.mkdir(parents=True, exist_ok=True)
             if DATA_DIR.exists() and options.scope in {BackupScope.FULL, BackupScope.FILES}:
-                for child in DATA_DIR.rglob("*"):
-                    relative = child.relative_to(DATA_DIR)
-                    if _should_skip_data_path(relative):
-                        continue
-                    target = data_root / relative
-                    if child.is_dir() and not child.is_symlink():
-                        target.mkdir(parents=True, exist_ok=True)
-                    elif child.is_symlink():
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        if target.exists() or target.is_symlink():
-                            target.unlink()
-                        target.symlink_to(os.readlink(child))
-                    else:
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(child, target)
+                files_collect_message = "Copying data files"
+                _emit_progress(progress, "files_collect_start", progress=35, message=files_collect_message)
+                copied_data_items = _copy_backup_data_tree(
+                    DATA_DIR,
+                    data_root,
+                    progress=progress,
+                    progress_start=35,
+                    progress_end=55,
+                    progress_message=files_collect_message,
+                )
+                _emit_progress(
+                    progress,
+                    "files_collect_complete",
+                    progress=55,
+                    message=f"Copied {copied_data_items} data item{'s' if copied_data_items != 1 else ''}",
+                    item_count=copied_data_items,
+                )
             if includes_managed_key:
                 shutil.copy2(ENCRYPTION_KEY_FILE, data_root / ".encryption_key")
+
+        deployment_environment_variables = []
+        if options.encrypt and options.scope == BackupScope.FULL:
+            deployment_environment = _collect_deployment_environment_variables()
+            deployment_environment_variables = sorted(deployment_environment)
+            _write_deployment_environment(root, deployment_environment)
 
         manifest = BackupManifest(
             format="ragbak" if options.encrypt else "tar.gz",
@@ -778,13 +1104,24 @@ def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] =
             schema_version=_get_current_schema_version(),
             encrypted=options.encrypt,
             includes_managed_key=includes_managed_key,
+            deployment_environment_variables=deployment_environment_variables,
             legacy_embedded_key=False,
         )
+        _emit_progress(progress, "manifest_write", progress=65, message="Backup manifest written")
         _write_manifest(root, manifest)
 
         archive_path = root / "backup.tar.gz"
-        _emit_progress(progress, "archive")
-        _build_tarball(root, archive_path)
+        archive_build_message = "Compressing staged database dump, data files, and manifest into a gzip-compressed tar archive"
+        _emit_progress(progress, "archive_build_start", progress=75, message=archive_build_message)
+        archive_item_count = _build_tarball(
+            root,
+            archive_path,
+            progress=progress,
+            progress_start=75,
+            progress_end=85,
+            progress_message=archive_build_message,
+        )
+        _emit_progress(progress, "archive_build_complete", progress=85, message="Backup archive built", item_count=archive_item_count)
 
         destination: BinaryIO
         close_destination = False
@@ -798,25 +1135,47 @@ def create_backup(options: BackupOptions, progress: Optional[ProgressCallback] =
 
         try:
             with archive_path.open("rb") as source_handle:
+                _emit_progress(progress, "output_write_start", progress=90, message="Writing backup artifact")
                 if options.encrypt:
                     encrypt_stream(source_handle, destination, password or "")
                 else:
                     shutil.copyfileobj(source_handle, destination)
+                _emit_progress(progress, "output_write_complete", progress=95, message="Backup artifact written")
         finally:
             if close_destination:
                 destination.close()
 
-        _emit_progress(progress, "complete", format=manifest.format)
+        _emit_progress(progress, "complete", progress=100, message="Backup ready for download", format=manifest.format)
         return manifest
 
 
-def inspect_backup(path, password: Optional[str] = None) -> BackupManifest:
+def inspect_backup(path, password: Optional[str] = None, progress: Optional[ProgressCallback] = None) -> BackupManifest:
     try:
+        _emit_progress(progress, "archive_prepare", progress=5, message="Preparing restore archive")
         archive_path, tempdir = _prepare_archive(Path(path), None, password)
         try:
             extract_dir = Path(tempdir.name) / "inspect"
             extract_dir.mkdir()
-            manifest, _ = _extract_archive(archive_path, extract_dir)
+            archive_extract_message = "Extracting restore archive"
+            _emit_progress(progress, "archive_extract_start", progress=15, message=archive_extract_message)
+            manifest, _, stats = _extract_archive(
+                archive_path,
+                extract_dir,
+                progress=progress,
+                progress_phase="archive_extract_start",
+                progress_start=15,
+                progress_end=20,
+                progress_message=archive_extract_message,
+            )
+            _emit_progress(
+                progress,
+                "archive_extract_complete",
+                progress=20,
+                message="Restore archive extracted",
+                item_count=stats["member_count"],
+                data_item_count=stats["data_item_count"],
+            )
+            _emit_progress(progress, "validation_complete", progress=40, message="Restore validated; confirmation required")
             return manifest
         finally:
             tempdir.cleanup()
@@ -824,13 +1183,70 @@ def inspect_backup(path, password: Optional[str] = None) -> BackupManifest:
         raise BackupValidationError(str(exc)) from exc
 
 
+def recover_deployment_environment(path: Path, password: str) -> DeploymentEnvironmentRecovery:
+    archive_path, tempdir = _prepare_archive(path, None, password)
+    try:
+        deployment_payload: Optional[dict[str, str]] = None
+        with tarfile.open(archive_path, "r:gz") as archive:
+            for member in archive.getmembers():
+                relative = _validate_member(member)
+                if relative.as_posix() != DEPLOYMENT_ENV_NAME:
+                    continue
+                if deployment_payload is not None:
+                    raise BackupValidationError("Backup archive contains duplicate deployment environment payloads")
+                if not member.isreg():
+                    raise BackupValidationError("Backup archive contains an invalid deployment environment payload")
+                if member.size > _DEPLOYMENT_ENV_MAX_BYTES:
+                    raise BackupValidationError("Deployment environment payload exceeds the maximum supported size")
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise BackupValidationError("Backup archive contains an invalid deployment environment payload")
+                with extracted:
+                    payload_bytes = extracted.read(_DEPLOYMENT_ENV_MAX_BYTES + 1)
+                if len(payload_bytes) > _DEPLOYMENT_ENV_MAX_BYTES:
+                    raise BackupValidationError("Deployment environment payload exceeds the maximum supported size")
+                deployment_payload = _load_deployment_environment_payload(payload_bytes)
+        if deployment_payload is None:
+            raise BackupValidationError("Backup archive does not contain a deployment environment payload")
+        variable_names = sorted(deployment_payload)
+        warnings = []
+        if "DATABASE_URL" in deployment_payload:
+            warnings.append("Recovered deployment environment includes DATABASE_URL; verify it before applying to another deployment.")
+        if "POSTGRES_PASSWORD" in deployment_payload:
+            warnings.append("Recovered deployment environment includes POSTGRES_PASSWORD; verify it before applying to another deployment.")
+        return DeploymentEnvironmentRecovery(variables=deployment_payload, variable_names=variable_names, warnings=warnings)
+    except (BackupCryptoError, tarfile.TarError, OSError) as exc:
+        raise BackupValidationError(str(exc)) from exc
+    finally:
+        tempdir.cleanup()
+
+
 def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback] = None) -> BackupManifest:
     password = _read_password(options.password_fd, prompt="Backup password: ") if options.password_fd is not None else None
     try:
+        _emit_progress(progress, "archive_prepare", progress=41, message="Preparing restore archive")
         archive_path, tempdir = _prepare_archive(options.archive_path, options.archive_stream, password)
         extract_dir = Path(tempdir.name) / "extract"
         extract_dir.mkdir()
-        manifest, names = _extract_archive(archive_path, extract_dir)
+        archive_extract_message = "Extracting restore archive"
+        _emit_progress(progress, "archive_extract_start", progress=42, message=archive_extract_message)
+        manifest, names, extract_stats = _extract_archive(
+            archive_path,
+            extract_dir,
+            progress=progress,
+            progress_phase="archive_extract_start",
+            progress_start=42,
+            progress_end=43,
+            progress_message=archive_extract_message,
+        )
+        _emit_progress(
+            progress,
+            "archive_extract_complete",
+            progress=44,
+            message="Restore archive extracted",
+            item_count=extract_stats["member_count"],
+            data_item_count=extract_stats["data_item_count"],
+        )
         restore_scope = options.scope_override or manifest.scope
         data_source = _resolve_data_source(extract_dir)
         if manifest.legacy_embedded_key and not options.acknowledge_legacy_key:
@@ -845,6 +1261,7 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
             raise BackupValidationError("Backup archive does not contain a database dump")
         if restore_scope in {BackupScope.FULL, BackupScope.FILES} and data_source is None:
             raise BackupValidationError("Backup archive does not contain data files")
+        _emit_progress(progress, "validation_complete", progress=44, message="Restore validated; confirmation required", scope=restore_scope.value)
     except (BackupCryptoError, tarfile.TarError, OSError, json.JSONDecodeError) as exc:
         raise BackupValidationError(str(exc)) from exc
 
@@ -853,33 +1270,72 @@ def restore_backup(options: RestoreOptions, progress: Optional[ProgressCallback]
     db_mutated = False
     try:
         with _locked_operation():
-            _emit_progress(progress, "start", scope=restore_scope.value)
+            _emit_progress(progress, "start", progress=45, message="Starting restore", scope=restore_scope.value)
             if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
-                snapshot_path = _snapshot_directory(DATA_DIR, Path(tempdir.name))
+                snapshot_message = "Creating data safety snapshot"
+                _emit_progress(progress, "data_snapshot_start", progress=48, message=snapshot_message)
+                snapshot_path, snapshot_count = _snapshot_directory(
+                    DATA_DIR,
+                    Path(tempdir.name),
+                    progress=progress,
+                    progress_start=48,
+                    progress_end=50,
+                    progress_message=snapshot_message,
+                )
+                _emit_progress(progress, "data_snapshot_complete", progress=50, message="Created data safety snapshot", item_count=snapshot_count)
             if restore_scope in {BackupScope.FULL, BackupScope.DATABASE}:
                 database_safety_dump_path = Path(tempdir.name) / "database-safety.dump"
+                _emit_progress(progress, "database_safety_dump_start", progress=55, message="Creating database safety dump")
                 _create_database_safety_dump(database_safety_dump_path)
+                _emit_progress(progress, "database_safety_dump_complete", progress=60, message="Created database safety dump", item_count=1)
 
             if restore_scope in {BackupScope.FULL, BackupScope.DATABASE}:
-                _emit_progress(progress, "database_restore")
+                _emit_progress(progress, "database_restore_start", progress=65, message="Restoring database")
                 _terminate_other_database_connections()
                 _restore_database(extract_dir / "database.dump", data_only=options.pg_data_only)
+                _emit_progress(progress, "database_restore_complete", progress=70, message="Database restore complete")
                 db_mutated = True
                 if not options.skip_migrations and not options.pg_data_only:
+                    _emit_progress(progress, "database_migrations_start", progress=75, message="Applying database migrations")
                     _run_migrations()
+                    _emit_progress(progress, "database_migrations_complete", progress=80, message="Database migrations applied")
                 if options.mirror_local_admin_access:
                     _mirror_local_admin_access(options.mirror_local_admin_from, options.local_admin_username)
+                    _emit_progress(progress, "admin_access_mirror", progress=85, message="Local admin access mirrored")
                 _invalidate_restored_runtime_sessions()
+                _emit_progress(progress, "runtime_sessions_invalidate", progress=88, message="Restored runtime sessions invalidated")
+                if restore_scope == BackupScope.DATABASE and manifest.includes_managed_key:
+                    _install_database_only_managed_key(extract_dir)
 
             if restore_scope in {BackupScope.FULL, BackupScope.FILES}:
-                _emit_progress(progress, "files_restore")
-                _copy_tree_contents(data_source, DATA_DIR, replace=options.replace_data)  # type: ignore[arg-type]
+                files_restore_message = "Restoring data files"
+                _emit_progress(progress, "files_restore_start", progress=90, message=files_restore_message)
+                if data_source is None:
+                    raise BackupValidationError("Backup archive does not contain data files")
+                restored_items = _copy_tree_contents(
+                    data_source,
+                    DATA_DIR,
+                    replace=options.replace_data,
+                    progress=progress,
+                    progress_phase="files_restore_start",
+                    progress_start=90,
+                    progress_end=95,
+                    progress_message=files_restore_message,
+                )
+                _emit_progress(
+                    progress,
+                    "files_restore_complete",
+                    progress=95,
+                    message=f"Restored {restored_items} data item{'s' if restored_items != 1 else ''}",
+                    item_count=restored_items,
+                )
                 _invalidate_restored_workspace_runtime_artifacts()
+                _emit_progress(progress, "workspace_runtime_invalidate", progress=97, message="Workspace runtime artifacts invalidated")
                 key_path = DATA_DIR / ".encryption_key"
                 if key_path.exists():
                     key_path.chmod(0o600)
 
-            _emit_progress(progress, "complete", scope=restore_scope.value)
+            _emit_progress(progress, "complete", progress=100, message="Restore completed", scope=restore_scope.value)
             if options.scope_override is not None:
                 manifest.scope = options.scope_override
             return manifest

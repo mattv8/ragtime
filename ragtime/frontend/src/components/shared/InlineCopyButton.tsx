@@ -17,14 +17,19 @@ interface InlineCopyButtonProps {
   disabled?: boolean;
   iconSize?: number;
   feedbackMs?: number;
+  allowDomFallback?: boolean;
   onCopySuccess?: () => void;
   onCopyError?: (error: Error) => void;
 }
 
-async function writeTextToClipboard(value: string): Promise<void> {
+async function writeTextToClipboard(value: string, allowDomFallback: boolean): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
     return;
+  }
+
+  if (!allowDomFallback) {
+    throw new Error('Clipboard copy is unavailable in this browser.');
   }
 
   const textarea = document.createElement('textarea');
@@ -57,6 +62,7 @@ export function InlineCopyButton({
   disabled = false,
   iconSize = 14,
   feedbackMs = 1500,
+  allowDomFallback = true,
   onCopySuccess,
   onCopyError,
 }: InlineCopyButtonProps) {
@@ -78,11 +84,11 @@ export function InlineCopyButton({
 
     try {
       const value = typeof copyText === 'function' ? await copyText() : copyText;
-      if (!value) {
+      if (value == null) {
         return;
       }
 
-      await writeTextToClipboard(value);
+      await writeTextToClipboard(value, allowDomFallback);
       onCopySuccess?.();
       setCopied(true);
       if (resetTimerRef.current !== null) {
@@ -95,7 +101,7 @@ export function InlineCopyButton({
     } catch (error) {
       onCopyError?.(error instanceof Error ? error : new Error('Failed to copy'));
     }
-  }, [copyText, disabled, feedbackMs, onCopyError, onCopySuccess]);
+  }, [allowDomFallback, copyText, disabled, feedbackMs, onCopyError, onCopySuccess]);
 
   return (
     <button

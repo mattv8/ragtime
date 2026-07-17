@@ -1,6 +1,7 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ragtime.core.security import require_admin
@@ -42,6 +43,11 @@ async def create_backup_job(request: CreateBackupJobRequest, _user: Any = Depend
     )
 
 
+@router.get("/active-jobs")
+async def get_active_jobs(_user: Any = Depends(require_admin)):
+    return await server_backup_service.get_active_jobs()
+
+
 @router.get("/jobs/{job_id}")
 async def get_backup_job(job_id: str, _user: Any = Depends(require_admin)):
     return await server_backup_service.get_backup_job(job_id)
@@ -55,6 +61,16 @@ async def cancel_backup_job(job_id: str, _user: Any = Depends(require_admin)):
 @router.get("/jobs/{job_id}/download")
 async def download_backup_job(job_id: str, _user: Any = Depends(require_admin)):
     return await server_backup_service.get_backup_download_response(job_id)
+
+
+@router.get("/exports")
+async def list_backup_exports(_user: Any = Depends(require_admin)):
+    return await server_backup_service.list_backup_exports()
+
+
+@router.delete("/jobs/{job_id}")
+async def delete_backup_job(job_id: str, _user: Any = Depends(require_admin)):
+    return await server_backup_service.delete_backup_job(job_id)
 
 
 @router.post("/uploads", status_code=202)
@@ -83,6 +99,15 @@ async def create_restore_job(request: CreateRestoreJobRequest, _user: Any = Depe
 @router.get("/restore-jobs/{job_id}")
 async def get_restore_job(job_id: str, _user: Any = Depends(require_admin)):
     return await server_backup_service.get_restore_job(job_id)
+
+
+@router.post("/restore-jobs/{job_id}/deployment-environment")
+async def recover_restore_job_deployment_environment(job_id: str, _user: Any = Depends(require_admin)):
+    payload = await server_backup_service.recover_deployment_environment(job_id)
+    return JSONResponse(
+        content=payload,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
 
 
 @router.post("/restore-jobs/{job_id}/commit", status_code=202)

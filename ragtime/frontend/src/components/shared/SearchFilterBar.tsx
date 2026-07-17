@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { Search, X } from 'lucide-react';
 
@@ -20,10 +20,22 @@ interface SearchFilterBarProps {
   ariaLabel: string;
   className?: string;
   onClick?: () => void;
+  completionCandidates?: string[];
 }
 
 export function normalizeSearchFilterText(value: string): string {
-  return value.trim().toLowerCase();
+  return (
+    value
+      .toLowerCase()
+      // Treat "&" and "and" as interchangeable so, e.g., a search for
+      // "backup and restore" still matches a "Backup & Restore" label.
+      // Surround the replacement with spaces so unspaced forms ("a&b") and
+      // spaced forms ("a & b") canonicalize identically once whitespace is
+      // collapsed below.
+      .replace(/&/g, ' and ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 export function searchFilterTextMatchesQuery(
@@ -36,6 +48,28 @@ export function searchFilterTextMatchesQuery(
 
   const normalized = normalizeSearchFilterText(text || '');
   return queries.some((query) => normalized.includes(query));
+}
+
+function getSearchFilterCompletionCandidate(
+  input: string,
+  completionCandidates?: string[],
+): string | null {
+  const normalizedInput = normalizeSearchFilterText(input);
+  if (!normalizedInput || !completionCandidates?.length) {
+    return null;
+  }
+
+  for (const candidate of completionCandidates) {
+    const normalizedCandidate = normalizeSearchFilterText(candidate);
+    if (!normalizedCandidate || normalizedCandidate === normalizedInput) {
+      continue;
+    }
+    if (normalizedCandidate.startsWith(normalizedInput)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function readSearchFilterStateFromUrl(queryParam: string): { input: string; tags: string[] } {
@@ -112,7 +146,14 @@ export function SearchFilterBar({
   ariaLabel,
   className = '',
   onClick,
+  completionCandidates,
 }: SearchFilterBarProps) {
+  const completionHintId = useId();
+  const completionCandidate = useMemo(
+    () => getSearchFilterCompletionCandidate(state.input, completionCandidates),
+    [completionCandidates, state.input],
+  );
+
   const addTag = (rawTag: string) => {
     const tag = rawTag.trim();
     if (tag && !state.tags.includes(tag)) {
@@ -162,6 +203,16 @@ export function SearchFilterBar({
           }
         }}
         onKeyDown={(event) => {
+          if (event.key === 'Tab' && state.input.trim()) {
+            if (completionCandidates) {
+              if (completionCandidate) {
+                event.preventDefault();
+                state.setInput(completionCandidate);
+              }
+              return;
+            }
+          }
+
           if ((event.key === 'Tab' || event.key === 'Enter') && state.input.trim()) {
             event.preventDefault();
             addTag(state.input);
@@ -176,7 +227,13 @@ export function SearchFilterBar({
           state.setInput('');
         }}
         aria-label={ariaLabel}
+        aria-describedby={completionCandidate ? completionHintId : undefined}
       />
+      {completionCandidate && (
+        <span id={completionHintId} className="muted" aria-live="polite">
+          Tab to complete: {completionCandidate}
+        </span>
+      )}
       {(state.tags.length > 0 || state.input.trim()) && (
         <button
           type="button"

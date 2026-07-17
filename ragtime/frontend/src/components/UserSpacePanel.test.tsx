@@ -523,5 +523,4 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     );
     expect(previewApiMock.listUserSpaceWorkspaceShareLinks).toHaveBeenCalledTimes(1);
   });
-
 });

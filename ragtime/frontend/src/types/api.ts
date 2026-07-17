@@ -748,6 +748,13 @@ export interface ServerBackupManifest {
   encrypted?: boolean;
   includes_managed_key?: boolean;
   legacy_embedded_key?: boolean;
+  deployment_environment_variables?: string[];
+}
+
+export interface ServerDeploymentEnvironmentRecovery {
+  variables: Record<string, string>;
+  variable_names: string[];
+  warnings: string[];
 }
 
 export interface CreateServerBackupJobRequest {
@@ -759,13 +766,40 @@ export interface CreateServerBackupJobRequest {
 export interface ServerBackupJob {
   id: string;
   status: string;
+  phase?: string | null;
   progress?: number | null;
   message?: string | null;
+  details?: ServerBackupJobDetails | null;
   scope?: ServerBackupScope;
   encrypt?: boolean;
   delivered_at?: string | null;
   manifest?: ServerBackupManifest | null;
   error?: string | null;
+}
+
+export interface ServerBackupJobDetails {
+  item_count?: number | null;
+  data_item_count?: number | null;
+  current_item?: string | null;
+  processed_items?: number | null;
+  total_items?: number | null;
+  scope?: string | null;
+  encrypted?: boolean | null;
+  format?: string | null;
+}
+
+export interface ServerBackupExportListItem {
+  job_id: string;
+  file_name: string;
+  size_bytes: number;
+  created_at: string;
+  scope?: ServerBackupScope | null;
+  encrypted?: boolean | null;
+  delivered_at?: string | null;
+}
+
+export interface ServerBackupExportListResponse {
+  exports: ServerBackupExportListItem[];
 }
 
 export interface UploadedServerBackupArchive {
@@ -796,14 +830,21 @@ export interface CommitServerRestoreJobRequest {
 export interface ServerRestoreJob {
   id: string;
   status: string;
+  phase?: string | null;
   progress?: number | null;
   message?: string | null;
+  details?: ServerBackupJobDetails | null;
   manifest?: ServerBackupManifest | null;
   required_confirmation?: string | null;
   requires_legacy_key_acknowledgement?: boolean;
   restart_required?: boolean;
   restart_state?: string | null;
   error?: string | null;
+}
+
+export interface ServerBackupRestoreActiveJobsResponse {
+  backup_job: ServerBackupJob | null;
+  restore_job: ServerRestoreJob | null;
 }
 
 export interface GetSettingsResponse {

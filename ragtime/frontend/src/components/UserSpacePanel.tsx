@@ -7706,12 +7706,7 @@ export function UserSpacePanel({
         setSavingShareLabel(false);
       }
     },
-    [
-      activeShareLinkStatus?.id,
-      activeWorkspaceId,
-      applyWorkspaceShareStatus,
-      canEditWorkspace,
-    ],
+    [activeShareLinkStatus?.id, activeWorkspaceId, applyWorkspaceShareStatus, canEditWorkspace],
   );
 
   const handleDeleteSelectedShareLink = useCallback(

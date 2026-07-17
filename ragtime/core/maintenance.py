@@ -18,6 +18,8 @@ _BACKUP_STATUS_PREFIXES = (
     "/indexes/server-backups/jobs/",
     "/indexes/server-backups/restore-jobs/",
 )
+_BACKUP_CANCEL_PATH_PREFIX = "/indexes/server-backups/jobs/"
+_BACKUP_CANCEL_PATH_SUFFIX = "/cancel"
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ class MaintenanceStatus:
 def is_maintenance_bypass_path(method: str, path: str) -> bool:
     normalized_method = (method or "GET").upper()
     normalized_path = path or "/"
+    if normalized_method == "POST":
+        return normalized_path.startswith(_BACKUP_CANCEL_PATH_PREFIX) and normalized_path.endswith(_BACKUP_CANCEL_PATH_SUFFIX)
     if normalized_method not in _SAFE_METHODS:
         return False
     if normalized_path in _HEALTH_PATHS:

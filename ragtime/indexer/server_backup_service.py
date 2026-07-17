@@ -5,11 +5,12 @@ import json
 import os
 import shutil
 import stat
+import threading
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from tempfile import TemporaryFile
 from typing import Any, Callable
 
@@ -25,7 +26,6 @@ from ragtime.core.maintenance import ProcessMaintenanceState
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 _DEFAULT_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024 * 1024
 _DEFAULT_MIN_FREE_BYTES = 512 * 1024 * 1024
-_DEFAULT_ARTIFACT_TTL_SECONDS = 24 * 60 * 60
 _DEFAULT_UPLOAD_TTL_SECONDS = 24 * 60 * 60
 _DEFAULT_JOB_TTL_SECONDS = 7 * 24 * 60 * 60
 _DEFAULT_MAX_PASSWORD_BYTES = 8192
@@ -36,8 +36,20 @@ _RECOVERABLE_RESTORE_STATUSES = {"validating", "restoring"}
 _RECOVERABLE_BACKUP_STATUSES = {"pending", "running"}
 _TERMINAL_BACKUP_STATUSES = {"completed", "delivered", "failed", "cancelled", "interrupted"}
 _TERMINAL_RESTORE_STATUSES = {"completed", "failed", "cancelled"}
+_PERSISTENT_EXPORT_BACKUP_STATUSES = {"completed", "delivered"}
 
 logger = get_logger(__name__)
+
+_PROGRESS_DETAIL_ALLOWLIST = {
+    "item_count",
+    "data_item_count",
+    "current_item",
+    "processed_items",
+    "total_items",
+    "scope",
+    "encrypted",
+    "format",
+}
 
 
 def _utcnow() -> datetime:
@@ -61,7 +73,6 @@ class ServerBackupService:
         self,
         *,
         root_dir: Path | None = None,
-        artifact_ttl_seconds: int = _DEFAULT_ARTIFACT_TTL_SECONDS,
         upload_ttl_seconds: int = _DEFAULT_UPLOAD_TTL_SECONDS,
         job_ttl_seconds: int = _DEFAULT_JOB_TTL_SECONDS,
         upload_limit_bytes: int = _DEFAULT_UPLOAD_LIMIT_BYTES,
@@ -80,7 +91,6 @@ class ServerBackupService:
         self._lock = asyncio.Lock()
         self._restart_signaler: Callable[[str], None] = lambda _job_id: None
         self._maintenance_state: ProcessMaintenanceState | None = None
-        self._artifact_ttl = max(artifact_ttl_seconds, 0)
         self._upload_ttl = max(upload_ttl_seconds, 0)
         self._job_ttl = max(job_ttl_seconds, 0)
         self._upload_limit_bytes = max(upload_limit_bytes, 1)
@@ -123,6 +133,7 @@ class ServerBackupService:
         record = {
             "id": job_id,
             "status": "pending",
+            "phase": "queued",
             "progress": 0,
             "message": "Backup queued",
             "scope": backup_scope.value,
@@ -149,6 +160,15 @@ class ServerBackupService:
             raise HTTPException(status_code=404, detail="Backup job not found")
         return self._snapshot(job)
 
+    async def get_active_jobs(self) -> dict[str, Any]:
+        self._cleanup_expired_state()
+        backup_job = self._latest_active_job(self._backup_jobs, _ACTIVE_BACKUP_STATUSES)
+        restore_job = self._latest_active_job(self._restore_jobs, _ACTIVE_RESTORE_STATUSES)
+        return {
+            "backup_job": self._snapshot(backup_job) if backup_job is not None else None,
+            "restore_job": self._snapshot(restore_job) if restore_job is not None else None,
+        }
+
     async def cancel_backup_job(self, job_id: str) -> dict[str, Any]:
         job = self._backup_jobs.get(job_id)
         if job is None:
@@ -157,6 +177,7 @@ class ServerBackupService:
             return self._snapshot(job)
         job["cancel_requested"] = True
         job["status"] = "cancelled"
+        job["phase"] = "cancelled"
         job["progress"] = job.get("progress") or 0
         job["message"] = "Backup cancelled"
         job["updated_at"] = _utcnow()
@@ -171,7 +192,7 @@ class ServerBackupService:
         job = self._backup_jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Backup job not found")
-        if job["status"] != "completed":
+        if job["status"] not in _PERSISTENT_EXPORT_BACKUP_STATUSES:
             raise HTTPException(status_code=409, detail="Backup artifact is not ready for download")
         artifact_path = Path(job["artifact_path"])
         if not artifact_path.exists():
@@ -182,6 +203,47 @@ class ServerBackupService:
             media_type="application/octet-stream",
             background=BackgroundTask(self._complete_backup_delivery, job_id),
         )
+
+    async def list_backup_exports(self) -> dict[str, list[dict[str, Any]]]:
+        self._cleanup_expired_state()
+        exports: list[dict[str, Any]] = []
+        for job in self._backup_jobs.values():
+            if job.get("status") not in _PERSISTENT_EXPORT_BACKUP_STATUSES:
+                continue
+            artifact_path = Path(job["artifact_path"])
+            if not artifact_path.exists():
+                continue
+            created_at = job.get("created_at")
+            exports.append(
+                {
+                    "job_id": job["id"],
+                    "file_name": job["download_name"],
+                    "size_bytes": artifact_path.stat().st_size,
+                    "created_at": _isoformat(created_at),
+                    "scope": job.get("scope"),
+                    "encrypted": job.get("encrypt"),
+                    "delivered_at": _isoformat(job.get("delivered_at")),
+                    "_sort_created_at": created_at,
+                }
+            )
+        exports.sort(
+            key=lambda item: item.get("_sort_created_at") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        for item in exports:
+            item.pop("_sort_created_at", None)
+        return {"exports": exports}
+
+    async def delete_backup_job(self, job_id: str) -> dict[str, Any]:
+        job = self._backup_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Backup job not found")
+        if job.get("status") in _ACTIVE_BACKUP_STATUSES:
+            raise HTTPException(status_code=409, detail="Active backup jobs cannot be deleted")
+        Path(job["artifact_path"]).unlink(missing_ok=True)
+        self._backup_job_sidecar_path(job_id).unlink(missing_ok=True)
+        self._backup_jobs.pop(job_id, None)
+        return {"success": True, "job_id": job_id}
 
     async def stage_restore_upload(self, file: UploadFile, *, filename: str | None = None) -> dict[str, Any]:
         self._cleanup_expired_state()
@@ -249,6 +311,7 @@ class ServerBackupService:
             record = {
                 "id": job_id,
                 "status": "validating",
+                "phase": "validation_pending",
                 "progress": 0,
                 "message": "Validating restore archive",
                 "created_at": created_at,
@@ -301,8 +364,8 @@ class ServerBackupService:
                 raise HTTPException(status_code=400, detail="Legacy key acknowledgement is required")
             job["acknowledge_legacy_key"] = acknowledge_legacy_key
             job["status"] = "restoring"
-            job["progress"] = 50
-            job["message"] = "Restore in progress"
+            job["phase"] = "commit_requested"
+            job["message"] = "Restore commit requested"
             job["updated_at"] = _utcnow()
         self._write_json(self._restore_job_sidecar_path(job_id), self._serialize_restore_job(job))
         self._restore_tasks[job_id] = asyncio.create_task(self._run_restore_commit(job_id))
@@ -310,24 +373,56 @@ class ServerBackupService:
 
     async def _run_backup_job(self, job_id: str, artifact_path: Path, password: str | None) -> None:
         job = self._backup_jobs[job_id]
+        maintenance_lease: Any = None
+        runtime_lease = self._runtime_lease_id(job_id, operation_kind="backup")
+        runtime_lease_owned = False
+        heartbeat_task: asyncio.Task[None] | None = None
+        heartbeat_failure: asyncio.Future[None] | None = None
         try:
             job["status"] = "running"
             job["progress"] = 10
+            job["phase"] = "start"
             job["message"] = "Creating backup"
             job["updated_at"] = _utcnow()
             self._write_json(self._backup_job_sidecar_path(job_id), self._serialize_backup_job(job))
-            manifest = await self._create_backup_archive(
-                scope=job["scope"],
-                encrypt=job["encrypt"],
-                output_path=artifact_path,
-                password=password,
-            )
+            if self._backup_requires_maintenance(job.get("scope")):
+                job["phase"] = "acquiring_maintenance"
+                job["message"] = "Acquiring maintenance lease"
+                job["updated_at"] = _utcnow()
+                self._write_json(self._backup_job_sidecar_path(job_id), self._serialize_backup_job(job))
+                maintenance_lease = await self._acquire_maintenance_lease(job_id, operation_kind="backup")
+                runtime_lease_owned = True
+                acquired_runtime_lease = await self._acquire_runtime_lease(job_id, operation_kind="backup")
+                if acquired_runtime_lease is not None:
+                    runtime_lease = acquired_runtime_lease
+                heartbeat_task, heartbeat_failure = self._start_maintenance_heartbeat(
+                    process_lease_id=maintenance_lease,
+                    runtime_lease_id=runtime_lease,
+                )
+                manifest = await self._run_backup_with_heartbeat(
+                    scope=job["scope"],
+                    encrypt=job["encrypt"],
+                    output_path=artifact_path,
+                    password=password,
+                    heartbeat_failure=heartbeat_failure,
+                    progress_callback=self._job_progress_callback(job_id, backup=True),
+                )
+            else:
+                manifest = await self._create_backup_archive(
+                    scope=job["scope"],
+                    encrypt=job["encrypt"],
+                    output_path=artifact_path,
+                    password=password,
+                    progress_callback=self._job_progress_callback(job_id, backup=True),
+                )
             if job["cancel_requested"]:
                 artifact_path.unlink(missing_ok=True)
                 job["status"] = "cancelled"
+                job["phase"] = "cancelled"
                 job["message"] = "Backup cancelled"
             else:
                 job["status"] = "completed"
+                job["phase"] = "complete"
                 job["progress"] = 100
                 job["message"] = "Backup ready for download"
                 job["manifest"] = self._normalize_manifest(manifest)
@@ -336,6 +431,7 @@ class ServerBackupService:
         except asyncio.CancelledError:
             artifact_path.unlink(missing_ok=True)
             job["status"] = "cancelled"
+            job["phase"] = "cancelled"
             job["message"] = "Backup cancelled"
             job["updated_at"] = _utcnow()
             self._write_json(self._backup_job_sidecar_path(job_id), self._serialize_backup_job(job))
@@ -343,32 +439,48 @@ class ServerBackupService:
         except Exception as exc:
             artifact_path.unlink(missing_ok=True)
             job["status"] = "failed"
+            job["phase"] = "failed"
             job["error"] = str(exc)
             job["message"] = str(exc)
             job["updated_at"] = _utcnow()
             self._write_json(self._backup_job_sidecar_path(job_id), self._serialize_backup_job(job))
             logger.warning("Server backup job %s failed: %s", job_id, exc)
+        finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+            if runtime_lease_owned and runtime_lease is not None:
+                await self._release_runtime_lease(runtime_lease)
+            if maintenance_lease is not None:
+                await self._release_maintenance_lease(maintenance_lease)
 
     async def _run_restore_validation(self, job_id: str, password: str | None) -> None:
         job = self._restore_jobs[job_id]
         try:
-            manifest = await self._inspect_backup_archive(Path(job["upload_path"]), password)
+            manifest = await self._inspect_backup_archive(
+                Path(job["upload_path"]),
+                password,
+                self._job_progress_callback(job_id, backup=False),
+            )
             normalized = self._normalize_manifest(manifest)
             job["manifest"] = normalized
             job["requires_legacy_key_acknowledgement"] = bool(normalized.get("legacy_embedded_key", False))
             job["status"] = "ready_for_commit"
-            job["progress"] = 100
+            job["phase"] = "validation_complete"
+            job["progress"] = max(job.get("progress") or 0, 40)
             job["message"] = "Restore validated; confirmation required"
             job["updated_at"] = _utcnow()
             self._write_json(self._restore_job_sidecar_path(job_id), self._serialize_restore_job(job))
         except asyncio.CancelledError:
             job["status"] = "cancelled"
+            job["phase"] = "cancelled"
             job["message"] = "Restore validation cancelled"
             job["updated_at"] = _utcnow()
             self._write_json(self._restore_job_sidecar_path(job_id), self._serialize_restore_job(job))
             raise
         except Exception as exc:
             job["status"] = "failed"
+            job["phase"] = "failed"
             job["error"] = str(exc)
             job["message"] = str(exc)
             job["updated_at"] = _utcnow()
@@ -385,6 +497,11 @@ class ServerBackupService:
         success = False
         should_restart = False
         try:
+            job["phase"] = "acquiring_maintenance"
+            job["progress"] = max(job.get("progress") or 0, 42)
+            job["message"] = "Acquiring maintenance lease"
+            job["updated_at"] = _utcnow()
+            self._write_json(self._restore_job_sidecar_path(job_id), self._serialize_restore_job(job))
             maintenance_lease = await self._acquire_maintenance_lease(job_id)
             runtime_lease_owned = True
             acquired_runtime_lease = await self._acquire_runtime_lease(job_id)
@@ -408,9 +525,11 @@ class ServerBackupService:
                     "local_admin_username": job.get("local_admin_username"),
                 },
                 heartbeat_failure=heartbeat_failure,
+                progress_callback=self._job_progress_callback(job_id, backup=False),
             )
             job["manifest"] = self._normalize_manifest(manifest)
             job["status"] = "completed"
+            job["phase"] = "complete"
             job["progress"] = 100
             job["message"] = "Restore completed; restart requested"
             job["restart_required"] = True
@@ -423,12 +542,14 @@ class ServerBackupService:
             self._uploads.pop(job["upload_id"], None)
         except asyncio.CancelledError:
             job["status"] = "cancelled"
+            job["phase"] = "cancelled"
             job["message"] = "Restore cancelled"
             job["updated_at"] = _utcnow()
             self._write_json(self._restore_job_sidecar_path(job_id), self._serialize_restore_job(job))
             raise
         except Exception as exc:
             job["status"] = "failed"
+            job["phase"] = "failed"
             job["error"] = str(exc)
             job["message"] = str(exc)
             job["updated_at"] = _utcnow()
@@ -455,34 +576,47 @@ class ServerBackupService:
         encrypt: bool,
         output_path: Path,
         password: str | None,
+        progress_callback: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
         module = import_module("ragtime.core.server_backup")
 
         def _call() -> Any:
             with self._password_fd(password) as password_fd:
                 options = self._build_backup_options(module.BackupOptions, module.BackupScope(scope), output_path, encrypt, password_fd)
-                return module.create_backup(options)
+                return module.create_backup(options, progress=progress_callback)
 
         return self._normalize_manifest(await asyncio.to_thread(_call))
 
-    async def _inspect_backup_archive(self, archive_path: Path, password: str | None) -> dict[str, Any]:
+    async def _inspect_backup_archive(
+        self,
+        archive_path: Path,
+        password: str | None,
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
         module = import_module("ragtime.core.server_backup")
-        return self._normalize_manifest(await asyncio.to_thread(module.inspect_backup, archive_path, password))
+        return self._normalize_manifest(await asyncio.to_thread(module.inspect_backup, archive_path, password, progress_callback))
 
-    async def _restore_backup_archive(self, archive_path: Path, *, password: str | None, options: dict[str, Any]) -> dict[str, Any]:
+    async def _restore_backup_archive(
+        self,
+        archive_path: Path,
+        *,
+        password: str | None,
+        options: dict[str, Any],
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
         module = import_module("ragtime.core.server_backup")
 
         def _call() -> Any:
             with self._password_fd(password) as password_fd:
                 restore_options = self._build_restore_options(module.RestoreOptions, archive_path, password_fd, options)
-                return module.restore_backup(restore_options)
+                return module.restore_backup(restore_options, progress=progress_callback)
 
         return self._normalize_manifest(await asyncio.to_thread(_call))
 
-    async def _acquire_maintenance_lease(self, job_id: str) -> str | None:
-        lease_id = f"server-restore-{job_id}"
+    async def _acquire_maintenance_lease(self, job_id: str, *, operation_kind: str = "restore") -> str | None:
+        lease_id = self._runtime_lease_id(job_id, operation_kind=operation_kind)
         if self._maintenance_state is not None:
-            await self._maintenance_state.acquire(lease_id, reason=f"server-restore:{job_id}")
+            await self._maintenance_state.acquire(lease_id, reason=f"server-{operation_kind}:{job_id}")
             return lease_id
         return None
 
@@ -501,17 +635,17 @@ class ServerBackupService:
             return
         await self._maintenance_state.acquire(lease_id)
 
-    async def _acquire_runtime_lease(self, job_id: str) -> str | None:
+    async def _acquire_runtime_lease(self, job_id: str, *, operation_kind: str = "restore") -> str | None:
         token = (settings.userspace_runtime_auth_token or "").strip()
         base_url = (settings.userspace_runtime_manager_url or "").strip().rstrip("/")
         if not token or not base_url:
             return None
-        lease_id = f"server-restore-{job_id}"
+        lease_id = self._runtime_lease_id(job_id, operation_kind=operation_kind)
         async with httpx.AsyncClient(timeout=settings.userspace_runtime_manager_timeout_seconds) as client:
             response = await client.post(
                 f"{base_url}/maintenance/lease",
                 headers={"Authorization": f"Bearer {token}"},
-                json={"lease_id": lease_id, "reason": f"server-restore:{job_id}", "retry_after_seconds": 60},
+                json={"lease_id": lease_id, "reason": f"server-{operation_kind}:{job_id}", "retry_after_seconds": 60},
             )
         if response.status_code >= 400:
             raise HTTPException(status_code=409, detail="Runtime maintenance lease request failed")
@@ -574,12 +708,14 @@ class ServerBackupService:
         password: str | None,
         options: dict[str, Any],
         heartbeat_failure: asyncio.Future[None] | None,
+        progress_callback: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
         restore_task = asyncio.create_task(
             self._restore_backup_archive(
                 archive_path,
                 password=password,
                 options=options,
+                progress_callback=progress_callback,
             )
         )
         heartbeat_task: asyncio.Task[None] | None = None
@@ -603,6 +739,44 @@ class ServerBackupService:
 
     async def _await_heartbeat_failure(self, heartbeat_failure: asyncio.Future[None]) -> None:
         await heartbeat_failure
+
+    async def _run_backup_with_heartbeat(
+        self,
+        *,
+        scope: str,
+        encrypt: bool,
+        output_path: Path,
+        password: str | None,
+        heartbeat_failure: asyncio.Future[None] | None,
+        progress_callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        backup_task = asyncio.create_task(
+            self._create_backup_archive(
+                scope=scope,
+                encrypt=encrypt,
+                output_path=output_path,
+                password=password,
+                progress_callback=progress_callback,
+            )
+        )
+        heartbeat_task: asyncio.Task[None] | None = None
+        try:
+            if heartbeat_failure is None:
+                return await backup_task
+            heartbeat_task = asyncio.create_task(self._await_heartbeat_failure(heartbeat_failure))
+            done, _ = await asyncio.wait({backup_task, heartbeat_task}, return_when=asyncio.FIRST_COMPLETED)
+            if heartbeat_task in done:
+                backup_task.cancel()
+                await asyncio.gather(backup_task, return_exceptions=True)
+                await heartbeat_task
+            return await backup_task
+        finally:
+            if heartbeat_task is not None and not heartbeat_task.done():
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+            if not backup_task.done():
+                backup_task.cancel()
+                await asyncio.gather(backup_task, return_exceptions=True)
 
     def _build_backup_options(self, options_type: Any, scope: Any, output_path: Path, encrypt: bool, password_fd: int | None) -> Any:
         if options_type is None:
@@ -637,6 +811,71 @@ class ServerBackupService:
         module = import_module("ragtime.core.server_backup")
         return module._confirmation_phrase()
 
+    async def recover_deployment_environment(self, job_id: str) -> dict[str, object]:
+        job = self._restore_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Restore job not found")
+        if job.get("status") != "ready_for_commit":
+            raise HTTPException(status_code=409, detail="Deployment environment recovery is only available for validated restore jobs")
+        manifest = job.get("manifest")
+        if not isinstance(manifest, dict):
+            raise HTTPException(status_code=409, detail="Deployment environment recovery is not available for this restore job")
+        if manifest.get("scope") != "full" or not manifest.get("encrypted"):
+            raise HTTPException(status_code=409, detail="Deployment environment recovery is only available for encrypted full backups")
+        manifest_names = manifest.get("deployment_environment_variables")
+        if not isinstance(manifest_names, list) or not manifest_names or any(not isinstance(name, str) for name in manifest_names):
+            raise HTTPException(status_code=409, detail="Deployment environment recovery data is not available for this restore job")
+        password = job.get("_password")
+        if not isinstance(password, str) or not password:
+            raise HTTPException(status_code=409, detail="Deployment environment recovery requires the original in-memory password")
+        upload_path_value = job.get("upload_path")
+        if not isinstance(upload_path_value, str) or not upload_path_value:
+            raise HTTPException(status_code=409, detail="Restore upload is no longer available")
+        upload_path = Path(upload_path_value)
+        if not upload_path.exists():
+            raise HTTPException(status_code=409, detail="Restore upload is no longer available")
+
+        module = import_module("ragtime.core.server_backup")
+        try:
+            recovered = await asyncio.to_thread(module.recover_deployment_environment, upload_path, password)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("Deployment environment recovery failed for restore job %s", job_id)
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed") from None
+
+        payload = self._normalize_recovered_deployment_environment(recovered)
+        expected_names = sorted(manifest_names)
+        if payload["variable_names"] != expected_names:
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed")
+        return payload
+
+    def _normalize_recovered_deployment_environment(self, payload: Any) -> dict[str, object]:
+        if hasattr(payload, "__dict__") and not isinstance(payload, dict):
+            payload = vars(payload)
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed")
+        variables = payload.get("variables")
+        variable_names = payload.get("variable_names")
+        warnings = payload.get("warnings")
+        if not isinstance(variables, dict) or any(not isinstance(name, str) or not isinstance(value, str) for name, value in variables.items()):
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed")
+        if not isinstance(variable_names, list) or any(not isinstance(name, str) for name in variable_names):
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed")
+        if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed")
+        sorted_names = sorted(variables)
+        if sorted(variable_names) != sorted_names:
+            raise HTTPException(status_code=422, detail="Deployment environment recovery failed")
+        return {
+            "variables": {name: variables[name] for name in sorted_names},
+            "variable_names": sorted_names,
+            "warnings": list(warnings),
+        }
+
+    def _backup_requires_maintenance(self, scope: Any) -> bool:
+        return str(scope) in {"full", "files"}
+
     def _normalize_manifest(self, manifest: Any) -> dict[str, Any]:
         if manifest is None:
             return {}
@@ -662,6 +901,7 @@ class ServerBackupService:
         for job_id, job in list(self._backup_jobs.items()):
             if job.get("status") in _RECOVERABLE_BACKUP_STATUSES:
                 job["status"] = "interrupted"
+                job["phase"] = "interrupted"
                 job["message"] = "Backup interrupted by server restart"
                 job["updated_at"] = _utcnow()
                 Path(job["artifact_path"]).unlink(missing_ok=True)
@@ -669,24 +909,20 @@ class ServerBackupService:
         for job_id, job in list(self._restore_jobs.items()):
             if job.get("status") in _RECOVERABLE_RESTORE_STATUSES:
                 job["status"] = "interrupted"
+                job["phase"] = "interrupted"
                 job["message"] = "Restore interrupted by server restart"
                 job["updated_at"] = _utcnow()
                 self._write_json(self._restore_job_sidecar_path(job_id), self._serialize_restore_job(job))
 
     def _cleanup_expired_state(self) -> None:
         now = _utcnow()
-        artifact_cutoff = now - timedelta(seconds=self._artifact_ttl)
         upload_cutoff = now - timedelta(seconds=self._upload_ttl)
         job_cutoff = now - timedelta(seconds=self._job_ttl)
 
         for job_id, job in list(self._backup_jobs.items()):
             updated_at = job.get("updated_at") or job.get("created_at") or now
-            if job.get("status") == "completed" and updated_at < artifact_cutoff:
-                Path(job["artifact_path"]).unlink(missing_ok=True)
-                self._backup_job_sidecar_path(job_id).unlink(missing_ok=True)
-                self._backup_jobs.pop(job_id, None)
-                continue
-            if job.get("status") in _TERMINAL_BACKUP_STATUSES and updated_at < job_cutoff:
+            # Completed and delivered exports persist until explicit deletion.
+            if job.get("status") in (_TERMINAL_BACKUP_STATUSES - _PERSISTENT_EXPORT_BACKUP_STATUSES) and updated_at < job_cutoff:
                 Path(job["artifact_path"]).unlink(missing_ok=True)
                 self._backup_job_sidecar_path(job_id).unlink(missing_ok=True)
                 self._backup_jobs.pop(job_id, None)
@@ -708,12 +944,13 @@ class ServerBackupService:
         job = self._backup_jobs.get(job_id)
         if job is None:
             return
-        Path(job["artifact_path"]).unlink(missing_ok=True)
         job["status"] = "delivered"
+        job["phase"] = "delivered"
         job["progress"] = 100
         job["message"] = "Backup delivered"
-        job["delivered_at"] = _utcnow()
-        job["updated_at"] = job["delivered_at"]
+        delivered_at = job.get("delivered_at") or _utcnow()
+        job["delivered_at"] = delivered_at
+        job["updated_at"] = _utcnow()
         self._write_json(self._backup_job_sidecar_path(job_id), self._serialize_backup_job(job))
 
     def _assert_no_active_job_locked(self) -> None:
@@ -774,6 +1011,64 @@ class ServerBackupService:
             if isinstance(snapshot.get(key), datetime):
                 snapshot[key] = _isoformat(snapshot[key])
         return snapshot
+
+    def _latest_active_job(
+        self,
+        jobs: dict[str, dict[str, Any]],
+        active_statuses: set[str],
+    ) -> dict[str, Any] | None:
+        active_jobs = [job for job in jobs.values() if job.get("status") in active_statuses]
+        if not active_jobs:
+            return None
+        return max(active_jobs, key=lambda job: job.get("updated_at") or job.get("created_at") or datetime.min.replace(tzinfo=timezone.utc))
+
+    def _job_progress_callback(self, job_id: str, *, backup: bool) -> Callable[[dict[str, Any]], None]:
+        loop = asyncio.get_running_loop()
+        loop_thread_id = threading.get_ident()
+
+        def _callback(event: dict[str, Any]) -> None:
+            if threading.get_ident() == loop_thread_id:
+                self._apply_job_progress(job_id, event, backup=backup)
+                return
+            loop.call_soon_threadsafe(self._apply_job_progress, job_id, event, backup)
+
+        return _callback
+
+    def _apply_job_progress(self, job_id: str, event: dict[str, Any], backup: bool) -> None:
+        jobs = self._backup_jobs if backup else self._restore_jobs
+        sidecar_path = self._backup_job_sidecar_path(job_id) if backup else self._restore_job_sidecar_path(job_id)
+        job = jobs.get(job_id)
+        if job is None:
+            return
+        current_progress = int(job.get("progress") or 0)
+        next_progress = event.get("progress")
+        if isinstance(next_progress, (int, float)) and int(next_progress) < current_progress:
+            return
+        phase = event.get("phase")
+        if isinstance(phase, str) and phase:
+            job["phase"] = phase
+        if isinstance(next_progress, (int, float)):
+            job["progress"] = int(next_progress)
+        message = event.get("message")
+        if isinstance(message, str) and message:
+            job["message"] = message
+        details = self._sanitize_progress_details(event)
+        if details:
+            job["details"] = details
+        else:
+            job.pop("details", None)
+        job["updated_at"] = _utcnow()
+        self._write_json(sidecar_path, self._serialize_backup_job(job) if backup else self._serialize_restore_job(job))
+
+    def _sanitize_progress_details(self, event: dict[str, Any]) -> dict[str, Any]:
+        details = {key: event[key] for key in _PROGRESS_DETAIL_ALLOWLIST if key in event}
+        current_item = details.get("current_item")
+        if not isinstance(current_item, str) or self._is_absolute_progress_item(current_item):
+            details.pop("current_item", None)
+        return details
+
+    def _is_absolute_progress_item(self, value: str) -> bool:
+        return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
 
     def _snapshot_upload(self, payload: dict[str, Any]) -> dict[str, Any]:
         snapshot = dict(payload)
@@ -840,8 +1135,8 @@ class ServerBackupService:
 
         return _PasswordFD()
 
-    def _runtime_lease_id(self, job_id: str) -> str:
-        return f"server-restore-{job_id}"
+    def _runtime_lease_id(self, job_id: str, *, operation_kind: str = "restore") -> str:
+        return f"server-{operation_kind}-{job_id}"
 
     def _backup_job_sidecar_path(self, job_id: str) -> Path:
         return self._backup_dir / f"{job_id}.json"

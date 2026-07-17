@@ -27,6 +27,8 @@ import type {
   OcrMode,
   OcrProvider,
   CloudOAuthProviderStatus,
+  ServerBackupJob,
+  ServerRestoreJob,
 } from '@/types';
 import { MCPRoutesPanel } from './MCPRoutesPanel';
 import { OllamaConnectionForm } from './OllamaConnectionForm';
@@ -221,6 +223,34 @@ function renderCloudDriveOAuthSetupPopover(callbackUrl: string): JSX.Element {
 
 function isSettingsSaveControlButton(button: HTMLButtonElement): boolean {
   return normalizeSearchFilterText(button.textContent || '').includes('save');
+}
+
+const SETTINGS_SEARCH_COMPLETION_SELECTOR = [
+  '.settings-accordion-title',
+  'fieldset > legend',
+  'fieldset .form-group > label',
+  'fieldset details > summary',
+  '[data-settings-filter-card="true"] > strong',
+  '[data-settings-filter-card="true"] > div > strong',
+  '[data-settings-filter-card="true"] h3',
+  '[data-settings-filter-card="true"] h4',
+].join(', ');
+
+function collectSettingsSearchCompletionCandidates(root: HTMLElement): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  root.querySelectorAll<HTMLElement>(SETTINGS_SEARCH_COMPLETION_SELECTOR).forEach((element) => {
+    const text = element.textContent?.replace(/\s+/g, ' ').trim() || '';
+    const normalized = normalizeSearchFilterText(text);
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    candidates.push(text);
+  });
+
+  return candidates;
 }
 
 const DEFAULT_OLLAMA_PORT = PROVIDER_CONNECTIONS.ollamaEmbedding.defaultPort;
@@ -561,6 +591,9 @@ interface SettingsPanelProps {
   /** Auth status for security warnings */
   authStatus?: AuthStatus | null;
   onEncryptedArtifactDelivered?: () => void;
+  onServerBackupJobObserved?: (job: ServerBackupJob) => void;
+  onServerRestoreJobObserved?: (job: ServerRestoreJob) => void;
+  onServerOperationError?: (message: string) => void;
 }
 
 export function SettingsPanel({
@@ -574,7 +607,11 @@ export function SettingsPanel({
   onHighlightComplete,
   authStatus,
   onEncryptedArtifactDelivered,
+  onServerBackupJobObserved,
+  onServerRestoreJobObserved,
+  onServerOperationError,
 }: SettingsPanelProps) {
+  const settingsPanelRef = useRef<HTMLDivElement | null>(null);
   const hasAuthenticatedPosture = hasAuthenticatedSecurityPosture(authStatus);
   const showApiKeyWarning = hasAuthenticatedPosture && !authStatus.api_key_configured;
   const showHttpWarning = window.location.protocol === 'http:';
@@ -591,6 +628,9 @@ export function SettingsPanel({
   const [toasts, toast] = useToast();
   const settingsFilter = useUrlSearchFilterState();
   const [settingsFilterHasMatches, setSettingsFilterHasMatches] = useState(true);
+  const [settingsFilterCompletionCandidates, setSettingsFilterCompletionCandidates] = useState<
+    string[]
+  >([]);
   const settingsFilterInputRef = useRef<HTMLInputElement | null>(null);
   const [activeAuthProviderValue, setActiveAuthProviderValue] =
     useState<(typeof AUTH_PROVIDER_OPTIONS)[number]['value']>('local_managed');
@@ -642,6 +682,25 @@ export function SettingsPanel({
       window.cancelAnimationFrame(frame);
     };
   }, [loading]);
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+
+    const root = settingsPanelRef.current;
+    if (!root) {
+      return;
+    }
+
+    const nextCandidates = collectSettingsSearchCompletionCandidates(root);
+    setSettingsFilterCompletionCandidates((current) =>
+      current.length === nextCandidates.length &&
+      current.every((value, index) => value === nextCandidates[index])
+        ? current
+        : nextCandidates,
+    );
+  }, [activeAuthProviderValue, cloudOAuthProvidersLoaded, loading]);
 
   // Section-specific saving states
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
@@ -4085,7 +4144,7 @@ export function SettingsPanel({
   );
 
   return (
-    <div className="card">
+    <div ref={settingsPanelRef} className="card">
       <h2>Settings</h2>
 
       <SearchFilterBar
@@ -4093,6 +4152,7 @@ export function SettingsPanel({
         inputRef={settingsFilterInputRef}
         placeholder="Filter settings by keyword..."
         ariaLabel="Filter settings by keyword"
+        completionCandidates={settingsFilterCompletionCandidates}
       />
 
       {!settingsFilterHasMatches && settingsFilter.hasActiveFilters && (
@@ -7533,7 +7593,7 @@ export function SettingsPanel({
               </p>
 
               <div className="form-row">
-                <div className="form-actions">
+                <div className="form-group">
                   <label>Configure</label>
                   <select
                     value={activeAuthProvider.value}
@@ -8315,6 +8375,9 @@ export function SettingsPanel({
             onToggle={handleToggleAccordionSection}
             settings={settings}
             onEncryptedArtifactDelivered={onEncryptedArtifactDelivered}
+            onServerBackupJobObserved={onServerBackupJobObserved}
+            onServerRestoreJobObserved={onServerRestoreJobObserved}
+            onServerOperationError={onServerOperationError}
           />
 
           {/* Security */}

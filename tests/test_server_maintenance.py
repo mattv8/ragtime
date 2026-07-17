@@ -80,6 +80,61 @@ class ServerMaintenanceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_cancel_bypass_is_the_only_post_backup_mutation_allowed(self) -> None:
+        maintenance = self._load_module()
+
+        self.assertTrue(
+            maintenance.is_maintenance_bypass_path(
+                "POST",
+                "/indexes/server-backups/jobs/job-123/cancel",
+            )
+        )
+        self.assertFalse(
+            maintenance.is_maintenance_bypass_path(
+                "POST",
+                "/indexes/server-backups/jobs/job-123",
+            )
+        )
+        self.assertFalse(
+            maintenance.is_maintenance_bypass_path(
+                "POST",
+                "/indexes/server-backups/jobs/job-123/download",
+            )
+        )
+        self.assertFalse(
+            maintenance.is_maintenance_bypass_path(
+                "POST",
+                "/indexes/server-backups/restore-jobs/job-123/commit",
+            )
+        )
+
+    async def test_middleware_allows_only_backup_cancel_post_during_maintenance(self) -> None:
+        maintenance = self._load_module()
+        state = maintenance.ProcessMaintenanceState()
+
+        app = FastAPI()
+        app.add_middleware(maintenance.MaintenanceModeMiddleware, state=state)
+
+        @app.post("/indexes/server-backups/jobs/job-123/cancel")
+        async def cancel() -> dict[str, str]:
+            return {"status": "cancelled"}
+
+        @app.post("/indexes/server-backups/jobs/job-123")
+        async def mutate_job() -> dict[str, str]:
+            return {"status": "mutated"}
+
+        await state.acquire("lease-1", reason="backup", retry_after_seconds=9)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://ragtime.example") as client:
+            cancel_response = await client.post("/indexes/server-backups/jobs/job-123/cancel")
+            mutate_response = await client.post("/indexes/server-backups/jobs/job-123")
+
+        self.assertEqual(cancel_response.status_code, 200)
+        self.assertEqual(cancel_response.json(), {"status": "cancelled"})
+        self.assertEqual(mutate_response.status_code, 503)
+        self.assertEqual(mutate_response.headers.get("Retry-After"), "9")
+
     async def test_process_state_release_conflict_and_wait_behaviors(self) -> None:
         maintenance = self._load_module()
         state = maintenance.ProcessMaintenanceState(default_ttl_seconds=30)

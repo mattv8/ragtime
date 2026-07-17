@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Waves } from 'lucide-react';
 import { api, onAuthExpired } from '@/api';
 import {
@@ -21,6 +21,7 @@ import {
   UsersPanel,
 } from '@/components';
 import WebGLGradient from '@/components/WebGLGradient';
+import { ToastContainer, useToast } from '@/components/shared/Toast';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type {
   IndexJob,
@@ -33,6 +34,8 @@ import type {
   UserSpaceCodeIndexJob,
   ConfigurationWarning,
   UserSpacePreviewWarning,
+  ServerBackupJob,
+  ServerRestoreJob,
 } from '@/types';
 import type { OAuthParams } from '@/components';
 import { BrandName } from '@/utils/buildEnvironment';
@@ -81,6 +84,46 @@ function getInitialConversationId(): string | null {
 const INDEXER_ACTIVE_POLL_MS = 2000;
 const ENCRYPTION_KEY_ERROR_DISMISS_KEY = 'ragtime_encryption_key_error';
 const ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY = 'ragtime_encryption_backup_reminder';
+
+type ObservedServerJobKind = 'backup' | 'restore';
+
+function isObservedServerJobTerminal(
+  _kind: ObservedServerJobKind,
+  job: ServerBackupJob | ServerRestoreJob | null,
+): boolean {
+  if (!job) {
+    return false;
+  }
+  if (job.status === 'cancelled' || job.status === 'failed' || job.status === 'interrupted') {
+    return true;
+  }
+  return job.status === 'completed';
+}
+
+function getObservedServerJobToastMessage(
+  kind: ObservedServerJobKind,
+  job: ServerBackupJob | ServerRestoreJob,
+): { type: 'success' | 'error'; message: string } | null {
+  if (job.status === 'failed' || job.status === 'interrupted') {
+    return {
+      type: 'error',
+      message: job.error || job.message || `Server ${kind} ${job.status}.`,
+    };
+  }
+  if (job.status === 'cancelled') {
+    return null;
+  }
+  if (job.status === 'completed') {
+    return {
+      type: 'success',
+      message:
+        kind === 'backup'
+          ? 'Server backup completed successfully.'
+          : 'Server restore completed successfully.',
+    };
+  }
+  return null;
+}
 
 function readPersistentDismissed(dismissKey: string): boolean {
   try {
@@ -231,6 +274,14 @@ export function App() {
   const [aggregateSearch, setAggregateSearch] = useState(true);
   const [embeddingDimensions, setEmbeddingDimensions] = useState<number | null>(null);
   const [previewWarning, setPreviewWarning] = useState<UserSpacePreviewWarning | null>(null);
+  const [observedServerBackupJob, setObservedServerBackupJob] = useState<ServerBackupJob | null>(
+    null,
+  );
+  const [observedServerRestoreJob, setObservedServerRestoreJob] = useState<ServerRestoreJob | null>(
+    null,
+  );
+  const [toasts, toast] = useToast();
+  const observedServerTerminalToastsRef = useRef<Set<string>>(new Set());
 
   // Schema indexer state
   const [schemaJobs, setSchemaJobs] = useState<SchemaIndexJob[]>([]);
@@ -272,6 +323,9 @@ export function App() {
   }, []);
 
   const forceLoginScreen = useCallback(() => {
+    setObservedServerBackupJob(null);
+    setObservedServerRestoreJob(null);
+    observedServerTerminalToastsRef.current.clear();
     setCurrentUser(null);
     setAuthStatus((previous) => {
       if (previous) {
@@ -373,6 +427,63 @@ export function App() {
     }
     setEncryptionBackupReminderDismissed(true);
   }, []);
+
+  const handleServerOperationError = useCallback(
+    (message: string) => {
+      toast.error(message);
+    },
+    [toast],
+  );
+
+  const observeServerBackupJob = useCallback(
+    (job: ServerBackupJob) => {
+      const toastInfo = getObservedServerJobToastMessage('backup', job);
+      if (toastInfo) {
+        const toastKey = `backup:${job.id}:${job.status}`;
+        if (!observedServerTerminalToastsRef.current.has(toastKey)) {
+          observedServerTerminalToastsRef.current.add(toastKey);
+          if (toastInfo.type === 'success') {
+            toast.success(toastInfo.message);
+          } else {
+            toast.error(toastInfo.message);
+          }
+        }
+        setObservedServerBackupJob(null);
+        return;
+      }
+      if (!isObservedServerJobTerminal('backup', job)) {
+        setObservedServerBackupJob(job);
+      } else {
+        setObservedServerBackupJob(null);
+      }
+    },
+    [toast],
+  );
+
+  const observeServerRestoreJob = useCallback(
+    (job: ServerRestoreJob) => {
+      const toastInfo = getObservedServerJobToastMessage('restore', job);
+      if (toastInfo) {
+        const toastKey = `restore:${job.id}:${job.status}`;
+        if (!observedServerTerminalToastsRef.current.has(toastKey)) {
+          observedServerTerminalToastsRef.current.add(toastKey);
+          if (toastInfo.type === 'success') {
+            toast.success(toastInfo.message);
+          } else {
+            toast.error(toastInfo.message);
+          }
+        }
+        setObservedServerRestoreJob(null);
+        return;
+      }
+      if (!isObservedServerJobTerminal('restore', job)) {
+        setObservedServerRestoreJob(job);
+      } else {
+        setObservedServerRestoreJob(null);
+      }
+    },
+    [toast],
+  );
 
   // Check authentication status on mount
   useEffect(() => {
@@ -506,6 +617,87 @@ export function App() {
 
   // Check if user is admin
   const isAdmin = currentUser?.role === 'admin';
+
+  useEffect(() => {
+    if (!currentUser || !isAdmin) {
+      setObservedServerBackupJob(null);
+      setObservedServerRestoreJob(null);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const activeJobs = await api.getActiveServerBackupJobs();
+        if (cancelled) {
+          return;
+        }
+        if (activeJobs.backup_job) {
+          observeServerBackupJob(activeJobs.backup_job);
+        }
+        if (activeJobs.restore_job) {
+          observeServerRestoreJob(activeJobs.restore_job);
+        }
+      } catch (error) {
+        console.warn('Failed to reconnect active server backup jobs:', error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser, isAdmin, observeServerBackupJob, observeServerRestoreJob]);
+
+  useEffect(() => {
+    if (!currentUser || !isAdmin) {
+      return;
+    }
+
+    if (!observedServerBackupJob && !observedServerRestoreJob) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      if (
+        observedServerBackupJob &&
+        !isObservedServerJobTerminal('backup', observedServerBackupJob)
+      ) {
+        void api
+          .getServerBackupJob(observedServerBackupJob.id)
+          .then((job) => {
+            observeServerBackupJob(job);
+          })
+          .catch((error) => {
+            console.warn('Failed to refresh observed backup job:', error);
+          });
+      }
+
+      if (
+        observedServerRestoreJob &&
+        !isObservedServerJobTerminal('restore', observedServerRestoreJob)
+      ) {
+        void api
+          .getServerRestoreJob(observedServerRestoreJob.id)
+          .then((job) => {
+            observeServerRestoreJob(job);
+          })
+          .catch((error) => {
+            console.warn('Failed to refresh observed restore job:', error);
+          });
+      }
+    }, INDEXER_ACTIVE_POLL_MS);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [
+    currentUser,
+    isAdmin,
+    observeServerBackupJob,
+    observeServerRestoreJob,
+    observedServerBackupJob,
+    observedServerRestoreJob,
+  ]);
 
   // Enforce admin-only views - redirect non-admins to chat
   useEffect(() => {
@@ -1046,6 +1238,7 @@ export function App() {
           compact
           hidden={hideChrome || !isAdmin}
         />
+        <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
         <div className="container">
           {activeView === 'userspace' ? (
             <div className="userspace-page-container">
@@ -1087,6 +1280,9 @@ export function App() {
               onHighlightComplete={() => setHighlightSetting(null)}
               authStatus={authStatus}
               onEncryptedArtifactDelivered={handleEncryptedArtifactDelivered}
+              onServerBackupJobObserved={observeServerBackupJob}
+              onServerRestoreJobObserved={observeServerRestoreJob}
+              onServerOperationError={handleServerOperationError}
             />
           ) : activeView === 'tools' ? (
             <ToolsPanel

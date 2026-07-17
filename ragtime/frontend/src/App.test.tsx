@@ -1,9 +1,10 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from './components/shared/securityWarnings';
+import type { ServerBackupJob, ServerRestoreJob, User } from './types';
 
 const localStorageMock = vi.hoisted(() => ({
   getItem: vi.fn(() => null),
@@ -15,15 +16,46 @@ const apiMock = vi.hoisted(() => ({
   getAuthStatus: vi.fn(),
   getCurrentUser: vi.fn(),
   getSettings: vi.fn(),
+  getActiveServerBackupJobs: vi.fn(),
+  getServerBackupJob: vi.fn(),
+  getServerRestoreJob: vi.fn(),
+  logout: vi.fn(),
 }));
 
 const settingsPanelSpy = vi.hoisted(() => vi.fn());
+const toastApiMock = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  dismiss: vi.fn(),
+  clear: vi.fn(),
+}));
+const toastContainerSpy = vi.hoisted(() => vi.fn());
+const authExpiredListenerMock = vi.hoisted(() => ({
+  callback: null as null | (() => void),
+}));
+let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
 
 vi.stubGlobal('localStorage', localStorageMock);
 
 vi.mock('@/api', () => ({
   api: apiMock,
-  onAuthExpired: vi.fn(() => vi.fn()),
+  onAuthExpired: vi.fn((callback: () => void) => {
+    authExpiredListenerMock.callback = callback;
+    return vi.fn(() => {
+      if (authExpiredListenerMock.callback === callback) {
+        authExpiredListenerMock.callback = null;
+      }
+    });
+  }),
+}));
+
+vi.mock('./components/shared/Toast', () => ({
+  useToast: () => [[], toastApiMock] as const,
+  ToastContainer: (props: unknown) => {
+    toastContainerSpy(props);
+    return null;
+  },
 }));
 
 vi.mock('@/components/WebGLGradient', () => ({
@@ -40,7 +72,23 @@ vi.mock('@/components', () => ({
   FilesystemIndexPanel: () => null,
   IndexesList: () => null,
   JobsTable: () => null,
-  LoginPage: () => null,
+  LoginPage: ({ onLoginSuccess }: { onLoginSuccess: (user: User) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onLoginSuccess({
+          id: 'user-1',
+          username: 'local:admin',
+          display_name: 'Admin',
+          email: null,
+          auth_provider: 'local_managed',
+          role: 'admin',
+        })
+      }
+    >
+      Log in again
+    </button>
+  ),
   MemoryStatus: () => null,
   OAuthCallbackError: () => null,
   OAuthLoginPage: () => null,
@@ -52,6 +100,20 @@ vi.mock('@/components', () => ({
       props && typeof props === 'object' && 'onEncryptedArtifactDelivered' in props
         ? (props as { onEncryptedArtifactDelivered?: () => void }).onEncryptedArtifactDelivered
         : undefined;
+    const onServerBackupJobObserved =
+      props && typeof props === 'object' && 'onServerBackupJobObserved' in props
+        ? (props as { onServerBackupJobObserved?: (job: ServerBackupJob) => void })
+            .onServerBackupJobObserved
+        : undefined;
+    const onServerRestoreJobObserved =
+      props && typeof props === 'object' && 'onServerRestoreJobObserved' in props
+        ? (props as { onServerRestoreJobObserved?: (job: ServerRestoreJob) => void })
+            .onServerRestoreJobObserved
+        : undefined;
+    const onServerOperationError =
+      props && typeof props === 'object' && 'onServerOperationError' in props
+        ? (props as { onServerOperationError?: (message: string) => void }).onServerOperationError
+        : undefined;
     const highlightSetting =
       props && typeof props === 'object' && 'highlightSetting' in props
         ? (props as { highlightSetting?: string | null }).highlightSetting
@@ -62,6 +124,23 @@ vi.mock('@/components', () => ({
         <div data-testid="settings-highlight">{highlightSetting ?? 'none'}</div>
         <button type="button" onClick={() => onEncryptedArtifactDelivered?.()}>
           Mark backup delivered
+        </button>
+        <button
+          type="button"
+          onClick={() => onServerBackupJobObserved?.({ id: 'backup-observed', status: 'pending' })}
+        >
+          Observe backup job
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            onServerRestoreJobObserved?.({ id: 'restore-observed', status: 'pending' })
+          }
+        >
+          Observe restore job
+        </button>
+        <button type="button" onClick={() => onServerOperationError?.('Section action exploded')}>
+          Report operation error
         </button>
       </div>
     );
@@ -105,7 +184,79 @@ afterEach(() => {
   vi.clearAllMocks();
   localStorageMock.getItem.mockReturnValue(null);
   window.history.replaceState({}, '', '/');
+  authExpiredListenerMock.callback = null;
+  consoleWarnSpy.mockRestore();
+  vi.useRealTimers();
 });
+
+beforeEach(() => {
+  consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  apiMock.getActiveServerBackupJobs.mockResolvedValue({ backup_job: null, restore_job: null });
+  apiMock.getServerBackupJob.mockResolvedValue({ id: 'backup-default', status: 'pending' });
+  apiMock.getServerRestoreJob.mockResolvedValue({ id: 'restore-default', status: 'pending' });
+  apiMock.logout.mockResolvedValue(undefined);
+});
+
+function mockAuthenticatedAdmin(): void {
+  apiMock.getAuthStatus.mockResolvedValue({
+    authenticated: true,
+    ldap_configured: false,
+    local_admin_enabled: true,
+    debug_mode: false,
+    api_key_configured: true,
+    session_cookie_secure: false,
+    allowed_origins_open: false,
+    authenticated_webgl_background_enabled: false,
+    server_name: 'Ragtime',
+  });
+  apiMock.getCurrentUser.mockResolvedValue({
+    id: 'user-1',
+    username: 'local:admin',
+    display_name: 'Admin',
+    role: 'admin',
+  });
+  apiMock.getSettings.mockResolvedValue({
+    settings: {
+      server_name: 'Ragtime',
+      authenticated_webgl_background_enabled: false,
+    },
+    configuration_warnings: [],
+  });
+}
+
+function mockAuthenticatedNonAdmin(): void {
+  apiMock.getAuthStatus.mockResolvedValue({
+    authenticated: true,
+    ldap_configured: false,
+    local_admin_enabled: true,
+    debug_mode: false,
+    api_key_configured: true,
+    session_cookie_secure: false,
+    allowed_origins_open: false,
+    authenticated_webgl_background_enabled: false,
+    server_name: 'Ragtime',
+  });
+  apiMock.getCurrentUser.mockResolvedValue({
+    id: 'user-2',
+    username: 'local:user',
+    display_name: 'User',
+    role: 'user',
+  });
+  apiMock.getSettings.mockResolvedValue({
+    settings: {
+      server_name: 'Ragtime',
+      authenticated_webgl_background_enabled: false,
+    },
+    configuration_warnings: [],
+  });
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 describe('App chat fullscreen layout', () => {
   it('applies fullscreen state to the outer chat page container', async () => {
@@ -207,5 +358,231 @@ describe('App chat fullscreen layout', () => {
       );
     });
     expect(screen.queryByText('Back Up Your Encryption Key')).toBe(null);
+  });
+
+  it('emits one backup completion toast after navigating away from Settings', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getServerBackupJob
+      .mockResolvedValueOnce({ id: 'backup-observed', status: 'pending' })
+      .mockResolvedValue({ id: 'backup-observed', status: 'completed' });
+
+    render(<App />);
+
+    await flushMicrotasks();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Observe backup job' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledWith('backup-observed');
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(toastApiMock.success).toHaveBeenCalledWith('Server backup completed successfully.');
+
+    expect(toastApiMock.success).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+    });
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledTimes(2);
+  });
+
+  it('emits one restore failure toast after navigating away from Settings', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getServerRestoreJob
+      .mockResolvedValueOnce({ id: 'restore-observed', status: 'pending' })
+      .mockResolvedValue({
+        id: 'restore-observed',
+        status: 'failed',
+        error: 'Restore exploded',
+        message: 'ignore me',
+      });
+
+    render(<App />);
+
+    await flushMicrotasks();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Observe restore job' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }));
+
+    expect(apiMock.getServerRestoreJob).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(apiMock.getServerRestoreJob).toHaveBeenCalledWith('restore-observed');
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(toastApiMock.error).toHaveBeenCalledWith('Restore exploded');
+
+    expect(toastApiMock.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes settings-reported server operation errors to the app toast stack', async () => {
+    mockAuthenticatedAdmin();
+
+    render(<App />);
+
+    await flushMicrotasks();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Report operation error' }));
+
+    expect(toastApiMock.error).toHaveBeenCalledWith('Section action exploded');
+    expect(toastApiMock.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll backup lifecycle jobs for non-admin users', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedNonAdmin();
+
+    render(<App />);
+
+    await flushMicrotasks();
+    expect(apiMock.getCurrentUser).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+    });
+
+    expect(apiMock.getActiveServerBackupJobs).not.toHaveBeenCalled();
+    expect(apiMock.getServerBackupJob).not.toHaveBeenCalled();
+    expect(apiMock.getServerRestoreJob).not.toHaveBeenCalled();
+  });
+
+  it('ignores cancelled jobs and stops lifecycle polling on auth expiry', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getActiveServerBackupJobs.mockResolvedValue({
+      backup_job: { id: 'backup-cancelled', status: 'pending' },
+      restore_job: null,
+    });
+    apiMock.getServerBackupJob.mockResolvedValue({ id: 'backup-cancelled', status: 'cancelled' });
+
+    render(<App />);
+
+    await flushMicrotasks();
+    expect(apiMock.getActiveServerBackupJobs).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledWith('backup-cancelled');
+
+    expect(toastApiMock.success).not.toHaveBeenCalled();
+    expect(toastApiMock.error).not.toHaveBeenCalled();
+
+    authExpiredListenerMock.callback?.();
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+    });
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears terminal-toast deduplication on auth expiry', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getServerBackupJob.mockResolvedValue({
+      id: 'backup-observed',
+      status: 'completed',
+    });
+
+    render(<App />);
+
+    await flushMicrotasks();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Observe backup job' }));
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(toastApiMock.success).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      authExpiredListenerMock.callback?.();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in again' }));
+    await flushMicrotasks();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Observe backup job' }));
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+
+    expect(toastApiMock.success).toHaveBeenCalledTimes(2);
+  });
+
+  it('emits one interrupted backup error toast using fallback semantics and stops polling', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getActiveServerBackupJobs.mockResolvedValue({
+      backup_job: { id: 'backup-interrupted', status: 'pending' },
+      restore_job: null,
+    });
+    apiMock.getServerBackupJob
+      .mockResolvedValueOnce({ id: 'backup-interrupted', status: 'pending' })
+      .mockResolvedValue({
+        id: 'backup-interrupted',
+        status: 'interrupted',
+        message: 'Transport died',
+      });
+
+    render(<App />);
+
+    await flushMicrotasks();
+    expect(apiMock.getActiveServerBackupJobs).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledWith('backup-interrupted');
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await flushMicrotasks();
+    expect(toastApiMock.error).toHaveBeenCalledWith('Transport died');
+    expect(toastApiMock.error).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+    });
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not emit repeated polling-error toasts for tracked jobs', async () => {
+    vi.useFakeTimers();
+    mockAuthenticatedAdmin();
+    apiMock.getServerBackupJob.mockRejectedValue(new Error('poll failed'));
+
+    render(<App />);
+
+    await flushMicrotasks();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Observe backup job' }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(6000);
+    });
+
+    await flushMicrotasks();
+    expect(apiMock.getServerBackupJob).toHaveBeenCalledTimes(3);
+    expect(toastApiMock.error).not.toHaveBeenCalled();
+    expect(toastApiMock.success).not.toHaveBeenCalled();
   });
 });

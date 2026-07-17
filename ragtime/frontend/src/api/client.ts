@@ -208,7 +208,10 @@ import type {
   SharedConversationResponse,
   PublicShareTargetResponse,
   CreateServerBackupJobRequest,
+  ServerBackupExportListResponse,
+  ServerDeploymentEnvironmentRecovery,
   ServerBackupJob,
+  ServerBackupRestoreActiveJobsResponse,
   UploadedServerBackupArchive,
   CreateServerRestoreJobRequest,
   ServerRestoreJob,
@@ -1371,6 +1374,13 @@ export const api = {
     return handleResponse<ServerBackupJob>(response);
   },
 
+  async getActiveServerBackupJobs(): Promise<ServerBackupRestoreActiveJobsResponse> {
+    const response = await apiFetch(`${API_BASE}/server-backups/active-jobs`, {
+      cache: 'no-store',
+    });
+    return handleResponse<ServerBackupRestoreActiveJobsResponse>(response);
+  },
+
   async getServerBackupJob(jobId: string): Promise<ServerBackupJob> {
     const response = await apiFetch(
       `${API_BASE}/server-backups/jobs/${encodeURIComponent(jobId)}`,
@@ -1393,6 +1403,23 @@ export const api = {
 
   async downloadServerBackup(jobId: string): Promise<void> {
     startNativeDownload(`${API_BASE}/server-backups/jobs/${encodeURIComponent(jobId)}/download`);
+  },
+
+  async listServerBackupExports(): Promise<ServerBackupExportListResponse> {
+    const response = await apiFetch(`${API_BASE}/server-backups/exports`, {
+      cache: 'no-store',
+    });
+    return handleResponse<ServerBackupExportListResponse>(response);
+  },
+
+  async deleteServerBackupJob(jobId: string): Promise<{ success: true; job_id: string }> {
+    const response = await apiFetch(
+      `${API_BASE}/server-backups/jobs/${encodeURIComponent(jobId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+    return handleResponse<{ success: true; job_id: string }>(response);
   },
 
   async uploadServerBackupArchive(file: File): Promise<UploadedServerBackupArchive> {
@@ -1420,6 +1447,19 @@ export const api = {
       { cache: 'no-store' },
     );
     return handleResponse<ServerRestoreJob>(response);
+  },
+
+  async recoverServerDeploymentEnvironment(
+    jobId: string,
+  ): Promise<ServerDeploymentEnvironmentRecovery> {
+    const response = await apiFetch(
+      `${API_BASE}/server-backups/restore-jobs/${encodeURIComponent(jobId)}/deployment-environment`,
+      {
+        method: 'POST',
+        cache: 'no-store',
+      },
+    );
+    return handleResponse<ServerDeploymentEnvironmentRecovery>(response);
   },
 
   async commitServerRestoreJob(
