@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { AuthStatus } from '@/types';
 import {
   API_KEY_INFO_HIGHLIGHT,
+  hasAuthenticatedSecurityPosture,
   renderApiKeySecurityWarning,
   renderHttpSecurityWarning,
   renderRuntimeAuthSecurityWarning,
@@ -187,9 +188,11 @@ export function SecurityBanner({
   if (hidden) return null;
 
   // Check security issues
-  const showApiKeyWarning = !authStatus.api_key_configured;
-  const showCorsWarning = authStatus.allowed_origins_open;
-  const showRuntimeAuthWarning = Boolean(authStatus.runtime_auth_token_warning);
+  const hasAuthenticatedPosture = hasAuthenticatedSecurityPosture(authStatus);
+  const showApiKeyWarning = hasAuthenticatedPosture && !authStatus.api_key_configured;
+  const showCorsWarning = hasAuthenticatedPosture && authStatus.allowed_origins_open;
+  const showRuntimeAuthWarning =
+    hasAuthenticatedPosture && Boolean(authStatus.runtime_auth_token_warning);
   const isHttp = window.location.protocol === 'http:';
 
   const securityNoticeDefinitions: NoticeDefinition[] = [

@@ -45,7 +45,11 @@ import {
   useUrlSearchFilterState,
 } from './shared/SearchFilterBar';
 import { OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
-import { renderApiKeySecurityWarning, renderHttpSecurityWarning } from './shared/securityWarnings';
+import {
+  hasAuthenticatedSecurityPosture,
+  renderApiKeySecurityWarning,
+  renderHttpSecurityWarning,
+} from './shared/securityWarnings';
 import { useToast, ToastContainer } from './shared/Toast';
 import {
   defaultScheduleStartMinute,
@@ -571,6 +575,9 @@ export function SettingsPanel({
   authStatus,
   onEncryptedArtifactDelivered,
 }: SettingsPanelProps) {
+  const hasAuthenticatedPosture = hasAuthenticatedSecurityPosture(authStatus);
+  const showApiKeyWarning = hasAuthenticatedPosture && !authStatus.api_key_configured;
+  const showHttpWarning = window.location.protocol === 'http:';
   const { refresh: refreshModels } = useAvailableModels();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [userspacePreviewSettings, setUserspacePreviewSettings] =
@@ -4110,15 +4117,13 @@ export function SettingsPanel({
             : 'a separately configured OpenAPI models list'}
           .
         </p>
-        {(!authStatus?.api_key_configured || window.location.protocol === 'http:') && (
+        {showApiKeyWarning || showHttpWarning ? (
           <div className="field-warning">
             <strong>Security:</strong>
-            {!authStatus?.api_key_configured && <span> {renderApiKeySecurityWarning()}</span>}
-            {window.location.protocol === 'http:' && (
-              <span> {renderHttpSecurityWarning(!authStatus?.api_key_configured)}</span>
-            )}
+            {showApiKeyWarning && <span> {renderApiKeySecurityWarning()}</span>}
+            {showHttpWarning && <span> {renderHttpSecurityWarning(showApiKeyWarning)}</span>}
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="api-info-box" data-settings-filter-card="true">

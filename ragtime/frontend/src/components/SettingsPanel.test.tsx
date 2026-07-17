@@ -150,6 +150,32 @@ afterEach(() => {
 });
 
 describe('SettingsPanel server backup section wiring', () => {
+  it('does not render an API-key warning from a stale unauthenticated status', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(
+      <SettingsPanel
+        authStatus={{
+          authenticated: false,
+          ldap_configured: false,
+          local_admin_enabled: true,
+          debug_mode: false,
+          api_key_configured: false,
+          session_cookie_secure: false,
+          allowed_origins_open: false,
+        }}
+      />,
+    );
+
+    await screen.findByRole('button', { name: 'Open chat models' });
+
+    await waitFor(() => {
+      expect(document.querySelector('.field-warning')?.textContent).not.toContain(
+        'The API endpoint accepts an API Key for authentication',
+      );
+    });
+  });
+
   it('preserves enriched Codex and Claude Code labels when refreshing the allowed chat models modal', async () => {
     apiMock.fetchLLMModels.mockImplementation(({ provider }: { provider: string }) => {
       if (provider === 'openai_codex') {

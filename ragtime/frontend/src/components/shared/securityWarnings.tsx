@@ -1,7 +1,14 @@
 import type { ReactNode } from 'react';
+import type { AuthStatus } from '@/types';
 
 export const API_KEY_INFO_HIGHLIGHT = 'api_key_info';
 export const SERVER_BACKUP_RESTORE_HIGHLIGHT = 'server_backup_restore';
+
+export function hasAuthenticatedSecurityPosture(
+  authStatus: AuthStatus | null | undefined,
+): authStatus is AuthStatus & { authenticated: true } {
+  return authStatus?.authenticated === true;
+}
 
 export function renderApiKeySecurityWarning(): ReactNode {
   return (
