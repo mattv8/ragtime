@@ -101,6 +101,7 @@ from ragtime.core.encryption import (
     encrypt_secret,
 )
 from ragtime.core.logging import get_logger
+from ragtime.core.sql import sql_quote_literal as _sql_quote_literal
 from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.tokenization import count_tokens
 from ragtime.core.userspace_limits import (
@@ -208,13 +209,6 @@ def _safe_serialize(value: Any) -> str:
         return json.dumps(value, default=str)
     except Exception:
         return str(value) if value is not None else ""
-
-
-def _sql_quote_literal(value: Any) -> str:
-    """Quote a scalar value for trusted raw SQL construction."""
-    if value is None:
-        return "NULL"
-    return "'" + str(value).replace("'", "''") + "'"
 
 
 def _sql_jsonb_literal(value: Any) -> str:

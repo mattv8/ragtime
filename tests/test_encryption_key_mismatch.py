@@ -1,3 +1,4 @@
+import stat
 import sys
 import tempfile
 import unittest
@@ -103,13 +104,13 @@ class EncryptionKeyMismatchTests(unittest.TestCase):
         reset_key_mismatch_state()
         self.assertFalse(encryption_key_mismatch_detected())
 
-    def test_recovery_hint_mentions_env_key_precedence(self) -> None:
+    def test_recovery_hint_mentions_restore_options(self) -> None:
         hint = encryption_recovery_hint()
-        self.assertIn("ENCRYPTION_KEY", hint)
+        self.assertIn(".encryption_key", hint)
         self.assertIn("--include-secret", hint)
         self.assertIn("Settings", hint)
 
-    def test_env_key_wins_and_is_mirrored_to_file(self) -> None:
+    def test_existing_key_file_remains_authoritative_when_env_key_is_set(self) -> None:
         original_key_file = ENCRYPTION_KEY_FILE
         settings_mod = sys.modules["ragtime.config.settings"]
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,8 +122,38 @@ class EncryptionKeyMismatchTests(unittest.TestCase):
             finally:
                 settings_mod.ENCRYPTION_KEY_FILE = original_key_file  # type: ignore[attr-defined]
 
+            self.assertEqual(key, "old-file-key")
+            self.assertEqual(key_file.read_text().strip(), "old-file-key")
+
+    def test_env_key_seeds_missing_key_file_once(self) -> None:
+        original_key_file = ENCRYPTION_KEY_FILE
+        settings_mod = sys.modules["ragtime.config.settings"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_file = Path(tmpdir) / ".encryption_key"
+            settings_mod.ENCRYPTION_KEY_FILE = key_file  # type: ignore[attr-defined]
+            try:
+                key = SettingsClass.generate_encryption_key_if_empty("env-key")
+            finally:
+                settings_mod.ENCRYPTION_KEY_FILE = original_key_file  # type: ignore[attr-defined]
+
             self.assertEqual(key, "env-key")
             self.assertEqual(key_file.read_text().strip(), "env-key")
+            self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
+
+    def test_generated_key_is_persisted_with_mode_0600(self) -> None:
+        original_key_file = ENCRYPTION_KEY_FILE
+        settings_mod = sys.modules["ragtime.config.settings"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_file = Path(tmpdir) / ".encryption_key"
+            settings_mod.ENCRYPTION_KEY_FILE = key_file  # type: ignore[attr-defined]
+            try:
+                key = SettingsClass.generate_encryption_key_if_empty("")
+            finally:
+                settings_mod.ENCRYPTION_KEY_FILE = original_key_file  # type: ignore[attr-defined]
+
+            self.assertTrue(key)
+            self.assertEqual(key_file.read_text().strip(), key)
+            self.assertEqual(stat.S_IMODE(key_file.stat().st_mode), 0o600)
 
     def test_key_file_is_fallback_when_env_key_is_absent(self) -> None:
         original_key_file = ENCRYPTION_KEY_FILE

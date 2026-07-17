@@ -9,6 +9,7 @@ const modalState = vi.hoisted(() => ({
     allModels?: Array<Record<string, unknown>>;
   },
 }));
+const serverBackupSectionSpy = vi.hoisted(() => vi.fn());
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -39,6 +40,13 @@ vi.mock('./settings/ChatModelsSettingsSection', () => ({
     }, [openModelFilterModal]);
 
     return <button type="button">Open chat models</button>;
+  },
+}));
+
+vi.mock('./settings/ServerBackupRestoreSettingsSection', () => ({
+  ServerBackupRestoreSettingsSection: (props: unknown) => {
+    serverBackupSectionSpy(props);
+    return <div>Server backup section</div>;
   },
 }));
 
@@ -79,6 +87,7 @@ vi.mock('./shared/AuthAdminModals', () => ({ AuthAdminModalHost: () => null }));
 
 beforeEach(() => {
   modalRenderSpy.mockClear();
+  serverBackupSectionSpy.mockClear();
   modalState.latestAllowedChatModelsProps = null;
 
   apiMock.getSettings.mockResolvedValue({
@@ -129,52 +138,7 @@ beforeEach(() => {
     allowed_models: [],
     allowed_openapi_models: [],
   });
-  apiMock.fetchLLMModels.mockImplementation(({ provider }: { provider: string }) => {
-    if (provider === 'openai_codex') {
-      return Promise.resolve({
-        success: true,
-        models: [
-          {
-            id: 'gpt-5.6-terra',
-            name: 'gpt-5.6-terra',
-            provider: 'openai_codex',
-            context_limit: 123456,
-            display_name: '5.6 Terra',
-            model_variant: '5.6 Terra',
-            model_provider_label: 'OpenAI Codex',
-            model_family: 'Codex',
-            selector_label: 'OpenAI Codex / Codex / 5.6 Terra',
-            host_provider_label: 'OpenAI Codex',
-            group: 'Codex',
-            is_latest: true,
-          },
-        ],
-      });
-    }
-
-    if (provider === 'claude_code') {
-      return Promise.resolve({
-        success: true,
-        models: [
-          {
-            id: 'claude-sonnet-4-6',
-            name: 'claude-sonnet-4-6',
-            provider: 'anthropic',
-            context_limit: 654321,
-            display_name: 'Sonnet 4.6',
-            model_variant: 'Sonnet 4.6',
-            model_provider_label: 'Anthropic',
-            model_family: 'Claude',
-            selector_label: 'Claude Code / Anthropic / Sonnet 4.6',
-            host_provider_label: 'Claude Code',
-            group: 'Claude',
-          },
-        ],
-      });
-    }
-
-    return Promise.resolve({ success: true, models: [] });
-  });
+  apiMock.fetchLLMModels.mockResolvedValue({ success: true, models: [] });
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listCloudOAuthProviders.mockResolvedValue([]);
   apiMock.getLdapConfig.mockResolvedValue({ server_url: '', allow_self_signed: false });
@@ -185,8 +149,55 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('SettingsPanel model filter refresh metadata', () => {
+describe('SettingsPanel server backup section wiring', () => {
   it('preserves enriched Codex and Claude Code labels when refreshing the allowed chat models modal', async () => {
+    apiMock.fetchLLMModels.mockImplementation(({ provider }: { provider: string }) => {
+      if (provider === 'openai_codex') {
+        return Promise.resolve({
+          success: true,
+          models: [
+            {
+              id: 'gpt-5.6-terra',
+              name: 'gpt-5.6-terra',
+              provider: 'openai_codex',
+              context_limit: 123456,
+              display_name: '5.6 Terra',
+              model_variant: '5.6 Terra',
+              model_provider_label: 'OpenAI Codex',
+              model_family: 'Codex',
+              selector_label: 'OpenAI Codex / Codex / 5.6 Terra',
+              host_provider_label: 'OpenAI Codex',
+              group: 'Codex',
+              is_latest: true,
+            },
+          ],
+        });
+      }
+
+      if (provider === 'claude_code') {
+        return Promise.resolve({
+          success: true,
+          models: [
+            {
+              id: 'claude-sonnet-4-6',
+              name: 'claude-sonnet-4-6',
+              provider: 'anthropic',
+              context_limit: 654321,
+              display_name: 'Sonnet 4.6',
+              model_variant: 'Sonnet 4.6',
+              model_provider_label: 'Anthropic',
+              model_family: 'Claude',
+              selector_label: 'Claude Code / Anthropic / Sonnet 4.6',
+              host_provider_label: 'Claude Code',
+              group: 'Claude',
+            },
+          ],
+        });
+      }
+
+      return Promise.resolve({ success: true, models: [] });
+    });
+
     const { SettingsPanel } = await import('./SettingsPanel');
 
     render(<SettingsPanel />);
@@ -224,6 +235,34 @@ describe('SettingsPanel model filter refresh metadata', () => {
             host_provider_label: 'Claude Code',
           }),
         ]),
+      );
+    });
+  });
+
+  it('passes the server-backup accordion state and reminder callback through to the dedicated section', async () => {
+    const onEncryptedArtifactDelivered = vi.fn();
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(
+      <SettingsPanel
+        currentUser={{
+          id: 'user-1',
+          username: 'local:admin',
+          display_name: 'Admin',
+          email: null,
+          auth_provider: 'local_managed',
+          role: 'admin',
+        }}
+        onEncryptedArtifactDelivered={onEncryptedArtifactDelivered}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(serverBackupSectionSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          open: false,
+          onEncryptedArtifactDelivered,
+        }),
       );
     });
   });

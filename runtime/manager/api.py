@@ -16,6 +16,9 @@ from runtime.manager.models import (
     RuntimeFileReadResponse,
     RuntimeFileWriteRequest,
     RuntimeManagerHealthResponse,
+    RuntimeManagerMaintenanceAcquireRequest,
+    RuntimeManagerMaintenanceLeaseResponse,
+    RuntimeManagerMaintenanceRenewRequest,
     RuntimeMcpToolCallRequest,
     RuntimeMcpToolCallResponse,
     RuntimeMcpToolListResponse,
@@ -94,6 +97,37 @@ def create_app() -> FastAPI:
         _auth: None = ManagerAuth,
     ) -> RuntimeSessionResponse:
         return await manager.start_session(request)
+
+    @application.post(
+        "/maintenance/lease",
+        response_model=RuntimeManagerMaintenanceLeaseResponse,
+    )
+    async def acquire_maintenance_lease(
+        request: RuntimeManagerMaintenanceAcquireRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeManagerMaintenanceLeaseResponse:
+        return await manager.acquire_maintenance_lease(request)
+
+    @application.delete(
+        "/maintenance/lease/{lease_id}",
+        response_model=RuntimeManagerMaintenanceLeaseResponse,
+    )
+    async def release_maintenance_lease(
+        lease_id: str,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeManagerMaintenanceLeaseResponse:
+        return await manager.release_maintenance_lease(lease_id)
+
+    @application.put(
+        "/maintenance/lease/{lease_id}",
+        response_model=RuntimeManagerMaintenanceLeaseResponse,
+    )
+    async def renew_maintenance_lease(
+        lease_id: str,
+        request: RuntimeManagerMaintenanceRenewRequest,
+        _auth: None = ManagerAuth,
+    ) -> RuntimeManagerMaintenanceLeaseResponse:
+        return await manager.renew_maintenance_lease(lease_id, request)
 
     @application.get("/sessions/{provider_session_id}", response_model=RuntimeSessionResponse)
     async def get_session(

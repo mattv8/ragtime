@@ -53,6 +53,26 @@ class GitIndexJobCreationTests(unittest.IsolatedAsyncioTestCase):
         metadata.assert_not_awaited()
         create_task.assert_not_called()
 
+    async def test_try_create_git_index_returns_none_when_index_is_active(self) -> None:
+        existing = self._job(id="existing")
+
+        with (
+            mock.patch.object(repository, "get_active_job_for_index", new=mock.AsyncMock(return_value=existing)),
+            mock.patch.object(repository, "create_job", new=mock.AsyncMock()) as create_job,
+        ):
+            result = await self.service.try_create_index_from_git(URL, "main", self.config)
+
+        self.assertIsNone(result)
+        create_job.assert_not_awaited()
+
+    async def test_create_git_index_still_reuses_active_job(self) -> None:
+        existing = self._job(id="existing")
+
+        with mock.patch.object(repository, "get_active_job_for_index", new=mock.AsyncMock(return_value=existing)):
+            result = await self.service.create_index_from_git(URL, "main", self.config)
+
+        self.assertIs(result, existing)
+
     async def test_create_git_index_concurrent_calls_share_one_active_job(self) -> None:
         first_lookup_started = asyncio.Event()
         release_first_lookup = asyncio.Event()

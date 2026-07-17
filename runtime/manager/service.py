@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -19,6 +20,9 @@ from runtime.manager.models import (
     RuntimeExternalBrowseRequest,
     RuntimeExternalBrowseResponse,
     RuntimeFileReadResponse,
+    RuntimeManagerMaintenanceAcquireRequest,
+    RuntimeManagerMaintenanceLeaseResponse,
+    RuntimeManagerMaintenanceRenewRequest,
     RuntimeMcpToolCallRequest,
     RuntimeMcpToolCallResponse,
     RuntimeMcpToolListResponse,
@@ -36,6 +40,8 @@ from runtime.manager.models import (
     WorkerStartSessionRequest,
 )
 from runtime.worker.service import get_worker_service
+
+logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -60,9 +66,14 @@ class SessionManager:
             "RUNTIME_WORKER_CALL_TIMEOUT_SECONDS",
             10,
         )
+        self._maintenance_lease_ttl_seconds = get_positive_int_env(
+            "RUNTIME_MAINTENANCE_LEASE_TTL_SECONDS",
+            900,
+        )
         self._workspace_start_locks: dict[str, asyncio.Lock] = {}
         self._provider_locks: dict[str, asyncio.Lock] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
+        self._maintenance_lease = RuntimeManagerMaintenanceLeaseResponse.inactive()
 
     async def startup(self) -> None:
         if self._reconcile_task is None:
@@ -104,6 +115,81 @@ class SessionManager:
             raise HTTPException(
                 status_code=503,
                 detail="Runtime capacity exhausted. Retry after an active session stops.",
+            )
+
+    def _expire_maintenance_lease_locked(self, now: datetime) -> None:
+        if not self._maintenance_lease.active:
+            return
+        expires_at = self._maintenance_lease.expires_at
+        if expires_at is None or expires_at > now:
+            return
+        lease_id = self._maintenance_lease.lease_id
+        self._maintenance_lease = RuntimeManagerMaintenanceLeaseResponse.inactive()
+        logger.info("Runtime maintenance lease %s expired", lease_id)
+
+    def _ensure_launches_allowed_locked(self, now: datetime) -> None:
+        self._expire_maintenance_lease_locked(now)
+        if self._maintenance_lease.active:
+            raise HTTPException(
+                status_code=503,
+                detail="Runtime maintenance lease is active. Retry after maintenance completes.",
+            )
+
+    def _active_session_count_locked(self) -> int:
+        return sum(1 for session in self._sessions.values() if session.state in {"running", "starting"})
+
+    def _maintenance_snapshot_locked(self, now: datetime | None = None) -> RuntimeManagerMaintenanceLeaseResponse:
+        if now is not None:
+            self._expire_maintenance_lease_locked(now)
+        if not self._maintenance_lease.active:
+            return RuntimeManagerMaintenanceLeaseResponse.inactive()
+        return RuntimeManagerMaintenanceLeaseResponse(
+            active=True,
+            lease_id=self._maintenance_lease.lease_id,
+            reason=self._maintenance_lease.reason,
+            retry_after_seconds=self._maintenance_lease.retry_after_seconds,
+            acquired_at=self._maintenance_lease.acquired_at,
+            expires_at=self._maintenance_lease.expires_at,
+            active_session_count=self._active_session_count_locked(),
+        )
+
+    async def _stop_provider_session_for_maintenance(self, provider_session_id: str) -> bool:
+        async with self._provider_lock(provider_session_id):
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if not session:
+                    return True
+                worker_session_id = session.worker_session_id
+
+            try:
+                worker_data = await asyncio.wait_for(
+                    self._worker_service.stop_session(worker_session_id),
+                    timeout=self._worker_call_timeout,
+                )
+            except Exception as exc:
+                async with self._lock:
+                    session = self._sessions.get(provider_session_id)
+                    if session and session.worker_session_id == worker_session_id:
+                        session.last_error = f"Maintenance stop failed: {type(exc).__name__}"
+                        session.updated_at = utc_now()
+                return False
+
+            async with self._lock:
+                session = self._sessions.get(provider_session_id)
+                if session and session.worker_session_id == worker_session_id:
+                    self._apply_worker_state(session, worker_data)
+                    session.updated_at = utc_now()
+                    if worker_data.state == "stopped":
+                        self._workspace_index.pop(session.workspace_id, None)
+                        self._sessions.pop(provider_session_id, None)
+                        return True
+                return worker_data.state == "stopped"
+
+    async def _cleanup_worker_session_for_blocked_start(self, worker_session_id: str) -> None:
+        with suppress(Exception):
+            await asyncio.wait_for(
+                self._worker_service.stop_session(worker_session_id),
+                timeout=self._worker_call_timeout,
             )
 
     def _workspace_start_lock(self, workspace_id: str) -> asyncio.Lock:
@@ -268,6 +354,7 @@ class SessionManager:
             pty_access_token: str | None = None
 
             async with self._lock:
+                self._ensure_launches_allowed_locked(utc_now())
                 provider_session_id = request.provider_session_id
                 if provider_session_id and provider_session_id in self._sessions:
                     existing_provider_id = provider_session_id
@@ -323,20 +410,32 @@ class SessionManager:
                 pty_access_token,
             )
 
+            cleanup_worker_session_id: str | None = None
             duplicate_worker_session_id: str | None = None
             async with self._lock:
-                existing_id = self._workspace_index.get(request.workspace_id)
-                if existing_id and existing_id in self._sessions:
-                    session = self._sessions[existing_id]
-                    duplicate_worker_session_id = worker_session.worker_session_id
-                else:
-                    self._sessions[provider_session_id] = session
-                    self._workspace_index[session.workspace_id] = session.provider_session_id
                 now = utc_now()
-                session.leased_by_user_id = request.leased_by_user_id
-                session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-                session.updated_at = now
-                response = self._as_response(session)
+                self._expire_maintenance_lease_locked(now)
+                if self._maintenance_lease.active:
+                    cleanup_worker_session_id = worker_session.worker_session_id
+                else:
+                    existing_id = self._workspace_index.get(request.workspace_id)
+                    if existing_id and existing_id in self._sessions:
+                        session = self._sessions[existing_id]
+                        duplicate_worker_session_id = worker_session.worker_session_id
+                    else:
+                        self._sessions[provider_session_id] = session
+                        self._workspace_index[session.workspace_id] = session.provider_session_id
+                    session.leased_by_user_id = request.leased_by_user_id
+                    session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
+                    session.updated_at = now
+                    response = self._as_response(session)
+
+            if cleanup_worker_session_id:
+                await self._cleanup_worker_session_for_blocked_start(cleanup_worker_session_id)
+                raise HTTPException(
+                    status_code=503,
+                    detail="Runtime maintenance lease is active. Retry after maintenance completes.",
+                )
 
             if duplicate_worker_session_id:
                 with suppress(Exception):
@@ -346,6 +445,93 @@ class SessionManager:
                     )
 
             return response
+
+    async def acquire_maintenance_lease(
+        self,
+        request: RuntimeManagerMaintenanceAcquireRequest,
+    ) -> RuntimeManagerMaintenanceLeaseResponse:
+        async with self._lock:
+            now = utc_now()
+            self._expire_maintenance_lease_locked(now)
+            if self._maintenance_lease.active:
+                if self._maintenance_lease.lease_id == request.lease_id:
+                    snapshot = self._maintenance_snapshot_locked()
+                    provider_session_ids = [session.provider_session_id for session in self._sessions.values() if session.state in {"running", "starting"}]
+                    lease_id = request.lease_id
+                    existing_active = True
+                else:
+                    raise HTTPException(status_code=409, detail="A different runtime maintenance lease is already active")
+            else:
+                self._maintenance_lease = RuntimeManagerMaintenanceLeaseResponse(
+                    active=True,
+                    lease_id=request.lease_id,
+                    reason=request.reason,
+                    retry_after_seconds=request.retry_after_seconds,
+                    acquired_at=now,
+                    expires_at=now + timedelta(seconds=self._maintenance_lease_ttl_seconds),
+                    active_session_count=self._active_session_count_locked(),
+                )
+                provider_session_ids = [session.provider_session_id for session in self._sessions.values() if session.state in {"running", "starting"}]
+                lease_id = request.lease_id
+                existing_active = False
+        if not existing_active:
+            logger.info("Acquired runtime maintenance lease %s", lease_id)
+
+        for provider_session_id in provider_session_ids:
+            stopped = await self._stop_provider_session_for_maintenance(provider_session_id)
+            if not stopped:
+                logger.warning(
+                    "Failed to stop runtime session %s during maintenance lease %s",
+                    provider_session_id,
+                    lease_id,
+                )
+
+        async with self._lock:
+            snapshot = self._maintenance_snapshot_locked(utc_now())
+            if snapshot.active and snapshot.active_session_count > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"Runtime maintenance lease is active but not drained; {snapshot.active_session_count} active sessions remain."),
+                )
+            return snapshot
+
+    async def release_maintenance_lease(
+        self,
+        lease_id: str,
+    ) -> RuntimeManagerMaintenanceLeaseResponse:
+        async with self._lock:
+            self._expire_maintenance_lease_locked(utc_now())
+            if not self._maintenance_lease.active:
+                return RuntimeManagerMaintenanceLeaseResponse.inactive()
+            if self._maintenance_lease.lease_id != lease_id:
+                raise HTTPException(status_code=409, detail="Runtime maintenance lease is held by a different lease")
+            self._maintenance_lease = RuntimeManagerMaintenanceLeaseResponse.inactive()
+        logger.info("Released runtime maintenance lease %s", lease_id)
+        return RuntimeManagerMaintenanceLeaseResponse.inactive()
+
+    async def renew_maintenance_lease(
+        self,
+        lease_id: str,
+        request: RuntimeManagerMaintenanceRenewRequest,
+    ) -> RuntimeManagerMaintenanceLeaseResponse:
+        async with self._lock:
+            now = utc_now()
+            self._expire_maintenance_lease_locked(now)
+            if not self._maintenance_lease.active:
+                raise HTTPException(status_code=404, detail="Runtime maintenance lease is not active")
+            if self._maintenance_lease.lease_id != lease_id:
+                raise HTTPException(status_code=409, detail="Runtime maintenance lease is held by a different lease")
+            ttl_seconds = self._maintenance_lease_ttl_seconds if request.ttl_seconds is None else request.ttl_seconds
+            base_time = now
+            if self._maintenance_lease.expires_at is not None and self._maintenance_lease.expires_at > base_time:
+                base_time = self._maintenance_lease.expires_at
+            self._maintenance_lease = self._maintenance_lease.model_copy(
+                update={
+                    "expires_at": base_time + timedelta(seconds=ttl_seconds),
+                    "active_session_count": self._active_session_count_locked(),
+                }
+            )
+            return self._maintenance_snapshot_locked(now)
 
     async def get_session(self, provider_session_id: str) -> RuntimeSessionResponse:
         await self._cleanup_expired_sessions(utc_now())

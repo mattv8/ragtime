@@ -7,6 +7,7 @@ export const SETTINGS_ACCORDION_SECTION_IDS = [
   'authentication',
   'search',
   'appearance',
+  'server-backup-restore',
   'security',
 ] as const;
 

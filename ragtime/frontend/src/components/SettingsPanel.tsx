@@ -85,6 +85,7 @@ import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
 import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
 import { McpSettingsSection } from './settings/McpSettingsSection';
+import { ServerBackupRestoreSettingsSection } from './settings/ServerBackupRestoreSettingsSection';
 import { getLdapGroupDisplayName, type LdapGroup } from './LdapGroupSelect';
 import {
   getDefaultSettingsAccordionState,
@@ -555,6 +556,7 @@ interface SettingsPanelProps {
   onHighlightComplete?: () => void;
   /** Auth status for security warnings */
   authStatus?: AuthStatus | null;
+  onEncryptedArtifactDelivered?: () => void;
 }
 
 export function SettingsPanel({
@@ -567,6 +569,7 @@ export function SettingsPanel({
   highlightSetting,
   onHighlightComplete,
   authStatus,
+  onEncryptedArtifactDelivered,
 }: SettingsPanelProps) {
   const { refresh: refreshModels } = useAvailableModels();
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -8300,6 +8303,13 @@ export function SettingsPanel({
             highlightSetting={highlightSetting}
             handleSaveBranding={handleSaveBranding}
             brandingSaving={brandingSaving}
+          />
+
+          <ServerBackupRestoreSettingsSection
+            open={openAccordionSections['server-backup-restore']}
+            onToggle={handleToggleAccordionSection}
+            settings={settings}
+            onEncryptedArtifactDelivered={onEncryptedArtifactDelivered}
           />
 
           {/* Security */}

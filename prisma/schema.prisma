@@ -39,6 +39,20 @@ enum IndexJobPhase {
   cancelled
 }
 
+enum GitWebhookTargetType {
+  git_index
+  workspace_scm
+}
+
+enum GitWebhookDeliveryStatus {
+  pending
+  processing
+  completed
+  failed
+  skipped
+  ignored
+}
+
 /// OCR mode for extracting text from images
 enum OcrMode {
   disabled // No OCR - skip image files
@@ -125,6 +139,9 @@ model IndexMetadata {
   source     String?
   gitBranch  String? @map("git_branch") // Branch for git sources
   gitToken   String? @map("git_token") // Token for private repo access (stored for re-indexing)
+  webhookId  String? @unique @map("webhook_id")
+  webhookSecret String? @map("webhook_secret")
+  webhookCreatedAt DateTime? @map("webhook_created_at")
 
   // OCR settings (per-index)
   ocrMode        OcrMode @default(disabled) @map("ocr_mode") // OCR mode for this index
@@ -135,10 +152,35 @@ model IndexMetadata {
   configSnapshot Json? @map("config_snapshot")
 
   // Timestamps
-  createdAt    DateTime @default(now()) @map("created_at")
-  lastModified DateTime @default(now()) @map("last_modified")
+  createdAt    DateTime              @default(now()) @map("created_at")
+  lastModified DateTime              @default(now()) @map("last_modified")
+  webhookDeliveries GitWebhookDelivery[]
 
   @@map("index_metadata")
+}
+
+model GitWebhookDelivery {
+  id                 String                   @id @default(uuid())
+  targetType         GitWebhookTargetType     @map("target_type")
+  indexMetadataId    String?                  @map("index_metadata_id")
+  workspaceId        String?                  @map("workspace_id")
+  providerDeliveryId String?                  @map("provider_delivery_id")
+  eventName          String                   @map("event_name")
+  branch             String?
+  headCommit         String?                  @map("head_commit")
+  status             GitWebhookDeliveryStatus @default(pending)
+  indexJobId         String?                  @map("index_job_id")
+  message            String?
+  receivedAt         DateTime                 @default(now()) @map("received_at")
+  startedAt          DateTime?                @map("started_at")
+  completedAt        DateTime?                @map("completed_at")
+  indexMetadata      IndexMetadata?           @relation(fields: [indexMetadataId], references: [id], onDelete: Cascade)
+  workspace          Workspace?               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([indexMetadataId, receivedAt])
+  @@index([workspaceId, receivedAt])
+  @@index([status])
+  @@map("git_webhook_deliveries")
 }
 
 // -----------------------------------------------------------------------------
@@ -1365,6 +1407,9 @@ model Workspace {
   scmProvider                String?                     @map("scm_provider")
   scmRepoVisibility          String?                     @map("scm_repo_visibility")
   scmToken                   String?                     @map("scm_token")
+  scmWebhookId               String?                     @unique @map("scm_webhook_id")
+  scmWebhookSecret           String?                     @map("scm_webhook_secret")
+  scmWebhookCreatedAt        DateTime?                   @map("scm_webhook_created_at")
   scmConnectedAt             DateTime?                   @map("scm_connected_at")
   scmLastSyncAt              DateTime?                   @map("scm_last_sync_at")
   scmLastSyncDirection       String?                     @map("scm_last_sync_direction")
@@ -1420,6 +1465,7 @@ model Workspace {
   shares                      WorkspaceShare[]
   previewDiagnostics          WorkspacePreviewDiagnostic[]
   agentAccess                 WorkspaceAgentAccess?
+  webhookDeliveries           GitWebhookDelivery[]
 
   @@unique([ownerUserId, nameNormalized])
   @@index([ownerUserId])

@@ -17,6 +17,9 @@ import { api } from '@/api';
 import { formatBytes } from '@/utils';
 import { SQLITE_IMPORT_DEFAULT_MAX_BYTES } from '@/utils/sqliteImport';
 import type {
+  GitWebhookConfig,
+  GitWebhookDelivery,
+  GitWebhookEnableResponse,
   RepoVisibilityResponse,
   UserSpaceWorkspaceArchiveExportListItem,
   UserSpaceWorkspaceArchiveExportTask,
@@ -34,6 +37,7 @@ import type {
   UserSpaceWorkspaceScmSyncResponse,
 } from '@/types';
 import { DeleteConfirmButton } from './DeleteConfirmButton';
+import { GitWebhookSettings } from './GitWebhookSettings';
 import { Popover } from './Popover';
 import {
   defaultScheduleStartMinute,
@@ -332,6 +336,10 @@ function formatArchiveSize(bytes: number | null | undefined): string | null {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function getWebhookErrorMessage(prefix: string, err: unknown): string {
+  return `${prefix}: ${err instanceof Error ? err.message : 'Request failed'}`;
+}
+
 function isApiErrorWithStatus(error: unknown, status: number): error is { status: number } {
   return (
     typeof error === 'object' && error !== null && 'status' in error && error.status === status
@@ -539,6 +547,7 @@ export function WorkspaceScmWizard({
   const [loadingAction, setLoadingAction] = useState<
     | 'pull'
     | 'push'
+    | 'webhook'
     | 'overwrite'
     | 'sync'
     | 'preview'
@@ -572,15 +581,28 @@ export function WorkspaceScmWizard({
   const [autoPullTimezone, setAutoPullTimezone] = useState<string | null>(
     initialScm?.auto_pull_timezone ?? null,
   );
+  const [webhookConfig, setWebhookConfig] = useState<GitWebhookConfig | null>(null);
+  const [webhookDeliveries, setWebhookDeliveries] = useState<GitWebhookDelivery[]>([]);
+  const [revealedWebhookSecret, setRevealedWebhookSecret] = useState<string | null>(null);
+  const [webhookLoadingState, setWebhookLoadingState] = useState<'idle' | 'loading'>('idle');
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
   const archiveFileInputRef = useRef<HTMLInputElement>(null);
   const lastDownloadedArchiveTaskIdRef = useRef<string | null>(null);
   const lastNotifiedArchiveExportTaskIdRef = useRef<string | null>(null);
   const lastNotifiedArchiveImportTaskIdRef = useRef<string | null>(null);
+  const webhookRequestRef = useRef(0);
+  const loadingActionRef = useRef(loadingAction);
   const activeScm = scmState ?? result?.scm ?? initialScm ?? null;
   const hasConfiguredRemote = Boolean(activeScm?.connected || activeScm?.git_url);
+  const shouldShowWebhookSettings = hasConfiguredRemote && activeScm?.remote_role === 'upstream';
   const setupPrompt = lastSetupPrompt ?? activeScm?.last_setup_prompt ?? null;
   const clearStatus = useCallback(() => setStatus(EMPTY_STATUS), []);
+  const resetWebhookState = useCallback(() => {
+    setWebhookConfig(null);
+    setWebhookDeliveries([]);
+    setRevealedWebhookSecret(null);
+    setWebhookLoadingState('idle');
+  }, []);
 
   const resetGitSourceState = useCallback((nextScm?: UserSpaceWorkspaceScmStatus | null) => {
     setPreview(null);
@@ -690,8 +712,30 @@ export function WorkspaceScmWizard({
     setBranches([]);
     setBranchError(null);
     setShowMoreMenu(false);
+    resetWebhookState();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on workspace.id only
   }, [workspace.id]);
+
+  useEffect(() => {
+    return () => {
+      webhookRequestRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    loadingActionRef.current = loadingAction;
+  }, [loadingAction]);
+
+  useEffect(() => {
+    webhookRequestRef.current += 1;
+    resetWebhookState();
+    // Read the latest action through a ref so starting a webhook mutation does not retrigger
+    // this cleanup effect and invalidate that in-flight request.
+    if (loadingActionRef.current === 'webhook') {
+      setLoadingAction(null);
+      setIsLoading(false);
+    }
+  }, [resetWebhookState, shouldShowWebhookSettings, workspace.id]);
 
   useEffect(() => {
     if (!hasActiveArchiveExportTask && !hasActiveArchiveImportTask) {
@@ -865,6 +909,108 @@ export function WorkspaceScmWizard({
 
   const hasScmSettingsMutations = hasPendingPatToken || hasDirtyUpstreamSyncSettings;
 
+  const refreshWebhookDeliveries = useCallback(
+    async (workspaceId: string, requestId: number): Promise<boolean> => {
+      try {
+        const nextDeliveries = await api.listUserSpaceWorkspaceScmWebhookDeliveries(
+          workspaceId,
+          10,
+        );
+        if (requestId !== webhookRequestRef.current) {
+          return false;
+        }
+        setWebhookDeliveries(nextDeliveries);
+        return true;
+      } catch (error) {
+        if (requestId !== webhookRequestRef.current) {
+          return false;
+        }
+        toast.error(getWebhookErrorMessage('Failed to refresh webhook deliveries', error));
+        return false;
+      }
+    },
+    [toast],
+  );
+
+  const loadWebhookState = useCallback(async () => {
+    if (!shouldShowWebhookSettings) {
+      return;
+    }
+
+    const requestId = webhookRequestRef.current + 1;
+    webhookRequestRef.current = requestId;
+    setWebhookLoadingState('loading');
+
+    try {
+      const nextConfig = await api.getUserSpaceWorkspaceScmWebhook(workspace.id);
+      if (requestId !== webhookRequestRef.current) {
+        return;
+      }
+      setWebhookConfig(nextConfig);
+      await refreshWebhookDeliveries(workspace.id, requestId);
+    } catch (error) {
+      if (requestId !== webhookRequestRef.current) {
+        return;
+      }
+      toast.error(getWebhookErrorMessage('Failed to load webhook settings', error));
+    } finally {
+      if (requestId === webhookRequestRef.current) {
+        setWebhookLoadingState('idle');
+      }
+    }
+  }, [refreshWebhookDeliveries, shouldShowWebhookSettings, toast, workspace.id]);
+
+  const applyWebhookMutation = useCallback(
+    async (
+      runMutation: () => Promise<void | GitWebhookEnableResponse>,
+      fallbackConfig?: GitWebhookConfig,
+    ): Promise<void> => {
+      const requestId = webhookRequestRef.current + 1;
+      webhookRequestRef.current = requestId;
+      setIsLoading(true);
+      setLoadingAction('webhook');
+
+      try {
+        const mutationResult = await runMutation();
+        if (requestId !== webhookRequestRef.current) {
+          return;
+        }
+
+        if (mutationResult) {
+          setWebhookConfig({
+            enabled: mutationResult.enabled,
+            webhook_url: mutationResult.webhook_url,
+            provider: mutationResult.provider,
+            branch: mutationResult.branch,
+            created_at: mutationResult.created_at,
+          });
+          setRevealedWebhookSecret(mutationResult.secret || null);
+        } else if (fallbackConfig) {
+          setWebhookConfig(fallbackConfig);
+          setRevealedWebhookSecret(null);
+        }
+
+        const refreshPromise = refreshWebhookDeliveries(workspace.id, requestId);
+        if (requestId !== webhookRequestRef.current) {
+          return;
+        }
+        await onWorkspaceChanged?.();
+        await refreshPromise;
+      } catch (error) {
+        if (requestId !== webhookRequestRef.current) {
+          return;
+        }
+        toast.error(getWebhookErrorMessage('Webhook setup failed', error));
+      } finally {
+        if (requestId === webhookRequestRef.current) {
+          setIsLoading(false);
+          setLoadingAction(null);
+        }
+      }
+    },
+    [onWorkspaceChanged, refreshWebhookDeliveries, toast, workspace.id],
+  );
+
   const applyScmSettingsPatch = useCallback(
     async (
       patch: UserSpaceWorkspaceScmSettingsRequest,
@@ -883,6 +1029,10 @@ export function WorkspaceScmWizard({
     },
     [onSyncComplete, workspace.id],
   );
+
+  useEffect(() => {
+    void loadWebhookState();
+  }, [loadWebhookState]);
 
   async function handleSaveScmSettings(): Promise<void> {
     if (!hasConfiguredRemote || !activeScm) {
@@ -2916,6 +3066,49 @@ export function WorkspaceScmWizard({
                                   </div>
                                 </div>
                               ))}
+                          </div>
+                        )}
+
+                        {shouldShowWebhookSettings &&
+                          webhookLoadingState === 'loading' &&
+                          !webhookConfig && (
+                            <p role="status" className="userspace-muted" style={{ margin: 0 }}>
+                              Loading webhook settings…
+                            </p>
+                          )}
+
+                        {shouldShowWebhookSettings && webhookConfig && (
+                          <div style={{ display: 'grid', gap: 'var(--space-sm)' }}>
+                            {!autoPullEnabled && (
+                              <p className="userspace-muted" style={{ margin: 0 }}>
+                                Scheduled auto-pull is off. Push webhooks can still trigger pulls.
+                              </p>
+                            )}
+                            <GitWebhookSettings
+                              config={webhookConfig}
+                              revealedSecret={revealedWebhookSecret}
+                              deliveries={webhookDeliveries}
+                              disabled={isLoading}
+                              onEnable={() => {
+                                void applyWebhookMutation(() =>
+                                  api.enableUserSpaceWorkspaceScmWebhook(workspace.id),
+                                );
+                              }}
+                              onRotate={() => {
+                                void applyWebhookMutation(() =>
+                                  api.rotateUserSpaceWorkspaceScmWebhookSecret(workspace.id),
+                                );
+                              }}
+                              onDisable={() => {
+                                void applyWebhookMutation(
+                                  async () => {
+                                    await api.disableUserSpaceWorkspaceScmWebhook(workspace.id);
+                                  },
+                                  { ...webhookConfig, enabled: false, webhook_url: null },
+                                );
+                              }}
+                              onDismissSecret={() => setRevealedWebhookSecret(null)}
+                            />
                           </div>
                         )}
                       </div>

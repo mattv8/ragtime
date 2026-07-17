@@ -21,6 +21,7 @@ describe('settingsAccordionState', () => {
         'authentication',
         'search',
         'appearance',
+        'server-backup-restore',
         'security',
       ]);
     });
@@ -61,6 +62,7 @@ describe('settingsAccordionState', () => {
         authentication: false,
         search: false,
         appearance: false,
+        'server-backup-restore': false,
         security: false,
       };
       const next = openSettingsAccordionSections(current, ['chat-models', 'userspace']);
@@ -73,6 +75,7 @@ describe('settingsAccordionState', () => {
         authentication: false,
         search: false,
         appearance: false,
+        'server-backup-restore': false,
         security: false,
       });
     });
@@ -114,6 +117,7 @@ describe('settingsAccordionState', () => {
         authentication: true,
         search: true,
         appearance: true,
+        'server-backup-restore': false,
         security: true,
       };
       const restored = restoreSettingsAccordionState(snapshot);

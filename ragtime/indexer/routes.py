@@ -189,6 +189,9 @@ from ragtime.core.userspace_preview_sandbox import (
 )
 from ragtime.core.validation import require_valid_embedding_provider
 from ragtime.core.vision_models import list_provider_vision_models, list_vision_models
+from ragtime.git_webhooks.models import GitWebhookConfigResponse, GitWebhookDeliveryResponse, GitWebhookEnableResponse, GitWebhookTargetType
+from ragtime.git_webhooks.repository import git_webhook_repository
+from ragtime.git_webhooks.service import git_webhook_service
 from ragtime.indexer.background_tasks import (
     _find_compaction_split_index,
     background_task_service,
@@ -741,6 +744,54 @@ async def fetch_branches(
         error=None,
         needs_token=False,
     )
+
+
+@router.get("/{name}/webhook", response_model=GitWebhookConfigResponse)
+async def get_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookConfigResponse:
+    return await git_webhook_repository.get_index_config(name, str(request.base_url).rstrip("/"))
+
+
+async def _ensure_git_index_webhook_eligible(name: str) -> None:
+    metadata = await repository.get_index_metadata(name)
+    if metadata is None:
+        return
+    if getattr(metadata, "sourceType", None) != "git":
+        raise HTTPException(status_code=400, detail="Git webhooks can only be enabled for Git indexes.")
+    if not str(getattr(metadata, "source", "") or "").strip():
+        raise HTTPException(status_code=400, detail="Git webhook target is missing a Git source URL.")
+
+
+@router.post("/{name}/webhook", response_model=GitWebhookEnableResponse, response_model_exclude_none=True)
+async def enable_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookEnableResponse:
+    await _ensure_git_index_webhook_eligible(name)
+    return await git_webhook_repository.enable_index(name, str(request.base_url).rstrip("/"))
+
+
+@router.post("/{name}/webhook/rotate", response_model=GitWebhookEnableResponse, response_model_exclude_none=True)
+async def rotate_index_webhook_secret(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookEnableResponse:
+    await _ensure_git_index_webhook_eligible(name)
+    return await git_webhook_repository.rotate_index_secret(name, str(request.base_url).rstrip("/"))
+
+
+@router.delete("/{name}/webhook")
+async def disable_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> dict[str, str]:
+    target = await git_webhook_repository.resolve_index_target(name)
+    await git_webhook_repository.disable_index(name)
+    if target is not None:
+        git_webhook_service.disable_target(target)
+    return {"status": "disabled"}
+
+
+@router.get("/{name}/webhook/deliveries", response_model=list[GitWebhookDeliveryResponse])
+async def list_index_webhook_deliveries(
+    name: str,
+    limit: int = Query(default=20, ge=1, le=50),
+    _user: Any = Depends(require_admin),
+) -> list[GitWebhookDeliveryResponse]:
+    target_id = await git_webhook_repository.get_index_target_id(name)
+    if target_id is None:
+        raise HTTPException(status_code=404, detail="Index not found")
+    return await git_webhook_repository.list_deliveries(GitWebhookTargetType.GIT_INDEX, target_id, limit=limit)
 
 
 @router.get("/jobs", response_model=List[IndexJobResponse])

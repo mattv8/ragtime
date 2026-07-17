@@ -9,6 +9,7 @@ services:
   ragtime-db:
     image: pgvector/pgvector:pg18
     container_name: ragtime-db-dev
+    restart: unless-stopped
     ports:
       - "5434:5432"
     environment:
@@ -28,6 +29,7 @@ services:
   searxng:
     image: ghcr.io/searxng/searxng:latest
     container_name: searxng-dev
+    restart: unless-stopped
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
       - SEARXNG_SECRET=${SEARXNG_SECRET:-ragtime-internal-searxng}
@@ -56,6 +58,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.dev
     container_name: ragtime-dev
+    restart: unless-stopped
     ports:
       - "${PORT:-8000}:8000"
       - "${API_PORT:-8001}:${API_PORT:-8001}"
@@ -120,6 +123,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.runtime
     container_name: runtime-dev
+    restart: unless-stopped
     environment:
       - DEBUG_MODE=true
       - RUNTIME_SERVICE_MODE=manager

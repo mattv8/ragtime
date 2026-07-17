@@ -14,6 +14,7 @@ Usage:
 import asyncio
 import os
 import secrets
+import signal
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -59,6 +60,7 @@ from ragtime.core.auth import (
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
 from ragtime.core.logging import get_logger, redact_agent_access_path, setup_logging
+from ragtime.core.maintenance import MaintenanceModeMiddleware, ProcessMaintenanceState
 from ragtime.core.mfa import (
     MFA_TRUST_COOKIE_NAME,
     create_pending_mfa_token,
@@ -71,6 +73,8 @@ from ragtime.core.mfa import (
 )
 from ragtime.core.rate_limit import LOGIN_RATE_LIMIT, SHARE_AUTH_RATE_LIMIT, limiter
 from ragtime.core.ssl import setup_ssl
+from ragtime.git_webhooks.routes import router as git_webhook_router
+from ragtime.git_webhooks.service import git_webhook_service
 from ragtime.indexer.background_tasks import background_task_service
 from ragtime.indexer.chat_attachments import cleanup_expired_chat_attachments
 from ragtime.indexer.chunking import shutdown_process_pool
@@ -81,6 +85,8 @@ from ragtime.indexer.routes import ASSETS_DIR as INDEXER_ASSETS_DIR
 from ragtime.indexer.routes import DIST_DIR
 from ragtime.indexer.routes import router as indexer_router
 from ragtime.indexer.schema_service import schema_indexer
+from ragtime.indexer.server_backup_routes import router as server_backup_router
+from ragtime.indexer.server_backup_service import server_backup_service
 from ragtime.indexer.service import indexer
 from ragtime.indexer.tool_health import ToolHealthCheckResult, tool_health_monitor
 from ragtime.mcp.config_routes import default_filter_router as mcp_default_filter_router
@@ -128,6 +134,28 @@ logger = get_logger(__name__)
 
 
 _SHARE_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+def _schedule_pid1_sigterm(callback: Any, *args: object) -> None:
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.1, callback, *args)
+
+
+def _signal_pid1(kill_fn: Any = os.kill) -> None:
+    kill_fn(1, signal.SIGTERM)
+
+
+def _build_server_restart_signaler(
+    app: FastAPI,
+    *,
+    scheduler: Any = _schedule_pid1_sigterm,
+    kill_fn: Any = os.kill,
+):
+    def _signaler(job_id: str) -> None:
+        app.state.server_backup_restart_requested = job_id
+        scheduler(_signal_pid1, kill_fn)
+
+    return _signaler
 
 
 async def _handle_tool_health_change(result: ToolHealthCheckResult) -> None:
@@ -242,6 +270,8 @@ async def lifespan(app: FastAPI):
     # Remove expired chat attachment uploads left from previous sessions
     await cleanup_expired_chat_attachments()
 
+    await server_backup_service.startup()
+
     # Start background task service for chat
     await background_task_service.start()
 
@@ -252,11 +282,13 @@ async def lifespan(app: FastAPI):
     userspace_service.schedule_workspace_mount_watch()
     userspace_service.schedule_workspace_scm_watch()
     await workspace_code_index_service.start()
+    await git_webhook_service.start()
     # Start MCP session manager (enable/disable checked at request time)
     async with mcp_lifespan_manager():
         yield
 
     # Cleanup - cancel the startup Git policy reconciliation task
+    await git_webhook_service.stop()
     await workspace_code_index_service.stop()
     await userspace_service.shutdown_git_drift_reconciliation()
     await userspace_service.shutdown_workspace_mount_watch()
@@ -265,6 +297,7 @@ async def lifespan(app: FastAPI):
 
     # Cleanup - stop background services before disconnecting DB
     await background_task_service.stop()
+    await server_backup_service.shutdown()
 
     # Stop document indexing tasks before tearing down their chunking pools.
     await indexer.shutdown()
@@ -306,6 +339,9 @@ app = FastAPI(
     redoc_url="/redoc" if _docs_enabled else None,
     openapi_url="/openapi.json" if _docs_enabled else None,
 )
+app.state.server_maintenance_state = ProcessMaintenanceState()
+server_backup_service.set_process_maintenance_state(app.state.server_maintenance_state)
+server_backup_service.set_restart_signaler(_build_server_restart_signaler(app))
 
 
 # Exception handler for validation errors
@@ -375,6 +411,7 @@ app.add_middleware(
     # Allow any port on loopback for OAuth callbacks
     allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
 )
+app.add_middleware(MaintenanceModeMiddleware, state=app.state.server_maintenance_state)
 app.add_middleware(PreviewHostDispatchMiddleware)
 
 
@@ -429,8 +466,12 @@ app.include_router(router)
 # Include auth routes
 app.include_router(auth_router)
 
+# Include public git webhook routes
+app.include_router(git_webhook_router)
+
 # Include indexer routes
 app.include_router(indexer_router)
+app.include_router(server_backup_router)
 app.include_router(userspace_router)
 app.include_router(userspace_runtime_router)
 app.include_router(agent_router)  # Public workspace agent surface at /agent/w/{token}

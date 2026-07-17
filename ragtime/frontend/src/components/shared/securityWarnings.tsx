@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 export const API_KEY_INFO_HIGHLIGHT = 'api_key_info';
+export const SERVER_BACKUP_RESTORE_HIGHLIGHT = 'server_backup_restore';
 
 export function renderApiKeySecurityWarning(): ReactNode {
   return (

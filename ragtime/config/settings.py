@@ -8,6 +8,7 @@ See: ragtime/core/app_settings.py and indexer/routes.py (GET/PUT /indexes/settin
 
 import os
 import secrets
+import stat
 import sys
 from pathlib import Path
 from typing import Literal
@@ -20,7 +21,7 @@ from ragtime.oauth_redirects import (
     DEFAULT_TRUSTED_REDIRECT_URIS,
 )
 
-# File to persist auto-generated encryption key (in data volume)
+# File to persist the managed encryption key (in data volume)
 # Used for both JWT signing and secrets encryption (Fernet)
 ENCRYPTION_KEY_FILE = Path(os.environ.get("INDEX_DATA_PATH", "/data")) / ".encryption_key"
 
@@ -184,7 +185,7 @@ class Settings(BaseSettings):
     encryption_key: str = Field(
         default="",
         alias="ENCRYPTION_KEY",
-        description="Key for JWT signing and secrets encryption. Auto-generated if not set.",
+        description="Deprecated compatibility seed for the managed encryption key file.",
     )
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     jwt_expire_hours: int = Field(default=24, alias="JWT_EXPIRE_HOURS")
@@ -218,36 +219,22 @@ class Settings(BaseSettings):
     @classmethod
     def generate_encryption_key_if_empty(cls, v: str) -> str:
         """
-        Auto-generate encryption key if not provided or empty.
+        Resolve the managed encryption key.
 
-        The key is always persisted to a file in the data volume so it survives
-        container restarts. This ensures encrypted secrets remain recoverable
-        and user sessions stay valid.
+        The persisted .encryption_key file is authoritative. ENCRYPTION_KEY only
+        seeds a missing file once for compatibility. When no key exists, a new
+        key is generated and persisted with mode 0600.
         """
-        # Explicit environment/config wins. The persisted file is a fallback and
-        # backup artifact, not an override; keep it in sync with the effective
-        # key so backup --include-secret captures the key currently in use.
+        saved_key = cls._read_managed_encryption_key()
+        if saved_key:
+            return saved_key
+
         key = v.strip() if v else ""
-
-        if not key and ENCRYPTION_KEY_FILE.exists():
-            try:
-                saved_key = ENCRYPTION_KEY_FILE.read_text().strip()
-                if saved_key:
-                    return saved_key
-            except OSError:
-                pass
-
         if not key:
             key = secrets.token_urlsafe(32)
 
-        # Persist to file for future restarts
         try:
-            ENCRYPTION_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            ENCRYPTION_KEY_FILE.write_text(key)
-            print(
-                f"[INFO] Encryption key saved to {ENCRYPTION_KEY_FILE}",
-                file=sys.stderr,
-            )
+            cls._persist_managed_encryption_key(key)
         except OSError as e:
             print(
                 f"[WARNING] Could not persist encryption key to {ENCRYPTION_KEY_FILE}: {e}",
@@ -259,6 +246,22 @@ class Settings(BaseSettings):
             )
 
         return key
+
+    @staticmethod
+    def _read_managed_encryption_key() -> str:
+        if not ENCRYPTION_KEY_FILE.exists():
+            return ""
+
+        try:
+            return ENCRYPTION_KEY_FILE.read_text().strip()
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _persist_managed_encryption_key(key: str) -> None:
+        ENCRYPTION_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ENCRYPTION_KEY_FILE.write_text(key)
+        ENCRYPTION_KEY_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     # Session cookie settings
     session_cookie_name: str = Field(default="ragtime_session", alias="SESSION_COOKIE_NAME")

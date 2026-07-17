@@ -1968,37 +1968,61 @@ class IndexerService:
                 logger.info(f"Reusing active git indexing job {active_job.id} for index '{config.name}'")
                 return active_job
 
-            job_id = str(uuid.uuid4())[:8]
+            return await self._create_git_index_job_locked(git_url, branch, config, git_token)
 
-            job = IndexJob(
-                id=job_id,
-                name=config.name,
-                config=config,
-                source_type="git",
-                git_url=git_url,
-                git_branch=branch,
-                git_token=git_token,  # Kept in memory only, not persisted
-            )
+    async def try_create_index_from_git(
+        self,
+        git_url: str,
+        branch: str,
+        config: IndexConfig,
+        git_token: str | None = None,
+    ) -> IndexJob | None:
+        """Create an index from a git repository if no active job already exists."""
+        async with self._git_job_creation_lock:
+            if await repository.get_active_job_for_index(config.name) is not None:
+                return None
 
-            # Persist to database
-            await repository.create_job(job)
+            return await self._create_git_index_job_locked(git_url, branch, config, git_token)
 
-            # Create optimistic metadata so index shows up in UI immediately
-            await self._create_optimistic_index_metadata(
-                config=config,
-                source_type="git",
-                source=git_url,
-                git_branch=branch,
-                git_token=git_token,
-            )
+    async def _create_git_index_job_locked(
+        self,
+        git_url: str,
+        branch: str,
+        config: IndexConfig,
+        git_token: str | None = None,
+    ) -> IndexJob:
+        """Create and start a git indexing job while holding _git_job_creation_lock."""
+        job_id = str(uuid.uuid4())[:8]
 
-            # Cache for active processing
-            self._active_jobs[job_id] = job
+        job = IndexJob(
+            id=job_id,
+            name=config.name,
+            config=config,
+            source_type="git",
+            git_url=git_url,
+            git_branch=branch,
+            git_token=git_token,  # Kept in memory only, not persisted
+        )
 
-            # Start processing in background — hold strong reference to prevent GC
-            self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job))
+        # Persist to database
+        await repository.create_job(job)
 
-            return job
+        # Create optimistic metadata so index shows up in UI immediately
+        await self._create_optimistic_index_metadata(
+            config=config,
+            source_type="git",
+            source=git_url,
+            git_branch=branch,
+            git_token=git_token,
+        )
+
+        # Cache for active processing
+        self._active_jobs[job_id] = job
+
+        # Start processing in background — hold strong reference to prevent GC
+        self._processing_tasks[job.id] = asyncio.create_task(self._process_git(job))
+
+        return job
 
     async def _process_upload(self, job: IndexJob, archive_path: Path, temp_dir: Path):
         """Process an uploaded archive file (zip, tar, tar.gz, tar.bz2)."""

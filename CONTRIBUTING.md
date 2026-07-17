@@ -138,6 +138,8 @@ docker exec ragtime-dev restore --files-only --replace-existing-data /tmp/backup
 
 > **Important:** Database backups contain encrypted secrets (API keys, passwords), while the encryption key lives in the Ragtime data directory at `.encryption_key`. Use `--include-secret` to include the key file in your backup. Without the key, you will need to re-enter all passwords after restore. `--files-only` backs up the whole Ragtime data directory, including indexes and userspace workspaces.
 
+> **Recovery note:** Plain backups do not include `.encryption_key`. If you need a backup that can restore encrypted secrets on its own, make an encrypted backup with `--include-secret` so the managed key is only present inside ciphertext, or preserve `.encryption_key` separately alongside your restore materials.
+
 ### Reset Database
 
 ```bash

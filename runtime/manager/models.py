@@ -535,6 +535,40 @@ class RuntimeManagerHealthResponse(BaseModel):
     sessions: list[ManagerSessionSummary] = Field(default_factory=list, description="Summary of active sessions")
 
 
+class RuntimeManagerMaintenanceAcquireRequest(BaseModel):
+    lease_id: str = Field(description="Caller-provided maintenance lease identifier")
+    reason: str | None = Field(default=None, description="Optional reason for holding maintenance")
+    retry_after_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=86400,
+        description="Retry-After hint exposed while maintenance is active",
+    )
+
+
+class RuntimeManagerMaintenanceRenewRequest(BaseModel):
+    ttl_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=86400,
+        description="Optional lease TTL extension in seconds; defaults to the manager lease TTL",
+    )
+
+
+class RuntimeManagerMaintenanceLeaseResponse(BaseModel):
+    active: bool = Field(description="Whether a maintenance lease is currently held")
+    lease_id: str | None = Field(default=None, description="Active maintenance lease identifier")
+    reason: str | None = Field(default=None, description="Reason associated with the active lease")
+    retry_after_seconds: int | None = Field(default=None, description="Retry-After hint for callers")
+    acquired_at: datetime | None = Field(default=None, description="When the current lease was acquired")
+    expires_at: datetime | None = Field(default=None, description="When the current lease expires if unreleased")
+    active_session_count: int = Field(default=0, description="Active runtime sessions remaining while maintenance is held")
+
+    @classmethod
+    def inactive(cls) -> "RuntimeManagerMaintenanceLeaseResponse":
+        return cls(active=False, active_session_count=0)
+
+
 class WorkerHealthResponse(BaseModel):
     status: str = Field(description="Worker status")
     service_mode: str = Field(description="Runtime service mode")

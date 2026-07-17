@@ -526,6 +526,38 @@ export interface IndexInfo {
   vector_store_type?: VectorStoreType; // faiss (default) or pgvector
 }
 
+export type GitWebhookDeliveryStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'ignored';
+
+export interface GitWebhookConfig {
+  enabled: boolean;
+  webhook_url: string | null;
+  provider: 'github' | 'gitlab' | 'generic';
+  branch: string;
+  created_at: string | null;
+}
+
+export interface GitWebhookEnableResponse extends GitWebhookConfig {
+  secret: string | null;
+}
+
+export interface GitWebhookDelivery {
+  id: string;
+  event_name: string;
+  branch: string | null;
+  head_commit: string | null;
+  status: GitWebhookDeliveryStatus;
+  message: string | null;
+  received_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 export interface UpdateIndexConfigRequest {
   git_branch?: string;
   git_token?: string | null;
@@ -702,6 +734,76 @@ export interface ConfigurationWarning {
   category: string;
   message: string;
   recommendation?: string | null;
+}
+
+export type ServerBackupScope = 'full' | 'database' | 'files';
+
+export interface ServerBackupManifest {
+  format: string;
+  version: number | string;
+  created_at: string;
+  scope: ServerBackupScope;
+  ragtime_version?: string | null;
+  schema_version?: string | null;
+  encrypted?: boolean;
+  includes_managed_key?: boolean;
+  legacy_embedded_key?: boolean;
+}
+
+export interface CreateServerBackupJobRequest {
+  scope: ServerBackupScope;
+  encrypt: boolean;
+  password?: string;
+}
+
+export interface ServerBackupJob {
+  id: string;
+  status: string;
+  progress?: number | null;
+  message?: string | null;
+  scope?: ServerBackupScope;
+  encrypt?: boolean;
+  delivered_at?: string | null;
+  manifest?: ServerBackupManifest | null;
+  error?: string | null;
+}
+
+export interface UploadedServerBackupArchive {
+  upload_id: string;
+  filename: string;
+  size_bytes?: number;
+}
+
+export interface CreateServerRestoreJobRequest {
+  upload_id: string;
+  password?: string;
+  scope_override?: ServerBackupScope;
+  skip_migrations: boolean;
+  postgres_data_only: boolean;
+  replace_data: boolean;
+  mirror_local_admin_access: boolean;
+  mirror_local_admin_from: string;
+  local_admin_username?: string;
+}
+
+export type ServerRestoreScopeSelection = 'archive' | ServerBackupScope;
+
+export interface CommitServerRestoreJobRequest {
+  confirmation_text: string;
+  acknowledge_legacy_key: boolean;
+}
+
+export interface ServerRestoreJob {
+  id: string;
+  status: string;
+  progress?: number | null;
+  message?: string | null;
+  manifest?: ServerBackupManifest | null;
+  required_confirmation?: string | null;
+  requires_legacy_key_acknowledgement?: boolean;
+  restart_required?: boolean;
+  restart_state?: string | null;
+  error?: string | null;
 }
 
 export interface GetSettingsResponse {

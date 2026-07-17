@@ -257,6 +257,297 @@ textarea:focus {
 }
 
 /* =============================================================================
+   GIT WEBHOOK SETTINGS
+   ============================================================================= */
+
+.git-webhook-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.git-index-webhook-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-block-start: var(--space-md);
+}
+
+.git-index-webhook-loading {
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.git-index-webhook-checkbox-section {
+  margin-block-end: var(--space-md);
+}
+
+.git-index-webhook-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+}
+
+.git-index-webhook-checkbox-label input {
+  width: auto;
+  margin: 0;
+}
+
+.git-webhook-header,
+.git-webhook-card-header,
+.git-webhook-secret-header,
+.git-webhook-query-token-header,
+.git-webhook-delivery-topline,
+.git-webhook-delivery-title-wrap,
+.git-webhook-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.git-webhook-header,
+.git-webhook-secret-header,
+.git-webhook-query-token-header,
+.git-webhook-delivery-topline {
+  justify-content: space-between;
+}
+
+.git-webhook-header-copy,
+.git-webhook-secret-header > div {
+  min-width: 0;
+}
+
+.git-webhook-title,
+.git-webhook-card h4,
+.git-webhook-secret-panel h4,
+.git-webhook-query-token h5 {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+.git-webhook-subtitle {
+  margin: var(--space-xs) 0 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.git-webhook-settings .field-help {
+  margin: var(--space-xs) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.git-webhook-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.git-webhook-card,
+.git-webhook-secret-panel,
+.git-webhook-deliveries,
+.git-webhook-empty-state,
+.git-webhook-query-token,
+.git-webhook-delivery-item {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.git-webhook-card,
+.git-webhook-secret-panel,
+.git-webhook-deliveries,
+.git-webhook-empty-state,
+.git-webhook-query-token {
+  padding: var(--space-md);
+}
+
+.git-webhook-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
+  margin: 0 0 var(--space-sm);
+}
+
+.git-webhook-meta div,
+.git-webhook-delivery-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.git-webhook-meta dt,
+.git-webhook-delivery-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.git-webhook-meta dd {
+  margin: 0;
+  color: var(--color-text-primary);
+  word-break: break-word;
+}
+
+.git-webhook-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-sm);
+}
+
+.git-webhook-code,
+.git-webhook-inline-code,
+.git-webhook-delivery-id {
+  font-family: var(--font-mono);
+}
+
+.git-webhook-code,
+.git-webhook-inline-code {
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.git-webhook-code {
+  display: block;
+  padding: var(--space-sm);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.git-webhook-inline-code {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.git-webhook-copy-btn,
+.git-webhook-dismiss-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: calc(var(--space-lg) + var(--space-md));
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.git-webhook-copy-btn:hover:not(:disabled),
+.git-webhook-dismiss-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.git-webhook-copy-btn.is-copied {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #fff;
+}
+
+.git-webhook-copy-btn:disabled,
+.git-webhook-dismiss-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.git-webhook-query-token {
+  margin-top: var(--space-md);
+}
+
+.git-webhook-empty-title,
+.git-webhook-delivery-message {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+.git-webhook-delivery-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+}
+
+.git-webhook-delivery-item {
+  padding: var(--space-md);
+}
+
+.git-webhook-delivery-title-wrap {
+  flex-wrap: wrap;
+}
+
+.git-webhook-delivery-id {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.git-webhook-delivery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
+  margin-top: var(--space-sm);
+}
+
+.git-webhook-delivery-message {
+  margin-top: var(--space-sm);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 900px) {
+  .git-webhook-grid,
+  .git-webhook-meta,
+  .git-webhook-delivery-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .git-webhook-header,
+  .git-webhook-secret-header,
+  .git-webhook-query-token-header,
+  .git-webhook-delivery-topline,
+  .git-webhook-actions,
+  .git-webhook-code-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .git-webhook-code-row {
+    display: flex;
+  }
+
+  .git-webhook-delivery-id {
+    text-align: left;
+  }
+}
+
+/* =============================================================================
    USER SPACE - Replit-style split layout
    ============================================================================= */
 
@@ -9276,4 +9567,152 @@ fieldset legend.legend-with-status .legend-divider {
   cursor: pointer;
   color: var(--color-accent);
   margin-bottom: var(--space-xs);
+}
+
+.warnings-banner-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-left: auto;
+}
+
+.server-backup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-lg);
+}
+
+.server-backup-panel,
+.server-backup-status-card,
+.server-backup-manifest-card,
+.server-backup-confirmation-block {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+}
+
+.server-backup-panel {
+  padding: var(--space-lg);
+}
+
+.server-backup-panel > .form-group:first-of-type,
+.server-backup-progress-idle {
+  margin-top: var(--space-md);
+}
+
+.server-backup-panel-header,
+.server-backup-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.server-backup-panel-header {
+  margin-bottom: var(--space-md);
+}
+
+.server-backup-panel-header h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.server-backup-panel-kicker,
+.server-backup-field-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.server-backup-field-label {
+  display: block;
+  margin-bottom: var(--space-xs);
+}
+
+.server-backup-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-sm);
+}
+
+.server-backup-choice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+}
+
+.server-backup-choice-card input {
+  width: auto;
+  margin-top: 0.2rem;
+}
+
+.server-backup-status-card,
+.server-backup-manifest-card,
+.server-backup-confirmation-block {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+}
+
+.server-backup-progress {
+  margin-top: var(--space-sm);
+  width: 100%;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  overflow: hidden;
+}
+
+.server-backup-progress-bar {
+  display: block;
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: inherit;
+  transition: width var(--transition-fast);
+}
+
+.server-backup-manifest-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm) var(--space-md);
+  margin: var(--space-md) 0 0;
+}
+
+.server-backup-manifest-grid div {
+  min-width: 0;
+}
+
+.server-backup-manifest-grid dt {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.server-backup-manifest-grid dd {
+  margin: var(--space-xs) 0 0;
+  color: var(--color-text-primary);
+  word-break: break-word;
+}
+
+.server-backup-toggle-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.server-backup-mirror-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+@media (max-width: 900px) {
+  .server-backup-grid,
+  .server-backup-manifest-grid,
+  .server-backup-mirror-grid {
+    grid-template-columns: 1fr;
+  }
 }

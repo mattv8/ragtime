@@ -5,6 +5,9 @@
 import type {
   IndexJob,
   IndexInfo,
+  GitWebhookConfig,
+  GitWebhookDelivery,
+  GitWebhookEnableResponse,
   CreateIndexRequest,
   ImportFaissIndexResponse,
   AppSettings,
@@ -204,6 +207,12 @@ import type {
   UpdateConversationShareAccessRequest,
   SharedConversationResponse,
   PublicShareTargetResponse,
+  CreateServerBackupJobRequest,
+  ServerBackupJob,
+  UploadedServerBackupArchive,
+  CreateServerRestoreJobRequest,
+  ServerRestoreJob,
+  CommitServerRestoreJobRequest,
 } from '@/types';
 
 import type {
@@ -336,6 +345,48 @@ function withClientClock(request: SendMessageRequest): SendMessageRequest {
   };
 }
 
+type GitWebhookWireProvider = GitWebhookConfig['provider'] | null | undefined;
+
+interface GitWebhookConfigWire {
+  enabled: boolean;
+  webhook_url: string | null;
+  provider?: GitWebhookWireProvider;
+  branch?: string | null;
+  created_at: string | null;
+}
+
+interface GitWebhookEnableResponseWire extends GitWebhookConfigWire {
+  secret?: string | null;
+}
+
+function normalizeGitWebhookProvider(
+  provider: GitWebhookWireProvider,
+): GitWebhookConfig['provider'] {
+  if (provider === 'github' || provider === 'gitlab' || provider === 'generic') {
+    return provider;
+  }
+  return 'generic';
+}
+
+function normalizeGitWebhookConfig(config: GitWebhookConfigWire): GitWebhookConfig {
+  return {
+    enabled: Boolean(config.enabled),
+    webhook_url: typeof config.webhook_url === 'string' ? config.webhook_url : null,
+    provider: normalizeGitWebhookProvider(config.provider),
+    branch: typeof config.branch === 'string' ? config.branch : '',
+    created_at: typeof config.created_at === 'string' ? config.created_at : null,
+  };
+}
+
+function normalizeGitWebhookEnableResponse(
+  config: GitWebhookEnableResponseWire,
+): GitWebhookEnableResponse {
+  return {
+    ...normalizeGitWebhookConfig(config),
+    secret: typeof config.secret === 'string' ? config.secret : null,
+  };
+}
+
 class ApiError extends Error {
   constructor(
     message: string,
@@ -415,6 +466,17 @@ async function downloadBlobResponse(
   link.click();
   document.body.removeChild(link);
   window.URL.revokeObjectURL(url);
+}
+
+function startNativeDownload(url: string): void {
+  const iframe = document.createElement('iframe');
+  iframe.hidden = true;
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.src = url;
+  document.body.appendChild(iframe);
+  window.setTimeout(() => {
+    iframe.remove();
+  }, 60_000);
 }
 
 /**
@@ -1135,6 +1197,48 @@ export const api = {
     return handleResponse<IndexJob>(response);
   },
 
+  async getIndexWebhook(name: string): Promise<GitWebhookConfig> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/webhook`);
+    const data = await handleResponse<GitWebhookConfigWire>(response);
+    return normalizeGitWebhookConfig(data);
+  },
+
+  async enableIndexWebhook(name: string): Promise<GitWebhookEnableResponse> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/webhook`, {
+      method: 'POST',
+    });
+    const data = await handleResponse<GitWebhookEnableResponseWire>(response);
+    return normalizeGitWebhookEnableResponse(data);
+  },
+
+  async rotateIndexWebhookSecret(name: string): Promise<GitWebhookEnableResponse> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/webhook/rotate`, {
+      method: 'POST',
+    });
+    const data = await handleResponse<GitWebhookEnableResponseWire>(response);
+    return normalizeGitWebhookEnableResponse(data);
+  },
+
+  async disableIndexWebhook(name: string): Promise<void> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/webhook`, {
+      method: 'DELETE',
+    });
+    if (response.status === 204) {
+      return;
+    }
+    await handleResponse<{ status: string }>(response);
+  },
+
+  async listIndexWebhookDeliveries(
+    name: string,
+    limit: number = 10,
+  ): Promise<GitWebhookDelivery[]> {
+    const response = await apiFetch(
+      `${API_BASE}/${encodeURIComponent(name)}/webhook/deliveries?limit=${limit}`,
+    );
+    return handleResponse<GitWebhookDelivery[]>(response);
+  },
+
   /**
    * Download a FAISS index as a zip file
    */
@@ -1256,6 +1360,81 @@ export const api = {
       embedding_warning: string | null;
     }>(response);
     return result.settings;
+  },
+
+  async createServerBackupJob(request: CreateServerBackupJobRequest): Promise<ServerBackupJob> {
+    const response = await apiFetch(`${API_BASE}/server-backups/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ServerBackupJob>(response);
+  },
+
+  async getServerBackupJob(jobId: string): Promise<ServerBackupJob> {
+    const response = await apiFetch(
+      `${API_BASE}/server-backups/jobs/${encodeURIComponent(jobId)}`,
+      {
+        cache: 'no-store',
+      },
+    );
+    return handleResponse<ServerBackupJob>(response);
+  },
+
+  async cancelServerBackupJob(jobId: string): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/server-backups/jobs/${encodeURIComponent(jobId)}/cancel`,
+      {
+        method: 'POST',
+      },
+    );
+    await handleResponse<Record<string, never>>(response);
+  },
+
+  async downloadServerBackup(jobId: string): Promise<void> {
+    startNativeDownload(`${API_BASE}/server-backups/jobs/${encodeURIComponent(jobId)}/download`);
+  },
+
+  async uploadServerBackupArchive(file: File): Promise<UploadedServerBackupArchive> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiFetch(`${API_BASE}/server-backups/uploads`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse<UploadedServerBackupArchive>(response);
+  },
+
+  async createServerRestoreJob(request: CreateServerRestoreJobRequest): Promise<ServerRestoreJob> {
+    const response = await apiFetch(`${API_BASE}/server-backups/restore-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<ServerRestoreJob>(response);
+  },
+
+  async getServerRestoreJob(jobId: string): Promise<ServerRestoreJob> {
+    const response = await apiFetch(
+      `${API_BASE}/server-backups/restore-jobs/${encodeURIComponent(jobId)}`,
+      { cache: 'no-store' },
+    );
+    return handleResponse<ServerRestoreJob>(response);
+  },
+
+  async commitServerRestoreJob(
+    jobId: string,
+    request: CommitServerRestoreJobRequest,
+  ): Promise<ServerRestoreJob> {
+    const response = await apiFetch(
+      `${API_BASE}/server-backups/restore-jobs/${encodeURIComponent(jobId)}/commit`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      },
+    );
+    return handleResponse<ServerRestoreJob>(response);
   },
 
   /**
@@ -3614,6 +3793,61 @@ export const api = {
       },
     );
     return handleResponse<UserSpaceWorkspaceScmConnectionResponse>(response);
+  },
+
+  async getUserSpaceWorkspaceScmWebhook(workspaceId: string): Promise<GitWebhookConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook`,
+    );
+    const data = await handleResponse<GitWebhookConfigWire>(response);
+    return normalizeGitWebhookConfig(data);
+  },
+
+  async enableUserSpaceWorkspaceScmWebhook(workspaceId: string): Promise<GitWebhookEnableResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook`,
+      {
+        method: 'POST',
+      },
+    );
+    const data = await handleResponse<GitWebhookEnableResponseWire>(response);
+    return normalizeGitWebhookEnableResponse(data);
+  },
+
+  async rotateUserSpaceWorkspaceScmWebhookSecret(
+    workspaceId: string,
+  ): Promise<GitWebhookEnableResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook/rotate`,
+      {
+        method: 'POST',
+      },
+    );
+    const data = await handleResponse<GitWebhookEnableResponseWire>(response);
+    return normalizeGitWebhookEnableResponse(data);
+  },
+
+  async disableUserSpaceWorkspaceScmWebhook(workspaceId: string): Promise<void> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook`,
+      {
+        method: 'DELETE',
+      },
+    );
+    if (response.status === 204) {
+      return;
+    }
+    await handleResponse<{ status: string }>(response);
+  },
+
+  async listUserSpaceWorkspaceScmWebhookDeliveries(
+    workspaceId: string,
+    limit: number = 10,
+  ): Promise<GitWebhookDelivery[]> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook/deliveries?limit=${limit}`,
+    );
+    return handleResponse<GitWebhookDelivery[]>(response);
   },
 
   async importSqlToWorkspaceSqlite(

@@ -37,6 +37,7 @@ import type {
 import type { OAuthParams } from '@/components';
 import { BrandName } from '@/utils/buildEnvironment';
 import { setThemePack, resolveThemePackId } from '@/theme';
+import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from '@/components/shared/securityWarnings';
 import '@/styles/global.css';
 
 type ViewType = 'chat' | 'userspace' | 'indexer' | 'tools' | 'users' | 'settings';
@@ -79,6 +80,15 @@ function getInitialConversationId(): string | null {
 
 const INDEXER_ACTIVE_POLL_MS = 2000;
 const ENCRYPTION_KEY_ERROR_DISMISS_KEY = 'ragtime_encryption_key_error';
+const ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY = 'ragtime_encryption_backup_reminder';
+
+function readPersistentDismissed(dismissKey: string): boolean {
+  try {
+    return window.localStorage.getItem(dismissKey) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Check if URL contains OAuth authorization parameters.
@@ -233,6 +243,9 @@ export function App() {
 
   // Configuration warnings state
   const [configurationWarnings, setConfigurationWarnings] = useState<ConfigurationWarning[]>([]);
+  const [encryptionBackupReminderDismissed, setEncryptionBackupReminderDismissed] = useState(() =>
+    readPersistentDismissed(ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY),
+  );
 
   // Userspace fullscreen state
   const [userspaceFullscreen, setUserspaceFullscreen] = useState(false);
@@ -350,6 +363,15 @@ export function App() {
           }
         : previous,
     );
+  }, []);
+
+  const handleEncryptedArtifactDelivered = useCallback(() => {
+    try {
+      window.localStorage.setItem(ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY, 'true');
+    } catch {
+      // Ignore unavailable storage.
+    }
+    setEncryptionBackupReminderDismissed(true);
   }, []);
 
   // Check authentication status on mount
@@ -991,9 +1013,20 @@ export function App() {
         <WarningsBanner
           title="Back Up Your Encryption Key"
           warnings={encryptionBackupMessages}
-          dismissKey="ragtime_encryption_backup_reminder"
+          dismissKey={ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY}
           persistDismiss
-          hidden={hideChrome || !isAdmin}
+          hidden={hideChrome || !isAdmin || encryptionBackupReminderDismissed}
+          action={
+            isAdmin
+              ? {
+                  label: 'Open backup settings',
+                  onClick: () => {
+                    setHighlightSetting(SERVER_BACKUP_RESTORE_HIGHLIGHT);
+                    setActiveView('settings');
+                  },
+                }
+              : undefined
+          }
         />
         <ConfigurationBanner
           warnings={otherConfigurationWarnings}
@@ -1053,6 +1086,7 @@ export function App() {
               highlightSetting={highlightSetting}
               onHighlightComplete={() => setHighlightSetting(null)}
               authStatus={authStatus}
+              onEncryptedArtifactDelivered={handleEncryptedArtifactDelivered}
             />
           ) : activeView === 'tools' ? (
             <ToolsPanel

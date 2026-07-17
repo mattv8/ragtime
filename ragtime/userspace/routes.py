@@ -42,6 +42,9 @@ from ragtime.core.userspace_limits import (
     clamp_userspace_primitive_upload_max_bytes,
     format_userspace_sqlite_import_limit,
 )
+from ragtime.git_webhooks.models import GitWebhookConfigResponse, GitWebhookDeliveryResponse, GitWebhookEnableResponse, GitWebhookTargetType
+from ragtime.git_webhooks.repository import git_webhook_repository
+from ragtime.git_webhooks.service import git_webhook_service
 from ragtime.indexer.models import (
     CheckRepoVisibilityRequest,
     FetchBranchesRequest,
@@ -932,6 +935,95 @@ async def fetch_workspace_scm_branches(
         error=None,
         needs_token=False,
     )
+
+
+@router.get(
+    "/workspaces/{workspace_id}/scm/webhook",
+    response_model=GitWebhookConfigResponse,
+)
+async def get_workspace_scm_webhook(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+) -> GitWebhookConfigResponse:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    return await git_webhook_repository.get_workspace_config(workspace_id, str(request.base_url).rstrip("/"))
+
+
+async def _ensure_workspace_scm_webhook_eligible(workspace_id: str) -> None:
+    db = await get_db()
+    workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+    if workspace_record is None:
+        return
+    if not str(getattr(workspace_record, "scmGitUrl", "") or "").strip():
+        raise HTTPException(status_code=409, detail="Connect this workspace to an SCM Git remote before enabling webhooks.")
+    if getattr(workspace_record, "scmRemoteRole", None) != "upstream":
+        raise HTTPException(status_code=409, detail="Workspace webhooks are only available for upstream SCM remotes.")
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/webhook",
+    response_model=GitWebhookEnableResponse,
+    response_model_exclude_none=True,
+)
+async def enable_workspace_scm_webhook(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+) -> GitWebhookEnableResponse:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    await _ensure_workspace_scm_webhook_eligible(workspace_id)
+    return await git_webhook_repository.enable_workspace(workspace_id, str(request.base_url).rstrip("/"))
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/webhook/rotate",
+    response_model=GitWebhookEnableResponse,
+    response_model_exclude_none=True,
+)
+async def rotate_workspace_scm_webhook_secret(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+) -> GitWebhookEnableResponse:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    await _ensure_workspace_scm_webhook_eligible(workspace_id)
+    return await git_webhook_repository.rotate_workspace_secret(workspace_id, str(request.base_url).rstrip("/"))
+
+
+@router.delete("/workspaces/{workspace_id}/scm/webhook")
+async def disable_workspace_scm_webhook(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+) -> dict[str, str]:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    target = await git_webhook_repository.resolve_workspace_target(workspace_id)
+    await git_webhook_repository.disable_workspace(workspace_id)
+    if target is not None:
+        git_webhook_service.disable_target(target)
+    return {"status": "disabled"}
+
+
+@router.get(
+    "/workspaces/{workspace_id}/scm/webhook/deliveries",
+    response_model=list[GitWebhookDeliveryResponse],
+)
+async def list_workspace_scm_webhook_deliveries(
+    workspace_id: str,
+    limit: int = Query(default=20, ge=1, le=50),
+    user: Any = Depends(get_current_user),
+) -> list[GitWebhookDeliveryResponse]:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    target_id = await git_webhook_repository.get_workspace_target_id(workspace_id)
+    if target_id is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return await git_webhook_repository.list_deliveries(GitWebhookTargetType.WORKSPACE_SCM, target_id, limit=limit)
 
 
 @router.post(

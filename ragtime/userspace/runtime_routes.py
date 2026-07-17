@@ -3104,8 +3104,8 @@ async def collab_delete_file(
 # ---------------------------------------------------------------------------
 
 
-@router.api_route("/workspaces/{workspace_id}/preview", methods=_PROXY_METHODS)
-@router.api_route("/workspaces/{workspace_id}/preview/{path:path}", methods=_PROXY_METHODS)
+@router.api_route("/workspaces/{workspace_id}/preview", methods=_PROXY_METHODS, include_in_schema=False)
+@router.api_route("/workspaces/{workspace_id}/preview/{path:path}", methods=_PROXY_METHODS, include_in_schema=False)
 async def workspace_preview_path_proxy(
     workspace_id: str,
     request: Request,
@@ -3152,8 +3152,8 @@ async def workspace_preview_path_websocket(
     await _proxy_websocket_request(websocket, _to_websocket_url(upstream_url))
 
 
-@router.api_route("/shared/{share_token}/preview", methods=_PROXY_METHODS)
-@router.api_route("/shared/{share_token}/preview/{path:path}", methods=_PROXY_METHODS)
+@router.api_route("/shared/{share_token}/preview", methods=_PROXY_METHODS, include_in_schema=False)
+@router.api_route("/shared/{share_token}/preview/{path:path}", methods=_PROXY_METHODS, include_in_schema=False)
 async def shared_preview_path_proxy(
     share_token: str,
     request: Request,

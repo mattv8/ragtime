@@ -13,6 +13,11 @@ interface WarningsBannerProps {
   persistDismiss?: boolean;
   /** Render warnings as a compact summary instead of a bullet list */
   compact?: boolean;
+  /** Optional action button shown next to the warning content */
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
 function readDismissed(dismissKey: string | undefined, persistDismiss: boolean): boolean {
@@ -37,6 +42,7 @@ export function WarningsBanner({
   dismissKey,
   persistDismiss = false,
   compact = false,
+  action,
 }: WarningsBannerProps) {
   const [dismissed, setDismissed] = useState<boolean>(() =>
     readDismissed(dismissKey, persistDismiss),
@@ -69,10 +75,19 @@ export function WarningsBanner({
       <div className="warnings-banner-content">
         <strong className="warnings-banner-title">{title}</strong>
         {compact ? <span className="warnings-banner-summary">{summary}</span> : null}
-        {dismissKey ? (
-          <button type="button" onClick={handleDismiss} className="warnings-banner-dismiss">
-            Dismiss
-          </button>
+        {action || dismissKey ? (
+          <span className="warnings-banner-actions">
+            {action ? (
+              <button type="button" onClick={action.onClick} className="btn-link">
+                {action.label}
+              </button>
+            ) : null}
+            {dismissKey ? (
+              <button type="button" onClick={handleDismiss} className="warnings-banner-dismiss">
+                Dismiss
+              </button>
+            ) : null}
+          </span>
         ) : null}
       </div>
       {!compact ? (

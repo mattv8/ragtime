@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time as _time
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
@@ -464,6 +465,16 @@ class _WorkspaceScmImportResult:
         self.normalization_actions = normalization_actions
         self.task_summary = task_summary
         self.suggested_prompt = suggested_prompt
+
+
+class WorkspaceScmPullOutcome:
+    """Result of a serialized workspace SCM pull attempt."""
+
+    __slots__ = ("state", "summary")
+
+    def __init__(self, state: str, summary: str = "") -> None:
+        self.state = state
+        self.summary = summary
 
 
 class _WorkspaceMountSyncPreviewRecord:
@@ -4940,15 +4951,13 @@ class UserSpaceService:
         request: UserSpaceWorkspaceScmImportRequest,
     ) -> None:
         try:
-            async with self._workspace_scm_sync_semaphore:
-                operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
-                async with operation_lock:
-                    await self._run_workspace_scm_import_task_body(
-                        task_id,
-                        workspace_id,
-                        user_id,
-                        request,
-                    )
+            async with self.workspace_scm_operation(workspace_id):
+                await self._run_workspace_scm_import_task_body(
+                    task_id,
+                    workspace_id,
+                    user_id,
+                    request,
+                )
         except Exception as exc:
             detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "SCM import failed"
             logger.exception("SCM import task failed for workspace %s: %s", workspace_id, detail)
@@ -4975,31 +4984,29 @@ class UserSpaceService:
         request: UserSpaceWorkspaceScmPreviewRequest,
     ) -> None:
         try:
-            async with self._workspace_scm_sync_semaphore:
-                operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
-                async with operation_lock:
-                    await self._update_workspace_scm_import_task_phase(workspace_id, task_id, "previewing")
-                    preview, _ = await self._build_workspace_scm_preview(
-                        workspace_id,
-                        user_id,
-                        "import",
-                        request,
-                        store_preview=True,
-                        progress_callback=lambda pct: self._set_workspace_scm_import_task_phase(
-                            task_id,
-                            "previewing",
-                            progress=pct,
-                        ),
-                    )
-                    await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
-                    await self._update_workspace_scm_import_task_phase(
-                        workspace_id,
+            async with self.workspace_scm_operation(workspace_id):
+                await self._update_workspace_scm_import_task_phase(workspace_id, task_id, "previewing")
+                preview, _ = await self._build_workspace_scm_preview(
+                    workspace_id,
+                    user_id,
+                    "import",
+                    request,
+                    store_preview=True,
+                    progress_callback=lambda pct: self._set_workspace_scm_import_task_phase(
                         task_id,
-                        "preview_ready",
-                        summary=preview.summary,
-                        remote_commit_hash=preview.remote_commit_hash,
-                        preview=preview,
-                    )
+                        "previewing",
+                        progress=pct,
+                    ),
+                )
+                await self._maybe_store_workspace_scm_token(workspace_id, request.git_token)
+                await self._update_workspace_scm_import_task_phase(
+                    workspace_id,
+                    task_id,
+                    "preview_ready",
+                    summary=preview.summary,
+                    remote_commit_hash=preview.remote_commit_hash,
+                    preview=preview,
+                )
         except Exception as exc:
             detail = str(exc.detail) if isinstance(exc, HTTPException) else str(exc).strip() or "SCM import preview failed"
             logger.exception("SCM import preview task failed for workspace %s: %s", workspace_id, detail)
@@ -8324,6 +8331,13 @@ class UserSpaceService:
                 self._workspace_scm_operation_locks[workspace_id] = existing
             return existing
 
+    @asynccontextmanager
+    async def workspace_scm_operation(self, workspace_id: str):
+        async with self._workspace_scm_sync_semaphore:
+            operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
+            async with operation_lock:
+                yield
+
     def schedule_startup_git_drift_reconciliation(self) -> None:
         """Start best-effort Git policy reconciliation for existing workspaces."""
         if self._git_drift_startup_task is not None and not self._git_drift_startup_task.done():
@@ -8467,13 +8481,11 @@ class UserSpaceService:
         t0 = _time.monotonic()
         key = self._workspace_scm_watch_key(workspace_id, direction)
         try:
-            async with self._workspace_scm_sync_semaphore:
-                operation_lock = await self._get_workspace_scm_operation_lock(workspace_id)
-                async with operation_lock:
-                    if direction == "export":
-                        await self._run_workspace_auto_push(workspace_id)
-                    else:
-                        await self._run_workspace_auto_pull(workspace_id)
+            async with self.workspace_scm_operation(workspace_id):
+                if direction == "export":
+                    await self._run_workspace_auto_push(workspace_id)
+                else:
+                    await self._run_workspace_auto_pull(workspace_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -8556,9 +8568,27 @@ class UserSpaceService:
         if not workspace_record or not self._is_workspace_auto_pull_enabled(workspace_record):
             return
 
+        await self._run_workspace_safe_pull_locked(workspace_id)
+
+    async def _run_workspace_safe_pull_locked(self, workspace_id: str) -> WorkspaceScmPullOutcome:
+        db = await get_db()
+        workspace_record = await db.workspace.find_unique(where={"id": workspace_id})
+        if not workspace_record:
+            return WorkspaceScmPullOutcome("disconnected", "Workspace not found")
+
+        git_url = str(getattr(workspace_record, "scmGitUrl", "") or "").strip()
+        if not git_url:
+            return WorkspaceScmPullOutcome("disconnected", "Workspace SCM is disconnected")
+
+        if getattr(workspace_record, "scmRemoteRole", None) != "upstream":
+            return WorkspaceScmPullOutcome("not_upstream", "Workspace remote is not configured as upstream")
+
+        if bool(getattr(workspace_record, "scmSyncPaused", False)):
+            return WorkspaceScmPullOutcome("paused", "Workspace SCM sync is paused")
+
         owner_user_id = str(getattr(workspace_record, "ownerUserId", "") or "").strip()
         if not owner_user_id:
-            return
+            return WorkspaceScmPullOutcome("disconnected", "Workspace owner is unavailable for SCM pull")
 
         preview_request = UserSpaceWorkspaceScmPreviewRequest()
         preview, _ = await self._build_workspace_scm_preview(
@@ -8569,16 +8599,16 @@ class UserSpaceService:
             store_preview=False,
         )
         if preview.state in {"up_to_date", "missing_branch"}:
-            return
+            return WorkspaceScmPullOutcome(preview.state, preview.summary)
         if preview.state != "safe":
             logger.debug(
                 "Skipping auto-pull for workspace %s due to preview state %s",
                 workspace_id,
                 preview.state,
             )
-            return
+            return WorkspaceScmPullOutcome("conflict", preview.summary)
 
-        await self.import_workspace_from_scm(
+        response = await self.import_workspace_from_scm(
             workspace_id,
             owner_user_id,
             UserSpaceWorkspaceScmImportRequest(
@@ -8586,6 +8616,10 @@ class UserSpaceService:
                 git_branch=preview.git_branch,
             ),
         )
+        return WorkspaceScmPullOutcome("imported", response.summary)
+
+    async def run_workspace_scm_webhook_pull_locked(self, workspace_id: str) -> WorkspaceScmPullOutcome:
+        return await self._run_workspace_safe_pull_locked(workspace_id)
 
     async def _workspace_mount_watch_loop(self) -> None:
         poll_seconds = max(1.0, min(5.0, self._workspace_mount_watch_interval_seconds / 3.0))

@@ -164,6 +164,10 @@ flowchart LR
    # Generate with: openssl rand -base64 32
    API_KEY=
 
+   # Ragtime manages its own encryption key at /data/.encryption_key.
+   # Keep that managed file recoverable through your data backups if you need to
+   # restore encrypted API keys and connection passwords later.
+
    # Optional GitHub OAuth App client ID for GitHub Copilot device auth flow.
    # If not set, Ragtime falls back to the built-in default client id.
    # Create your own OAuth app to control consent screen branding (e.g., app name "Ragtime").
@@ -599,7 +603,7 @@ CI builds each push; main-branch images are Cosign-signed and ship with an SPDX 
 - **Review trusted external redirects carefully.** OAuth callbacks and other external redirect allowlists should only include destinations you control. Redirecting users to third-party domains can expose authorization codes, tokens, or sensitive workflow context if those destinations are compromised or misconfigured.
 
 #### Authentication Security
-- **Encryption key is auto-generated** on first startup; you do not need to set `ENCRYPTION_KEY` for normal setup. Ragtime persists the effective key in its data volume so it survives restarts. Because API keys and connection passwords are encrypted in the database using this key, use `backup --include-secret` for restorable backups. Set `ENCRYPTION_KEY` only when you intentionally need to supply or restore a known key.
+- **Encryption key is managed automatically** on first startup and stored in the data volume as `.encryption_key` so sessions and encrypted settings survive restarts. Plain backups do not carry that file. If you need a backup that can restore encrypted API keys and connection passwords, create an encrypted backup with `--include-secret` so the managed key stays inside ciphertext, or otherwise preserve the `.encryption_key` file separately.
 - **Rate limiting** protects the login endpoint (5 attempts/minute per IP) to prevent brute-force attacks. In `DEBUG_MODE=true`, rate limiting is disabled for local testing.
 
 #### Debug Mode Warning

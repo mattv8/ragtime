@@ -1,11 +1,10 @@
 """
 Reversible encryption utilities for storing secrets.
 
-Uses Fernet symmetric encryption with a key derived from the effective
-application encryption key. ENCRYPTION_KEY can explicitly provide that key;
-otherwise settings auto-generates one and persists it in the data volume.
-This allows secrets to be decrypted for display in the frontend or for
-backup/restore operations.
+Uses Fernet symmetric encryption with a key derived from the managed
+application encryption key stored in `.encryption_key`. For compatibility,
+ENCRYPTION_KEY can seed that file once when it is missing. This allows secrets
+to be decrypted for display in the frontend or for backup/restore operations.
 
 IMPORTANT: backups that must preserve encrypted secrets should use
 backup --include-secret. Without the original key, users must re-enter stored
@@ -56,12 +55,11 @@ def reset_key_mismatch_state() -> None:
 def encryption_recovery_hint() -> str:
     """Return standard, actionable recovery guidance for a key mismatch.
 
-    ENCRYPTION_KEY takes precedence over the persisted key file. The file is a
-    fallback and backup artifact so backup --include-secret can carry the
-    effective key between deployments.
+    The managed `.encryption_key` file is authoritative. Restore that file or a
+    backup created with `--include-secret` to recover encrypted settings.
     """
     return (
-        "Set ENCRYPTION_KEY to the original key and restart, or restore from a backup "
+        "Restore the original .encryption_key file and restart, or restore from a backup "
         "created with --include-secret. If the key is lost, re-enter API keys and "
         "connection passwords in Settings."
     )
@@ -83,12 +81,12 @@ def _mark_key_mismatch() -> None:
 @lru_cache(maxsize=1)
 def _get_fernet() -> Fernet:
     """
-    Get a Fernet instance using a key derived from ENCRYPTION_KEY.
+    Get a Fernet instance using a key derived from the managed encryption key.
 
     Fernet requires a 32-byte base64-encoded key. We derive this from
-    ENCRYPTION_KEY using SHA256 to ensure consistent key length.
+    settings.encryption_key using SHA256 to ensure consistent key length.
     """
-    # Use SHA256 to get exactly 32 bytes from ENCRYPTION_KEY
+    # Use SHA256 to get exactly 32 bytes from the managed encryption key
     key_bytes = hashlib.sha256(settings.encryption_key.encode()).digest()
     # Fernet requires base64-encoded key
     fernet_key = base64.urlsafe_b64encode(key_bytes)
