@@ -149,6 +149,9 @@ class BackupManifest:
         version_value = payload.get("version", 1)
         if not isinstance(version_value, int):
             raise BackupValidationError("Backup manifest version is invalid")
+        environment_variable_names = payload.get("deployment_environment_variables", [])
+        if not isinstance(environment_variable_names, list):
+            environment_variable_names = []
         return cls(
             format=str(payload.get("format", "tar.gz")),
             version=version_value,
@@ -158,7 +161,7 @@ class BackupManifest:
             schema_version=str(payload.get("schema_version", "unknown")),
             encrypted=bool(payload.get("encrypted", False)),
             includes_managed_key=bool(payload.get("includes_managed_key", False)),
-            deployment_environment_variables=sorted(str(name) for name in payload.get("deployment_environment_variables", []) if isinstance(name, str)),
+            deployment_environment_variables=sorted(str(name) for name in environment_variable_names if isinstance(name, str)),
             legacy_embedded_key=bool(payload.get("legacy_embedded_key", False)),
         )
 

@@ -352,6 +352,7 @@ type GitWebhookWireProvider = GitWebhookConfig['provider'] | null | undefined;
 
 interface GitWebhookConfigWire {
   enabled: boolean;
+  paused?: boolean | null;
   webhook_url: string | null;
   provider?: GitWebhookWireProvider;
   branch?: string | null;
@@ -374,6 +375,7 @@ function normalizeGitWebhookProvider(
 function normalizeGitWebhookConfig(config: GitWebhookConfigWire): GitWebhookConfig {
   return {
     enabled: Boolean(config.enabled),
+    paused: Boolean(config.paused),
     webhook_url: typeof config.webhook_url === 'string' ? config.webhook_url : null,
     provider: normalizeGitWebhookProvider(config.provider),
     branch: typeof config.branch === 'string' ? config.branch : '',
@@ -1220,6 +1222,22 @@ export const api = {
     });
     const data = await handleResponse<GitWebhookEnableResponseWire>(response);
     return normalizeGitWebhookEnableResponse(data);
+  },
+
+  async pauseIndexWebhook(name: string): Promise<GitWebhookConfig> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/webhook/pause`, {
+      method: 'POST',
+    });
+    const data = await handleResponse<GitWebhookConfigWire>(response);
+    return normalizeGitWebhookConfig(data);
+  },
+
+  async resumeIndexWebhook(name: string): Promise<GitWebhookConfig> {
+    const response = await apiFetch(`${API_BASE}/${encodeURIComponent(name)}/webhook/resume`, {
+      method: 'POST',
+    });
+    const data = await handleResponse<GitWebhookConfigWire>(response);
+    return normalizeGitWebhookConfig(data);
   },
 
   async disableIndexWebhook(name: string): Promise<void> {
@@ -3865,6 +3883,28 @@ export const api = {
     );
     const data = await handleResponse<GitWebhookEnableResponseWire>(response);
     return normalizeGitWebhookEnableResponse(data);
+  },
+
+  async pauseUserSpaceWorkspaceScmWebhook(workspaceId: string): Promise<GitWebhookConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook/pause`,
+      {
+        method: 'POST',
+      },
+    );
+    const data = await handleResponse<GitWebhookConfigWire>(response);
+    return normalizeGitWebhookConfig(data);
+  },
+
+  async resumeUserSpaceWorkspaceScmWebhook(workspaceId: string): Promise<GitWebhookConfig> {
+    const response = await apiFetch(
+      `${API_BASE}/userspace/workspaces/${encodeURIComponent(workspaceId)}/scm/webhook/resume`,
+      {
+        method: 'POST',
+      },
+    );
+    const data = await handleResponse<GitWebhookConfigWire>(response);
+    return normalizeGitWebhookConfig(data);
   },
 
   async disableUserSpaceWorkspaceScmWebhook(workspaceId: string): Promise<void> {

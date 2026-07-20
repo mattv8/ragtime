@@ -4,12 +4,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { GitWebhookConfig, GitWebhookDelivery } from '@/types';
+import type { GitWebhookConfig } from '@/types';
 
 import { GitWebhookSettings } from './GitWebhookSettings';
 
 const githubConfig: GitWebhookConfig = {
   enabled: true,
+  paused: false,
   webhook_url: 'https://ragtime.example/webhooks/git/webhook-123',
   provider: 'github',
   branch: 'main',
@@ -18,6 +19,7 @@ const githubConfig: GitWebhookConfig = {
 
 const gitlabConfig: GitWebhookConfig = {
   enabled: true,
+  paused: false,
   webhook_url: 'https://ragtime.example/webhooks/git/webhook-456',
   provider: 'gitlab',
   branch: 'release/2026.07',
@@ -26,6 +28,7 @@ const gitlabConfig: GitWebhookConfig = {
 
 const genericConfig: GitWebhookConfig = {
   enabled: true,
+  paused: false,
   webhook_url: 'https://ragtime.example/webhooks/git/webhook-789',
   provider: 'generic',
   branch: 'develop',
@@ -34,34 +37,11 @@ const genericConfig: GitWebhookConfig = {
 
 const disabledConfig: GitWebhookConfig = {
   enabled: false,
+  paused: false,
   webhook_url: null,
   provider: 'generic',
   branch: 'main',
   created_at: null,
-};
-
-const skippedDelivery: GitWebhookDelivery = {
-  id: 'delivery-1',
-  event_name: 'Push Hook',
-  branch: 'release/2026.07',
-  head_commit: 'abc123def456',
-  status: 'skipped',
-  message: 'A newer push arrived while another sync was already queued.',
-  received_at: '2026-07-16T12:10:00Z',
-  started_at: null,
-  completed_at: '2026-07-16T12:10:05Z',
-};
-
-const completedDelivery: GitWebhookDelivery = {
-  id: 'delivery-2',
-  event_name: 'push',
-  branch: 'main',
-  head_commit: 'fedcba987654',
-  status: 'completed',
-  message: 'Started a sync job successfully.',
-  received_at: '2026-07-16T12:12:00Z',
-  started_at: '2026-07-16T12:12:02Z',
-  completed_at: '2026-07-16T12:12:30Z',
 };
 
 let writeTextMock: ReturnType<typeof vi.fn>;
@@ -71,12 +51,10 @@ function renderComponent(overrides: Partial<ComponentProps<typeof GitWebhookSett
     <GitWebhookSettings
       config={githubConfig}
       revealedSecret={null}
-      deliveries={[]}
       disabled={false}
-      onEnable={vi.fn()}
       onRotate={vi.fn()}
-      onDisable={vi.fn()}
-      onDismissSecret={vi.fn()}
+      onPause={vi.fn()}
+      onResume={vi.fn()}
       {...overrides}
     />,
   );
@@ -99,115 +77,141 @@ describe('GitWebhookSettings', () => {
     vi.useRealTimers();
   });
 
-  it('shows and copies a one-time secret without retaining it after dismissal', async () => {
+  it('renders the one-time secret flat with an inline warning and share-link copy field', async () => {
     const user = userEvent.setup();
-    const onDismissSecret = vi.fn();
-    const { rerender } = renderComponent({
+    renderComponent({
       config: githubConfig,
       revealedSecret: 'secret-once',
-      onDismissSecret,
     });
 
-    expect(screen.getByText('secret-once')).toBeTruthy();
+    expect(screen.queryByText('Enabled')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Dismiss webhook secret' })).toBeNull();
+    expect(
+      screen.getByText(
+        'Copy this now. This secret will not be shown again after you close this window.',
+      ),
+    ).toBeTruthy();
+
+    const secretInput = screen.getByLabelText('One-time secret');
+    expect(secretInput.getAttribute('type')).toBe('text');
+    expect((secretInput as HTMLInputElement).readOnly).toBe(true);
+    expect((secretInput as HTMLInputElement).value).toBe('secret-once');
+    expect(secretInput.closest('.userspace-share-url-copy-wrap')).toBeTruthy();
+    expect(screen.queryByText('Recent deliveries')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Pause webhook' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Disable webhook' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copy webhook secret' }).className).toContain(
+      'is-always-visible',
+    );
+
     expect(screen.getByRole('alert')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Copy webhook secret' }));
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Webhook secret copied' })).toBeTruthy();
     });
+  });
 
-    await user.click(screen.getByRole('button', { name: 'Dismiss webhook secret' }));
-    expect(onDismissSecret).toHaveBeenCalledTimes(1);
+  it('uses the share-link inline copy field for the selected webhook URL', () => {
+    renderComponent({ revealedSecret: null });
+
+    const urlInput = screen.getByLabelText('Selected webhook URL');
+    expect(urlInput.getAttribute('type')).toBe('text');
+    expect((urlInput as HTMLInputElement).readOnly).toBe(true);
+    expect((urlInput as HTMLInputElement).value).toBe(githubConfig.webhook_url);
+    expect(urlInput.closest('.userspace-share-url-copy-wrap')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy selected webhook URL' }).className).toContain(
+      'userspace-share-inline-copy',
+    );
+  });
+
+  it('renders friendly GitLab setup instructions without recent deliveries', () => {
+    renderComponent({
+      config: gitlabConfig,
+      revealedSecret: null,
+    });
+
+    expect(
+      screen.getByText("Add this URL and secret in your GitLab project's webhook settings."),
+    ).toBeTruthy();
+    expect(screen.queryByText('Recent deliveries')).toBeNull();
+  });
+
+  it('defaults to the normal webhook URL and reveals the query-token URL only when selected', async () => {
+    const user = userEvent.setup();
+    renderComponent({
+      revealedSecret: 'secret value/with?symbols',
+    });
+
+    expect((screen.getByLabelText('Selected webhook URL') as HTMLInputElement).value).toBe(
+      githubConfig.webhook_url,
+    );
+    expect(screen.queryByText(/\?token=secret%20value/)).toBeNull();
+
+    await user.click(screen.getByRole('radio', { name: 'URL with query token (less secure)' }));
+    expect((screen.getByLabelText('Selected webhook URL') as HTMLInputElement).value).toBe(
+      'https://ragtime.example/webhooks/git/webhook-123?token=secret%20value%2Fwith%3Fsymbols',
+    );
+  });
+
+  it('removes the query-token choice when the one-time secret is dismissed', () => {
+    const { rerender } = renderComponent({ revealedSecret: 'secret-once' });
 
     rerender(
       <GitWebhookSettings
         config={githubConfig}
         revealedSecret={null}
-        deliveries={[]}
         disabled={false}
-        onEnable={vi.fn()}
         onRotate={vi.fn()}
-        onDisable={vi.fn()}
-        onDismissSecret={onDismissSecret}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
       />,
     );
 
-    expect(screen.queryByText('secret-once')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Copy webhook secret' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: 'URL with query token (less secure)' })).toBeNull();
+    expect((screen.getByLabelText('Selected webhook URL') as HTMLInputElement).value).toBe(
+      githubConfig.webhook_url,
+    );
   });
 
-  it('renders skipped deliveries and GitLab setup instructions', () => {
-    renderComponent({
-      config: gitlabConfig,
-      revealedSecret: null,
-      deliveries: [skippedDelivery],
-    });
+  it('does not repeat provider, branch, or creation metadata in enabled setup', () => {
+    renderComponent({ revealedSecret: 'secret-once' });
 
-    expect(screen.getByText('Use the Secret Token field.')).toBeTruthy();
-    expect(screen.getByText('Skipped')).toBeTruthy();
-    expect(screen.getAllByText('release/2026.07').length).toBeGreaterThan(0);
-    expect(
-      screen.getByText('A newer push arrived while another sync was already queued.'),
-    ).toBeTruthy();
+    expect(screen.queryByText('Provider setup')).toBeNull();
+    expect(screen.queryByText('Created')).toBeNull();
+    expect(screen.queryByText('Provider')).toBeNull();
   });
 
-  it('copies the webhook URL and query-token fallback URL with encoding', async () => {
-    const user = userEvent.setup();
-    renderComponent({
-      config: genericConfig,
-      revealedSecret: 'secret value/with?symbols',
-    });
+  it('shows an active status badge when the webhook is running', () => {
+    renderComponent({ config: githubConfig });
 
-    await user.click(screen.getByRole('button', { name: 'Copy webhook URL' }));
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Webhook URL copied' })).toBeTruthy();
-    });
-
-    await user.click(screen.getByRole('button', { name: 'Copy query token fallback URL' }));
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Fallback URL copied' })).toBeTruthy();
-    });
-    expect(
-      screen.getByText(
-        'https://ragtime.example/webhooks/git/webhook-789?token=secret%20value%2Fwith%3Fsymbols',
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText('Fallback URL with query token')).toBeTruthy();
-    expect(
-      screen.getByText('This is less secure because URLs may be captured in provider logs.'),
-    ).toBeTruthy();
+    expect(screen.getByText('Active')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Pause webhook' })).toBeTruthy();
   });
 
-  it('renders GitHub HMAC instructions, branch details, and recent delivery history', () => {
-    renderComponent({
-      config: githubConfig,
-      deliveries: [completedDelivery],
-    });
+  it('shows a paused status badge with a resume action', () => {
+    const pausedConfig: GitWebhookConfig = { ...githubConfig, paused: true };
 
+    renderComponent({ config: pausedConfig });
+
+    expect(screen.getByText('Paused')).toBeTruthy();
     expect(
-      screen.getByText('Configure the secret so GitHub sends X-Hub-Signature-256 HMAC signatures.'),
-    ).toBeTruthy();
-    expect(screen.getAllByText('Branch').length).toBe(2);
-    expect(screen.getAllByText('main').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('Completed').length).toBeGreaterThan(0);
-    expect(screen.getByText('Started a sync job successfully.')).toBeTruthy();
-    expect(screen.getByText('fedcba987654')).toBeTruthy();
+      screen.queryByText('Webhook is paused. Pushes are ignored until you resume.'),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resume webhook' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Pause webhook' })).toBeNull();
   });
 
-  it('renders generic provider instructions without unsupported-provider wording', () => {
+  it('renders friendly generic provider instructions without technical header wording', () => {
     renderComponent({
       config: genericConfig,
       revealedSecret: 'generic-secret',
     });
 
     expect(
-      screen.getByText('Use a token header when your provider supports custom headers.'),
+      screen.getByText("Add this URL and secret in your Git provider's webhook settings."),
     ).toBeTruthy();
-    expect(
-      screen.getByText(
-        'Accepted options include X-Ragtime-Webhook-Token, Authorization: Bearer, GitHub-style SHA-256 signatures, GitLab Secret Token headers, and compatible Gitea or Gogs SHA-256 headers.',
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText(/GitLab only/i)).toBeNull();
+    expect(screen.queryByText(/X-Ragtime-Webhook-Token/)).toBeNull();
+    expect(screen.queryByText(/HMAC/)).toBeNull();
   });
 
   it('disables action and copy controls when disabled', () => {
@@ -218,46 +222,32 @@ describe('GitWebhookSettings', () => {
     });
 
     expect(
-      (screen.getByRole('button', { name: 'Copy webhook URL' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Copy selected webhook URL' }) as HTMLButtonElement)
+        .disabled,
     ).toBe(true);
     expect(
       (screen.getByRole('button', { name: 'Copy webhook secret' }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(
-      (screen.getByRole('button', { name: 'Dismiss webhook secret' }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-    expect(
       (screen.getByRole('button', { name: 'Rotate secret' }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(
-      (screen.getByRole('button', { name: 'Disable webhook' }) as HTMLButtonElement).disabled,
+      (screen.getByRole('button', { name: 'Pause webhook' }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
 
-  it('shows the enable action for disabled configs and no plaintext placeholder when the secret is unavailable', () => {
-    const onEnable = vi.fn();
+  it('shows the flat setup for disabled configs without an enable action', () => {
     renderComponent({
       config: disabledConfig,
-      onEnable,
     });
 
-    expect(screen.getByText('Webhook delivery is disabled.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Enable push webhook' })).toBeTruthy();
+    expect(screen.queryByText('Webhook delivery is disabled.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Enable push webhook' })).toBeNull();
+    expect(
+      screen.getByText("Add this URL and secret in your Git provider's webhook settings."),
+    ).toBeTruthy();
     expect(screen.queryByText(/secret unavailable/i)).toBeNull();
     expect(screen.queryByText(/query token/i)).toBeNull();
-  });
-
-  it('invokes the enable callback when enabling a disabled webhook', () => {
-    const onEnable = vi.fn();
-    renderComponent({
-      config: disabledConfig,
-      onEnable,
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Enable push webhook' }));
-
-    expect(onEnable).toHaveBeenCalledTimes(1);
   });
 
   it('requires confirmation before rotating the secret and then invokes the callback', () => {
@@ -288,12 +278,12 @@ describe('GitWebhookSettings', () => {
     expect(onRotate).toHaveBeenCalledTimes(1);
   });
 
-  it('requires confirmation before disabling the webhook and then invokes the callback', () => {
+  it('requires confirmation before pausing the webhook and then invokes the callback', () => {
     vi.useFakeTimers();
-    const onDisable = vi.fn();
-    renderComponent({ onDisable });
+    const onPause = vi.fn();
+    renderComponent({ onPause });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable webhook' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pause webhook' }));
     expect(screen.getByRole('button', { name: 'Confirm? (3)' })).toBeTruthy();
 
     act(() => {
@@ -312,16 +302,6 @@ describe('GitWebhookSettings', () => {
     expect(screen.getByRole('button', { name: 'Confirm?' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }));
-    expect(onDisable).toHaveBeenCalledTimes(1);
-  });
-
-  it('renders a single Branch label in the summary section', () => {
-    renderComponent({
-      config: githubConfig,
-      deliveries: [completedDelivery],
-    });
-
-    expect(screen.getAllByText('Branch').length).toBe(2);
-    expect(screen.queryByText('Branch:')).toBeNull();
+    expect(onPause).toHaveBeenCalledTimes(1);
   });
 });

@@ -3,7 +3,6 @@ import { api } from '@/api';
 import type {
   CommitHistoryInfo,
   GitWebhookConfig,
-  GitWebhookDelivery,
   GitWebhookEnableResponse,
   IndexAnalysisResult,
   IndexJob,
@@ -253,7 +252,6 @@ export function GitIndexWizard({
   const [indexName, setIndexName] = useState(editIndex?.display_name || editIndex?.name || '');
   const [configureWebhookAfterCreate, setConfigureWebhookAfterCreate] = useState(false);
   const [webhookConfig, setWebhookConfig] = useState<GitWebhookConfig | null>(null);
-  const [webhookDeliveries, setWebhookDeliveries] = useState<GitWebhookDelivery[]>([]);
   const [revealedWebhookSecret, setRevealedWebhookSecret] = useState<string | null>(null);
   const [webhookError, setWebhookError] = useState<string | null>(null);
   const [webhookRequestState, setWebhookRequestState] = useState<'idle' | 'loading' | 'mutating'>(
@@ -264,23 +262,6 @@ export function GitIndexWizard({
     return () => {
       webhookRequestRef.current += 1;
     };
-  }, []);
-
-  const refreshWebhookDeliveries = useCallback(async (name: string, requestId: number) => {
-    try {
-      const nextDeliveries = await api.listIndexWebhookDeliveries(name, 10);
-      if (requestId !== webhookRequestRef.current) {
-        return false;
-      }
-      setWebhookDeliveries(nextDeliveries);
-      return true;
-    } catch (err) {
-      if (requestId !== webhookRequestRef.current) {
-        return false;
-      }
-      setWebhookError(getWebhookErrorMessage('Failed to refresh webhook deliveries', err));
-      return false;
-    }
   }, []);
 
   const loadWebhookState = useCallback(async (name: string) => {
@@ -295,19 +276,6 @@ export function GitIndexWizard({
         return;
       }
       setWebhookConfig(nextConfig);
-
-      try {
-        const nextDeliveries = await api.listIndexWebhookDeliveries(name, 10);
-        if (requestId !== webhookRequestRef.current) {
-          return;
-        }
-        setWebhookDeliveries(nextDeliveries);
-      } catch (err) {
-        if (requestId !== webhookRequestRef.current) {
-          return;
-        }
-        setWebhookError(getWebhookErrorMessage('Failed to refresh webhook deliveries', err));
-      }
     } catch (err) {
       if (requestId !== webhookRequestRef.current) {
         return;
@@ -322,10 +290,9 @@ export function GitIndexWizard({
 
   const applyWebhookMutation = useCallback(
     async (
-      name: string,
-      runMutation: () => Promise<void | GitWebhookEnableResponse>,
+      runMutation: () => Promise<void | GitWebhookConfig | GitWebhookEnableResponse>,
       fallbackConfig?: GitWebhookConfig,
-    ) => {
+    ): Promise<boolean> => {
       const requestId = webhookRequestRef.current + 1;
       webhookRequestRef.current = requestId;
       setWebhookRequestState('mutating');
@@ -334,36 +301,44 @@ export function GitIndexWizard({
       try {
         const result = await runMutation();
         if (requestId !== webhookRequestRef.current) {
-          return;
+          return false;
         }
+
+        let reflectedLocally = false;
 
         if (result) {
           setWebhookConfig({
             enabled: result.enabled,
+            paused: result.paused,
             webhook_url: result.webhook_url,
             provider: result.provider,
             branch: result.branch,
             created_at: result.created_at,
           });
-          setRevealedWebhookSecret(result.secret || null);
+          setRevealedWebhookSecret('secret' in result ? result.secret || null : null);
+          reflectedLocally = true;
         } else if (fallbackConfig) {
           setWebhookConfig(fallbackConfig);
           setRevealedWebhookSecret(null);
+          reflectedLocally = true;
         }
-
-        await refreshWebhookDeliveries(name, requestId);
+        if (requestId !== webhookRequestRef.current) {
+          return false;
+        }
+        return reflectedLocally;
       } catch (err) {
         if (requestId !== webhookRequestRef.current) {
-          return;
+          return false;
         }
         setWebhookError(getWebhookErrorMessage('Webhook setup failed', err));
+        return false;
       } finally {
         if (requestId === webhookRequestRef.current) {
           setWebhookRequestState('idle');
         }
       }
     },
-    [refreshWebhookDeliveries],
+    [],
   );
 
   // Auto-update timeout when depth changes (unless user manually overrode it)
@@ -425,7 +400,6 @@ export function GitIndexWizard({
       setPatternsExpanded(true);
       setConfigureWebhookAfterCreate(false);
       setWebhookConfig(null);
-      setWebhookDeliveries([]);
       setRevealedWebhookSecret(null);
       setWebhookError(null);
       setWebhookRequestState('idle');
@@ -524,7 +498,6 @@ export function GitIndexWizard({
     setPatternsExpanded(false);
     setConfigureWebhookAfterCreate(false);
     setWebhookConfig(null);
-    setWebhookDeliveries([]);
     setRevealedWebhookSecret(null);
     setWebhookError(null);
     setWebhookRequestState('idle');
@@ -771,7 +744,6 @@ export function GitIndexWizard({
     setStatus({ type: 'info', message: 'Starting git clone and indexing...' });
     setWebhookError(null);
     setRevealedWebhookSecret(null);
-    setWebhookDeliveries([]);
 
     try {
       const job: IndexJob = await api.indexFromGit({
@@ -814,7 +786,7 @@ export function GitIndexWizard({
       setStatus({ type: 'info', message: 'Cloning repository...' });
 
       if (configureWebhookAfterCreate) {
-        await applyWebhookMutation(name, () => api.enableIndexWebhook(name));
+        await applyWebhookMutation(() => api.enableIndexWebhook(name));
       } else {
         setWebhookConfig(null);
       }
@@ -884,7 +856,6 @@ export function GitIndexWizard({
     setPatternsExpanded(false);
     setConfigureWebhookAfterCreate(false);
     setWebhookConfig(null);
-    setWebhookDeliveries([]);
     setRevealedWebhookSecret(null);
     setWebhookError(null);
     setWebhookRequestState('idle');
@@ -1012,63 +983,130 @@ export function GitIndexWizard({
     ? (editIndex?.name ?? null)
     : (indexingJob?.name ?? null);
   const isWebhookLoading = webhookRequestState === 'loading';
-  const shouldRenderWebhookSection = isWebhookLoading || !!webhookError || !!webhookConfig;
+  const shouldRenderWebhookSection = isWebhookLoading || !!webhookError || !!webhookConfig?.enabled;
 
-  const handleEnableWebhook = useCallback(async () => {
+  const handleEnableWebhook = useCallback(async (): Promise<boolean> => {
     if (!currentWebhookIndexName) {
-      return;
+      return false;
     }
-    await applyWebhookMutation(currentWebhookIndexName, () =>
-      api.enableIndexWebhook(currentWebhookIndexName),
-    );
+    return applyWebhookMutation(() => api.enableIndexWebhook(currentWebhookIndexName));
   }, [applyWebhookMutation, currentWebhookIndexName]);
 
   const handleRotateWebhookSecret = useCallback(async () => {
     if (!currentWebhookIndexName) {
       return;
     }
-    await applyWebhookMutation(currentWebhookIndexName, () =>
-      api.rotateIndexWebhookSecret(currentWebhookIndexName),
-    );
+    await applyWebhookMutation(() => api.rotateIndexWebhookSecret(currentWebhookIndexName));
   }, [applyWebhookMutation, currentWebhookIndexName]);
 
-  const handleDisableWebhook = useCallback(async () => {
+  const handleDisableWebhook = useCallback(async (): Promise<boolean> => {
     if (!currentWebhookIndexName || !webhookConfig) {
-      return;
+      return false;
     }
-    await applyWebhookMutation(
-      currentWebhookIndexName,
+    return applyWebhookMutation(
       async () => {
         await api.disableIndexWebhook(currentWebhookIndexName);
       },
       {
         ...webhookConfig,
         enabled: false,
+        paused: false,
         webhook_url: null,
         created_at: null,
       },
     );
   }, [applyWebhookMutation, currentWebhookIndexName, webhookConfig]);
 
+  const handlePauseWebhook = useCallback(async () => {
+    if (!currentWebhookIndexName) {
+      return;
+    }
+    await applyWebhookMutation(() => api.pauseIndexWebhook(currentWebhookIndexName));
+  }, [applyWebhookMutation, currentWebhookIndexName]);
+
+  const handleResumeWebhook = useCallback(async () => {
+    if (!currentWebhookIndexName) {
+      return;
+    }
+    await applyWebhookMutation(() => api.resumeIndexWebhook(currentWebhookIndexName));
+  }, [applyWebhookMutation, currentWebhookIndexName]);
+
+  const handlePullNow = useCallback(async () => {
+    if (!currentWebhookIndexName) {
+      return;
+    }
+    setIsLoading(true);
+    setWebhookError(null);
+    setStatus({ type: 'info', message: 'Cloning repository...' });
+    try {
+      const job = await api.reindexFromGit(currentWebhookIndexName, gitToken.trim() || undefined);
+      setIndexingJob(job);
+      setWizardStep('indexing');
+      notifiedJobCreatedRef.current = true;
+      onJobCreated?.();
+    } catch (err) {
+      setStatus({
+        type: 'error',
+        message: `Error: ${err instanceof Error ? err.message : 'Request failed'}`,
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [currentWebhookIndexName, gitToken, onJobCreated]);
+
+  const handleWebhookDeliveryChange = useCallback(
+    async (enabled: boolean): Promise<boolean> => {
+      if (!enabled) {
+        if (!currentWebhookIndexName) {
+          setConfigureWebhookAfterCreate(false);
+          return true;
+        }
+        const disabled = await handleDisableWebhook();
+        if (disabled) {
+          setConfigureWebhookAfterCreate(false);
+          setReindexStartMinute(null);
+          setReindexTimezone(null);
+        }
+        return disabled;
+      }
+
+      if (!currentWebhookIndexName) {
+        setConfigureWebhookAfterCreate(true);
+        setReindexIntervalHours(0);
+        setReindexStartMinute(null);
+        setReindexTimezone(null);
+        return true;
+      }
+
+      const webhookEnabled = await handleEnableWebhook();
+      if (webhookEnabled) {
+        setConfigureWebhookAfterCreate(false);
+        setReindexIntervalHours(0);
+        setReindexStartMinute(null);
+        setReindexTimezone(null);
+      }
+      return webhookEnabled;
+    },
+    [currentWebhookIndexName, handleDisableWebhook, handleEnableWebhook],
+  );
+
   const webhookSection = shouldRenderWebhookSection ? (
     <div className="git-index-webhook-section">
       {isWebhookLoading && (
         <div className="git-index-webhook-loading">Loading webhook settings...</div>
       )}
-      {webhookConfig && (
+      {webhookConfig?.enabled && (
         <GitWebhookSettings
           config={webhookConfig}
           revealedSecret={revealedWebhookSecret}
-          deliveries={webhookDeliveries}
           disabled={
             isEditMode
               ? isLoading || webhookRequestState === 'mutating'
               : webhookRequestState === 'mutating'
           }
-          onEnable={() => void handleEnableWebhook()}
           onRotate={() => void handleRotateWebhookSecret()}
-          onDisable={() => void handleDisableWebhook()}
-          onDismissSecret={() => setRevealedWebhookSecret(null)}
+          onPause={() => void handlePauseWebhook()}
+          onResume={() => void handleResumeWebhook()}
         />
       )}
       {webhookError && <div className="status-message error">{webhookError}</div>}
@@ -1148,13 +1186,40 @@ export function GitIndexWizard({
           </div>
           <ReindexIntervalSelect
             value={reindexIntervalHours}
-            onChange={setReindexIntervalHours}
+            onChange={(nextInterval) => {
+              setReindexIntervalHours(nextInterval);
+              setConfigureWebhookAfterCreate(false);
+            }}
+            webhookDeliveryEnabled={
+              currentWebhookIndexName
+                ? Boolean(webhookConfig?.enabled)
+                : configureWebhookAfterCreate
+            }
+            onWebhookDeliveryChange={handleWebhookDeliveryChange}
             startMinute={reindexStartMinute}
             timezone={reindexTimezone}
             onStartMinuteChange={setReindexStartMinute}
             onTimezoneChange={setReindexTimezone}
-            disabled={isLoading}
+            disabled={isLoading || webhookRequestState === 'mutating'}
             style={{ flex: '1 1 300px' }}
+            action={
+              currentWebhookIndexName ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    void handlePullNow();
+                  }}
+                  disabled={
+                    isLoading ||
+                    webhookRequestState === 'mutating' ||
+                    (indexingJob !== null && !isIndexJobTerminal(indexingJob))
+                  }
+                >
+                  Pull now
+                </button>
+              ) : undefined
+            }
           />
         </div>
 
@@ -1335,12 +1400,21 @@ export function GitIndexWizard({
           </div>
           <ReindexIntervalSelect
             value={reindexIntervalHours}
-            onChange={setReindexIntervalHours}
+            onChange={(nextInterval) => {
+              setReindexIntervalHours(nextInterval);
+              setConfigureWebhookAfterCreate(false);
+            }}
+            webhookDeliveryEnabled={
+              currentWebhookIndexName
+                ? Boolean(webhookConfig?.enabled)
+                : configureWebhookAfterCreate
+            }
+            onWebhookDeliveryChange={handleWebhookDeliveryChange}
             startMinute={reindexStartMinute}
             timezone={reindexTimezone}
             onStartMinuteChange={setReindexStartMinute}
             onTimezoneChange={setReindexTimezone}
-            disabled={isLoading}
+            disabled={isLoading || webhookRequestState === 'mutating'}
             style={{ flex: '1 1 300px' }}
           />
         </div>
@@ -1625,30 +1699,21 @@ export function GitIndexWizard({
         {/* Auto Re-index Interval - visible outside Advanced Options */}
         <ReindexIntervalSelect
           value={reindexIntervalHours}
-          onChange={setReindexIntervalHours}
+          onChange={(nextInterval) => {
+            setReindexIntervalHours(nextInterval);
+            setConfigureWebhookAfterCreate(false);
+          }}
+          webhookDeliveryEnabled={
+            currentWebhookIndexName ? Boolean(webhookConfig?.enabled) : configureWebhookAfterCreate
+          }
+          onWebhookDeliveryChange={handleWebhookDeliveryChange}
           startMinute={reindexStartMinute}
           timezone={reindexTimezone}
           onStartMinuteChange={setReindexStartMinute}
           onTimezoneChange={setReindexTimezone}
-          disabled={isLoading}
+          disabled={isLoading || webhookRequestState === 'mutating'}
           style={{ marginBottom: '16px', maxWidth: '300px' }}
         />
-
-        <div className="git-index-webhook-checkbox-section">
-          <label
-            className="git-index-webhook-checkbox-label"
-            htmlFor="git-index-webhook-after-create"
-          >
-            <input
-              id="git-index-webhook-after-create"
-              type="checkbox"
-              checked={configureWebhookAfterCreate}
-              onChange={(e) => setConfigureWebhookAfterCreate(e.target.checked)}
-              disabled={isLoading}
-            />
-            Configure a push webhook after creation
-          </label>
-        </div>
 
         {/* Git History Depth - outside Advanced Options for prominence */}
         <div className="form-group" style={{ marginBottom: '16px' }}>

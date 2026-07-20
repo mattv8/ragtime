@@ -4,7 +4,7 @@ import os
 import tarfile
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -65,12 +65,15 @@ def _make_tar_entries(
     with tarfile.open(path, "w:gz") as archive:
         for entry in entries:
             info = tarfile.TarInfo(str(entry["name"]))
-            info.type = entry.get("type", tarfile.REGTYPE)
+            member_type = entry.get("type", tarfile.REGTYPE)
+            if not isinstance(member_type, bytes):
+                raise TypeError("tar entry type must be bytes")
+            info.type = member_type
             info.linkname = str(entry.get("linkname", ""))
             content = entry.get("content", b"")
             if not isinstance(content, bytes):
                 raise TypeError("tar entry content must be bytes")
-            info.size = int(entry.get("size", len(content)))
+            info.size = int(cast(int, entry.get("size", len(content))))
             if info.isreg():
                 archive.addfile(info, io.BytesIO(content))
             else:
@@ -641,7 +644,7 @@ class ServerBackupTests(unittest.TestCase):
         def payload_bytes(payload: object) -> bytes:
             return json.dumps(payload).encode("utf-8")
 
-        cases = [
+        cases: list[dict[str, object]] = [
             {
                 "name": "duplicate payload",
                 "entries": [
@@ -717,10 +720,10 @@ class ServerBackupTests(unittest.TestCase):
             for case in cases:
                 with self.subTest(case=case["name"]):
                     archive_path = Path(tmpdir) / f"{str(case['name']).replace(' ', '-')}.ragbak"
-                    _make_encrypted_tar_entries(archive_path, case["entries"], password)
+                    _make_encrypted_tar_entries(archive_path, cast(list[dict[str, object]], case["entries"]), password)
                     with self.assertRaises(BackupValidationError) as ctx:
                         with ExitStack() as stack:
-                            patcher = case.get("patch")
+                            patcher = cast(AbstractContextManager[object] | None, case.get("patch"))
                             if patcher is not None:
                                 stack.enter_context(patcher)
                             recover_deployment_environment(archive_path, password)

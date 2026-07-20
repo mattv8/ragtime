@@ -46,6 +46,10 @@ def _target_field(target_type: GitWebhookTargetType) -> str:
     return "workspaceId" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "indexMetadataId"
 
 
+def _paused_field(target_type: GitWebhookTargetType) -> str:
+    return "scmWebhookPaused" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookPaused"
+
+
 def _row_target_id(row: dict[str, Any]) -> str:
     return str(row.get("workspace_id") or row.get("index_metadata_id") or "")
 
@@ -222,12 +226,52 @@ class GitWebhookRepository:
             return
         await self._disable_target(db=db, row=row, target_type=GitWebhookTargetType.GIT_INDEX, lookup={"name": name})
 
+    async def pause_index(self, name: str, base_url: str) -> GitWebhookConfigResponse:
+        db = await get_db()
+        row = await db.indexmetadata.find_unique(where={"name": name})
+        if row is None:
+            return GitWebhookConfigResponse(enabled=False, paused=False, webhook_url=None)
+        return await self._pause_target(db=db, row=row, base_url=base_url, target_type=GitWebhookTargetType.GIT_INDEX, lookup={"name": name})
+
+    async def resume_index(self, name: str, base_url: str) -> GitWebhookConfigResponse:
+        db = await get_db()
+        row = await db.indexmetadata.find_unique(where={"name": name})
+        if row is None:
+            return GitWebhookConfigResponse(enabled=False, paused=False, webhook_url=None)
+        return await self._resume_target(db=db, row=row, base_url=base_url, target_type=GitWebhookTargetType.GIT_INDEX, lookup={"name": name})
+
     async def disable_workspace(self, workspace_id: str) -> None:
         db = await get_db()
         row = await db.workspace.find_unique(where={"id": workspace_id})
         if row is None:
             return
         await self._disable_target(db=db, row=row, target_type=GitWebhookTargetType.WORKSPACE_SCM, lookup={"id": workspace_id})
+
+    async def pause_workspace(self, workspace_id: str, base_url: str) -> GitWebhookConfigResponse:
+        db = await get_db()
+        row = await db.workspace.find_unique(where={"id": workspace_id})
+        if row is None:
+            return GitWebhookConfigResponse(enabled=False, paused=False, webhook_url=None)
+        return await self._pause_target(
+            db=db,
+            row=row,
+            base_url=base_url,
+            target_type=GitWebhookTargetType.WORKSPACE_SCM,
+            lookup={"id": workspace_id},
+        )
+
+    async def resume_workspace(self, workspace_id: str, base_url: str) -> GitWebhookConfigResponse:
+        db = await get_db()
+        row = await db.workspace.find_unique(where={"id": workspace_id})
+        if row is None:
+            return GitWebhookConfigResponse(enabled=False, paused=False, webhook_url=None)
+        return await self._resume_target(
+            db=db,
+            row=row,
+            base_url=base_url,
+            target_type=GitWebhookTargetType.WORKSPACE_SCM,
+            lookup={"id": workspace_id},
+        )
 
     async def record_ignored(self, target: GitWebhookTarget, event: GitPushEvent, message: str) -> GitWebhookDelivery:
         db = await get_db()
@@ -579,9 +623,11 @@ class GitWebhookRepository:
     def _config_from_row(self, row: Any | None, base_url: str, *, target_type: GitWebhookTargetType) -> GitWebhookConfigResponse:
         webhook_id_field = "scmWebhookId" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookId"
         secret_field = "scmWebhookSecret" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookSecret"
+        paused_field = _paused_field(target_type)
         created_at_field = "scmWebhookCreatedAt" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookCreatedAt"
         webhook_id = str(getattr(row, webhook_id_field, "") or "") or None
         enabled = bool(webhook_id and getattr(row, secret_field, None))
+        paused = bool(enabled and row is not None and getattr(row, paused_field, False))
         provider: str | None = None
         branch: str | None = None
         if row is not None:
@@ -596,6 +642,7 @@ class GitWebhookRepository:
                 branch = str(getattr(row, "gitBranch", "") or "") or None
         return GitWebhookConfigResponse(
             enabled=enabled,
+            paused=paused,
             webhook_id=webhook_id,
             webhook_url=_webhook_url(base_url, webhook_id),
             provider=provider,
@@ -626,6 +673,7 @@ class GitWebhookRepository:
             secret=decrypt_secret(str(row.webhookSecret or "")),
             provider=parsed.provider.value if parsed is not None else "generic",
             branch=str(getattr(row, "gitBranch", "") or "") or "main",
+            paused=bool(getattr(row, "webhookPaused", False)),
             created_at=getattr(row, "webhookCreatedAt", None),
             name=str(getattr(row, "name", "") or "") or None,
             description=str(getattr(row, "description", "") or "") or None,
@@ -643,6 +691,7 @@ class GitWebhookRepository:
             secret=decrypt_secret(str(row.scmWebhookSecret or "")),
             provider=str(getattr(row, "scmProvider", "") or "") or "generic",
             branch=str(getattr(row, "scmGitBranch", "") or "") or "main",
+            paused=bool(getattr(row, "scmWebhookPaused", False)),
             created_at=getattr(row, "scmWebhookCreatedAt", None),
             source=str(getattr(row, "scmGitUrl", "") or "") or None,
         )
@@ -663,21 +712,26 @@ class GitWebhookRepository:
             )
             current_id_field = "scmWebhookId" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookId"
             current_secret_field = "scmWebhookSecret" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookSecret"
+            current_paused_field = _paused_field(target_type)
             current_created_at_field = "scmWebhookCreatedAt" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookCreatedAt"
             webhook_id = str(getattr(current, current_id_field, "") or "") or None
             encrypted_secret = getattr(current, current_secret_field, None)
             if webhook_id and encrypted_secret:
+                if getattr(current, current_paused_field, False):
+                    current = await (
+                        db.workspace.update(where=lookup, data={current_paused_field: False})
+                        if target_type is GitWebhookTargetType.WORKSPACE_SCM
+                        else db.indexmetadata.update(where=lookup, data={current_paused_field: False})
+                    )
                 return GitWebhookEnableResponse(
-                    enabled=True,
-                    webhook_id=webhook_id,
-                    webhook_url=_webhook_url(base_url, webhook_id),
-                    created_at=getattr(current, current_created_at_field, None),
+                    **self._config_from_row(current, base_url, target_type=target_type).model_dump(),
                     secret=None,
                 )
             secret = secrets.token_urlsafe(32)
             update_data = {
                 current_id_field: webhook_id or secrets.token_urlsafe(24),
                 current_secret_field: encrypt_secret(secret),
+                current_paused_field: False,
                 current_created_at_field: utc_now(),
             }
             updated = await (
@@ -706,6 +760,7 @@ class GitWebhookRepository:
             update_data = {
                 current_id_field: str(getattr(row, current_id_field, "") or "") or secrets.token_urlsafe(24),
                 current_secret_field: encrypt_secret(secret),
+                _paused_field(target_type): bool(getattr(row, _paused_field(target_type), False)),
                 current_created_at_field: utc_now(),
             }
             updated = await (
@@ -726,12 +781,62 @@ class GitWebhookRepository:
             clear_data = {
                 ("scmWebhookId" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookId"): None,
                 ("scmWebhookSecret" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookSecret"): None,
+                _paused_field(target_type): False,
                 ("scmWebhookCreatedAt" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookCreatedAt"): None,
             }
             if target_type is GitWebhookTargetType.WORKSPACE_SCM:
                 await db.workspace.update(where=lookup, data=clear_data)
             else:
                 await db.indexmetadata.update(where=lookup, data=clear_data)
+
+    async def _pause_target(
+        self,
+        *,
+        db: Any,
+        row: Any,
+        base_url: str,
+        target_type: GitWebhookTargetType,
+        lookup: dict[str, Any],
+    ) -> GitWebhookConfigResponse:
+        id_field = "scmWebhookId" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookId"
+        secret_field = "scmWebhookSecret" if target_type is GitWebhookTargetType.WORKSPACE_SCM else "webhookSecret"
+        paused_field = _paused_field(target_type)
+        async with db.tx() as tx:
+            await tx.execute_raw(f"SELECT pg_advisory_xact_lock(hashtext({_sql_quote_literal(_lock_key(target_type, str(row.id)))}))")
+            current = await (
+                db.workspace.find_unique(where=lookup) if target_type is GitWebhookTargetType.WORKSPACE_SCM else db.indexmetadata.find_unique(where=lookup)
+            )
+            if current is None or not getattr(current, id_field, None) or not getattr(current, secret_field, None):
+                return self._config_from_row(current, base_url, target_type=target_type)
+            await tx.execute_raw(
+                f"UPDATE git_webhook_deliveries SET status = 'skipped', message = 'Webhook paused before processing.', completed_at = {_sql_quote_literal(utc_now().isoformat())}::timestamp WHERE {_target_column(target_type)} = {_sql_quote_literal(str(row.id))} AND status = 'pending'"
+            )
+            await self._prune_terminal_deliveries(tx, target_type=target_type, target_id=str(row.id))
+            updated = await (
+                db.workspace.update(where=lookup, data={paused_field: True})
+                if target_type is GitWebhookTargetType.WORKSPACE_SCM
+                else db.indexmetadata.update(where=lookup, data={paused_field: True})
+            )
+        return self._config_from_row(updated, base_url, target_type=target_type)
+
+    async def _resume_target(
+        self,
+        *,
+        db: Any,
+        row: Any,
+        base_url: str,
+        target_type: GitWebhookTargetType,
+        lookup: dict[str, Any],
+    ) -> GitWebhookConfigResponse:
+        paused_field = _paused_field(target_type)
+        async with db.tx() as tx:
+            await tx.execute_raw(f"SELECT pg_advisory_xact_lock(hashtext({_sql_quote_literal(_lock_key(target_type, str(row.id)))}))")
+            updated = await (
+                db.workspace.update(where=lookup, data={paused_field: False})
+                if target_type is GitWebhookTargetType.WORKSPACE_SCM
+                else db.indexmetadata.update(where=lookup, data={paused_field: False})
+            )
+        return self._config_from_row(updated, base_url, target_type=target_type)
 
     async def _read_existing_delivery(
         self,

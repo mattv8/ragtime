@@ -79,6 +79,8 @@ class GitWebhookService:
         return delivery
 
     def schedule_target(self, target: GitWebhookTarget) -> None:
+        if target.paused:
+            return
         self._ensure_task(target.target_type, target.target_id, target.key or format_git_webhook_target_key(target.target_type, target.target_id))
 
     def disable_target(self, target: GitWebhookTarget) -> None:
@@ -200,6 +202,8 @@ class GitWebhookService:
                 message="Webhook target no longer exists.",
             )
             return True
+        if target.paused:
+            return False
         if await self._index_jobs.get_active_job_for_index(target.name) is not None:
             return False
         delivery = await self._repo.claim_latest_pending(GitWebhookTargetType.GIT_INDEX, target_id)
@@ -246,6 +250,8 @@ class GitWebhookService:
                     message="Webhook target no longer exists.",
                 )
                 return True
+            if target.paused:
+                return False
             delivery = await self._repo.claim_latest_pending(GitWebhookTargetType.WORKSPACE_SCM, workspace_id)
             if delivery is None:
                 return False

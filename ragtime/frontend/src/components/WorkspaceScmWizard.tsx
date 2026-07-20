@@ -18,7 +18,6 @@ import { formatBytes } from '@/utils';
 import { SQLITE_IMPORT_DEFAULT_MAX_BYTES } from '@/utils/sqliteImport';
 import type {
   GitWebhookConfig,
-  GitWebhookDelivery,
   GitWebhookEnableResponse,
   RepoVisibilityResponse,
   UserSpaceWorkspaceArchiveExportListItem,
@@ -39,6 +38,7 @@ import type {
 import { DeleteConfirmButton } from './DeleteConfirmButton';
 import { GitWebhookSettings } from './GitWebhookSettings';
 import { Popover } from './Popover';
+import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 import {
   defaultScheduleStartMinute,
   defaultScheduleTimezone,
@@ -220,6 +220,16 @@ function formatSyncTimestamp(timestamp: string | null | undefined): string | nul
 const SCM_SYNC_INTERVAL_MIN = 300;
 const SCM_SYNC_INTERVAL_MAX = 2592000;
 const SCM_SYNC_INTERVAL_SCALE = Math.log(SCM_SYNC_INTERVAL_MAX / SCM_SYNC_INTERVAL_MIN);
+const WORKSPACE_PULL_INTERVAL_OPTIONS = [
+  { value: 0, label: 'Manual only' },
+  { value: 300, label: 'Every 5 minutes' },
+  { value: 900, label: 'Every 15 minutes' },
+  { value: 3600, label: 'Every hour' },
+  { value: 21600, label: 'Every 6 hours' },
+  { value: 86400, label: 'Every 24 hours (daily)' },
+  { value: 604800, label: 'Every week' },
+  { value: 2592000, label: 'Every 30 days' },
+];
 
 function syncIntervalToSlider(seconds: number): number {
   if (seconds >= SCM_SYNC_INTERVAL_MAX) return 100;
@@ -582,7 +592,6 @@ export function WorkspaceScmWizard({
     initialScm?.auto_pull_timezone ?? null,
   );
   const [webhookConfig, setWebhookConfig] = useState<GitWebhookConfig | null>(null);
-  const [webhookDeliveries, setWebhookDeliveries] = useState<GitWebhookDelivery[]>([]);
   const [revealedWebhookSecret, setRevealedWebhookSecret] = useState<string | null>(null);
   const [webhookLoadingState, setWebhookLoadingState] = useState<'idle' | 'loading'>('idle');
   const sqlFileInputRef = useRef<HTMLInputElement>(null);
@@ -599,7 +608,6 @@ export function WorkspaceScmWizard({
   const clearStatus = useCallback(() => setStatus(EMPTY_STATUS), []);
   const resetWebhookState = useCallback(() => {
     setWebhookConfig(null);
-    setWebhookDeliveries([]);
     setRevealedWebhookSecret(null);
     setWebhookLoadingState('idle');
   }, []);
@@ -909,29 +917,6 @@ export function WorkspaceScmWizard({
 
   const hasScmSettingsMutations = hasPendingPatToken || hasDirtyUpstreamSyncSettings;
 
-  const refreshWebhookDeliveries = useCallback(
-    async (workspaceId: string, requestId: number): Promise<boolean> => {
-      try {
-        const nextDeliveries = await api.listUserSpaceWorkspaceScmWebhookDeliveries(
-          workspaceId,
-          10,
-        );
-        if (requestId !== webhookRequestRef.current) {
-          return false;
-        }
-        setWebhookDeliveries(nextDeliveries);
-        return true;
-      } catch (error) {
-        if (requestId !== webhookRequestRef.current) {
-          return false;
-        }
-        toast.error(getWebhookErrorMessage('Failed to refresh webhook deliveries', error));
-        return false;
-      }
-    },
-    [toast],
-  );
-
   const loadWebhookState = useCallback(async () => {
     if (!shouldShowWebhookSettings) {
       return;
@@ -947,7 +932,6 @@ export function WorkspaceScmWizard({
         return;
       }
       setWebhookConfig(nextConfig);
-      await refreshWebhookDeliveries(workspace.id, requestId);
     } catch (error) {
       if (requestId !== webhookRequestRef.current) {
         return;
@@ -958,13 +942,13 @@ export function WorkspaceScmWizard({
         setWebhookLoadingState('idle');
       }
     }
-  }, [refreshWebhookDeliveries, shouldShowWebhookSettings, toast, workspace.id]);
+  }, [shouldShowWebhookSettings, toast, workspace.id]);
 
   const applyWebhookMutation = useCallback(
     async (
-      runMutation: () => Promise<void | GitWebhookEnableResponse>,
+      runMutation: () => Promise<void | GitWebhookConfig | GitWebhookEnableResponse>,
       fallbackConfig?: GitWebhookConfig,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       const requestId = webhookRequestRef.current + 1;
       webhookRequestRef.current = requestId;
       setIsLoading(true);
@@ -973,34 +957,37 @@ export function WorkspaceScmWizard({
       try {
         const mutationResult = await runMutation();
         if (requestId !== webhookRequestRef.current) {
-          return;
+          return false;
         }
 
         if (mutationResult) {
           setWebhookConfig({
             enabled: mutationResult.enabled,
+            paused: mutationResult.paused,
             webhook_url: mutationResult.webhook_url,
             provider: mutationResult.provider,
             branch: mutationResult.branch,
             created_at: mutationResult.created_at,
           });
-          setRevealedWebhookSecret(mutationResult.secret || null);
+          setRevealedWebhookSecret(
+            'secret' in mutationResult ? mutationResult.secret || null : null,
+          );
         } else if (fallbackConfig) {
           setWebhookConfig(fallbackConfig);
           setRevealedWebhookSecret(null);
         }
 
-        const refreshPromise = refreshWebhookDeliveries(workspace.id, requestId);
         if (requestId !== webhookRequestRef.current) {
-          return;
+          return false;
         }
         await onWorkspaceChanged?.();
-        await refreshPromise;
+        return true;
       } catch (error) {
         if (requestId !== webhookRequestRef.current) {
-          return;
+          return false;
         }
         toast.error(getWebhookErrorMessage('Webhook setup failed', error));
+        return false;
       } finally {
         if (requestId === webhookRequestRef.current) {
           setIsLoading(false);
@@ -1008,7 +995,54 @@ export function WorkspaceScmWizard({
         }
       }
     },
-    [onWorkspaceChanged, refreshWebhookDeliveries, toast, workspace.id],
+    [onWorkspaceChanged, toast],
+  );
+
+  const handlePauseWebhook = useCallback(async () => {
+    await applyWebhookMutation(() => api.pauseUserSpaceWorkspaceScmWebhook(workspace.id));
+  }, [applyWebhookMutation, workspace.id]);
+
+  const handleResumeWebhook = useCallback(async () => {
+    await applyWebhookMutation(() => api.resumeUserSpaceWorkspaceScmWebhook(workspace.id));
+  }, [applyWebhookMutation, workspace.id]);
+
+  const handleWorkspaceWebhookDeliveryChange = useCallback(
+    async (enabled: boolean): Promise<boolean> => {
+      if (enabled) {
+        const previousAutoPull = {
+          enabled: autoPullEnabled,
+          startMinute: autoPullStartMinute,
+          timezone: autoPullTimezone,
+        };
+        setAutoPullEnabled(false);
+        setAutoPullStartMinute(null);
+        setAutoPullTimezone(null);
+        const webhookEnabled = await applyWebhookMutation(() =>
+          api.enableUserSpaceWorkspaceScmWebhook(workspace.id),
+        );
+        if (!webhookEnabled) {
+          setAutoPullEnabled(previousAutoPull.enabled);
+          setAutoPullStartMinute(previousAutoPull.startMinute);
+          setAutoPullTimezone(previousAutoPull.timezone);
+        }
+        return webhookEnabled;
+      }
+      if (!webhookConfig) return false;
+      return applyWebhookMutation(
+        async () => {
+          await api.disableUserSpaceWorkspaceScmWebhook(workspace.id);
+        },
+        { ...webhookConfig, enabled: false, paused: false, webhook_url: null },
+      );
+    },
+    [
+      applyWebhookMutation,
+      autoPullEnabled,
+      autoPullStartMinute,
+      autoPullTimezone,
+      webhookConfig,
+      workspace.id,
+    ],
   );
 
   const applyScmSettingsPatch = useCallback(
@@ -1970,23 +2004,25 @@ export function WorkspaceScmWizard({
             timezone: autoPushTimezone,
             setTimezone: setAutoPushTimezone,
           },
-          {
-            key: 'pull' as const,
-            label: 'Auto-pull',
-            description: 'Check the remote branch and import changes on a schedule.',
-            enabled: autoPullEnabled,
-            setEnabled: setAutoPullEnabled,
-            interval: autoPullIntervalSeconds,
-            setInterval: setAutoPullIntervalSeconds,
-            startMinute: autoPullStartMinute,
-            setStartMinute: setAutoPullStartMinute,
-            timezone: autoPullTimezone,
-            setTimezone: setAutoPullTimezone,
-          },
         ]
       : [];
   const enabledUpstreamSyncCount = upstreamSyncRows.filter((row) => row.enabled).length;
   const useSingleEnabledSyncLayout = enabledUpstreamSyncCount === 1;
+  const workspacePullIntervalOptions = useMemo(() => {
+    if (
+      !autoPullIntervalSeconds ||
+      WORKSPACE_PULL_INTERVAL_OPTIONS.some((option) => option.value === autoPullIntervalSeconds)
+    ) {
+      return WORKSPACE_PULL_INTERVAL_OPTIONS;
+    }
+    return [
+      {
+        value: autoPullIntervalSeconds,
+        label: `Every ${formatSyncInterval(autoPullIntervalSeconds)} (current)`,
+      },
+      ...WORKSPACE_PULL_INTERVAL_OPTIONS,
+    ];
+  }, [autoPullIntervalSeconds]);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -2858,6 +2894,36 @@ export function WorkspaceScmWizard({
 
                     {activeScm.remote_role === 'upstream' && (
                       <div style={{ display: 'grid', gap: 10 }}>
+                        <ReindexIntervalSelect
+                          label="Auto-pull interval"
+                          value={autoPullEnabled ? autoPullIntervalSeconds : 0}
+                          intervalOptions={workspacePullIntervalOptions}
+                          onChange={(nextInterval) => {
+                            setAutoPullEnabled(nextInterval > 0);
+                            setAutoPullIntervalSeconds(nextInterval || autoPullIntervalSeconds);
+                            setAutoPullStartMinute(nextInterval > 0 ? autoPullStartMinute : null);
+                            setAutoPullTimezone(nextInterval > 0 ? autoPullTimezone : null);
+                          }}
+                          webhookDeliveryEnabled={Boolean(webhookConfig?.enabled)}
+                          onWebhookDeliveryChange={handleWorkspaceWebhookDeliveryChange}
+                          startMinute={autoPullStartMinute}
+                          timezone={autoPullTimezone}
+                          onStartMinuteChange={setAutoPullStartMinute}
+                          onTimezoneChange={setAutoPullTimezone}
+                          disabled={isLoading || webhookLoadingState === 'loading'}
+                          action={
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => {
+                                void handlePreview('import');
+                              }}
+                              disabled={isLoading || webhookLoadingState === 'loading'}
+                            >
+                              Pull now
+                            </button>
+                          }
+                        />
                         <div
                           style={{
                             display: 'grid',
@@ -2918,11 +2984,7 @@ export function WorkspaceScmWizard({
                                     : 'var(--color-text-muted)',
                                 }}
                               >
-                                {row.key === 'push' ? (
-                                  <ArrowUpToLine size={14} />
-                                ) : (
-                                  <ArrowDownToLine size={14} />
-                                )}
+                                <ArrowUpToLine size={14} />
                               </span>
                               <span style={{ display: 'grid', gap: 3, minWidth: 0, flex: 1 }}>
                                 <span
@@ -3077,37 +3139,23 @@ export function WorkspaceScmWizard({
                             </p>
                           )}
 
-                        {shouldShowWebhookSettings && webhookConfig && (
+                        {shouldShowWebhookSettings && webhookConfig?.enabled && (
                           <div style={{ display: 'grid', gap: 'var(--space-sm)' }}>
-                            {!autoPullEnabled && (
-                              <p className="userspace-muted" style={{ margin: 0 }}>
-                                Scheduled auto-pull is off. Push webhooks can still trigger pulls.
-                              </p>
-                            )}
                             <GitWebhookSettings
                               config={webhookConfig}
                               revealedSecret={revealedWebhookSecret}
-                              deliveries={webhookDeliveries}
                               disabled={isLoading}
-                              onEnable={() => {
-                                void applyWebhookMutation(() =>
-                                  api.enableUserSpaceWorkspaceScmWebhook(workspace.id),
-                                );
-                              }}
                               onRotate={() => {
                                 void applyWebhookMutation(() =>
                                   api.rotateUserSpaceWorkspaceScmWebhookSecret(workspace.id),
                                 );
                               }}
-                              onDisable={() => {
-                                void applyWebhookMutation(
-                                  async () => {
-                                    await api.disableUserSpaceWorkspaceScmWebhook(workspace.id);
-                                  },
-                                  { ...webhookConfig, enabled: false, webhook_url: null },
-                                );
+                              onPause={() => {
+                                void handlePauseWebhook();
                               }}
-                              onDismissSecret={() => setRevealedWebhookSecret(null)}
+                              onResume={() => {
+                                void handleResumeWebhook();
+                              }}
                             />
                           </div>
                         )}

@@ -773,6 +773,22 @@ async def rotate_index_webhook_secret(name: str, request: Request, _user: Any = 
     return await git_webhook_repository.rotate_index_secret(name, str(request.base_url).rstrip("/"))
 
 
+@router.post("/{name}/webhook/pause", response_model=GitWebhookConfigResponse)
+async def pause_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookConfigResponse:
+    await _ensure_git_index_webhook_eligible(name)
+    return await git_webhook_repository.pause_index(name, str(request.base_url).rstrip("/"))
+
+
+@router.post("/{name}/webhook/resume", response_model=GitWebhookConfigResponse)
+async def resume_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> GitWebhookConfigResponse:
+    await _ensure_git_index_webhook_eligible(name)
+    response = await git_webhook_repository.resume_index(name, str(request.base_url).rstrip("/"))
+    target = await git_webhook_repository.resolve_index_target(name)
+    if target is not None:
+        git_webhook_service.schedule_target(target)
+    return response
+
+
 @router.delete("/{name}/webhook")
 async def disable_index_webhook(name: str, request: Request, _user: Any = Depends(require_admin)) -> dict[str, str]:
     target = await git_webhook_repository.resolve_index_target(name)

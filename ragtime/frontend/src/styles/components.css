@@ -270,7 +270,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
-  margin-block-start: var(--space-md);
+  margin-block: var(--space-md);
 }
 
 .git-index-webhook-loading {
@@ -282,52 +282,23 @@ textarea:focus {
   box-shadow: var(--shadow-sm);
 }
 
-.git-index-webhook-checkbox-section {
-  margin-block-end: var(--space-md);
-}
-
-.git-index-webhook-checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  cursor: pointer;
-  color: var(--color-text-primary);
-  font-size: var(--text-sm);
-}
-
-.git-index-webhook-checkbox-label input {
-  width: auto;
-  margin: 0;
-}
-
 .git-webhook-header,
-.git-webhook-card-header,
-.git-webhook-secret-header,
-.git-webhook-query-token-header,
-.git-webhook-delivery-topline,
-.git-webhook-delivery-title-wrap,
 .git-webhook-actions {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
 }
 
-.git-webhook-header,
-.git-webhook-secret-header,
-.git-webhook-query-token-header,
-.git-webhook-delivery-topline {
+.git-webhook-header {
   justify-content: space-between;
 }
 
-.git-webhook-header-copy,
-.git-webhook-secret-header > div {
+.git-webhook-header-copy {
   min-width: 0;
 }
 
 .git-webhook-title,
-.git-webhook-card h4,
-.git-webhook-secret-panel h4,
-.git-webhook-query-token h5 {
+.git-webhook-secret h4 {
   margin: 0;
   color: var(--color-text-primary);
 }
@@ -344,85 +315,84 @@ textarea:focus {
   color: var(--color-text-muted);
 }
 
-.git-webhook-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-md);
-}
-
-.git-webhook-card,
-.git-webhook-secret-panel,
-.git-webhook-deliveries,
-.git-webhook-empty-state,
-.git-webhook-query-token,
-.git-webhook-delivery-item {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-sm);
-}
-
-.git-webhook-card,
-.git-webhook-secret-panel,
-.git-webhook-deliveries,
-.git-webhook-empty-state,
-.git-webhook-query-token {
-  padding: var(--space-md);
-}
-
-.git-webhook-meta {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-sm) var(--space-md);
-  margin: 0 0 var(--space-sm);
-}
-
-.git-webhook-meta div,
-.git-webhook-delivery-grid div {
+.git-webhook-setup {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
-  min-width: 0;
-}
-
-.git-webhook-meta dt,
-.git-webhook-delivery-label {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
-
-.git-webhook-meta dd {
-  margin: 0;
-  color: var(--color-text-primary);
-  word-break: break-word;
-}
-
-.git-webhook-code-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
   gap: var(--space-sm);
 }
 
-.git-webhook-code,
-.git-webhook-inline-code,
-.git-webhook-delivery-id {
+.git-webhook-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.git-webhook-secret .field-help {
+  margin-top: 0;
+}
+
+.git-webhook-url-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  padding: 2px;
+}
+
+.git-webhook-url-options label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.git-webhook-url-options input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.git-webhook-url-options span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: calc(var(--radius-md) - 2px);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+}
+
+.git-webhook-url-options input:checked + span {
+  background: var(--color-primary-soft);
+  box-shadow: inset 0 0 0 1px var(--color-primary-border);
+  color: var(--color-text-primary);
+}
+
+.git-webhook-url-options input:disabled + span {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.git-webhook-inline-code {
   font-family: var(--font-mono);
 }
 
-.git-webhook-code,
 .git-webhook-inline-code {
   color: var(--color-text-primary);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-}
-
-.git-webhook-code {
-  display: block;
-  padding: var(--space-sm);
-  font-size: var(--text-sm);
-  overflow-wrap: anywhere;
 }
 
 .git-webhook-inline-code {
@@ -434,116 +404,39 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
-.git-webhook-copy-btn,
-.git-webhook-dismiss-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-xs);
-  min-height: calc(var(--space-lg) + var(--space-md));
-  padding: var(--space-xs) var(--space-sm);
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-primary);
-  color: var(--color-text-secondary);
-  font: inherit;
-  cursor: pointer;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast),
-    border-color var(--transition-fast);
+/* The one-time secret is urgent and shown briefly, so keep its copy control
+   always visible. The webhook URL copy control follows the standard
+   hover/focus reveal used by the share-link pattern. */
+.userspace-share-inline-copy.is-always-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-.git-webhook-copy-btn:hover:not(:disabled),
-.git-webhook-dismiss-btn:hover:not(:disabled) {
-  background: var(--color-surface-hover);
-  color: var(--color-text-primary);
-}
-
-.git-webhook-copy-btn.is-copied {
-  background: var(--color-success);
-  border-color: var(--color-success);
-  color: #fff;
-}
-
-.git-webhook-copy-btn:disabled,
-.git-webhook-dismiss-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.git-webhook-query-token {
-  margin-top: var(--space-md);
-}
-
-.git-webhook-empty-title,
-.git-webhook-delivery-message {
-  margin: 0;
-  color: var(--color-text-primary);
-}
-
-.git-webhook-delivery-list {
-  list-style: none;
+.reindex-interval-action {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  margin: 0;
-  padding: 0;
+  align-items: flex-end;
 }
 
-.git-webhook-delivery-item {
-  padding: var(--space-md);
-}
-
-.git-webhook-delivery-title-wrap {
-  flex-wrap: wrap;
-}
-
-.git-webhook-delivery-id {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-.git-webhook-delivery-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-sm) var(--space-md);
-  margin-top: var(--space-sm);
-}
-
-.git-webhook-delivery-message {
-  margin-top: var(--space-sm);
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-}
-
-@media (max-width: 900px) {
-  .git-webhook-grid,
-  .git-webhook-meta,
-  .git-webhook-delivery-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.reindex-interval-action .btn {
+  min-height: 44px;
 }
 
 @media (max-width: 640px) {
   .git-webhook-header,
-  .git-webhook-secret-header,
-  .git-webhook-query-token-header,
-  .git-webhook-delivery-topline,
-  .git-webhook-actions,
-  .git-webhook-code-row {
+  .git-webhook-actions {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .git-webhook-code-row {
-    display: flex;
+  .git-webhook-url-options {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
   }
 
-  .git-webhook-delivery-id {
-    text-align: left;
+  .git-webhook-url-options label,
+  .git-webhook-url-options span {
+    width: 100%;
   }
 }
 

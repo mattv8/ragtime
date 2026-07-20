@@ -42,6 +42,7 @@ class GitWebhookTarget(BaseModel):
     secret: str = Field(description="Decrypted webhook signing secret.")
     provider: str = Field(default="generic", description="Resolved webhook provider.")
     branch: str | None = Field(default=None, description="Configured branch for this webhook target.")
+    paused: bool = Field(default=False, description="Whether webhook processing is temporarily paused for this target.")
     created_at: datetime | None = Field(default=None, description="When the webhook configuration was created.")
     name: str | None = Field(default=None, description="Index name when the target is a git index.")
     description: str | None = Field(default=None, description="Stored index description for git targets.")
@@ -72,6 +73,7 @@ class GitWebhookDeliveryResponse(GitWebhookDelivery):
 
 class GitWebhookConfigResponse(BaseModel):
     enabled: bool = Field(description="Whether webhook delivery is enabled for this target.")
+    paused: bool = Field(default=False, description="Whether webhook delivery is temporarily paused for this target.")
     webhook_id: str | None = Field(default=None, description="Opaque public webhook identifier.")
     webhook_url: str | None = Field(default=None, description="Full Ragtime webhook URL for manual provider registration.")
     provider: str | None = Field(default=None, description="Resolved SCM provider for this webhook target.")

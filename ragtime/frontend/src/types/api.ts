@@ -536,6 +536,7 @@ export type GitWebhookDeliveryStatus =
 
 export interface GitWebhookConfig {
   enabled: boolean;
+  paused: boolean;
   webhook_url: string | null;
   provider: 'github' | 'gitlab' | 'generic';
   branch: string;

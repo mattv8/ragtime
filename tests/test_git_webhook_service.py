@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 from ragtime.git_webhooks.models import (
     GitPushEvent,
@@ -43,6 +44,7 @@ def _git_target(
         key=format_git_webhook_target_key(GitWebhookTargetType.GIT_INDEX, target_id),
         source=source,
         git_token=git_token,
+        paused=False,
         config_snapshot=config_snapshot or {"name": name, "git_history_depth": 1},
     )
 
@@ -57,6 +59,7 @@ def _workspace_target(*, workspace_id: str = "workspace-1", branch: str = "main"
         branch=branch,
         created_at=_utcnow(),
         key=format_git_webhook_target_key(GitWebhookTargetType.WORKSPACE_SCM, workspace_id),
+        paused=False,
     )
 
 
@@ -854,6 +857,101 @@ class GitWebhookServiceTests(unittest.IsolatedAsyncioTestCase):
         await repo.wait_for_status(second.id, "completed")
 
         self.assertEqual(service._indexer.started_commits, ["commit-2"])
+
+    async def test_paused_push_is_ignored_without_queueing(self) -> None:
+        repo = FakeWebhookRepository()
+        target = _git_target().model_copy(update={"paused": True})
+        event = _push("commit-paused")
+        service = GitWebhookService(
+            repo=repo, indexer=FakeIndexer(repo, FakeIndexJobRepository()), userspace=FakeUserSpace(), index_jobs=FakeIndexJobRepository()
+        )
+
+        record_ignored = mock.AsyncMock(
+            return_value=GitWebhookDelivery(
+                id="ignored-1",
+                target_type=target.target_type,
+                target_id=target.target_id,
+                provider_delivery_id=event.provider_delivery_id,
+                event_name=event.event_name,
+                branch=event.branch,
+                head_commit=event.head_commit,
+                status=GitWebhookDeliveryStatus.IGNORED,
+                message="Webhook push ignored while paused.",
+                received_at=_utcnow(),
+                started_at=None,
+                completed_at=_utcnow(),
+            )
+        )
+        with mock.patch("ragtime.git_webhooks.routes.git_webhook_repository.record_ignored", record_ignored):
+            from ragtime.git_webhooks.routes import _accept_matching_events
+
+            await _accept_matching_events(target, [event])
+
+        record_ignored.assert_awaited_once()
+        ignored_call = record_ignored.await_args
+        assert ignored_call is not None
+        ignored_message = ignored_call.args[2]
+        self.assertIn("paused", ignored_message.lower())
+
+    async def test_resume_does_not_replay_pending_rows_skipped_by_pause(self) -> None:
+        repo = FakeWebhookRepository()
+        active_target = _git_target()
+        repo.set_target(active_target)
+        jobs = FakeIndexJobRepository(active_git_job=True)
+        service = GitWebhookService(repo=repo, indexer=FakeIndexer(repo, jobs), userspace=FakeUserSpace(), index_jobs=jobs, poll_seconds=0.01)
+
+        await service.start()
+        self.addAsyncCleanup(service.stop)
+
+        delivery = await service.accept_push(active_target, _push("commit-1"))
+        self.assertEqual(repo.status(delivery.id), "pending")
+        paused_target = active_target.model_copy(update={"paused": True})
+        repo.set_target(paused_target)
+
+        pause_delivery = repo.deliveries[delivery.id]
+        pause_delivery.status = GitWebhookDeliveryStatus.SKIPPED
+        pause_delivery.message = "Webhook paused before processing."
+        pause_delivery.completed_at = _utcnow()
+        repo._signal(pause_delivery.id, pause_delivery.status)
+
+        resumed_target = active_target.model_copy(update={"paused": False})
+        repo.set_target(resumed_target)
+        service.schedule_target(resumed_target)
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(repo.claim_calls, [])
+        self.assertEqual(repo.status(delivery.id), "skipped")
+        self.assertEqual(service._indexer.started_commits, [])
+
+    async def test_start_ignores_paused_pending_targets(self) -> None:
+        repo = FakeWebhookRepository()
+        paused_target = _git_target(target_id="paused-index").model_copy(update={"paused": True})
+        repo.set_target(paused_target)
+        repo.add_delivery(
+            GitWebhookDelivery(
+                id="pending-paused",
+                target_type=paused_target.target_type,
+                target_id=paused_target.target_id,
+                provider_delivery_id="delivery-paused",
+                event_name="push",
+                branch="main",
+                head_commit="commit-paused",
+                status=GitWebhookDeliveryStatus.PENDING,
+                received_at=_utcnow(),
+                started_at=None,
+                completed_at=None,
+            )
+        )
+        service = GitWebhookService(
+            repo=repo, indexer=FakeIndexer(repo, FakeIndexJobRepository()), userspace=FakeUserSpace(), index_jobs=FakeIndexJobRepository(), poll_seconds=0.01
+        )
+
+        await service.start()
+        self.addAsyncCleanup(service.stop)
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(service._target_tasks, {})
+        self.assertEqual(repo.claim_calls, [])
 
     async def test_disable_during_active_git_work_still_terminalizes_processing_delivery(self) -> None:
         repo = FakeWebhookRepository()

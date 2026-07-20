@@ -3,29 +3,26 @@ import type { ComponentProps, ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type {
-  GitWebhookConfig,
-  GitWebhookDelivery,
-  GitWebhookEnableResponse,
-  UserSpaceWorkspace,
-} from '@/types';
+import type { GitWebhookConfig, GitWebhookEnableResponse, UserSpaceWorkspace } from '@/types';
 
 import { WorkspaceScmWizard } from './WorkspaceScmWizard';
 
 const apiMock = vi.hoisted(() => ({
   getUserSpacePreviewSettings: vi.fn(),
   fetchUserSpaceWorkspaceScmBranches: vi.fn(),
+  updateUserSpaceWorkspaceScmSettings: vi.fn(),
   getUserSpaceWorkspaceScmWebhook: vi.fn(),
   enableUserSpaceWorkspaceScmWebhook: vi.fn(),
+  pauseUserSpaceWorkspaceScmWebhook: vi.fn(),
+  resumeUserSpaceWorkspaceScmWebhook: vi.fn(),
   rotateUserSpaceWorkspaceScmWebhookSecret: vi.fn(),
   disableUserSpaceWorkspaceScmWebhook: vi.fn(),
-  listUserSpaceWorkspaceScmWebhookDeliveries: vi.fn(),
+  queueUserSpaceWorkspaceScmPreviewImport: vi.fn(),
 }));
 
 const latestWebhookSettingsProps = vi.hoisted(() => ({
   config: null as GitWebhookConfig | null,
   revealedSecret: null as string | null,
-  deliveries: [] as GitWebhookDelivery[],
   disabled: false,
 }));
 
@@ -61,50 +58,42 @@ vi.mock('./GitWebhookSettings', () => ({
   GitWebhookSettings: ({
     config,
     revealedSecret,
-    deliveries,
     disabled,
-    onEnable,
     onRotate,
-    onDisable,
-    onDismissSecret,
+    onPause,
+    onResume,
   }: {
     config: GitWebhookConfig;
     revealedSecret: string | null;
-    deliveries: GitWebhookDelivery[];
     disabled: boolean;
-    onEnable: () => void;
     onRotate: () => void;
-    onDisable: () => void;
-    onDismissSecret: () => void;
+    onPause: () => void;
+    onResume: () => void;
   }) =>
     (() => {
       latestWebhookSettingsProps.config = config;
       latestWebhookSettingsProps.revealedSecret = revealedSecret;
-      latestWebhookSettingsProps.deliveries = deliveries;
       latestWebhookSettingsProps.disabled = Boolean(disabled);
       return (
         <div data-testid="git-webhook-settings-mock">
           <div>Push webhook</div>
-          <div>{`webhook:${config.provider}:${config.branch}:${config.enabled ? 'enabled' : 'disabled'}`}</div>
-          <div>{`deliveries:${deliveries.length}`}</div>
-          {deliveries[0] && <div>{`delivery-id:${deliveries[0].id}`}</div>}
+          <div>{`webhook:${config.provider}:${config.branch}:${config.enabled ? 'enabled' : 'disabled'}:${config.paused ? 'paused' : 'active'}`}</div>
           {revealedSecret && <div>{revealedSecret}</div>}
-          <button type="button" onClick={onDismissSecret} disabled={disabled}>
-            Dismiss webhook secret
-          </button>
-          {config.enabled ? (
+          {config.enabled && (
             <>
               <button type="button" onClick={onRotate} disabled={disabled}>
                 Rotate secret
               </button>
-              <button type="button" onClick={onDisable} disabled={disabled}>
-                Disable webhook
-              </button>
+              {config.paused ? (
+                <button type="button" onClick={onResume} disabled={disabled}>
+                  Resume webhook
+                </button>
+              ) : (
+                <button type="button" onClick={onPause} disabled={disabled}>
+                  Pause webhook
+                </button>
+              )}
             </>
-          ) : (
-            <button type="button" onClick={onEnable} disabled={disabled}>
-              Enable push webhook
-            </button>
           )}
         </div>
       );
@@ -152,6 +141,7 @@ const baseWorkspace: UserSpaceWorkspace = {
 
 const disabledWebhookConfig: GitWebhookConfig = {
   enabled: false,
+  paused: false,
   webhook_url: null,
   provider: 'github',
   branch: 'main',
@@ -160,6 +150,7 @@ const disabledWebhookConfig: GitWebhookConfig = {
 
 const enabledWebhookConfig: GitWebhookConfig = {
   enabled: true,
+  paused: false,
   webhook_url: 'https://ragtime.example/webhooks/git/workspace-1',
   provider: 'github',
   branch: 'main',
@@ -170,20 +161,6 @@ const enabledWebhookWithSecret: GitWebhookEnableResponse = {
   ...enabledWebhookConfig,
   secret: 'secret-once',
 };
-
-const webhookDeliveries: GitWebhookDelivery[] = [
-  {
-    id: 'delivery-1',
-    event_name: 'push',
-    branch: 'main',
-    head_commit: 'abc123',
-    status: 'completed',
-    message: 'done',
-    received_at: '2026-07-16T12:00:00Z',
-    started_at: '2026-07-16T12:00:01Z',
-    completed_at: '2026-07-16T12:00:02Z',
-  },
-];
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -223,6 +200,16 @@ function publishWorkspace(): UserSpaceWorkspace {
   };
 }
 
+function scmSettingsResponse(
+  scmOverrides?: Partial<NonNullable<UserSpaceWorkspace['scm']>>,
+  workspaceId = 'workspace-1',
+) {
+  return {
+    workspace_id: workspaceId,
+    scm: upstreamWorkspace(scmOverrides).scm!,
+  };
+}
+
 function disconnectedWorkspace(): UserSpaceWorkspace {
   return {
     ...baseWorkspace,
@@ -239,7 +226,7 @@ function disconnectedWorkspace(): UserSpaceWorkspace {
 }
 
 async function openGitSourceTab() {
-  fireEvent.click(screen.getByRole('button', { name: 'Git Source' }));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Git Source' })[0]);
   await act(async () => {
     await Promise.resolve();
   });
@@ -265,14 +252,33 @@ beforeEach(() => {
     userspace_sqlite_import_max_bytes: 1000,
   });
   apiMock.fetchUserSpaceWorkspaceScmBranches.mockResolvedValue({ branches: ['main'], error: null });
+  apiMock.updateUserSpaceWorkspaceScmSettings.mockResolvedValue(scmSettingsResponse());
   apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(disabledWebhookConfig);
   apiMock.enableUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookWithSecret);
+  apiMock.pauseUserSpaceWorkspaceScmWebhook.mockResolvedValue({
+    ...enabledWebhookConfig,
+    paused: true,
+  });
+  apiMock.resumeUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
   apiMock.rotateUserSpaceWorkspaceScmWebhookSecret.mockResolvedValue({
     ...enabledWebhookConfig,
     secret: 'rotated-secret',
   });
   apiMock.disableUserSpaceWorkspaceScmWebhook.mockResolvedValue(undefined);
-  apiMock.listUserSpaceWorkspaceScmWebhookDeliveries.mockResolvedValue(webhookDeliveries);
+  apiMock.queueUserSpaceWorkspaceScmPreviewImport.mockResolvedValue({
+    task_id: 'preview-task-1',
+    workspace_id: 'workspace-1',
+    git_url: 'https://github.com/example/repo.git',
+    git_branch: 'main',
+    phase: 'queued',
+    progress: 0,
+    message: null,
+    preview: null,
+    created_at: '2026-07-16T12:00:00Z',
+    started_at: null,
+    completed_at: null,
+    error: null,
+  });
 });
 
 afterEach(() => {
@@ -284,21 +290,19 @@ afterEach(() => {
   toastApiMock.dismiss.mockReset();
   latestWebhookSettingsProps.config = null;
   latestWebhookSettingsProps.revealedSecret = null;
-  latestWebhookSettingsProps.deliveries = [];
   latestWebhookSettingsProps.disabled = false;
 });
 
 describe('WorkspaceScmWizard webhook integration', () => {
-  it('shows webhook controls for a connected upstream remote independently of auto-pull', async () => {
+  it('shows manual pull cadence by default and hides webhook setup until webhook delivery is selected', async () => {
     renderWizard(upstreamWorkspace({ auto_pull_enabled: false }));
 
     await openGitSourceTab();
 
-    expect(await screen.findByText('Push webhook')).toBeTruthy();
-    const hint = screen.getByText(
-      'Scheduled auto-pull is off. Push webhooks can still trigger pulls.',
-    );
-    expect(hint.className).toContain('userspace-muted');
+    expect(
+      (await screen.findByLabelText('Auto-pull interval')) as HTMLSelectElement,
+    ).toHaveProperty('value', '0');
+    expect(screen.queryByText('Push webhook')).toBeNull();
   });
 
   it('renders webhook loading text as a muted status message before config resolves', async () => {
@@ -340,22 +344,87 @@ describe('WorkspaceScmWizard webhook integration', () => {
     expect(screen.queryByText('Push webhook')).toBeNull();
   });
 
-  it('enables the workspace webhook, refreshes deliveries, and notifies parent refresh', async () => {
+  it('enables webhook delivery from the pull cadence selector', async () => {
+    renderWizard(upstreamWorkspace({ auto_pull_enabled: true }));
+
+    await openGitSourceTab();
+
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: 'webhook' } });
+
+    await waitFor(() => {
+      expect(apiMock.enableUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-1');
+    });
+    expect(latestWebhookSettingsProps.config?.enabled).toBe(true);
+  });
+
+  it('requires confirmation before leaving webhook delivery for a scheduled pull', async () => {
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
+    renderWizard(upstreamWorkspace({ auto_pull_enabled: false }));
+
+    await openGitSourceTab();
+
+    await screen.findByLabelText('Auto-pull interval');
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: '3600' } });
+    expect(screen.getByRole('dialog', { name: 'Disable webhook delivery?' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable webhook and continue' }));
+    await waitFor(() => {
+      expect(apiMock.disableUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-1');
+    });
+    expect((screen.getByLabelText('Auto-pull interval') as HTMLSelectElement).value).toBe('3600');
+  });
+
+  it('keeps scheduled pull drafts unsaved until Save is clicked', async () => {
+    renderWizard(upstreamWorkspace({ auto_pull_enabled: false }));
+
+    await openGitSourceTab();
+
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: '300' } });
+
+    expect(apiMock.updateUserSpaceWorkspaceScmSettings).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateUserSpaceWorkspaceScmSettings).toHaveBeenCalledWith(
+        'workspace-1',
+        expect.objectContaining({
+          auto_pull_enabled: true,
+          auto_pull_interval_seconds: 300,
+        }),
+      );
+    });
+  });
+
+  it('restores the prior pull draft when enabling webhook delivery fails', async () => {
+    apiMock.enableUserSpaceWorkspaceScmWebhook.mockRejectedValueOnce(new Error('enable failed'));
+    renderWizard(upstreamWorkspace({ auto_pull_enabled: true, auto_pull_interval_seconds: 900 }));
+
+    await openGitSourceTab();
+
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: 'webhook' } });
+
+    await waitFor(() => {
+      expect(toastApiMock.error).toHaveBeenCalledWith('Webhook setup failed: enable failed');
+    });
+    expect((screen.getByLabelText('Auto-pull interval') as HTMLSelectElement).value).toBe('900');
+  });
+
+  it('refreshes deliveries and notifies parent refresh when webhook delivery is enabled', async () => {
     const onWorkspaceChanged = vi.fn();
     renderWizard(upstreamWorkspace(), { onWorkspaceChanged });
 
     await openGitSourceTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable push webhook' }));
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: 'webhook' } });
 
     await waitFor(() => {
       expect(apiMock.enableUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-1');
     });
     expect(await screen.findByText('secret-once')).toBeTruthy();
-    expect(await screen.findByText('delivery-id:delivery-1')).toBeTruthy();
     expect(onWorkspaceChanged).toHaveBeenCalledTimes(1);
   });
 
-  it('rotates and disables the webhook while refreshing deliveries after each mutation', async () => {
+  it('pauses and resumes the webhook while keeping webhook cadence selected', async () => {
     apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
     const onWorkspaceChanged = vi.fn();
     renderWizard(upstreamWorkspace(), { onWorkspaceChanged });
@@ -368,60 +437,60 @@ describe('WorkspaceScmWizard webhook integration', () => {
     });
     expect(await screen.findByText('rotated-secret')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Disable webhook' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pause webhook' }));
     await waitFor(() => {
-      expect(apiMock.disableUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-1');
+      expect(apiMock.pauseUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-1');
     });
-    expect(await screen.findByRole('button', { name: 'Enable push webhook' })).toBeTruthy();
-    expect(apiMock.listUserSpaceWorkspaceScmWebhookDeliveries).toHaveBeenCalledTimes(3);
-    expect(onWorkspaceChanged).toHaveBeenCalledTimes(2);
+    expect((screen.getByLabelText('Auto-pull interval') as HTMLSelectElement).value).toBe(
+      'webhook',
+    );
+    expect(screen.getByText('webhook:github:main:enabled:paused')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume webhook' }));
+    await waitFor(() => {
+      expect(apiMock.resumeUserSpaceWorkspaceScmWebhook).toHaveBeenCalledWith('workspace-1');
+    });
+    expect(screen.getByText('webhook:github:main:enabled:active')).toBeTruthy();
+    expect(onWorkspaceChanged).toHaveBeenCalledTimes(3);
   });
 
-  it('preserves the visible webhook configuration when a delivery refresh fails after enable', async () => {
-    apiMock.listUserSpaceWorkspaceScmWebhookDeliveries
-      .mockResolvedValueOnce(webhookDeliveries)
-      .mockRejectedValueOnce(new Error('refresh failed'));
-
+  it('shows pull now beside cadence for manual, scheduled, active, and paused webhook states', async () => {
     renderWizard(upstreamWorkspace());
 
     await openGitSourceTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable push webhook' }));
+    expect(screen.getByRole('button', { name: 'Pull now' })).toBeTruthy();
 
-    expect(await screen.findByText('secret-once')).toBeTruthy();
-    expect(screen.getByText('webhook:github:main:enabled')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: '300' } });
+    expect(screen.getByRole('button', { name: 'Pull now' })).toBeTruthy();
+
+    cleanup();
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue(enabledWebhookConfig);
+    renderWizard(upstreamWorkspace());
+    await openGitSourceTab();
+    expect(await screen.findByRole('button', { name: 'Pull now' })).toBeTruthy();
+
+    cleanup();
+    apiMock.getUserSpaceWorkspaceScmWebhook.mockResolvedValue({
+      ...enabledWebhookConfig,
+      paused: true,
+    });
+    renderWizard(upstreamWorkspace());
+    await openGitSourceTab();
+    expect(await screen.findByRole('button', { name: 'Pull now' })).toBeTruthy();
+  });
+
+  it('pulls now by reusing the workspace import preview flow', async () => {
+    renderWizard(upstreamWorkspace());
+
+    await openGitSourceTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Pull now' }));
+
     await waitFor(() => {
-      expect(toastApiMock.error).toHaveBeenCalledWith(
-        'Failed to refresh webhook deliveries: refresh failed',
+      expect(apiMock.queueUserSpaceWorkspaceScmPreviewImport).toHaveBeenCalledWith(
+        'workspace-1',
+        expect.objectContaining({ git_branch: 'main' }),
       );
     });
-  });
-
-  it('rejects stale delivery responses after a newer mutation refresh', async () => {
-    const initialDeliveries = deferred<GitWebhookDelivery[]>();
-    const mutationDeliveries = deferred<GitWebhookDelivery[]>();
-
-    apiMock.listUserSpaceWorkspaceScmWebhookDeliveries
-      .mockImplementationOnce(() => initialDeliveries.promise)
-      .mockImplementationOnce(() => mutationDeliveries.promise);
-
-    renderWizard(upstreamWorkspace());
-
-    await openGitSourceTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable push webhook' }));
-
-    await act(async () => {
-      mutationDeliveries.resolve([{ ...webhookDeliveries[0], id: 'delivery-new' }]);
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      initialDeliveries.resolve([{ ...webhookDeliveries[0], id: 'delivery-stale' }]);
-      await Promise.resolve();
-    });
-
-    expect(latestWebhookSettingsProps.deliveries[0]?.id).toBe('delivery-new');
-    expect(screen.queryByText('delivery-id:delivery-stale')).toBeNull();
-    expect(latestWebhookSettingsProps.revealedSecret).toBe('secret-once');
   });
 
   it('rejects stale webhook mutation responses after switching workspaces', async () => {
@@ -429,15 +498,12 @@ describe('WorkspaceScmWizard webhook integration', () => {
     apiMock.getUserSpaceWorkspaceScmWebhook
       .mockResolvedValueOnce(disabledWebhookConfig)
       .mockResolvedValueOnce({ ...disabledWebhookConfig, branch: 'develop' });
-    apiMock.listUserSpaceWorkspaceScmWebhookDeliveries
-      .mockResolvedValueOnce(webhookDeliveries)
-      .mockResolvedValueOnce([{ ...webhookDeliveries[0], id: 'delivery-two' }]);
     apiMock.enableUserSpaceWorkspaceScmWebhook.mockImplementationOnce(() => enableWebhook.promise);
 
     const { rerender } = renderWizard(upstreamWorkspace());
 
     await openGitSourceTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable push webhook' }));
+    fireEvent.change(screen.getByLabelText('Auto-pull interval'), { target: { value: 'webhook' } });
 
     rerender(
       <WorkspaceScmWizard
@@ -458,7 +524,8 @@ describe('WorkspaceScmWizard webhook integration', () => {
 
     expect(screen.queryByText('secret-once')).toBeNull();
     expect(screen.queryByText('webhook:github:main:enabled')).toBeNull();
-    expect(screen.getByText('webhook:github:develop:disabled')).toBeTruthy();
+    expect(screen.queryByText('Push webhook')).toBeNull();
+    expect((screen.getByLabelText('Auto-pull interval') as HTMLSelectElement).value).toBe('3600');
   });
 
   it('clears the one-time secret when the workspace disconnects', async () => {

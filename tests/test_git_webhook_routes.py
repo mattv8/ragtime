@@ -17,6 +17,7 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 
 import ragtime.indexer.routes as indexer_routes
+import ragtime.userspace.routes as userspace_routes
 from ragtime.core.rate_limit import limiter as global_limiter
 from ragtime.git_webhooks.models import (
     GitWebhookConfigResponse,
@@ -260,6 +261,35 @@ class GitWebhookPublicRouteTests(unittest.IsolatedAsyncioTestCase):
         accept_push.assert_not_awaited()
         record_ignored.assert_awaited_once()
 
+    async def test_public_webhook_returns_accepted_for_paused_target_and_records_ignored(self) -> None:
+        body = b'{"ref":"refs/heads/main","after":"abc123"}'
+        request = _request(
+            body,
+            headers={
+                "x-github-event": "push",
+                "x-github-delivery": "delivery-1",
+                "x-hub-signature-256": _signature("secret", body),
+            },
+        )
+        target = _target(branch="main", secret="secret")
+        paused_target = target.model_copy(update={"paused": True})
+        accept_push = mock.AsyncMock()
+        record_ignored = mock.AsyncMock(return_value=_delivery(status=GitWebhookDeliveryStatus.IGNORED))
+        with (
+            mock.patch("ragtime.git_webhooks.routes.git_webhook_repository.resolve_target", mock.AsyncMock(return_value=paused_target)),
+            mock.patch("ragtime.git_webhooks.service.git_webhook_service.accept_push", accept_push),
+            mock.patch("ragtime.git_webhooks.routes.git_webhook_repository.record_ignored", record_ignored),
+        ):
+            response = await receive_git_webhook("opaque-id", request)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(json.loads(bytes(response.body)), {"status": "accepted"})
+        accept_push.assert_not_awaited()
+        record_ignored.assert_awaited_once()
+        ignored_call = record_ignored.await_args
+        assert ignored_call is not None
+        ignored_message = ignored_call.args[2]
+        self.assertIn("paused", ignored_message.lower())
+
     async def test_public_webhook_returns_same_body_for_duplicate_delivery(self) -> None:
         body = b'{"ref":"refs/heads/main","after":"abc123"}'
         request = _request(
@@ -450,6 +480,7 @@ class GitWebhookConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_config_does_not_return_secret(self) -> None:
         config = GitWebhookConfigResponse(
             enabled=True,
+            paused=True,
             webhook_id="opaque-id",
             webhook_url="https://example/webhooks/git/opaque-id",
             provider="github",
@@ -461,6 +492,7 @@ class GitWebhookConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await get_index_webhook("git-index", _request(b"", path="/indexes/git-index/webhook"), _admin())
         self.assertNotIn("secret", response.model_dump())
+        self.assertTrue(response.paused)
 
     async def test_workspace_editor_cannot_enable_scm_webhook(self) -> None:
         user = SimpleNamespace(id="editor-1", role="user")
@@ -502,9 +534,42 @@ class GitWebhookConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, {"status": "disabled"})
         disable_target.assert_called_once_with(target)
 
+    async def test_index_pause_and_resume_routes_return_config_and_wake_target_on_resume(self) -> None:
+        pause_handler = getattr(indexer_routes, "pause_index_webhook", None)
+        resume_handler = getattr(indexer_routes, "resume_index_webhook", None)
+        self.assertIsNotNone(pause_handler)
+        self.assertIsNotNone(resume_handler)
+        paused_config = GitWebhookConfigResponse(
+            enabled=True,
+            paused=True,
+            webhook_id="opaque-id",
+            webhook_url="https://ragtime.example/webhooks/git/opaque-id",
+            provider="github",
+            branch="main",
+        )
+        resumed_config = paused_config.model_copy(update={"paused": False})
+        target = _target(target_type=GitWebhookTargetType.GIT_INDEX, target_id="index-1")
+        with (
+            mock.patch(
+                "ragtime.indexer.routes.repository.get_index_metadata",
+                mock.AsyncMock(return_value=SimpleNamespace(sourceType="git", source="https://git.example/repo.git")),
+            ),
+            mock.patch("ragtime.indexer.routes.git_webhook_repository.pause_index", mock.AsyncMock(return_value=paused_config)),
+            mock.patch("ragtime.indexer.routes.git_webhook_repository.resolve_index_target", mock.AsyncMock(return_value=target)),
+            mock.patch("ragtime.indexer.routes.git_webhook_repository.resume_index", mock.AsyncMock(return_value=resumed_config)),
+            mock.patch("ragtime.git_webhooks.service.git_webhook_service.schedule_target") as schedule_target,
+        ):
+            paused = await cast(Any, pause_handler)("git-index", _request(b"", path="/indexes/git-index/webhook/pause"), _admin())
+            resumed = await cast(Any, resume_handler)("git-index", _request(b"", path="/indexes/git-index/webhook/resume"), _admin())
+        self.assertTrue(paused.enabled)
+        self.assertTrue(paused.paused)
+        self.assertFalse(resumed.paused)
+        self.assertEqual(paused.webhook_url, resumed.webhook_url)
+        schedule_target.assert_called_once_with(target)
+
     async def test_workspace_admin_routes_enforce_owner_with_admin_flag(self) -> None:
         user = SimpleNamespace(id="admin-1", role="admin")
-        config = GitWebhookConfigResponse(enabled=False, webhook_url=None, provider=None, branch=None)
+        config = GitWebhookConfigResponse(enabled=False, paused=False, webhook_url=None, provider=None, branch=None)
         with (
             mock.patch("ragtime.userspace.routes.userspace_service.enforce_workspace_role", mock.AsyncMock()) as enforce_role,
             mock.patch("ragtime.userspace.routes.git_webhook_repository.get_workspace_config", mock.AsyncMock(return_value=config)),
@@ -532,6 +597,61 @@ class GitWebhookConfigurationRouteTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(response, {"status": "disabled"})
         disable_target.assert_called_once_with(target)
+
+    async def test_workspace_pause_and_resume_routes_return_config_and_wake_target_on_resume(self) -> None:
+        pause_handler = getattr(userspace_routes, "pause_workspace_scm_webhook", None)
+        resume_handler = getattr(userspace_routes, "resume_workspace_scm_webhook", None)
+        self.assertIsNotNone(pause_handler)
+        self.assertIsNotNone(resume_handler)
+        user = SimpleNamespace(id="owner-1", role="user")
+        paused_config = GitWebhookConfigResponse(
+            enabled=True,
+            paused=True,
+            webhook_id="opaque-id",
+            webhook_url="https://ragtime.example/webhooks/git/opaque-id",
+            provider="github",
+            branch="main",
+        )
+        resumed_config = paused_config.model_copy(update={"paused": False})
+        target = _target(target_type=GitWebhookTargetType.WORKSPACE_SCM, target_id="workspace-1")
+        with (
+            mock.patch("ragtime.userspace.routes.userspace_service.enforce_workspace_role", mock.AsyncMock()),
+            mock.patch(
+                "ragtime.userspace.routes.get_db",
+                mock.AsyncMock(
+                    return_value=SimpleNamespace(
+                        workspace=SimpleNamespace(
+                            find_unique=mock.AsyncMock(
+                                return_value=SimpleNamespace(
+                                    id="workspace-1",
+                                    scmGitUrl="https://git.example/repo.git",
+                                    scmRemoteRole="upstream",
+                                )
+                            )
+                        )
+                    )
+                ),
+            ),
+            mock.patch("ragtime.userspace.routes.git_webhook_repository.pause_workspace", mock.AsyncMock(return_value=paused_config)),
+            mock.patch("ragtime.userspace.routes.git_webhook_repository.resolve_workspace_target", mock.AsyncMock(return_value=target)),
+            mock.patch("ragtime.userspace.routes.git_webhook_repository.resume_workspace", mock.AsyncMock(return_value=resumed_config)),
+            mock.patch("ragtime.git_webhooks.service.git_webhook_service.schedule_target") as schedule_target,
+        ):
+            paused = await cast(Any, pause_handler)(
+                "workspace-1",
+                _request(b"", path="/indexes/userspace/workspaces/workspace-1/scm/webhook/pause"),
+                user,
+            )
+            resumed = await cast(Any, resume_handler)(
+                "workspace-1",
+                _request(b"", path="/indexes/userspace/workspaces/workspace-1/scm/webhook/resume"),
+                user,
+            )
+        self.assertTrue(paused.enabled)
+        self.assertTrue(paused.paused)
+        self.assertFalse(resumed.paused)
+        self.assertEqual(paused.webhook_url, resumed.webhook_url)
+        schedule_target.assert_called_once_with(target)
 
     async def test_delivery_history_routes_clamp_limit_and_return_rows(self) -> None:
         deliveries = [_delivery()]

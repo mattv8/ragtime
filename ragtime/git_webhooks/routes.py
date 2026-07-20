@@ -71,6 +71,9 @@ async def _accept_matching_events(target: GitWebhookTarget, events: list[GitPush
     configured_branch = (target.branch or "main").strip() or "main"
     for event in events:
         if event.kind == "push" and (event.branch or "") == configured_branch:
+            if target.paused:
+                await git_webhook_repository.record_ignored(target, event, "Webhook push ignored while paused.")
+                return
             await git_webhook_service.accept_push(target, event)
             return
     for event in events:

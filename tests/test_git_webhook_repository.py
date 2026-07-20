@@ -45,9 +45,11 @@ def _target_row(**overrides: Any) -> SimpleNamespace:
         "name": "git-index",
         "webhookId": "wh_123",
         "webhookSecret": None,
+        "webhookPaused": False,
         "webhookCreatedAt": _utcnow(),
         "scmWebhookId": None,
         "scmWebhookSecret": None,
+        "scmWebhookPaused": False,
         "scmWebhookCreatedAt": None,
     }
     values.update(overrides)
@@ -491,12 +493,116 @@ class GitWebhookRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_config_never_returns_encrypted_secret(self) -> None:
         repository = GitWebhookRepository()
-        row = _target_row(webhookSecret="enc::ciphertext")
+        row = _target_row(webhookSecret="enc::ciphertext", webhookPaused=True)
         with mock.patch("ragtime.git_webhooks.repository.get_db", return_value=FakeLookupDb(row)):
             config = await repository.get_index_config("git-index", "https://ragtime.example")
         self.assertTrue(config.enabled)
+        self.assertTrue(config.paused)
         self.assertFalse(hasattr(config, "secret"))
         self.assertNotIn("ciphertext", config.model_dump_json())
+
+    async def test_get_workspace_config_reports_paused_only_when_credentials_exist(self) -> None:
+        repository = GitWebhookRepository()
+        row = _target_row(
+            id="workspace-1",
+            webhookId=None,
+            webhookSecret=None,
+            webhookPaused=False,
+            scmWebhookId="ws_wh_123",
+            scmWebhookSecret="enc::ciphertext",
+            scmWebhookPaused=True,
+            scmProvider="github",
+            scmGitBranch="main",
+        )
+        with mock.patch(
+            "ragtime.git_webhooks.repository.get_db",
+            return_value=FakeLookupDb(row, target_type=GitWebhookTargetType.WORKSPACE_SCM),
+        ):
+            config = await repository.get_workspace_config("workspace-1", "https://ragtime.example")
+        self.assertTrue(config.enabled)
+        self.assertTrue(config.paused)
+        self.assertEqual(config.webhook_url, "https://ragtime.example/webhooks/git/ws_wh_123")
+
+    async def test_pause_index_preserves_credentials_and_skips_pending_rows(self) -> None:
+        repository = GitWebhookRepository()
+        original_secret = "enc::secret"
+        original_created_at = _utcnow()
+        row = _target_row(webhookSecret=original_secret, webhookPaused=False, webhookCreatedAt=original_created_at)
+        tx = FakeTransaction(execute_results=[1, 1])
+        db = FakeLookupDb(row, tx=tx)
+        db.indexmetadata = _LookupDelegate(row)
+        with mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db):
+            config = await repository.pause_index("git-index", "https://ragtime.example")
+        updated = db.indexmetadata.updated[-1]
+        self.assertTrue(config.enabled)
+        self.assertTrue(config.paused)
+        self.assertEqual(config.webhook_url, "https://ragtime.example/webhooks/git/wh_123")
+        self.assertTrue(updated["webhookPaused"])
+        self.assertEqual(row.webhookId, "wh_123")
+        self.assertEqual(row.webhookSecret, original_secret)
+        self.assertEqual(row.webhookCreatedAt, original_created_at)
+        self.assertTrue(any("Webhook paused before processing." in query for query in tx.executed))
+
+    async def test_pause_workspace_preserves_credentials_and_skips_pending_rows(self) -> None:
+        repository = GitWebhookRepository()
+        original_secret = "enc::workspace-secret"
+        original_created_at = _utcnow()
+        row = _target_row(
+            id="workspace-1",
+            webhookId=None,
+            webhookSecret=None,
+            scmWebhookId="ws_wh_123",
+            scmWebhookSecret=original_secret,
+            scmWebhookPaused=False,
+            scmWebhookCreatedAt=original_created_at,
+            scmProvider="github",
+            scmGitBranch="main",
+        )
+        tx = FakeTransaction(execute_results=[1, 1])
+        db = FakeLookupDb(row, target_type=GitWebhookTargetType.WORKSPACE_SCM, tx=tx)
+        db.workspace = _LookupDelegate(row)
+        with mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db):
+            config = await repository.pause_workspace("workspace-1", "https://ragtime.example")
+        updated = db.workspace.updated[-1]
+        self.assertTrue(config.enabled)
+        self.assertTrue(config.paused)
+        self.assertEqual(config.webhook_url, "https://ragtime.example/webhooks/git/ws_wh_123")
+        self.assertTrue(updated["scmWebhookPaused"])
+        self.assertEqual(row.scmWebhookId, "ws_wh_123")
+        self.assertEqual(row.scmWebhookSecret, original_secret)
+        self.assertEqual(row.scmWebhookCreatedAt, original_created_at)
+        self.assertTrue(any("Webhook paused before processing." in query for query in tx.executed))
+
+    async def test_resume_index_clears_paused_without_rotating_credentials(self) -> None:
+        repository = GitWebhookRepository()
+        original_secret = "enc::secret"
+        row = _target_row(webhookSecret=original_secret, webhookPaused=True)
+        tx = FakeTransaction(execute_results=[1])
+        db = FakeLookupDb(row, tx=tx)
+        db.indexmetadata = _LookupDelegate(row)
+        with mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db):
+            config = await repository.resume_index("git-index", "https://ragtime.example")
+        updated = db.indexmetadata.updated[-1]
+        self.assertTrue(config.enabled)
+        self.assertFalse(config.paused)
+        self.assertFalse(updated["webhookPaused"])
+        self.assertEqual(row.webhookSecret, original_secret)
+        self.assertEqual(row.webhookId, "wh_123")
+
+    async def test_rotate_secret_preserves_paused_flag(self) -> None:
+        repository = GitWebhookRepository()
+        row = _target_row(webhookSecret="enc::secret", webhookPaused=True)
+        db = FakeLookupDb(row)
+        db.indexmetadata = _LookupDelegate(row)
+        with (
+            mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db),
+            mock.patch("ragtime.git_webhooks.repository.encrypt_secret", side_effect=lambda value: f"enc::{value}"),
+        ):
+            response = await repository.rotate_index_secret("git-index", "https://ragtime.example")
+        updated = db.indexmetadata.updated[-1]
+        self.assertTrue(response.enabled)
+        self.assertTrue(response.paused)
+        self.assertTrue(updated["webhookPaused"])
 
     async def test_claim_latest_pending_refuses_when_processing_delivery_exists(self) -> None:
         repository = GitWebhookRepository()
@@ -557,7 +663,7 @@ class GitWebhookRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_disable_target_skips_pending_rows(self) -> None:
         repository = GitWebhookRepository()
         tx = FakeTransaction(execute_results=[1, 1])
-        row = _target_row(webhookId="wh_123", webhookSecret="enc::secret")
+        row = _target_row(webhookId="wh_123", webhookSecret="enc::secret", webhookPaused=True)
         db = FakeLookupDb(row, tx=tx)
         db.indexmetadata = _LookupDelegate(row)
         with mock.patch("ragtime.git_webhooks.repository.get_db", return_value=db):
@@ -565,6 +671,7 @@ class GitWebhookRepositoryTests(unittest.IsolatedAsyncioTestCase):
         updated = db.indexmetadata.updated[-1]
         self.assertEqual(updated["webhookId"], None)
         self.assertEqual(updated["webhookSecret"], None)
+        self.assertFalse(updated["webhookPaused"])
         prune_queries = [query for query in tx.executed if query.lstrip().startswith("DELETE FROM git_webhook_deliveries")]
         self.assertEqual(len(prune_queries), 1)
 

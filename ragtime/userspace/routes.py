@@ -994,6 +994,40 @@ async def rotate_workspace_scm_webhook_secret(
     return await git_webhook_repository.rotate_workspace_secret(workspace_id, str(request.base_url).rstrip("/"))
 
 
+@router.post(
+    "/workspaces/{workspace_id}/scm/webhook/pause",
+    response_model=GitWebhookConfigResponse,
+)
+async def pause_workspace_scm_webhook(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+) -> GitWebhookConfigResponse:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    await _ensure_workspace_scm_webhook_eligible(workspace_id)
+    return await git_webhook_repository.pause_workspace(workspace_id, str(request.base_url).rstrip("/"))
+
+
+@router.post(
+    "/workspaces/{workspace_id}/scm/webhook/resume",
+    response_model=GitWebhookConfigResponse,
+)
+async def resume_workspace_scm_webhook(
+    workspace_id: str,
+    request: Request,
+    user: Any = Depends(get_current_user),
+) -> GitWebhookConfigResponse:
+    is_admin = user.role == "admin"
+    await userspace_service.enforce_workspace_role(workspace_id, user.id, "owner", is_admin=is_admin)
+    await _ensure_workspace_scm_webhook_eligible(workspace_id)
+    response = await git_webhook_repository.resume_workspace(workspace_id, str(request.base_url).rstrip("/"))
+    target = await git_webhook_repository.resolve_workspace_target(workspace_id)
+    if target is not None:
+        git_webhook_service.schedule_target(target)
+    return response
+
+
 @router.delete("/workspaces/{workspace_id}/scm/webhook")
 async def disable_workspace_scm_webhook(
     workspace_id: str,

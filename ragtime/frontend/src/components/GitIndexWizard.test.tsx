@@ -1,12 +1,8 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type {
-  GitWebhookConfig,
-  GitWebhookDelivery,
-  GitWebhookEnableResponse,
-  IndexInfo,
-} from '@/types';
+import type { GitWebhookConfig, GitWebhookEnableResponse, IndexInfo } from '@/types';
 
 import { GitIndexWizard } from './GitIndexWizard';
 
@@ -20,9 +16,11 @@ const apiMock = vi.hoisted(() => ({
   cancelJob: vi.fn(),
   getIndexWebhook: vi.fn(),
   enableIndexWebhook: vi.fn(),
+  pauseIndexWebhook: vi.fn(),
+  resumeIndexWebhook: vi.fn(),
   rotateIndexWebhookSecret: vi.fn(),
   disableIndexWebhook: vi.fn(),
-  listIndexWebhookDeliveries: vi.fn(),
+  reindexFromGit: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -52,46 +50,40 @@ vi.mock('./WarningsBanner', () => ({
   WarningsBanner: () => null,
 }));
 
-vi.mock('./ReindexIntervalSelect', () => ({
-  ReindexIntervalSelect: () => <div>reindex interval</div>,
-}));
-
 vi.mock('./GitWebhookSettings', () => ({
   GitWebhookSettings: ({
     config,
     revealedSecret,
-    deliveries,
     disabled,
-    onEnable,
     onRotate,
-    onDisable,
+    onPause,
+    onResume,
   }: {
     config: GitWebhookConfig;
     revealedSecret: string | null;
-    deliveries: GitWebhookDelivery[];
     disabled: boolean;
-    onEnable: () => void;
     onRotate: () => void;
-    onDisable: () => void;
+    onPause: () => void;
+    onResume: () => void;
   }) => (
     <div data-testid="git-webhook-settings-mock">
-      <div>{`webhook:${config.provider}:${config.branch}:${config.enabled ? 'enabled' : 'disabled'}`}</div>
-      <div>{`deliveries:${deliveries.length}`}</div>
-      {deliveries[0] && <div>{`delivery-id:${deliveries[0].id}`}</div>}
+      <div>{`webhook:${config.provider}:${config.branch}:${config.enabled ? 'enabled' : 'disabled'}:${config.paused ? 'paused' : 'active'}`}</div>
       {revealedSecret && <div>{revealedSecret}</div>}
-      {config.enabled ? (
+      {config.enabled && (
         <>
           <button type="button" onClick={onRotate} disabled={disabled}>
             Rotate secret
           </button>
-          <button type="button" onClick={onDisable} disabled={disabled}>
-            Disable webhook
-          </button>
+          {config.paused ? (
+            <button type="button" onClick={onResume} disabled={disabled}>
+              Resume webhook
+            </button>
+          ) : (
+            <button type="button" onClick={onPause} disabled={disabled}>
+              Pause webhook
+            </button>
+          )}
         </>
-      ) : (
-        <button type="button" onClick={onEnable} disabled={disabled}>
-          Enable push webhook
-        </button>
       )}
     </div>
   ),
@@ -168,6 +160,7 @@ const secondGitIndex: IndexInfo = {
 
 const disabledWebhookConfig: GitWebhookConfig = {
   enabled: false,
+  paused: false,
   webhook_url: null,
   provider: 'github',
   branch: 'main',
@@ -176,6 +169,7 @@ const disabledWebhookConfig: GitWebhookConfig = {
 
 const enabledWebhookConfig: GitWebhookConfig = {
   enabled: true,
+  paused: false,
   webhook_url: 'https://ragtime.example/webhooks/git/repo',
   provider: 'github',
   branch: 'main',
@@ -186,20 +180,6 @@ const enabledWebhookWithSecret: GitWebhookEnableResponse = {
   ...enabledWebhookConfig,
   secret: 'secret-once',
 };
-
-const webhookDeliveries: GitWebhookDelivery[] = [
-  {
-    id: 'delivery-1',
-    event_name: 'push',
-    branch: 'main',
-    head_commit: 'abc123',
-    status: 'completed',
-    message: 'done',
-    received_at: '2026-07-16T12:00:00Z',
-    started_at: '2026-07-16T12:00:01Z',
-    completed_at: '2026-07-16T12:00:02Z',
-  },
-];
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -239,12 +219,14 @@ beforeEach(() => {
   });
   apiMock.getIndexWebhook.mockResolvedValue(disabledWebhookConfig);
   apiMock.enableIndexWebhook.mockResolvedValue(enabledWebhookWithSecret);
+  apiMock.pauseIndexWebhook.mockResolvedValue({ ...enabledWebhookConfig, paused: true });
+  apiMock.resumeIndexWebhook.mockResolvedValue(enabledWebhookConfig);
   apiMock.rotateIndexWebhookSecret.mockResolvedValue({
     ...enabledWebhookConfig,
     secret: 'rotated-secret',
   });
   apiMock.disableIndexWebhook.mockResolvedValue(undefined);
-  apiMock.listIndexWebhookDeliveries.mockResolvedValue(webhookDeliveries);
+  apiMock.reindexFromGit.mockResolvedValue(startingJob);
 });
 
 afterEach(() => {
@@ -384,22 +366,21 @@ describe('GitIndexWizard', () => {
   });
 
   it('loads webhook configuration in edit mode and reveals a new secret after enable', async () => {
+    const user = userEvent.setup();
     apiMock.getIndexWebhook.mockResolvedValue(disabledWebhookConfig);
 
     render(<GitIndexWizard editIndex={existingGitIndex} />);
 
     await waitFor(() => {
       expect(apiMock.getIndexWebhook).toHaveBeenCalledWith('repo');
-      expect(apiMock.listIndexWebhookDeliveries).toHaveBeenCalledWith('repo', 10);
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable push webhook' }));
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
 
     await waitFor(() => {
       expect(apiMock.enableIndexWebhook).toHaveBeenCalledWith('repo');
     });
     expect(await screen.findByText('secret-once')).toBeTruthy();
-    expect(apiMock.listIndexWebhookDeliveries).toHaveBeenCalledTimes(2);
   });
 
   it('rotates the webhook secret in edit mode and refreshes deliveries', async () => {
@@ -413,79 +394,92 @@ describe('GitIndexWizard', () => {
       expect(apiMock.rotateIndexWebhookSecret).toHaveBeenCalledWith('repo');
     });
     expect(await screen.findByText('rotated-secret')).toBeTruthy();
-    expect(apiMock.listIndexWebhookDeliveries).toHaveBeenCalledTimes(2);
   });
 
-  it('disables the webhook in edit mode and refreshes deliveries', async () => {
+  it('pauses and resumes the webhook in edit mode without leaving webhook cadence', async () => {
     apiMock.getIndexWebhook.mockResolvedValue(enabledWebhookConfig);
 
     render(<GitIndexWizard editIndex={existingGitIndex} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Disable webhook' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause webhook' }));
 
     await waitFor(() => {
-      expect(apiMock.disableIndexWebhook).toHaveBeenCalledWith('repo');
+      expect(apiMock.pauseIndexWebhook).toHaveBeenCalledWith('repo');
     });
-    expect(await screen.findByRole('button', { name: 'Enable push webhook' })).toBeTruthy();
-    expect(apiMock.listIndexWebhookDeliveries).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe(
+        'webhook',
+      );
+    });
+    expect(screen.getByText('webhook:github:main:enabled:paused')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume webhook' }));
+    await waitFor(() => {
+      expect(apiMock.resumeIndexWebhook).toHaveBeenCalledWith('repo');
+    });
+    expect(screen.getByText('webhook:github:main:enabled:active')).toBeTruthy();
   });
 
-  it('preserves the visible webhook configuration when a delivery refresh fails after enable', async () => {
-    apiMock.getIndexWebhook.mockResolvedValue(disabledWebhookConfig);
-    apiMock.listIndexWebhookDeliveries
-      .mockResolvedValueOnce(webhookDeliveries)
-      .mockRejectedValueOnce(new Error('refresh failed'));
-
+  it('shows pull now beside cadence for manual, scheduled, active, and paused webhook states', async () => {
     render(<GitIndexWizard editIndex={existingGitIndex} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable push webhook' }));
+    const scheduledWebhookIndex: IndexInfo = {
+      ...existingGitIndex,
+      config_snapshot: {
+        ...existingGitIndex.config_snapshot!,
+        reindex_interval_hours: 24,
+        reindex_start_minute: 120,
+        reindex_timezone: 'UTC',
+      },
+    };
+    const { rerender, container } = render(<GitIndexWizard editIndex={existingGitIndex} />);
 
-    expect(await screen.findByText('secret-once')).toBeTruthy();
-    expect(screen.getByText('webhook:github:main:enabled')).toBeTruthy();
-    expect(screen.getByText(/refresh failed/i)).toBeTruthy();
+    await within(container).findByRole('button', { name: 'Pull now' });
+    expect(within(container).getByRole('button', { name: 'Pull now' })).toBeTruthy();
+
+    rerender(<GitIndexWizard editIndex={scheduledWebhookIndex} />);
+    expect(await within(container).findByRole('button', { name: 'Pull now' })).toBeTruthy();
+
+    cleanup();
+    apiMock.getIndexWebhook.mockResolvedValue(enabledWebhookConfig);
+    const activeRender = render(<GitIndexWizard editIndex={existingGitIndex} />);
+    expect(
+      await within(activeRender.container).findByRole('button', { name: 'Pull now' }),
+    ).toBeTruthy();
+
+    cleanup();
+    apiMock.getIndexWebhook.mockResolvedValue({ ...enabledWebhookConfig, paused: true });
+    const pausedRender = render(<GitIndexWizard editIndex={existingGitIndex} />);
+    expect(
+      await within(pausedRender.container).findByRole('button', { name: 'Pull now' }),
+    ).toBeTruthy();
   });
 
-  it('keeps the latest webhook deliveries when a stale edit load resolves after a mutation refresh', async () => {
-    const initialDeliveries = deferred<GitWebhookDelivery[]>();
-    const mutationDeliveries = deferred<GitWebhookDelivery[]>();
+  it('pulls now by reusing git reindex and moves to indexing progress', async () => {
+    const onJobCreated = vi.fn();
+    render(<GitIndexWizard editIndex={existingGitIndex} onJobCreated={onJobCreated} />);
 
-    apiMock.getIndexWebhook.mockResolvedValue(disabledWebhookConfig);
-    apiMock.listIndexWebhookDeliveries
-      .mockImplementationOnce(() => initialDeliveries.promise)
-      .mockImplementationOnce(() => mutationDeliveries.promise);
+    fireEvent.click(await screen.findByRole('button', { name: 'Pull now' }));
 
-    render(<GitIndexWizard editIndex={existingGitIndex} />);
-
-    await screen.findByRole('button', { name: 'Enable push webhook' });
-    fireEvent.click(screen.getByRole('button', { name: 'Enable push webhook' }));
-
-    mutationDeliveries.resolve([{ ...webhookDeliveries[0], id: 'delivery-new' }]);
-    expect(await screen.findByText('delivery-id:delivery-new')).toBeTruthy();
-
-    initialDeliveries.resolve([{ ...webhookDeliveries[0], id: 'delivery-stale' }]);
-
-    await act(async () => {
-      await Promise.resolve();
+    await waitFor(() => {
+      expect(apiMock.reindexFromGit).toHaveBeenCalledWith('repo', undefined);
     });
-
-    expect(screen.queryByText('delivery-id:delivery-stale')).toBeNull();
-    expect(screen.getByText('delivery-id:delivery-new')).toBeTruthy();
+    expect(onJobCreated).toHaveBeenCalledTimes(1);
+    expect((await screen.findAllByText('Cloning repository')).length).toBeGreaterThan(0);
   });
 
   it('invalidates an in-flight webhook mutation when edit mode switches to a different index', async () => {
+    const user = userEvent.setup();
     const enableWebhook = deferred<GitWebhookEnableResponse>();
     apiMock.getIndexWebhook
       .mockResolvedValueOnce(disabledWebhookConfig)
       .mockResolvedValueOnce({ ...disabledWebhookConfig, branch: 'develop' });
-    apiMock.listIndexWebhookDeliveries
-      .mockResolvedValueOnce(webhookDeliveries)
-      .mockResolvedValueOnce([{ ...webhookDeliveries[0], id: 'delivery-two' }]);
     apiMock.enableIndexWebhook.mockImplementationOnce(() => enableWebhook.promise);
 
     const { rerender } = render(<GitIndexWizard editIndex={existingGitIndex} />);
 
-    await screen.findByRole('button', { name: 'Enable push webhook' });
-    fireEvent.click(screen.getByRole('button', { name: 'Enable push webhook' }));
+    await screen.findByRole('combobox', { name: 'Auto Re-index Interval' });
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
 
     rerender(<GitIndexWizard editIndex={secondGitIndex} />);
     await waitFor(() => expect(apiMock.getIndexWebhook).toHaveBeenCalledWith('repo-two'));
@@ -497,7 +491,8 @@ describe('GitIndexWizard', () => {
 
     expect(screen.queryByText('secret-once')).toBeNull();
     expect(screen.queryByText('webhook:github:main:enabled')).toBeNull();
-    expect(screen.getByText('webhook:github:develop:disabled')).toBeTruthy();
+    expect(screen.queryByTestId('git-webhook-settings-mock')).toBeNull();
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe('0');
   });
 
   it('shows an initial webhook load error even when no config is available yet', async () => {
@@ -508,31 +503,50 @@ describe('GitIndexWizard', () => {
     expect(await screen.findByText(/failed to load webhook settings: load failed/i)).toBeTruthy();
   });
 
-  it('enables a requested webhook after optimistic index metadata exists', async () => {
+  it('keeps webhook delivery selected in the create input step before analysis', async () => {
+    const user = userEvent.setup();
+
+    render(<GitIndexWizard onJobCreated={vi.fn()} />);
+
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        'https://github.com/user/repo.git or https://your-git-server.com/user/repo.git',
+      ),
+      { target: { value: 'https://github.com/example/repo.git' } },
+    );
+
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
+
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe(
+      'webhook',
+    );
+  });
+
+  it('selects webhook delivery and enables it after creating a new index', async () => {
+    const user = userEvent.setup();
     render(<GitIndexWizard onJobCreated={vi.fn()} />);
 
     await completeAnalysis();
 
-    fireEvent.click(
-      screen.getByRole('checkbox', { name: 'Configure a push webhook after creation' }),
-    );
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
     fireEvent.click(screen.getByRole('button', { name: 'Start Indexing' }));
 
     await waitFor(() => expect(apiMock.indexFromGit).toHaveBeenCalled());
+    expect(apiMock.indexFromGit.mock.calls[0][0].config.reindex_interval_hours).toBe(0);
+    expect(apiMock.indexFromGit.mock.calls[0][0].config.reindex_start_minute).toBeNull();
     expect(apiMock.enableIndexWebhook).toHaveBeenCalledWith('repo');
     expect(await screen.findByText('secret-once')).toBeTruthy();
   });
 
   it('keeps the indexing job active when webhook setup fails after creation', async () => {
+    const user = userEvent.setup();
     apiMock.enableIndexWebhook.mockRejectedValue(new Error('webhook failed'));
 
     render(<GitIndexWizard onJobCreated={vi.fn()} />);
 
     await completeAnalysis();
 
-    fireEvent.click(
-      screen.getByRole('checkbox', { name: 'Configure a push webhook after creation' }),
-    );
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
     fireEvent.click(screen.getByRole('button', { name: 'Start Indexing' }));
 
     await waitFor(() => {
@@ -545,14 +559,13 @@ describe('GitIndexWizard', () => {
   });
 
   it('shows create-mode webhook setup errors without hiding a successful indexing state', async () => {
+    const user = userEvent.setup();
     apiMock.enableIndexWebhook.mockRejectedValue(new Error('setup failed'));
 
     render(<GitIndexWizard onJobCreated={vi.fn()} />);
 
     await completeAnalysis();
-    fireEvent.click(
-      screen.getByRole('checkbox', { name: 'Configure a push webhook after creation' }),
-    );
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), 'webhook');
     fireEvent.click(screen.getByRole('button', { name: 'Start Indexing' }));
 
     expect(await screen.findByText(/webhook setup failed: setup failed/i)).toBeTruthy();
@@ -561,19 +574,17 @@ describe('GitIndexWizard', () => {
     expect(screen.getAllByText('Cloning repository').length).toBeGreaterThan(0);
   });
 
-  it('uses an explicitly associated full-width create-mode webhook checkbox section', async () => {
-    render(<GitIndexWizard onJobCreated={vi.fn()} />);
+  it('confirms and disables an existing index webhook before selecting manual re-indexing', async () => {
+    const user = userEvent.setup();
+    apiMock.getIndexWebhook.mockResolvedValue(enabledWebhookConfig);
 
-    await completeAnalysis();
+    render(<GitIndexWizard editIndex={existingGitIndex} />);
 
-    const checkbox = screen.getByRole('checkbox', {
-      name: 'Configure a push webhook after creation',
-    });
-    const section = checkbox.closest('.git-index-webhook-checkbox-section');
-    const label = screen.getByText('Configure a push webhook after creation').closest('label');
+    await screen.findByRole('combobox', { name: 'Auto Re-index Interval' });
+    await user.selectOptions(screen.getByLabelText('Auto Re-index Interval'), '0');
+    await user.click(screen.getByRole('button', { name: 'Disable webhook and continue' }));
 
-    expect(section).toBeTruthy();
-    expect(checkbox.getAttribute('id')).toBe('git-index-webhook-after-create');
-    expect(label?.getAttribute('for')).toBe('git-index-webhook-after-create');
+    await waitFor(() => expect(apiMock.disableIndexWebhook).toHaveBeenCalledWith('repo'));
+    expect((screen.getByLabelText('Auto Re-index Interval') as HTMLSelectElement).value).toBe('0');
   });
 });

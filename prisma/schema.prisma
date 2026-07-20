@@ -141,6 +141,7 @@ model IndexMetadata {
   gitToken   String? @map("git_token") // Token for private repo access (stored for re-indexing)
   webhookId  String? @unique @map("webhook_id")
   webhookSecret String? @map("webhook_secret")
+  webhookPaused Boolean @default(false) @map("webhook_paused")
   webhookCreatedAt DateTime? @map("webhook_created_at")
 
   // OCR settings (per-index)
@@ -1409,6 +1410,7 @@ model Workspace {
   scmToken                   String?                     @map("scm_token")
   scmWebhookId               String?                     @unique @map("scm_webhook_id")
   scmWebhookSecret           String?                     @map("scm_webhook_secret")
+  scmWebhookPaused           Boolean                     @default(false) @map("scm_webhook_paused")
   scmWebhookCreatedAt        DateTime?                   @map("scm_webhook_created_at")
   scmConnectedAt             DateTime?                   @map("scm_connected_at")
   scmLastSyncAt              DateTime?                   @map("scm_last_sync_at")

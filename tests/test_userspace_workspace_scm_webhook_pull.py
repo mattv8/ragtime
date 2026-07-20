@@ -25,6 +25,7 @@ def _workspace(**overrides: Any) -> SimpleNamespace:
         "scmRemoteRole": "upstream",
         "scmAutoPullEnabled": True,
         "scmSyncPaused": False,
+        "scmWebhookPaused": False,
         "ownerUserId": "owner-1",
         "scmLastRemoteCommitHash": "remote-1",
     }
@@ -115,6 +116,29 @@ class WorkspaceScmWebhookPullTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outcome.state, "paused")
         preview_mock.assert_not_called()
+
+    async def test_webhook_pull_ignores_webhook_pause_state_and_still_imports(self) -> None:
+        workspace = _workspace(scmWebhookPaused=True, scmAutoPullEnabled=False)
+        service = UserSpaceService()
+
+        with (
+            mock.patch.object(
+                service,
+                "_build_workspace_scm_preview",
+                new=mock.AsyncMock(return_value=(_preview("safe"), "fingerprint")),
+            ) as preview_mock,
+            mock.patch.object(
+                service,
+                "import_workspace_from_scm",
+                new=mock.AsyncMock(return_value=_sync_response()),
+            ) as import_mock,
+            mock.patch("ragtime.userspace.service.get_db", return_value=_workspace_db(workspace)),
+        ):
+            outcome = await service.run_workspace_scm_webhook_pull_locked("workspace-1")
+
+        self.assertEqual(outcome.state, "imported")
+        preview_mock.assert_awaited_once()
+        import_mock.assert_awaited_once()
 
     async def test_webhook_pull_returns_not_upstream_for_publish_remote(self) -> None:
         service = UserSpaceService()
