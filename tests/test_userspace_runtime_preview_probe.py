@@ -4,6 +4,7 @@ import asyncio
 import sys
 import types
 import unittest
+from unittest import mock
 
 if "ragtime.rag.prompts" not in sys.modules:
     fake_rag_package = types.ModuleType("ragtime.rag")
@@ -13,6 +14,7 @@ if "ragtime.rag.prompts" not in sys.modules:
     sys.modules.setdefault("ragtime.rag", fake_rag_package)
     sys.modules["ragtime.rag.prompts"] = fake_prompts_module
 
+from ragtime.config import settings
 from ragtime.userspace.runtime_service import UserSpaceRuntimeService
 
 
@@ -91,6 +93,28 @@ class RuntimePreviewProbeCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first)
         self.assertTrue(second)
         self.assertEqual(len(service.calls), 1)
+
+
+class RuntimePreviewDomainTests(unittest.TestCase):
+    def test_derives_preview_domain_from_external_url_before_any_launch(self) -> None:
+        with (
+            mock.patch.object(settings, "userspace_preview_base_domain", ""),
+            mock.patch.object(settings, "external_base_url", "https://ragtime.hammerton.com"),
+            mock.patch.object(settings, "debug_mode", False),
+        ):
+            service = UserSpaceRuntimeService()
+
+            self.assertEqual(service.get_preview_base_domains(), {"ragtime.hammerton.com"})
+
+    def test_prefers_explicit_preview_domain_over_external_url(self) -> None:
+        with (
+            mock.patch.object(settings, "userspace_preview_base_domain", "preview.example.com"),
+            mock.patch.object(settings, "external_base_url", "https://ragtime.hammerton.com"),
+            mock.patch.object(settings, "debug_mode", False),
+        ):
+            service = UserSpaceRuntimeService()
+
+            self.assertEqual(service.get_preview_base_domains(), {"preview.example.com"})
 
 
 if __name__ == "__main__":

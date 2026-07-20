@@ -128,6 +128,12 @@ class UserspaceAuthPrimitiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(RateLimitExceeded, _PREVIEW_HOST.preview_host_app.exception_handlers)
         self.assertFalse(any(getattr(middleware.cls, "__name__", "") == "SlowAPIMiddleware" for middleware in _PREVIEW_HOST.preview_host_app.user_middleware))
 
+    def test_preview_host_dispatch_excludes_the_canonical_host(self) -> None:
+        runtime_service = SimpleNamespace(get_preview_base_domains=lambda: {"ragtime.hammerton.com"})
+        with mock.patch.object(_PREVIEW_HOST, "_runtime_service", return_value=runtime_service):
+            self.assertTrue(_PREVIEW_HOST.is_preview_host("761f21da-4fc5-4946-b004-a2a374a26c65.ragtime.hammerton.com"))
+            self.assertFalse(_PREVIEW_HOST.is_preview_host("ragtime.hammerton.com"))
+
     def test_workspace_user_fingerprint_is_stable_and_workspace_scoped(self) -> None:
         first = build_workspace_user_fingerprint(user_id="user-1", workspace_id="workspace-a", workspace_fingerprint_namespace="portable-a")
         second = build_workspace_user_fingerprint(user_id="user-1", workspace_id="workspace-a", workspace_fingerprint_namespace="portable-a")

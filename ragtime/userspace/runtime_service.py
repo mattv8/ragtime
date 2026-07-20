@@ -290,6 +290,10 @@ class UserSpaceRuntimeService:
         configured = self._configured_preview_base_domain()
         if configured:
             domains.add(configured)
+        elif external_host := self._normalize_preview_base_domain_candidate(
+            getattr(settings, "external_base_url", ""),
+        ):
+            domains.add(external_host)
         if bool(getattr(settings, "debug_mode", False)):
             domains.add(_DEFAULT_USERSPACE_PREVIEW_BASE_DOMAIN)
         return domains
