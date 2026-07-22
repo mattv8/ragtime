@@ -93,6 +93,38 @@ class _FakePdmDocument:
         return sha256(b"metadata").hexdigest()
 
 
+class _HashBatchingFakeDb(_FakeDb):
+    def __init__(self, stored_hashes: dict[int, str]) -> None:
+        super().__init__()
+        self.stored_hashes = stored_hashes
+
+    async def query_raw(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.query_raw_calls.append((query, *params))
+
+        if "metadata_hash" not in query:
+            return []
+
+        if len(params) >= 3:
+            document_ids = [int(doc_id) for doc_id in params[1:]]
+        elif len(params) == 2 and isinstance(params[1], (list, tuple, set)):
+            document_ids = [int(doc_id) for doc_id in params[1]]
+        elif len(params) == 2:
+            document_ids = [int(params[1])]
+        else:
+            document_ids = []
+
+        return [{"document_id": doc_id, "metadata_hash": self.stored_hashes[doc_id]} for doc_id in document_ids if doc_id in self.stored_hashes]
+
+
+class _FakeHashBatchDoc:
+    def __init__(self, document_id: int, metadata_hash: str) -> None:
+        self.document_id = document_id
+        self._metadata_hash = metadata_hash
+
+    def compute_metadata_hash(self) -> str:
+        return self._metadata_hash
+
+
 class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
     """Verify that PDM cleanup methods pass index_name as a bound parameter."""
 
@@ -281,3 +313,71 @@ class PdmServiceSqlInjectionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(captured.get("extra_where"), "document_type = 'SLDPRT'")
+
+    async def test_process_index_batches_stored_hash_reads_per_extraction_batch(self) -> None:
+        """_process_index should fetch stored hashes once per extracted batch."""
+
+        class _FakeEmbeddings:
+            def embed_documents(self, _texts: list[str]) -> list[list[float]]:
+                return [[0.1, 0.2, 0.3]]
+
+        class _FakeSettings:
+            embedding_dimension = 3
+            embedding_config_hash = "config-hash"
+
+            def get_embedding_config_hash(self) -> str:
+                return "config-hash"
+
+        async def _fake_extract_documents_batched(**_kwargs: Any):
+            yield [
+                _FakeHashBatchDoc(101, "same-hash"),
+                _FakeHashBatchDoc(202, "new-hash"),
+            ]
+
+        service = self._make_service()
+        fake_db = _HashBatchingFakeDb({101: "same-hash", 202: "old-hash"})
+        processed_docs: list[list[int]] = []
+        job = mock.Mock(
+            id="job-1",
+            index_name="pdm_batch_test",
+            status=None,
+            started_at=None,
+            current_step="",
+            total_documents=0,
+            skipped_documents=0,
+            processed_documents=0,
+            extracted_documents=0,
+            total_chunks=0,
+            processed_chunks=0,
+            completed_at=None,
+            error_message=None,
+        )
+
+        async def _record_process_batch(_job: Any, documents: list[Any], _embeddings: Any) -> None:
+            processed_docs.append([doc.document_id for doc in documents])
+
+        with (
+            mock.patch("ragtime.indexer.pdm_service.get_db", return_value=fake_db),
+            mock.patch.object(service, "_ensure_pgvector", mock.AsyncMock(return_value=True)),
+            mock.patch("ragtime.core.app_settings.get_app_settings", mock.AsyncMock(return_value={})),
+            mock.patch(
+                "ragtime.indexer.pdm_service.repository.get_settings",
+                mock.AsyncMock(return_value=_FakeSettings()),
+            ),
+            mock.patch.object(service, "_get_embeddings", mock.AsyncMock(return_value=_FakeEmbeddings())),
+            mock.patch.object(service, "_ensure_embedding_column", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "_count_documents", mock.AsyncMock(return_value=2)),
+            mock.patch.object(service, "_get_variable_map", mock.AsyncMock(return_value={})),
+            mock.patch.object(service, "extract_documents_batched", side_effect=_fake_extract_documents_batched),
+            mock.patch.object(service, "_process_batch", side_effect=_record_process_batch),
+            mock.patch.object(service, "_update_job", mock.AsyncMock()),
+        ):
+            await service._process_index(job, {"host": "pdm.example", "database": "vault", "user": "u", "password": "p"}, False)
+
+        self.assertEqual(processed_docs, [[202]])
+        self.assertEqual(job.skipped_documents, 1)
+        self.assertEqual(job.processed_documents, 1)
+        self.assertEqual(len(fake_db.query_raw_calls), 1)
+        query_call = fake_db.query_raw_calls[0]
+        self.assertEqual(query_call[1], "pdm_batch_test")
+        self.assertGreater(len(query_call), 3)

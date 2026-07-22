@@ -2746,7 +2746,23 @@ const USERSPACE_WRITE_TOOL_NAMES = new Set([
 const USERSPACE_STRUCTURED_JSON_TOOL_NAMES = new Set([
   'assay_userspace_code',
   'discover_userspace_primitives',
+  'validate_userspace_code',
 ]);
+const USERSPACE_STRUCTURED_JSON_TITLES: Record<string, string> = {
+  assay_userspace_code: 'Code assay',
+  discover_userspace_primitives: 'Primitive discovery',
+  validate_userspace_code: 'Code validation',
+};
+const VALIDATION_DIAGNOSTIC_LABELS: Record<string, string> = {
+  entrypoint: 'Entrypoint',
+  live_data: 'Live data',
+  imports: 'Imports',
+  typescript: 'TypeScript',
+  runtime: 'Runtime',
+  policy: 'Policy',
+  other: 'Other',
+};
+const VALIDATION_VISIBLE_ITEM_LIMIT = 3;
 const USERSPACE_DIFFABLE_TOOL_NAMES = new Set(['upsert_userspace_file', 'patch_userspace_file']);
 const USERSPACE_WRITE_DIFF_CACHE_MAX_ENTRIES = 100;
 
@@ -3112,6 +3128,10 @@ function formatStructuredSummaryValue(value: unknown): string {
   return '';
 }
 
+function getUserspaceStructuredJsonTitle(toolName: string): string {
+  return USERSPACE_STRUCTURED_JSON_TITLES[toolName] || 'Structured result';
+}
+
 function parseJsonRecordValue(output: string): Record<string, unknown> | null {
   const normalized = output.replace(/^\uFEFF/, '').trim();
   if (!normalized) return null;
@@ -3211,11 +3231,23 @@ function parseUserspaceStructuredJsonToolResult(
         (structure?.has_runtime_entrypoint ? 'configured' : 'missing'),
     );
     pushRow('Live data', workspace?.live_data_contract ? 'available' : null);
+  } else if (toolName === 'validate_userspace_code') {
+    const validation = asJsonRecord(parsed.validation);
+    const validatedFiles = Array.isArray(validation?.validated_files)
+      ? validation.validated_files.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
+      : [];
+    pushRow('Validated files', validatedFiles.length);
+    pushRow('Errors', validation?.error_count);
+    pushRow('Runtime errors', validation?.runtime_error_count);
+    pushRow('Runtime warnings', validation?.runtime_warning_count);
+    pushRow('Contract errors', validation?.contract_error_count);
   }
 
   return {
     toolName,
-    title: toolName === 'discover_userspace_primitives' ? 'Primitive discovery' : 'Code assay',
+    title: getUserspaceStructuredJsonTitle(toolName),
     message,
     summaryRows: rows,
     formattedJson: JSON.stringify(parsed, null, 2),
@@ -6769,9 +6801,9 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
       }
 
       case 'assay_userspace_code':
+      case 'validate_userspace_code':
       case 'discover_userspace_primitives': {
-        const title =
-          toolCall.tool === 'discover_userspace_primitives' ? 'Primitive discovery' : 'Code assay';
+        const title = getUserspaceStructuredJsonTitle(toolCall.tool);
         if (!userspaceStructuredJsonResult) {
           const fallbackMessage = effectiveOutput
             ? 'Tool output was not valid JSON, so it could not be formatted.'
@@ -6807,6 +6839,8 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
           );
         }
         const payload = userspaceStructuredJsonResult.payload;
+        const validationPayload = asJsonRecord(payload.validation);
+        const diagnosticsPayload = asJsonRecord(payload.diagnostics);
         const capabilities = asJsonRecord(payload.capabilities);
         const endpoints = asJsonRecord(capabilities?.endpoints);
         const objectBuckets = Array.isArray(capabilities?.object_buckets)
@@ -6830,6 +6864,115 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
               .map(asJsonRecord)
               .filter((item): item is Record<string, unknown> => Boolean(item))
           : [];
+        const validationStatusOk = validationPayload?.ok === true;
+        const validationStatusText = validationStatusOk
+          ? 'Validation passed.'
+          : 'Validation failed.';
+        const validationMessageDetail = userspaceStructuredJsonResult.message.startsWith(
+          validationStatusText,
+        )
+          ? userspaceStructuredJsonResult.message.slice(validationStatusText.length).trim()
+          : userspaceStructuredJsonResult.message;
+        const validationRuntimeProbe = asJsonRecord(validationPayload?.runtime_probe);
+        const validatedFiles = Array.isArray(validationPayload?.validated_files)
+          ? validationPayload.validated_files.filter(
+              (item): item is string => typeof item === 'string' && item.trim().length > 0,
+            )
+          : [];
+        const validationDiagnosticGroups =
+          toolCall.tool === 'validate_userspace_code' && diagnosticsPayload
+            ? Object.entries(VALIDATION_DIAGNOSTIC_LABELS)
+                .map(([key, label]) => ({
+                  key,
+                  label,
+                  items: Array.isArray(diagnosticsPayload[key])
+                    ? diagnosticsPayload[key].filter(
+                        (item): item is string =>
+                          typeof item === 'string' && item.trim().length > 0,
+                      )
+                    : [],
+                }))
+                .filter((group) => group.items.length > 0)
+            : [];
+        const visibleValidatedFiles = validatedFiles.slice(0, VALIDATION_VISIBLE_ITEM_LIMIT);
+        const hiddenValidatedFileCount = Math.max(
+          0,
+          validatedFiles.length - visibleValidatedFiles.length,
+        );
+        const visibleRuntimeProbeRows = validationRuntimeProbe
+          ? [
+              {
+                label: 'Attempted',
+                value:
+                  typeof validationRuntimeProbe.attempted === 'boolean'
+                    ? validationRuntimeProbe.attempted
+                      ? 'Yes'
+                      : 'No'
+                    : null,
+              },
+              {
+                label: 'Devserver',
+                value:
+                  typeof validationRuntimeProbe.devserver_running === 'boolean'
+                    ? validationRuntimeProbe.devserver_running
+                      ? 'Running'
+                      : 'Not running'
+                    : null,
+              },
+              {
+                label: 'Preview status',
+                value:
+                  typeof validationRuntimeProbe.preview_status_code === 'number'
+                    ? String(validationRuntimeProbe.preview_status_code)
+                    : null,
+              },
+              {
+                label: 'Directory listing',
+                value:
+                  typeof validationRuntimeProbe.directory_listing_detected === 'boolean'
+                    ? validationRuntimeProbe.directory_listing_detected
+                      ? 'Detected'
+                      : 'Not detected'
+                    : null,
+              },
+              {
+                label: 'Blank screen',
+                value:
+                  typeof validationRuntimeProbe.blank_screen_detected === 'boolean'
+                    ? validationRuntimeProbe.blank_screen_detected
+                      ? 'Detected'
+                      : 'Not detected'
+                    : null,
+              },
+              {
+                label: 'Error page',
+                value:
+                  typeof validationRuntimeProbe.error_page_detected === 'boolean'
+                    ? validationRuntimeProbe.error_page_detected
+                      ? 'Detected'
+                      : 'Not detected'
+                    : null,
+              },
+              {
+                label: 'Console errors',
+                value:
+                  typeof validationRuntimeProbe.console_error_count === 'number'
+                    ? String(validationRuntimeProbe.console_error_count)
+                    : null,
+              },
+            ].filter(
+              (row): row is { label: string; value: string } => typeof row.value === 'string',
+            )
+          : [];
+        const visibleDiagnosticGroups = validationDiagnosticGroups.map((group) => ({
+          ...group,
+          visibleItems: group.items.slice(0, VALIDATION_VISIBLE_ITEM_LIMIT),
+          hiddenCount: Math.max(0, group.items.length - VALIDATION_VISIBLE_ITEM_LIMIT),
+        }));
+        const actionRequired =
+          typeof payload.action_required === 'string' && payload.action_required.trim().length > 0
+            ? payload.action_required.trim()
+            : null;
         return (
           <div className="tool-call-section tool-call-userspace-json-section">
             <div className="tool-call-section-header">
@@ -6854,11 +6997,12 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                 )}
               </button>
             </div>
-            {userspaceStructuredJsonResult.message && (
-              <div className="tool-call-userspace-json-message">
-                {userspaceStructuredJsonResult.message}
-              </div>
-            )}
+            {toolCall.tool !== 'validate_userspace_code' &&
+              userspaceStructuredJsonResult.message && (
+                <div className="tool-call-userspace-json-message">
+                  {userspaceStructuredJsonResult.message}
+                </div>
+              )}
             {userspaceStructuredJsonResult.summaryRows.length > 0 && (
               <dl className="tool-call-userspace-json-summary">
                 {userspaceStructuredJsonResult.summaryRows.map((row) => (
@@ -6871,6 +7015,88 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
                   </div>
                 ))}
               </dl>
+            )}
+            {toolCall.tool === 'validate_userspace_code' && (
+              <>
+                <div className="tool-call-userspace-json-message">
+                  <strong
+                    className={
+                      validationStatusOk
+                        ? 'tool-call-userspace-json-status-pass'
+                        : 'tool-call-userspace-json-status-fail'
+                    }
+                  >
+                    {validationStatusText}
+                  </strong>
+                </div>
+                {validationMessageDetail && (
+                  <div className="tool-call-userspace-json-message">{validationMessageDetail}</div>
+                )}
+                {visibleDiagnosticGroups.map((group) => (
+                  <div className="tool-call-userspace-json-group" key={group.key}>
+                    <div className="tool-call-userspace-json-group-title">{group.label}</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {group.visibleItems.map((item, index) => (
+                        <li key={`${group.key}:${index}`}>
+                          <span title={item}>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {group.hiddenCount > 0 && (
+                      <div className="tool-call-userspace-json-message">
+                        {group.hiddenCount} more omitted.
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {validatedFiles.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Validated files</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {visibleValidatedFiles.map((path) => (
+                        <li key={path}>
+                          {onOpenWorkspaceFile ? (
+                            <button
+                              type="button"
+                              className="tool-call-userspace-json-path-button"
+                              title={path}
+                              onClick={() => onOpenWorkspaceFile(path)}
+                            >
+                              {path}
+                            </button>
+                          ) : (
+                            <span title={path}>{path}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                    {hiddenValidatedFileCount > 0 && (
+                      <div className="tool-call-userspace-json-message">
+                        {hiddenValidatedFileCount} more omitted.
+                      </div>
+                    )}
+                  </div>
+                )}
+                {visibleRuntimeProbeRows.length > 0 && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Runtime probe</div>
+                    <ul className="tool-call-userspace-json-list">
+                      {visibleRuntimeProbeRows.map((row) => (
+                        <li key={row.label}>
+                          <span>{row.label}</span>
+                          <code>{row.value}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {actionRequired && (
+                  <div className="tool-call-userspace-json-group">
+                    <div className="tool-call-userspace-json-group-title">Action required</div>
+                    <div className="tool-call-userspace-json-message">{actionRequired}</div>
+                  </div>
+                )}
+              </>
             )}
             {toolCall.tool === 'discover_userspace_primitives' && (
               <>

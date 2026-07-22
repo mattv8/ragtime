@@ -1977,10 +1977,10 @@ async def validate_session_and_fetch_user(
 
     db = await get_db()
     user = await db.user.find_unique(where={"id": token_data.user_id})
-    if user:
+    if user and not token_data.mfa_verified:
         from ragtime.core.mfa import mfa_needed_for_user
 
-        if await mfa_needed_for_user(user) and not token_data.mfa_verified:
+        if await mfa_needed_for_user(user):
             return None, None
     return token_data, user
 

@@ -3630,6 +3630,14 @@ button.tool-call-userspace-write-path-link:hover {
   line-height: 1.45;
 }
 
+.tool-call-userspace-json-status-pass {
+  color: var(--color-success);
+}
+
+.tool-call-userspace-json-status-fail {
+  color: var(--color-error);
+}
+
 .tool-call-userspace-json-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

@@ -262,6 +262,7 @@ FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES = frozenset(
         "assay_userspace_code",
         "discover_userspace_primitives",
         "search_knowledge",
+        "validate_userspace_code",
     }
 )
 STREAM_DISPLAY_COMPACT_USERSPACE_WRITE_TOOL_NAMES = frozenset(

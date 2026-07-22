@@ -2313,9 +2313,16 @@ class WorkerService:
                     self._set_operation_phase(session, "ready")
                     session.updated_at = utc_now()
 
-    def _schedule_startup_locked(self, session: WorkerSession) -> None:
+    def _schedule_startup_locked(
+        self,
+        session: WorkerSession,
+        *,
+        replace_existing: bool = True,
+    ) -> None:
         existing = self._startup_tasks.get(session.id)
         if existing and not existing.done():
+            if not replace_existing:
+                return
             existing.cancel()
         self._begin_operation(session, "queued")
         session.state = "starting"
@@ -2697,7 +2704,7 @@ class WorkerService:
 
             await self._sync_devserver_state_locked(session)
             if not session.devserver_running:
-                self._schedule_startup_locked(session)
+                self._schedule_startup_locked(session, replace_existing=False)
             if not session.devserver_running or not session.devserver_port:
                 raise HTTPException(
                     status_code=503,
@@ -2836,7 +2843,7 @@ class WorkerService:
 
             await self._sync_devserver_state_locked(session)
             if not session.devserver_running:
-                self._schedule_startup_locked(session)
+                self._schedule_startup_locked(session, replace_existing=False)
             if not session.devserver_running or not session.devserver_port:
                 raise HTTPException(
                     status_code=503,
@@ -3350,7 +3357,7 @@ class WorkerService:
                 raise HTTPException(status_code=409, detail="Worker session not active")
             await self._sync_devserver_state_locked(session)
             if not session.devserver_running:
-                self._schedule_startup_locked(session)
+                self._schedule_startup_locked(session, replace_existing=False)
 
             if not session.devserver_running or not session.devserver_port:
                 if session.runtime_operation_phase in {

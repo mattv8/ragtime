@@ -368,21 +368,16 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.waiting_for_job_id, "job-1")
         self.assertTrue(response.cancel_requested)
 
-    async def test_queue_relink_sql_orders_pending_jobs(self) -> None:
+    async def test_relink_pending_jobs_uses_one_set_based_update_with_queue_ordering(self) -> None:
         from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
 
         class FakeDb:
             def __init__(self) -> None:
                 self.executed: list[str] = []
 
-            async def query_raw(self, query: str):
-                if "WHERE status = 'pending'" in query:
-                    return [{"id": "job-1"}, {"id": "job-2"}]
-                return []
-
             async def execute_raw(self, query: str):
                 self.executed.append(query)
-                return 1
+                return 2
 
         fake_db = FakeDb()
         service = WorkspaceCodeIndexService()
@@ -390,36 +385,14 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
             await service._relink_pending_jobs()
 
-        self.assertTrue(any("waiting_for_job_id = NULL" in query for query in fake_db.executed))
-        self.assertTrue(any("waiting_for_job_id = 'job-1'" in query for query in fake_db.executed))
-
-    async def test_relink_pending_jobs_points_head_at_running_job(self) -> None:
-        from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
-
-        class FakeDb:
-            def __init__(self) -> None:
-                self.executed: list[str] = []
-
-            async def query_raw(self, query: str):
-                if "status = 'indexing'" in query:
-                    return [{"id": "job-running"}]
-                if "WHERE status = 'pending'" in query:
-                    return [{"id": "job-1"}, {"id": "job-2"}]
-                return []
-
-            async def execute_raw(self, query: str):
-                self.executed.append(query)
-                return 1
-
-        fake_db = FakeDb()
-        service = WorkspaceCodeIndexService()
-
-        with mock.patch("ragtime.userspace.workspace_code_index_service.get_db", return_value=fake_db):
-            await service._relink_pending_jobs()
-
-        self.assertTrue(any("waiting_for_job_id = 'job-running'" in query for query in fake_db.executed))
-        self.assertTrue(any("waiting_for_job_id = 'job-1'" in query for query in fake_db.executed))
-        self.assertFalse(any("waiting_for_job_id = NULL" in query for query in fake_db.executed))
+        self.assertEqual(len(fake_db.executed), 1)
+        query = fake_db.executed[0]
+        self.assertIn("WITH running_job AS", query)
+        self.assertIn("pending_jobs AS", query)
+        self.assertIn("LAG(id, 1, (SELECT id FROM running_job)) OVER (ORDER BY created_at ASC, id ASC)", query)
+        self.assertIn("ORDER BY started_at DESC NULLS LAST, id DESC", query)
+        self.assertIn("WHERE status = 'pending'", query)
+        self.assertIn("SET waiting_for_job_id = pending_jobs.predecessor_job_id", query)
 
     async def test_delete_workspace_index_flags_active_job_cancelled(self) -> None:
         from ragtime.userspace.workspace_code_index_service import WorkspaceCodeIndexService
@@ -640,7 +613,7 @@ class WorkspaceCodeIndexServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("current_file = NULL" in q for q in fake_db.queries))
         self.assertTrue(any("completed_at = NOW()" in q for q in fake_db.queries))
         self.assertTrue(any("cancel_requested = FALSE" in q for q in fake_db.queries))
-        self.assertTrue(any("waiting_for_job_id = NULL" in q for q in fake_db.queries))
+        self.assertTrue(any("SET waiting_for_job_id = pending_jobs.predecessor_job_id" in q for q in fake_db.queries))
         self.assertTrue(service._queue_event.is_set())
 
     async def test_cancel_job_flags_indexing_job_and_updates_db(self) -> None:

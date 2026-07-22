@@ -245,6 +245,142 @@ describe('ToolCallDisplay screenshot rendering', () => {
   });
 });
 
+describe('ToolCallDisplay userspace validation rendering', () => {
+  it('renders validate_userspace_code failure output from production-shaped validation payloads', () => {
+    const payload = {
+      message: 'Validation failed. Fix the reported diagnostics before finalizing.',
+      action_required:
+        'Fix the diagnostics in this response, then run validate_userspace_code again.',
+      diagnostics: {
+        live_data: [
+          'dashboard/main.ts must include live_data_connections metadata.',
+          'dashboard/main.ts must include live_data_checks metadata.',
+          'dashboard/main.ts must call context.components.sales.execute().',
+          'dashboard/main.ts must call context.components.inventory.execute().',
+          'dashboard/main.ts must record execution proof for sales.',
+        ],
+        runtime: [
+          'Runtime validation failed: preview is returning a directory listing instead of rendering the app.',
+          'Runtime validation failed: browser console reported a JavaScript exception during preview.',
+          'Runtime validation failed: preview renders a blank page with no visible content.',
+          'Runtime validation failed: preview is rendering an error page.',
+          'Runtime strict validation failed: devserver is not running.',
+        ],
+      },
+      validation: {
+        ok: false,
+        validated_files: [
+          'dashboard/main.ts',
+          'dashboard/widgets/chart.ts',
+          'dashboard/widgets/table.ts',
+          'dashboard/lib/runtime.ts',
+          'dashboard/lib/probe.ts',
+        ],
+        error_count: 10,
+        errors: ['Validation failed.'],
+        runtime_error_count: 1,
+        runtime_errors: ['Runtime strict validation failed: devserver is not running.'],
+        runtime_warning_count: 1,
+        runtime_warnings: ['Screenshot capture skipped because preview was unavailable.'],
+        contract_error_count: 2,
+        contract_errors: [
+          'dashboard/main.ts must include live_data_connections metadata.',
+          'dashboard/main.ts must include live_data_checks metadata.',
+        ],
+        runtime_probe: {
+          attempted: true,
+          devserver_running: false,
+          preview_status_code: 200,
+          directory_listing_detected: true,
+          blank_screen_detected: true,
+          error_page_detected: true,
+          console_error_count: 3,
+          upstream_url: 'http://runtime.internal/workspace/ws-1',
+          console_errors: ['ReferenceError: window is not defined'],
+          content_probe: { body_text_preview: 'Internal error' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallDisplay
+        toolCall={{
+          tool: 'validate_userspace_code',
+          status: 'complete',
+          output: JSON.stringify(payload),
+        }}
+        defaultExpanded
+      />,
+    );
+
+    expect(screen.getByText('Code validation:')).toBeDefined();
+    expect(screen.getByText('Validation failed.')).toBeDefined();
+    expect(screen.getByText('Live data')).toBeDefined();
+    expect(screen.getByText('Runtime')).toBeDefined();
+    expect(screen.getByText('dashboard/main.ts')).toBeDefined();
+    expect(screen.getByText('dashboard/widgets/chart.ts')).toBeDefined();
+    expect(screen.getAllByText('2 more omitted.')).toHaveLength(3);
+    expect(screen.queryByText('dashboard/lib/runtime.ts')).toBeNull();
+    expect(screen.getByText('Attempted')).toBeDefined();
+    expect(screen.getByText('Not running')).toBeDefined();
+    expect(screen.getByText('200')).toBeDefined();
+    expect(screen.getByText('Directory listing')).toBeDefined();
+    expect(screen.getByText('Blank screen')).toBeDefined();
+    expect(screen.getByText('Error page')).toBeDefined();
+    expect(screen.getByText('Console errors')).toBeDefined();
+    expect(screen.queryByText('http://runtime.internal/workspace/ws-1')).toBeNull();
+    expect(screen.queryByText('ReferenceError: window is not defined')).toBeNull();
+    expect(screen.queryByText('Internal error')).toBeNull();
+    expect(screen.queryByText('Result:')).toBeNull();
+  });
+
+  it('renders validate_userspace_code success status from validation.ok without top-level ok', () => {
+    const payload = {
+      message: 'Validation passed.',
+      action_required: 'Create a snapshot for this completed change loop.',
+      diagnostics: {},
+      validation: {
+        ok: true,
+        validated_files: ['dashboard/main.ts', 'dashboard/lib/runtime.ts'],
+        error_count: 0,
+        errors: [],
+        runtime_error_count: 0,
+        runtime_errors: [],
+        runtime_warning_count: 0,
+        runtime_warnings: [],
+        contract_error_count: 0,
+        contract_errors: [],
+        runtime_probe: {
+          attempted: true,
+          devserver_running: true,
+          preview_status_code: 200,
+          directory_listing_detected: false,
+          blank_screen_detected: false,
+          error_page_detected: false,
+          console_error_count: 0,
+        },
+      },
+    };
+
+    const { container } = render(
+      <ToolCallDisplay
+        toolCall={{
+          tool: 'validate_userspace_code',
+          status: 'complete',
+          output: JSON.stringify(payload),
+        }}
+        defaultExpanded
+      />,
+    );
+
+    const status = screen.getByText('Validation passed.');
+    expect(status).toBeDefined();
+    expect(status.className).toContain('tool-call-userspace-json-status-pass');
+    expect(container.querySelector('.tool-call-userspace-json-status-fail')).toBeNull();
+    expect(screen.getByText('Create a snapshot for this completed change loop.')).toBeDefined();
+  });
+});
+
 describe('ToolCallDisplay subagent rendering', () => {
   it('expands completed subagent transcripts before opening the child conversation', async () => {
     const user = userEvent.setup();

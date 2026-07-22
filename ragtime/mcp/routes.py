@@ -1004,13 +1004,13 @@ async def mcp_health(_user: User = Depends(require_admin)):
     """
     try:
         all_tools = await mcp_tool_adapter.get_available_tools(include_unhealthy=True)
-        healthy_tools = await mcp_tool_adapter.get_available_tools(include_unhealthy=False)
+        healthy_tools = sum(1 for tool in all_tools if tool.is_healthy)
 
         return {
             "status": "healthy",
             "total_tools": len(all_tools),
-            "healthy_tools": len(healthy_tools),
-            "unhealthy_tools": len(all_tools) - len(healthy_tools),
+            "healthy_tools": healthy_tools,
+            "unhealthy_tools": len(all_tools) - healthy_tools,
         }
     except Exception as e:
         logger.exception(f"MCP health check failed: {e}")

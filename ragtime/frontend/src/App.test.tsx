@@ -23,6 +23,16 @@ const apiMock = vi.hoisted(() => ({
 }));
 
 const settingsPanelSpy = vi.hoisted(() => vi.fn());
+const settingsPanelModuleGate = vi.hoisted(() => {
+  let resolve: (() => void) | null = null;
+  const promise = new Promise<void>((resolver) => {
+    resolve = resolver;
+  });
+  return {
+    promise,
+    resolve: () => resolve?.(),
+  };
+});
 const toastApiMock = vi.hoisted(() => ({
   success: vi.fn(),
   error: vi.fn(),
@@ -62,16 +72,11 @@ vi.mock('@/components/WebGLGradient', () => ({
   default: () => <div data-testid="webgl-gradient" />,
 }));
 
-vi.mock('@/components', () => ({
-  ChatPage: ({ onFullscreenChange }: { onFullscreenChange?: (fullscreen: boolean) => void }) => (
-    <button type="button" onClick={() => onFullscreenChange?.(true)}>
-      Enter chat fullscreen
-    </button>
-  ),
+vi.mock('./components/ConfigurationBanner', () => ({
   ConfigurationBanner: () => null,
-  FilesystemIndexPanel: () => null,
-  IndexesList: () => null,
-  JobsTable: () => null,
+}));
+
+vi.mock('./components/LoginPage', () => ({
   LoginPage: ({ onLoginSuccess }: { onLoginSuccess: (user: User) => void }) => (
     <button
       type="button"
@@ -89,66 +94,33 @@ vi.mock('@/components', () => ({
       Log in again
     </button>
   ),
-  MemoryStatus: () => null,
-  OAuthCallbackError: () => null,
-  OAuthLoginPage: () => null,
-  PublicSharedChatView: () => null,
-  SecurityBanner: () => null,
-  SettingsPanel: (props: unknown) => {
-    settingsPanelSpy(props);
-    const onEncryptedArtifactDelivered =
-      props && typeof props === 'object' && 'onEncryptedArtifactDelivered' in props
-        ? (props as { onEncryptedArtifactDelivered?: () => void }).onEncryptedArtifactDelivered
-        : undefined;
-    const onServerBackupJobObserved =
-      props && typeof props === 'object' && 'onServerBackupJobObserved' in props
-        ? (props as { onServerBackupJobObserved?: (job: ServerBackupJob) => void })
-            .onServerBackupJobObserved
-        : undefined;
-    const onServerRestoreJobObserved =
-      props && typeof props === 'object' && 'onServerRestoreJobObserved' in props
-        ? (props as { onServerRestoreJobObserved?: (job: ServerRestoreJob) => void })
-            .onServerRestoreJobObserved
-        : undefined;
-    const onServerOperationError =
-      props && typeof props === 'object' && 'onServerOperationError' in props
-        ? (props as { onServerOperationError?: (message: string) => void }).onServerOperationError
-        : undefined;
-    const highlightSetting =
-      props && typeof props === 'object' && 'highlightSetting' in props
-        ? (props as { highlightSetting?: string | null }).highlightSetting
-        : null;
+}));
 
-    return (
-      <div>
-        <div data-testid="settings-highlight">{highlightSetting ?? 'none'}</div>
-        <button type="button" onClick={() => onEncryptedArtifactDelivered?.()}>
-          Mark backup delivered
-        </button>
-        <button
-          type="button"
-          onClick={() => onServerBackupJobObserved?.({ id: 'backup-observed', status: 'pending' })}
-        >
-          Observe backup job
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            onServerRestoreJobObserved?.({ id: 'restore-observed', status: 'pending' })
-          }
-        >
-          Observe restore job
-        </button>
-        <button type="button" onClick={() => onServerOperationError?.('Section action exploded')}>
-          Report operation error
-        </button>
-      </div>
-    );
-  },
-  ToolsPanel: () => null,
+vi.mock('./components/MemoryStatus', () => ({
+  MemoryStatus: () => null,
+}));
+
+vi.mock('./components/OAuthCallbackError', () => ({
+  OAuthCallbackError: () => null,
+}));
+
+vi.mock('./components/OAuthLoginPage', () => ({
+  OAuthLoginPage: () => null,
+}));
+
+vi.mock('./components/PublicSharedChatView', () => ({
+  PublicSharedChatView: () => null,
+}));
+
+vi.mock('./components/SecurityBanner', () => ({
+  SecurityBanner: () => null,
+}));
+
+vi.mock('./components/UserMenu', () => ({
   UserMenu: () => null,
-  UserSpacePanel: () => null,
-  UsersPanel: () => null,
+}));
+
+vi.mock('./components/WarningsBanner', () => ({
   WarningsBanner: ({
     title,
     warnings,
@@ -177,6 +149,90 @@ vi.mock('@/components', () => ({
       </div>
     );
   },
+}));
+
+vi.mock('./components/ChatPage', () => ({
+  ChatPage: ({ onFullscreenChange }: { onFullscreenChange?: (fullscreen: boolean) => void }) => (
+    <button type="button" onClick={() => onFullscreenChange?.(true)}>
+      Enter chat fullscreen
+    </button>
+  ),
+}));
+
+vi.mock('./components/UserSpacePanel', () => ({
+  UserSpacePanel: () => null,
+}));
+
+vi.mock('./components/ToolsPanel', () => ({
+  ToolsPanel: () => null,
+}));
+
+vi.mock('./components/UsersPanel', () => ({
+  UsersPanel: () => null,
+}));
+
+vi.mock('./components/SettingsPanel', async () => {
+  await settingsPanelModuleGate.promise;
+
+  return {
+    SettingsPanel: (props: unknown) => {
+      settingsPanelSpy(props);
+      const onEncryptedArtifactDelivered =
+        props && typeof props === 'object' && 'onEncryptedArtifactDelivered' in props
+          ? (props as { onEncryptedArtifactDelivered?: () => void }).onEncryptedArtifactDelivered
+          : undefined;
+      const onServerBackupJobObserved =
+        props && typeof props === 'object' && 'onServerBackupJobObserved' in props
+          ? (props as { onServerBackupJobObserved?: (job: ServerBackupJob) => void })
+              .onServerBackupJobObserved
+          : undefined;
+      const onServerRestoreJobObserved =
+        props && typeof props === 'object' && 'onServerRestoreJobObserved' in props
+          ? (props as { onServerRestoreJobObserved?: (job: ServerRestoreJob) => void })
+              .onServerRestoreJobObserved
+          : undefined;
+      const onServerOperationError =
+        props && typeof props === 'object' && 'onServerOperationError' in props
+          ? (props as { onServerOperationError?: (message: string) => void }).onServerOperationError
+          : undefined;
+      const highlightSetting =
+        props && typeof props === 'object' && 'highlightSetting' in props
+          ? (props as { highlightSetting?: string | null }).highlightSetting
+          : null;
+
+      return (
+        <div>
+          <div data-testid="settings-highlight">{highlightSetting ?? 'none'}</div>
+          <button type="button" onClick={() => onEncryptedArtifactDelivered?.()}>
+            Mark backup delivered
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onServerBackupJobObserved?.({ id: 'backup-observed', status: 'pending' })
+            }
+          >
+            Observe backup job
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onServerRestoreJobObserved?.({ id: 'restore-observed', status: 'pending' })
+            }
+          >
+            Observe restore job
+          </button>
+          <button type="button" onClick={() => onServerOperationError?.('Section action exploded')}>
+            Report operation error
+          </button>
+        </div>
+      );
+    },
+  };
+});
+
+vi.mock('./components/IndexerAdminView', () => ({
+  IndexerAdminView: () => null,
 }));
 
 afterEach(() => {
@@ -259,6 +315,24 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe('App chat fullscreen layout', () => {
+  it('shows a loading fallback before rendering a lazy admin view', async () => {
+    const user = userEvent.setup();
+    mockAuthenticatedAdmin();
+
+    render(<App />);
+
+    await flushMicrotasks();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(await screen.findByText('Loading view...')).toBeTruthy();
+
+    settingsPanelModuleGate.resolve();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('settings-highlight').textContent).toBe('none');
+    });
+  });
+
   it('applies fullscreen state to the outer chat page container', async () => {
     const user = userEvent.setup();
     apiMock.getAuthStatus.mockResolvedValue({

@@ -1,27 +1,18 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { Suspense, lazy, useState, useEffect, useCallback, useRef } from 'react';
 import { Waves } from 'lucide-react';
 import { api, onAuthExpired } from '@/api';
-import {
-  JobsTable,
-  IndexesList,
-  FilesystemIndexPanel,
-  SettingsPanel,
-  ToolsPanel,
-  ChatPage,
-  PublicSharedChatView,
-  UserSpacePanel,
-  LoginPage,
-  OAuthLoginPage,
-  OAuthCallbackError,
-  MemoryStatus,
-  UserMenu,
-  SecurityBanner,
-  ConfigurationBanner,
-  WarningsBanner,
-  UsersPanel,
-} from '@/components';
 import WebGLGradient from '@/components/WebGLGradient';
+import { ConfigurationBanner } from './components/ConfigurationBanner';
+import { LoginPage } from './components/LoginPage';
+import { MemoryStatus } from './components/MemoryStatus';
+import { OAuthCallbackError } from './components/OAuthCallbackError';
+import { OAuthLoginPage } from './components/OAuthLoginPage';
+import type { OAuthParams } from './components/OAuthLoginPage';
+import { PublicSharedChatView } from './components/PublicSharedChatView';
+import { SecurityBanner } from './components/SecurityBanner';
 import { ToastContainer, useToast } from '@/components/shared/Toast';
+import { UserMenu } from './components/UserMenu';
+import { WarningsBanner } from './components/WarningsBanner';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
 import type {
   IndexJob,
@@ -37,7 +28,6 @@ import type {
   ServerBackupJob,
   ServerRestoreJob,
 } from '@/types';
-import type { OAuthParams } from '@/components';
 import { BrandName } from '@/utils/buildEnvironment';
 import { setThemePack, resolveThemePackId } from '@/theme';
 import { SERVER_BACKUP_RESTORE_HIGHLIGHT } from '@/components/shared/securityWarnings';
@@ -85,6 +75,25 @@ const INDEXER_ACTIVE_POLL_MS = 2000;
 const ENCRYPTION_KEY_ERROR_DISMISS_KEY = 'ragtime_encryption_key_error';
 const ENCRYPTION_BACKUP_REMINDER_DISMISS_KEY = 'ragtime_encryption_backup_reminder';
 
+const LazyChatPage = lazy(async () => ({
+  default: (await import('./components/ChatPage')).ChatPage,
+}));
+const LazyUserSpacePanel = lazy(async () => ({
+  default: (await import('./components/UserSpacePanel')).UserSpacePanel,
+}));
+const LazySettingsPanel = lazy(async () => ({
+  default: (await import('./components/SettingsPanel')).SettingsPanel,
+}));
+const LazyToolsPanel = lazy(async () => ({
+  default: (await import('./components/ToolsPanel')).ToolsPanel,
+}));
+const LazyUsersPanel = lazy(async () => ({
+  default: (await import('./components/UsersPanel')).UsersPanel,
+}));
+const LazyIndexerAdminView = lazy(async () => ({
+  default: (await import('./components/IndexerAdminView')).IndexerAdminView,
+}));
+
 type ObservedServerJobKind = 'backup' | 'restore';
 
 function isObservedServerJobTerminal(
@@ -123,6 +132,15 @@ function getObservedServerJobToastMessage(
     };
   }
   return null;
+}
+
+function RouteViewFallback() {
+  return (
+    <div className="auth-loading" aria-live="polite">
+      <div className="spinner"></div>
+      <p>Loading view...</p>
+    </div>
+  );
 }
 
 function readPersistentDismissed(dismissKey: string): boolean {
@@ -1242,99 +1260,97 @@ export function App() {
         <div className="container">
           {activeView === 'userspace' ? (
             <div className="userspace-page-container">
-              <UserSpacePanel
-                currentUser={currentUser}
-                debugMode={Boolean(authStatus?.debug_mode)}
-                openWorkspaceRequest={workspaceOpenRequest}
-                onFullscreenChange={setUserspaceFullscreen}
-                onPreviewWarningChange={setPreviewWarning}
-                onNavigateToTools={(section) => {
-                  setHighlightToolsSection(section ?? null);
-                  setActiveView('tools');
-                }}
-              />
+              <Suspense fallback={<RouteViewFallback />}>
+                <LazyUserSpacePanel
+                  currentUser={currentUser}
+                  debugMode={Boolean(authStatus?.debug_mode)}
+                  openWorkspaceRequest={workspaceOpenRequest}
+                  onFullscreenChange={setUserspaceFullscreen}
+                  onPreviewWarningChange={setPreviewWarning}
+                  onNavigateToTools={(section) => {
+                    setHighlightToolsSection(section ?? null);
+                    setActiveView('tools');
+                  }}
+                />
+              </Suspense>
             </div>
           ) : isChatView ? (
             <div className={`chat-page-container${chatFullscreen ? ' chat-page-fullscreen' : ''}`}>
-              <ChatPage
-                key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
-                currentUser={currentUser}
-                debugMode={Boolean(authStatus?.debug_mode)}
-                initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
-                chatCompactionThresholdPercent={authStatus?.chat_compaction_threshold_percent ?? 80}
-                chatAutoCompactionThresholdPercent={
-                  authStatus?.chat_auto_compaction_threshold_percent ?? 99
-                }
-                onFullscreenChange={setChatFullscreen}
-              />
+              <Suspense fallback={<RouteViewFallback />}>
+                <LazyChatPage
+                  key={chatOpenRequest ? `chat-open-${chatOpenRequest.requestId}` : 'chat-main'}
+                  currentUser={currentUser}
+                  debugMode={Boolean(authStatus?.debug_mode)}
+                  initialConversationId={chatOpenRequest?.conversationId ?? initialConversationId}
+                  chatCompactionThresholdPercent={
+                    authStatus?.chat_compaction_threshold_percent ?? 80
+                  }
+                  chatAutoCompactionThresholdPercent={
+                    authStatus?.chat_auto_compaction_threshold_percent ?? 99
+                  }
+                  onFullscreenChange={setChatFullscreen}
+                />
+              </Suspense>
             </div>
           ) : activeView === 'settings' ? (
-            <SettingsPanel
-              currentUser={currentUser}
-              onServerNameChange={handleServerNameChange}
-              onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
-              onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
-              onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
-              onSettingsSaved={refreshConfigurationWarnings}
-              highlightSetting={highlightSetting}
-              onHighlightComplete={() => setHighlightSetting(null)}
-              authStatus={authStatus}
-              onEncryptedArtifactDelivered={handleEncryptedArtifactDelivered}
-              onServerBackupJobObserved={observeServerBackupJob}
-              onServerRestoreJobObserved={observeServerRestoreJob}
-              onServerOperationError={handleServerOperationError}
-            />
+            <Suspense fallback={<RouteViewFallback />}>
+              <LazySettingsPanel
+                currentUser={currentUser}
+                onServerNameChange={handleServerNameChange}
+                onAuthenticatedWebglBackgroundChange={setAuthenticatedWebglBackgroundEnabled}
+                onChatCompactionThresholdChange={handleChatCompactionThresholdChange}
+                onChatAutoCompactionThresholdChange={handleChatAutoCompactionThresholdChange}
+                onSettingsSaved={refreshConfigurationWarnings}
+                highlightSetting={highlightSetting}
+                onHighlightComplete={() => setHighlightSetting(null)}
+                authStatus={authStatus}
+                onEncryptedArtifactDelivered={handleEncryptedArtifactDelivered}
+                onServerBackupJobObserved={observeServerBackupJob}
+                onServerRestoreJobObserved={observeServerRestoreJob}
+                onServerOperationError={handleServerOperationError}
+              />
+            </Suspense>
           ) : activeView === 'tools' ? (
-            <ToolsPanel
-              onSchemaJobTriggered={loadSchemaJobs}
-              schemaJobs={schemaJobs}
-              highlightSection={highlightToolsSection}
-              onHighlightComplete={() => setHighlightToolsSection(null)}
-            />
+            <Suspense fallback={<RouteViewFallback />}>
+              <LazyToolsPanel
+                onSchemaJobTriggered={loadSchemaJobs}
+                schemaJobs={schemaJobs}
+                highlightSection={highlightToolsSection}
+                onHighlightComplete={() => setHighlightToolsSection(null)}
+              />
+            </Suspense>
           ) : activeView === 'users' ? (
-            <UsersPanel
-              currentUser={currentUser}
-              onOpenWorkspace={handleOpenWorkspaceFromUsers}
-              onOpenChat={handleOpenChatFromUsers}
-            />
+            <Suspense fallback={<RouteViewFallback />}>
+              <LazyUsersPanel
+                currentUser={currentUser}
+                onOpenWorkspace={handleOpenWorkspaceFromUsers}
+                onOpenChat={handleOpenChatFromUsers}
+              />
+            </Suspense>
           ) : (
-            <>
-              {/* Document Indexes (FAISS) */}
-              <IndexesList
+            <Suspense fallback={<RouteViewFallback />}>
+              <LazyIndexerAdminView
                 indexes={indexes}
                 jobs={jobs}
-                loading={indexesLoading}
-                error={indexesError}
-                onDelete={loadIndexes}
-                onToggle={loadIndexes}
-                onDescriptionUpdate={loadIndexes}
-                onJobCreated={handleJobCreated}
-                aggregateSearch={aggregateSearch}
-                embeddingDimensions={embeddingDimensions}
-                onNavigateToSettings={() => {
-                  setHighlightSetting('sequential_index_loading');
-                  setActiveView('settings');
-                }}
-              />
-
-              {/* Filesystem Indexes (pgvector) */}
-              <FilesystemIndexPanel
-                onToolsChanged={handleFilesystemToolsChanged}
-                onJobsChanged={loadFilesystemJobs}
-                embeddingDimensions={embeddingDimensions}
-              />
-
-              {/* Jobs Table */}
-              <JobsTable
-                jobs={jobs}
+                indexesLoading={indexesLoading}
+                indexesError={indexesError}
+                jobsLoading={jobsLoading}
+                jobsError={jobsError}
                 filesystemJobs={filesystemJobs}
                 schemaJobs={schemaJobs}
                 pdmJobs={pdmJobs}
                 userspaceCodeJobs={userspaceCodeJobs}
-                loading={jobsLoading}
-                error={jobsError}
-                onJobsChanged={loadJobs}
+                aggregateSearch={aggregateSearch}
+                embeddingDimensions={embeddingDimensions}
+                onLoadIndexes={loadIndexes}
+                onJobCreated={handleJobCreated}
+                onNavigateToSettings={() => {
+                  setHighlightSetting('sequential_index_loading');
+                  setActiveView('settings');
+                }}
+                onToolsChanged={handleFilesystemToolsChanged}
                 onFilesystemJobsChanged={loadFilesystemJobs}
+                onJobsChanged={loadJobs}
                 onSchemaJobsChanged={loadSchemaJobs}
                 onPdmJobsChanged={loadPdmJobs}
                 onUserSpaceCodeJobsChanged={loadUserSpaceCodeJobs}
@@ -1342,7 +1358,7 @@ export function App() {
                 onCancelSchemaJob={handleCancelSchemaJob}
                 onCancelPdmJob={handleCancelPdmJob}
               />
-            </>
+            </Suspense>
           )}
         </div>
       </div>

@@ -956,12 +956,19 @@ class PdmIndexerService:
                 job.current_step = f"Extracting documents from PDM ({extracted}/{doc_count})"
                 await self._update_job(job)
 
+                stored_hashes: dict[int, str] = {}
+                if not full_reindex:
+                    stored_hashes = await self._get_stored_hashes(
+                        job.index_name,
+                        [doc.document_id for doc in doc_batch],
+                    )
+
                 # Process each document in the extraction batch
                 for doc in doc_batch:
                     # Check if document has changed (skip if unchanged and not full reindex)
                     if not full_reindex:
                         current_hash = doc.compute_metadata_hash()
-                        stored_hash = await self._get_stored_hash(job.index_name, doc.document_id)
+                        stored_hash = stored_hashes.get(doc.document_id)
                         if stored_hash == current_hash:
                             skipped += 1
                             job.skipped_documents = skipped
@@ -1166,6 +1173,23 @@ class PdmIndexerService:
         except Exception:
             pass
         return None
+
+    async def _get_stored_hashes(self, index_name: str, document_ids: list[int]) -> dict[int, str]:
+        """Get stored metadata hashes for a batch of documents."""
+        if not document_ids:
+            return {}
+
+        try:
+            db: Any = await get_db()
+            placeholders = ", ".join(f"${position}" for position in range(2, len(document_ids) + 2))
+            result = await db.query_raw(
+                (f"SELECT document_id, metadata_hash FROM pdm_document_metadata WHERE index_name = $1 AND document_id IN ({placeholders})"),
+                index_name,
+                *document_ids,
+            )
+            return {int(row["document_id"]): row["metadata_hash"] for row in (result or []) if row.get("document_id") is not None and row.get("metadata_hash")}
+        except Exception:
+            return {}
 
     async def _clear_embeddings(self, index_name: str):
         """Clear all embeddings for an index."""

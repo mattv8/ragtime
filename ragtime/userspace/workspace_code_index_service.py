@@ -327,36 +327,27 @@ class WorkspaceCodeIndexService:
 
     async def _relink_pending_jobs(self) -> None:
         db = await get_db()
-        running_rows = await db.query_raw(
+        await db.execute_raw(
             """
-            SELECT id FROM workspace_code_index_jobs
-            WHERE status = 'indexing'
-            ORDER BY started_at DESC NULLS LAST, id DESC
-            LIMIT 1
-            """
-        )
-        rows = await db.query_raw(
-            f"""
-            SELECT id FROM workspace_code_index_jobs
-            WHERE status = 'pending'
-            ORDER BY created_at ASC, id ASC
-            """
-        )
-        # Seed the chain with the most recently started running job so the
-        # head-of-queue pending job always names the job it is waiting for.
-        previous_id: str | None = str(running_rows[0].get("id") or "") or None if running_rows else None
-        for row in rows:
-            job_id = str(row.get("id") or "")
-            if not job_id:
-                continue
-            await db.execute_raw(
-                f"""
-                UPDATE workspace_code_index_jobs
-                SET waiting_for_job_id = {_sql(previous_id)}
-                WHERE id = {_sql(job_id)}
-                """
+            WITH running_job AS (
+                SELECT id FROM workspace_code_index_jobs
+                WHERE status = 'indexing'
+                ORDER BY started_at DESC NULLS LAST, id DESC
+                LIMIT 1
+            ),
+            pending_jobs AS (
+                SELECT
+                    id,
+                    LAG(id, 1, (SELECT id FROM running_job)) OVER (ORDER BY created_at ASC, id ASC) AS predecessor_job_id
+                FROM workspace_code_index_jobs
+                WHERE status = 'pending'
             )
-            previous_id = job_id
+            UPDATE workspace_code_index_jobs
+            SET waiting_for_job_id = pending_jobs.predecessor_job_id
+            FROM pending_jobs
+            WHERE workspace_code_index_jobs.id = pending_jobs.id
+            """
+        )
 
     async def _enqueue_workspace(self, workspace_id: str) -> str | None:
         async with self._queue_lock:

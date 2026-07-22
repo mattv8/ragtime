@@ -816,6 +816,114 @@ async def _user_response(user: User) -> UserResponse:
     )
 
 
+def _prefetched_group_ids_for_user(
+    user_id: str,
+    memberships_by_user_id: dict[str, list[Any]],
+    groups_by_id: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    manual_group_ids: list[str] = []
+    ldap_group_ids: list[str] = []
+    for membership in memberships_by_user_id.get(user_id, []):
+        group = groups_by_id.get(membership.groupId)
+        if not group:
+            continue
+        membership_provider = _auth_provider_value(membership.sourceProvider)
+        group_provider = _auth_provider_value(group.provider)
+        if membership_provider == "local_managed" and group_provider == "local_managed":
+            manual_group_ids.append(membership.groupId)
+        elif membership_provider == "ldap":
+            ldap_group_ids.append(membership.groupId)
+    return manual_group_ids, ldap_group_ids
+
+
+def _prefetched_user_requires_mfa(
+    user: User,
+    auth_config: Any,
+    memberships_by_user_id: dict[str, list[Any]],
+    totp_enabled_user_ids: set[str],
+    webauthn_enabled_user_ids: set[str],
+) -> bool:
+    if user.id in totp_enabled_user_ids or user.id in webauthn_enabled_user_ids:
+        return True
+
+    policy = str(getattr(auth_config, "totp_policy", "optional") or "optional")
+    if policy == "required_all":
+        return True
+    if policy != "required_admins_groups":
+        return False
+    if _auth_provider_value(getattr(user, "role", "")) == "admin":
+        return True
+
+    required_group_ids = set(getattr(auth_config, "totp_required_group_ids", []) or [])
+    if not required_group_ids:
+        return False
+
+    return any(membership.groupId in required_group_ids for membership in memberships_by_user_id.get(user.id, []))
+
+
+async def _bulk_user_responses(users: list[User]) -> list[UserResponse]:
+    if not users:
+        return []
+
+    db = await get_db()
+    auth_config = await get_auth_provider_config()
+    user_ids = [user.id for user in users]
+
+    memberships = await db.authgroupmembership.find_many(where={"userId": {"in": user_ids}})
+    memberships_by_user_id: dict[str, list[Any]] = {}
+    for membership in memberships:
+        memberships_by_user_id.setdefault(membership.userId, []).append(membership)
+
+    group_ids = list(dict.fromkeys(membership.groupId for membership in memberships))
+    groups = await db.authgroup.find_many(where={"id": {"in": group_ids}}) if group_ids else []
+    groups_by_id = {group.id: group for group in groups}
+
+    enabled_totp_factors = await db.usermfafactor.find_many(where={"userId": {"in": user_ids}, "factorType": "totp", "enabled": True})
+    totp_enabled_user_ids = {factor.userId for factor in enabled_totp_factors if getattr(factor, "enabled", False) and getattr(factor, "secretEncrypted", None)}
+
+    webauthn_credentials = await db.userwebauthncredential.find_many(where={"userId": {"in": user_ids}})
+    webauthn_enabled_user_ids = {credential.userId for credential in webauthn_credentials}
+
+    unused_recovery_codes = await db.usermfarecoverycode.find_many(where={"userId": {"in": user_ids}, "usedAt": None})
+    recovery_code_counts: dict[str, int] = {}
+    for recovery_code in unused_recovery_codes:
+        recovery_code_counts[recovery_code.userId] = recovery_code_counts.get(recovery_code.userId, 0) + 1
+
+    responses: list[UserResponse] = []
+    for user in users:
+        cached_groups = getattr(user, "cachedGroups", None)
+        manual_group_ids, ldap_group_ids = _prefetched_group_ids_for_user(user.id, memberships_by_user_id, groups_by_id)
+        responses.append(
+            UserResponse(
+                id=user.id,
+                username=user.username,
+                display_name=user.displayName,
+                email=user.email,
+                role=user.role,
+                auth_provider=user.authProvider,
+                theme_pack=getattr(user, "themePack", None),
+                role_manually_set=user.roleManuallySet,
+                source_provider=getattr(user, "sourceProvider", None),
+                source_synced_at=getattr(user, "sourceSyncedAt", None),
+                source_expires_at=getattr(user, "sourceExpiresAt", None),
+                cached_groups=cached_groups if isinstance(cached_groups, list) else [],
+                manual_group_ids=manual_group_ids,
+                ldap_group_ids=ldap_group_ids,
+                local_group_ids=manual_group_ids,
+                mfa_enabled=user.id in totp_enabled_user_ids,
+                mfa_required=_prefetched_user_requires_mfa(
+                    user,
+                    auth_config,
+                    memberships_by_user_id,
+                    totp_enabled_user_ids,
+                    webauthn_enabled_user_ids,
+                ),
+                recovery_codes_remaining=recovery_code_counts.get(user.id, 0),
+            )
+        )
+    return responses
+
+
 def _auth_provider_config_response(config) -> AuthProviderConfigResponse:
     return AuthProviderConfigResponse(
         local_users_enabled=config.local_users_enabled,
@@ -2690,7 +2798,7 @@ async def list_users(
     )
 
     return UserListResponse(
-        users=[await _user_response(u) for u in users],
+        users=await _bulk_user_responses(users),
         total=total,
         skip=skip,
         take=take,

@@ -2073,19 +2073,7 @@ class FilesystemIndexerService:
                     job.completed_at = utc_now()
                     return
 
-                # First pass: count directories for progress estimation
-                # Run in thread to avoid blocking
-                def count_dirs() -> int:
-                    count = 0
-                    try:
-                        for entry in base_path.rglob("*"):
-                            if entry.is_dir():
-                                count += 1
-                    except PermissionError:
-                        pass
-                    return max(count, 1)  # At least 1 to avoid division by zero
-
-                job.total_dirs_to_scan = await asyncio.to_thread(count_dirs)
+                job.total_dirs_to_scan = 1
                 await asyncio.sleep(0)  # Yield
 
                 # File extension stats
@@ -2131,6 +2119,7 @@ class FilesystemIndexerService:
                         ]
 
                         dirs_processed += 1
+                        job.total_dirs_to_scan = max(job.total_dirs_to_scan, dirs_processed + len(dirnames), 1)
                         job.dirs_scanned = dirs_processed
                         rel_dir = str(current_dir.relative_to(base_path)) if current_dir != base_path else "/"
                         job.current_directory = rel_dir[:50] + "..." if len(rel_dir) > 50 else rel_dir

@@ -291,6 +291,15 @@ class UserSpaceUpsertToolValidationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(should_truncate_stream_display_output("generic_tool", output))
 
+    def test_structured_userspace_outputs_are_not_truncated(self) -> None:
+        output = "x" * 3000
+
+        for tool_name in (*FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES, "validate_userspace_code"):
+            self.assertFalse(
+                should_truncate_stream_display_output(tool_name, output),
+                tool_name,
+            )
+
     async def test_search_userspace_code_tool_delegates_to_workspace_index_service(self) -> None:
         tool = await self._tool("search_userspace_code")
         coroutine = tool.coroutine

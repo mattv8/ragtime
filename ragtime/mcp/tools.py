@@ -311,6 +311,7 @@ class MCPToolDefinition:
     input_schema: dict
     tool_config: dict  # Original ToolConfig data
     execute_fn: Callable[..., Awaitable[str]]
+    is_healthy: bool = True
 
 
 @dataclass
@@ -404,6 +405,7 @@ class MCPToolAdapter:
             # Create MCP tool definition
             tool_def = await self._create_tool_definition(config)
             if tool_def:
+                tool_def.is_healthy = status.alive if status is not None else True
                 tools.append(tool_def)
                 logger.info(f"MCP: Added tool: {tool_def.name} (type: {tool_type})")
             else:
@@ -416,6 +418,7 @@ class MCPToolAdapter:
                     continue
             schema_tool_def = await self._create_schema_search_tool_definition(config)
             if schema_tool_def:
+                schema_tool_def.is_healthy = status.alive if status is not None else True
                 tools.append(schema_tool_def)
 
         # Add knowledge search tool(s) based on aggregate_search setting

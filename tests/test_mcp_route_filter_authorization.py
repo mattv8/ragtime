@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from unittest import mock
 
+import ragtime.mcp.routes as mcp_routes
 import ragtime.mcp.tools as mcp_tools
 from ragtime.mcp.tools import McpRouteFilter, MCPToolAdapter, MCPToolDefinition
 
@@ -17,6 +18,95 @@ class _HangingMcpTool:
 
 
 class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_get_available_tools_sets_health_flag_from_heartbeat_status(self) -> None:
+        adapter = MCPToolAdapter()
+        config = {
+            "id": "tool-1",
+            "name": "Production Infoscan Database",
+            "tool_type": "postgres",
+            "enabled": True,
+        }
+        main_def = MCPToolDefinition(
+            name="query_production_infoscan_database",
+            description="prod",
+            input_schema={},
+            tool_config=config,
+            execute_fn=mock.AsyncMock(return_value="ok"),
+        )
+        schema_def = MCPToolDefinition(
+            name="search_schema_production_infoscan_database",
+            description="schema",
+            input_schema={},
+            tool_config=config,
+            execute_fn=mock.AsyncMock(return_value="ok"),
+        )
+        unhealthy_status = mcp_tools.ToolHealthStatus(
+            tool_id="tool-1",
+            alive=False,
+            error="offline",
+        )
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[config])),
+            mock.patch.object(adapter, "_check_heartbeats", mock.AsyncMock(return_value={"tool-1": unhealthy_status})),
+            mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=main_def)),
+            mock.patch.object(adapter, "_create_schema_search_tool_definition", mock.AsyncMock(return_value=schema_def)),
+            mock.patch("ragtime.mcp.tools.get_app_settings", mock.AsyncMock(return_value={"aggregate_search": False})),
+            mock.patch.object(adapter, "_create_per_index_search_tools", mock.AsyncMock(return_value=[])),
+            mock.patch.object(adapter, "_create_git_history_tools", mock.AsyncMock(return_value=[])),
+        ):
+            tools = await adapter.get_available_tools(include_unhealthy=True)
+
+        self.assertEqual([tool.name for tool in tools], [main_def.name, schema_def.name])
+        self.assertFalse(tools[0].is_healthy)
+        self.assertFalse(tools[1].is_healthy)
+
+    async def test_mcp_health_reuses_single_tool_snapshot(self) -> None:
+        tools = [
+            MCPToolDefinition(
+                name="query_prod",
+                description="prod",
+                input_schema={},
+                tool_config={"id": "tool-1", "tool_type": "postgres"},
+                execute_fn=mock.AsyncMock(return_value="ok"),
+                is_healthy=True,
+            ),
+            MCPToolDefinition(
+                name="query_staging",
+                description="staging",
+                input_schema={},
+                tool_config={"id": "tool-2", "tool_type": "postgres"},
+                execute_fn=mock.AsyncMock(return_value="ok"),
+                is_healthy=False,
+            ),
+            MCPToolDefinition(
+                name="search_knowledge",
+                description="knowledge",
+                input_schema={},
+                tool_config={"tool_type": "knowledge_search"},
+                execute_fn=mock.AsyncMock(return_value="ok"),
+                is_healthy=True,
+            ),
+        ]
+
+        with mock.patch.object(
+            mcp_routes.mcp_tool_adapter,
+            "get_available_tools",
+            new=mock.AsyncMock(return_value=tools),
+        ) as get_available_tools:
+            result = await mcp_routes.mcp_health(_user=mock.sentinel.user)
+
+        self.assertEqual(
+            result,
+            {
+                "status": "healthy",
+                "total_tools": 3,
+                "healthy_tools": 2,
+                "unhealthy_tools": 1,
+            },
+        )
+        get_available_tools.assert_awaited_once_with(include_unhealthy=True)
+
     async def test_selected_database_tool_is_allowed_by_name_without_building_tools(self) -> None:
         adapter = MCPToolAdapter()
         route_filter = McpRouteFilter(
