@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { api } from '@/api';
 import type { IndexJob, IndexAnalysisResult, OcrMode, OcrProvider, VectorStoreType } from '@/types';
 import { DescriptionField } from './DescriptionField';
@@ -8,6 +8,7 @@ import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreField
 import { FileTypeStatsTable } from './FileTypeStatsTable';
 import { SuggestedExclusionsBanner } from './SuggestedExclusionsBanner';
 import { WarningsBanner } from './WarningsBanner';
+import { FileDropZone } from './shared/FileDropZone';
 
 interface UploadFormProps {
   onJobCreated: () => void;
@@ -45,7 +46,6 @@ export function UploadForm({
   const [file, setFile] = useState<File | null>(null);
   const [indexName, setIndexName] = useState('');
   const [description, setDescription] = useState('');
-  const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<{ type: StatusType; message: string }>({
@@ -121,31 +121,9 @@ export function UploadForm({
       });
   }, []);
 
-  const handleDragOver = useCallback((e: DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback((e: DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files.length) {
-      const droppedFile = e.dataTransfer.files[0];
-      setFile(droppedFile);
-      setIndexName(getIndexNameFromFile(droppedFile.name));
-    }
-  }, []);
-
-  const handleFileChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.length) {
-      const selectedFile = e.target.files[0];
-      setFile(selectedFile);
-      setIndexName(getIndexNameFromFile(selectedFile.name));
-    }
+  const handleFileSelected = useCallback((selectedFile: File) => {
+    setFile(selectedFile);
+    setIndexName(getIndexNameFromFile(selectedFile.name));
   }, []);
 
   const handleAnalyze = async () => {
@@ -320,26 +298,15 @@ export function UploadForm({
       <div>
         {/* File drop area */}
         <div className="form-group">
-          <div
-            className={`file-input-wrapper ${isDragOver ? 'dragover' : ''} ${file ? 'has-file' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-          >
-            <div className="icon">↑</div>
-            <div>Drag & drop an archive file here, or click to browse</div>
-            <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginTop: 8 }}>
-              Supported: .zip, .tar, .tar.gz, .tar.bz2
-            </div>
-            {file && <div className="file-name">{file.name}</div>}
-            <input
-              type="file"
-              name="file"
-              accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2,application/gzip,application/x-gzip,application/x-tar,application/zip"
-              onChange={handleFileChange}
-              disabled={isLoading}
-            />
-          </div>
+          <FileDropZone
+            file={file}
+            accept=".zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2,application/gzip,application/x-gzip,application/x-tar,application/zip"
+            disabled={isLoading}
+            icon="↑"
+            prompt={<>Drag &amp; drop an archive file here, or click to browse</>}
+            helpText={<>Supported: .zip, .tar, .tar.gz, .tar.bz2</>}
+            onFileSelected={handleFileSelected}
+          />
         </div>
 
         {/* Show config options after file is selected */}

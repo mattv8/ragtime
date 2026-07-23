@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -73,22 +73,35 @@ def _sync_response(summary: str = "Imported") -> UserSpaceWorkspaceScmSyncRespon
     )
 
 
+@contextmanager
+def _webhook_pull_mocks(
+    service: UserSpaceService,
+    *,
+    preview_state: WorkspaceScmPreviewState = "safe",
+    sync_response: UserSpaceWorkspaceScmSyncResponse | None = None,
+):
+    with (
+        mock.patch.object(
+            service,
+            "_build_workspace_scm_preview",
+            new=mock.AsyncMock(return_value=(_preview(preview_state), "fingerprint")),
+        ) as preview_mock,
+        mock.patch.object(
+            service,
+            "import_workspace_from_scm",
+            new=mock.AsyncMock(return_value=sync_response or _sync_response()),
+        ) as import_mock,
+    ):
+        yield preview_mock, import_mock
+
+
 class WorkspaceScmWebhookPullTests(unittest.IsolatedAsyncioTestCase):
     async def test_webhook_pull_does_not_require_interval_auto_pull(self) -> None:
         workspace = _workspace(scmAutoPullEnabled=False)
         service = UserSpaceService()
 
         with (
-            mock.patch.object(
-                service,
-                "_build_workspace_scm_preview",
-                new=mock.AsyncMock(return_value=(_preview("safe"), "fingerprint")),
-            ) as preview_mock,
-            mock.patch.object(
-                service,
-                "import_workspace_from_scm",
-                new=mock.AsyncMock(return_value=_sync_response()),
-            ) as import_mock,
+            _webhook_pull_mocks(service) as (preview_mock, import_mock),
             mock.patch("ragtime.userspace.service.get_db", return_value=_workspace_db(workspace)),
         ):
             outcome = await service.run_workspace_scm_webhook_pull_locked("workspace-1")
@@ -122,16 +135,7 @@ class WorkspaceScmWebhookPullTests(unittest.IsolatedAsyncioTestCase):
         service = UserSpaceService()
 
         with (
-            mock.patch.object(
-                service,
-                "_build_workspace_scm_preview",
-                new=mock.AsyncMock(return_value=(_preview("safe"), "fingerprint")),
-            ) as preview_mock,
-            mock.patch.object(
-                service,
-                "import_workspace_from_scm",
-                new=mock.AsyncMock(return_value=_sync_response()),
-            ) as import_mock,
+            _webhook_pull_mocks(service) as (preview_mock, import_mock),
             mock.patch("ragtime.userspace.service.get_db", return_value=_workspace_db(workspace)),
         ):
             outcome = await service.run_workspace_scm_webhook_pull_locked("workspace-1")

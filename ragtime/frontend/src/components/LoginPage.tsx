@@ -3,7 +3,7 @@ import { api } from '@/api';
 import type { User, AuthStatus, AuthMethodStatus, MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
-import { AuthMfaPanel } from './AuthMfaPanel';
+import { LoginMfaPanel } from './shared/LoginMfaPanel';
 import WebGLGradient from './WebGLGradient';
 
 interface LoginPageProps {
@@ -156,13 +156,12 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
       )}
 
       {mfaMode !== 'none' && (
-        <AuthMfaPanel
+        <LoginMfaPanel
           mode={mfaMode}
           error={error}
           isLoading={isLoading}
           code={mfaCode}
           rememberDevice={rememberDevice}
-          recoveryCodes={[]}
           methods={mfaMethods}
           preferredMethod={mfaPreferredMethod}
           mfaChallengeToken={mfaChallengeToken ?? undefined}
@@ -170,8 +169,7 @@ export function LoginCard({ authStatus, onLoginSuccess, serverName = 'Ragtime' }
           onCodeChange={setMfaCode}
           onRememberDeviceChange={setRememberDevice}
           onVerify={handleMfaVerify}
-          onVerified={handleMfaSessionEstablished}
-          onEnrollComplete={handleMfaSessionEstablished}
+          onSessionEstablished={handleMfaSessionEstablished}
           onRecoveryContinue={() => void finishLogin()}
         />
       )}

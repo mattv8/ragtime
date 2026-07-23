@@ -1,7 +1,8 @@
-import { useCallback, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useCallback, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { api } from '@/api';
 import type { ImportFaissIndexResponse } from '@/types';
+import { FileDropZone } from './shared/FileDropZone';
 
 interface ImportFaissFormProps {
   onImported?: (result: ImportFaissIndexResponse) => void;
@@ -21,7 +22,6 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [overwrite, setOverwrite] = useState(false);
-  const [isDragOver, setIsDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showRiskConfirm, setShowRiskConfirm] = useState(false);
   const [status, setStatus] = useState<{
@@ -35,7 +35,6 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
     setName('');
     setDescription('');
     setOverwrite(false);
-    setIsDragOver(false);
     setShowRiskConfirm(false);
     setStatus(null);
     setResult(null);
@@ -48,33 +47,6 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
     // Default the index name to the zip filename (without extension)
     setName((current) => current || selected.name.replace(/\.zip$/i, ''));
   }, []);
-
-  const handleDragOver = useCallback((e: DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: DragEvent) => {
-      e.preventDefault();
-      setIsDragOver(false);
-      const dropped = e.dataTransfer.files[0];
-      if (dropped) handleFile(dropped);
-    },
-    [handleFile],
-  );
-
-  const handleFileChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const selected = e.target.files?.[0];
-      if (selected) handleFile(selected);
-    },
-    [handleFile],
-  );
 
   const handleImport = async () => {
     if (!file) {
@@ -114,28 +86,15 @@ export function ImportFaissForm({ onImported, onCancel }: ImportFaissFormProps) 
   return (
     <div>
       <div className="form-group">
-        <div
-          className={`file-input-wrapper ${isDragOver ? 'dragover' : ''} ${file ? 'has-file' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <div className="icon">
-            <Upload size={28} />
-          </div>
-          <div>Drag &amp; drop an exported FAISS zip here, or click to browse</div>
-          <div style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginTop: 8 }}>
-            Produced by the &quot;Download&quot; button on an existing document index
-          </div>
-          {file && <div className="file-name">{file.name}</div>}
-          <input
-            type="file"
-            name="file"
-            accept=".zip,application/zip"
-            onChange={handleFileChange}
-            disabled={isLoading}
-          />
-        </div>
+        <FileDropZone
+          file={file}
+          accept=".zip,application/zip"
+          disabled={isLoading}
+          icon={<Upload size={28} />}
+          prompt={<>Drag &amp; drop an exported FAISS zip here, or click to browse</>}
+          helpText={<>Produced by the &quot;Download&quot; button on an existing document index</>}
+          onFileSelected={handleFile}
+        />
       </div>
 
       {file && (

@@ -3,7 +3,7 @@ import { api } from '@/api';
 import type { MfaMethod } from '@/types';
 import { BrandName } from '@/utils/buildEnvironment';
 import { AuthCredentialsForm } from './AuthCredentialsForm';
-import { AuthMfaPanel } from './AuthMfaPanel';
+import { LoginMfaPanel } from './shared/LoginMfaPanel';
 
 export interface OAuthParams {
   client_id: string;
@@ -202,13 +202,12 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
         )}
 
         {mfaMode !== 'none' && (
-          <AuthMfaPanel
+          <LoginMfaPanel
             mode={mfaMode}
             error={error}
             isLoading={isLoading}
             code={mfaCode}
             rememberDevice={rememberDevice}
-            recoveryCodes={[]}
             recoveryContinueLabel="Continue authorization"
             methods={mfaMethods}
             preferredMethod={mfaPreferredMethod}
@@ -217,8 +216,7 @@ export function OAuthLoginPage({ params, serverName = 'Ragtime' }: OAuthLoginPag
             onCodeChange={setMfaCode}
             onRememberDeviceChange={setRememberDevice}
             onVerify={handleMfaVerify}
-            onVerified={handleMfaSessionEstablished}
-            onEnrollComplete={handleMfaSessionEstablished}
+            onSessionEstablished={handleMfaSessionEstablished}
             onRecoveryContinue={() => void completeOAuthFromSession()}
           />
         )}

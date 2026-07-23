@@ -1,6 +1,7 @@
 """Tests for externally submitted build briefs and task lifecycle."""
 
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TypedDict, Unpack
@@ -463,34 +464,62 @@ class GetBuildTaskTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reply_rejects_running_task(self) -> None:
-        from ragtime.userspace import build_task_service as module
+    @contextmanager
+    def _reply_patches(
+        self,
+        service,
+        module,
+        *,
+        task,
+        conversation,
+        ledger_task_id="task-1",
+        existing=None,
+        access=True,
+        task_side_effect=None,
+        send=None,
+    ):
+        from ragtime.indexer import routes as indexer_routes
 
-        service = module.build_task_service
-        with (
+        get_task = mock.AsyncMock(
+            side_effect=task_side_effect if task_side_effect is not None else None,
+            return_value=task if task_side_effect is None else None,
+        )
+        patches = [
             mock.patch.object(
                 type(service),
                 "_load_prisma_user",
                 mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
             ),
             mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
-            mock.patch.object(
-                module.repository,
-                "get_conversation",
-                mock.AsyncMock(return_value=SimpleNamespace(workspace_id="ws-1", parent_conversation_id=None)),
-            ),
-            mock.patch.object(
-                module.repository,
-                "get_chat_task",
-                mock.AsyncMock(return_value=SimpleNamespace(id="task-1", conversation_id="conv-1", status="running")),
-            ),
+            mock.patch.object(module.repository, "get_chat_task", get_task),
+            mock.patch.object(module.repository, "get_conversation", mock.AsyncMock(return_value=conversation)),
             mock.patch.object(
                 module,
                 "find_external_build_request_by_conversation",
-                mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId="task-1")),
+                mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId=ledger_task_id)),
             ),
-            mock.patch.object(module, "find_external_build_request", mock.AsyncMock(return_value=None)),
-            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
+            mock.patch.object(module, "find_external_build_request", mock.AsyncMock(return_value=existing)),
+            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=access)),
+        ]
+        if send is not None:
+            patches.append(mock.patch.object(indexer_routes, "_send_background_message_to_loaded_conversation", send))
+        for patcher in patches:
+            patcher.start()
+        try:
+            yield
+        finally:
+            for patcher in reversed(patches):
+                patcher.stop()
+
+    async def test_reply_rejects_running_task(self) -> None:
+        from ragtime.userspace import build_task_service as module
+
+        service = module.build_task_service
+        with self._reply_patches(
+            service,
+            module,
+            task=SimpleNamespace(id="task-1", conversation_id="conv-1", status="running"),
+            conversation=SimpleNamespace(workspace_id="ws-1", parent_conversation_id=None),
         ):
             with self.assertRaises(HTTPException) as ctx:
                 await service.reply_to_build_task("ws-1", "user-1", "task-1", "Proceed", "reply-001")
@@ -543,7 +572,6 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_reply_to_older_task_returns_current_ledger_task_without_enqueuing(self) -> None:
-        from ragtime.indexer import routes as indexer_routes
         from ragtime.userspace import build_task_service as module
 
         service = module.build_task_service
@@ -551,27 +579,14 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         current_task = SimpleNamespace(id="task-2", conversation_id="conv-1", status="pending")
         conversation = SimpleNamespace(id="conv-1", workspace_id="ws-1", parent_conversation_id=None)
         send = mock.AsyncMock()
-        with (
-            mock.patch.object(
-                type(service),
-                "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
-            ),
-            mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
-            mock.patch.object(
-                module.repository,
-                "get_chat_task",
-                mock.AsyncMock(side_effect=[older_task, current_task]),
-            ),
-            mock.patch.object(module.repository, "get_conversation", mock.AsyncMock(return_value=conversation)),
-            mock.patch.object(
-                module,
-                "find_external_build_request_by_conversation",
-                mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId="task-2")),
-            ),
-            mock.patch.object(module, "find_external_build_request", mock.AsyncMock(return_value=None)),
-            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
-            mock.patch.object(indexer_routes, "_send_background_message_to_loaded_conversation", send),
+        with self._reply_patches(
+            service,
+            module,
+            task=current_task,
+            conversation=conversation,
+            ledger_task_id="task-2",
+            task_side_effect=[older_task, current_task],
+            send=send,
         ):
             result = await service.reply_to_build_task("ws-1", "user-1", "task-1", "Proceed", "reply-001")
 
@@ -581,34 +596,20 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         send.assert_not_awaited()
 
     async def test_reply_rejects_stale_task_when_current_pointer_task_missing(self) -> None:
-        from ragtime.indexer import routes as indexer_routes
         from ragtime.userspace import build_task_service as module
 
         service = module.build_task_service
         requested_task = SimpleNamespace(id="task-1", conversation_id="conv-1", status="completed")
         conversation = SimpleNamespace(id="conv-1", workspace_id="ws-1", parent_conversation_id=None)
         send = mock.AsyncMock()
-        with (
-            mock.patch.object(
-                type(service),
-                "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
-            ),
-            mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
-            mock.patch.object(
-                module.repository,
-                "get_chat_task",
-                mock.AsyncMock(side_effect=[requested_task, None]),
-            ),
-            mock.patch.object(module.repository, "get_conversation", mock.AsyncMock(return_value=conversation)),
-            mock.patch.object(
-                module,
-                "find_external_build_request_by_conversation",
-                mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId="task-2")),
-            ),
-            mock.patch.object(module, "find_external_build_request", mock.AsyncMock(return_value=None)),
-            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
-            mock.patch.object(indexer_routes, "_send_background_message_to_loaded_conversation", send),
+        with self._reply_patches(
+            service,
+            module,
+            task=None,
+            conversation=conversation,
+            ledger_task_id="task-2",
+            task_side_effect=[requested_task, None],
+            send=send,
         ):
             with self.assertRaises(HTTPException) as ctx:
                 await service.reply_to_build_task("ws-1", "user-1", "task-1", "Proceed", "reply-001")
@@ -622,21 +623,12 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         service = module.build_task_service
         task = SimpleNamespace(id="task-1", conversation_id="conv-1", status="completed")
         conversation = SimpleNamespace(id="conv-1", workspace_id="ws-1", parent_conversation_id=None)
-        with (
-            mock.patch.object(
-                type(service),
-                "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
-            ),
-            mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
-            mock.patch.object(module.repository, "get_chat_task", mock.AsyncMock(return_value=task)),
-            mock.patch.object(module.repository, "get_conversation", mock.AsyncMock(return_value=conversation)),
-            mock.patch.object(
-                module,
-                "find_external_build_request_by_conversation",
-                mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId="task-1")),
-            ),
-            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=False)),
+        with self._reply_patches(
+            service,
+            module,
+            task=task,
+            conversation=conversation,
+            access=False,
         ):
             with self.assertRaises(HTTPException) as ctx:
                 await service.reply_to_build_task("ws-1", "user-1", "task-1", "Proceed", "reply-001")
@@ -659,19 +651,14 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             taskId="task-2",
         )
         send = mock.AsyncMock()
-        with (
-            mock.patch.object(
-                type(service),
-                "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
-            ),
-            mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
-            mock.patch.object(module.repository, "get_chat_task", mock.AsyncMock(side_effect=[task, reply_task])),
-            mock.patch.object(module.repository, "get_conversation", mock.AsyncMock(return_value=conversation)),
-            mock.patch.object(module, "find_external_build_request_by_conversation", mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId="task-1"))),
-            mock.patch.object(module, "find_external_build_request", mock.AsyncMock(return_value=existing)),
-            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
-            mock.patch.object(indexer_routes, "_send_background_message_to_loaded_conversation", send),
+        with self._reply_patches(
+            service,
+            module,
+            task=reply_task,
+            conversation=conversation,
+            existing=existing,
+            task_side_effect=[task, reply_task],
+            send=send,
         ):
             result = await service.reply_to_build_task("ws-1", "user-1", "task-1", "Proceed", "reply-001")
 
@@ -680,7 +667,6 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         send.assert_not_awaited()
 
     async def test_reply_retry_prefers_finalized_reply_ledger_over_advanced_original_pointer(self) -> None:
-        from ragtime.indexer import routes as indexer_routes
         from ragtime.userspace import build_task_service as module
 
         service = module.build_task_service
@@ -695,23 +681,15 @@ class ReplyBuildTaskTests(unittest.IsolatedAsyncioTestCase):
             taskId="task-2",
         )
         send = mock.AsyncMock()
-        with (
-            mock.patch.object(
-                type(service),
-                "_load_prisma_user",
-                mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user")),
-            ),
-            mock.patch.object(type(service), "_enforce_editor", mock.AsyncMock()),
-            mock.patch.object(module.repository, "get_chat_task", mock.AsyncMock(side_effect=[requested_task, followup_task])),
-            mock.patch.object(module.repository, "get_conversation", mock.AsyncMock(return_value=conversation)),
-            mock.patch.object(
-                module,
-                "find_external_build_request_by_conversation",
-                mock.AsyncMock(return_value=SimpleNamespace(id="ebr-1", taskId="task-2")),
-            ),
-            mock.patch.object(module, "find_external_build_request", mock.AsyncMock(return_value=existing_reply)),
-            mock.patch.object(module.repository, "check_conversation_access", mock.AsyncMock(return_value=True)),
-            mock.patch.object(indexer_routes, "_send_background_message_to_loaded_conversation", send),
+        with self._reply_patches(
+            service,
+            module,
+            task=followup_task,
+            conversation=conversation,
+            ledger_task_id="task-2",
+            existing=existing_reply,
+            task_side_effect=[requested_task, followup_task],
+            send=send,
         ):
             result = await service.reply_to_build_task("ws-1", "user-1", "task-1", "Proceed", "reply-001")
 

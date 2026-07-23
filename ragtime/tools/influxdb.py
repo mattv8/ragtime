@@ -19,12 +19,11 @@ from pydantic import BaseModel, Field
 from ragtime.core.logging import get_logger
 from ragtime.core.sql_utils import (
     DB_TYPE_INFLUXDB,
-    enforce_max_results,
     format_query_result,
-    validate_sql_query,
 )
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.tools._query_helpers import validate_and_prepare_query
 from ragtime.tools.descriptions import format_tool_write_access_sentence
 
 logger = get_logger(__name__)
@@ -133,19 +132,19 @@ async def execute_influxdb_query_async(
     logger.info(f"InfluxDB Query: {description}")
     logger.debug(f"Flux: {query[:200]}...")
 
-    is_safe, reason = validate_sql_query(
+    is_safe, prepared_query = validate_and_prepare_query(
         query,
-        enable_write=allow_write,
+        max_results=max_results,
+        allow_write=allow_write,
         db_type=DB_TYPE_INFLUXDB,
         require_result_limit=require_result_limit,
+        enforce_result_limit=enforce_result_limit,
     )
     if not is_safe:
-        error_msg = f"Security validation failed: {reason}"
+        error_msg = f"Security validation failed: {prepared_query}"
         logger.warning(error_msg)
         return f"Error: {error_msg}"
-
-    if enforce_result_limit:
-        query = enforce_max_results(query, max_results, db_type=DB_TYPE_INFLUXDB)
+    query = prepared_query
 
     def run_query() -> str:
         """Execute query in thread pool."""

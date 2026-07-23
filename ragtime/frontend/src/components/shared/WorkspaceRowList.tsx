@@ -1,5 +1,6 @@
 import { useState, useCallback, type ReactNode } from 'react';
-import { Check, Repeat, Trash2, X } from 'lucide-react';
+import { Repeat, Trash2 } from 'lucide-react';
+import { DeleteConfirmationActions } from './DeleteConfirmationActions';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import type { User, UserSpaceWorkspace } from '@/types';
 
@@ -134,36 +135,12 @@ export function WorkspaceRowList({
                   <Repeat size={12} />
                 </button>
                 {isConfirming ? (
-                  <>
-                    <button
-                      type="button"
-                      className="chat-action-btn confirm-delete"
-                      disabled={busy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleDelete(ws.id);
-                      }}
-                      title="Confirm delete"
-                    >
-                      {isDeleting ? (
-                        <MiniLoadingSpinner variant="icon" size={12} />
-                      ) : (
-                        <Check size={12} />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-action-btn cancel-delete"
-                      disabled={busy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteConfirmId(null);
-                      }}
-                      title="Cancel"
-                    >
-                      <X size={12} />
-                    </button>
-                  </>
+                  <DeleteConfirmationActions
+                    disabled={busy}
+                    deleting={isDeleting}
+                    onConfirm={() => void handleDelete(ws.id)}
+                    onCancel={() => setDeleteConfirmId(null)}
+                  />
                 ) : (
                   <button
                     type="button"

@@ -44,6 +44,24 @@ class _TrackedAsyncByteStream(httpx.AsyncByteStream):
 
 
 class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
+    def _broker(self, handler, *, resolver=None, clock=None) -> HttpApiBroker:
+        options = {"clock": clock} if clock is not None else {}
+        return HttpApiBroker(
+            resolver=resolver or (lambda _host: ["8.8.8.8"]),
+            base_transport=httpx.MockTransport(handler),
+            **options,
+        )
+
+    async def _execute(self, broker: HttpApiBroker, config: HttpApiConnectionConfig, request: HttpApiRequest | None = None):
+        return await broker.execute(
+            "tool-1",
+            config,
+            request or HttpApiRequest(method=HttpApiMethod.GET, path="/items"),
+            allow_write=False,
+            timeout_seconds=5,
+            max_results=10,
+        )
+
     async def test_resolve_http_api_hostname_deduplicates_stream_addresses(self) -> None:
         loop = asyncio.get_running_loop()
 
@@ -81,14 +99,10 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             resolver_calls.append(host)
             return ["8.8.8.8", "8.8.4.4"] if len(resolver_calls) == 1 else ["8.8.4.4"]
 
-        broker = HttpApiBroker(
-            resolver=resolver,
-            base_transport=httpx.MockTransport(handler),
-            clock=lambda: 1000.0,
-        )
+        broker = self._broker(handler, resolver=resolver, clock=lambda: 1000.0)
 
-        result = await broker.execute(
-            "tool-1",
+        result = await self._execute(
+            broker,
             HttpApiConnectionConfig(
                 base_url="https://api.example.com",
                 auth_mode=HttpApiAuthMode.LOGIN_EXCHANGE,
@@ -96,10 +110,6 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 login_username="demo",
                 login_password="super-secret",
             ),
-            HttpApiRequest(method=HttpApiMethod.GET, path="/items"),
-            allow_write=False,
-            timeout_seconds=5,
-            max_results=10,
         )
 
         self.assertEqual(resolver_calls, ["api.example.com"])
@@ -113,10 +123,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             calls.append("request")
             return httpx.Response(200, json={})
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-        )
+        broker = self._broker(handler)
 
         result = await broker.validate_configuration(HttpApiConnectionConfig(base_url="https://api.example.com"), perform_login=False)
 
@@ -131,10 +138,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return httpx.Response(200, json={"access_token": "token-123", "expires_in": 60})
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-        )
+        broker = self._broker(handler)
 
         result = await broker.validate_configuration(
             HttpApiConnectionConfig(
@@ -159,10 +163,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return httpx.Response(200, json={"access_token": "token-123", "expires_in": 60})
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-        )
+        broker = self._broker(handler)
 
         result = await broker.validate_configuration(
             HttpApiConnectionConfig(
@@ -191,10 +192,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             requests.append(request)
             return httpx.Response(200, json={"access_token": "token-123", "expires_in": 60})
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-        )
+        broker = self._broker(handler)
 
         await broker.validate_configuration(
             HttpApiConnectionConfig(
@@ -257,7 +255,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             resolver_calls.append(host)
             return ["8.8.8.8"]
 
-        broker = HttpApiBroker(resolver=resolver, base_transport=httpx.MockTransport(handler))
+        broker = self._broker(handler, resolver=resolver)
 
         with self.assertRaisesRegex(HttpApiSecurityError, "token_header_name"):
             await broker.validate_configuration(
@@ -319,11 +317,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, json={"access_token": "token-123", "expires_in": 60})
             return httpx.Response(200, json=[{"id": 1}])
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-            clock=lambda: 1000.0,
-        )
+        broker = self._broker(handler, clock=lambda: 1000.0)
         config = HttpApiConnectionConfig(
             base_url="https://api.example.com",
             auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
@@ -371,14 +365,10 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(401, json={"error": "expired"})
             return httpx.Response(200, json=[{"id": 1}])
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-            clock=lambda: 1000.0,
-        )
+        broker = self._broker(handler, clock=lambda: 1000.0)
 
-        result = await broker.execute(
-            "tool-1",
+        result = await self._execute(
+            broker,
             HttpApiConnectionConfig(
                 base_url="https://api.example.com",
                 auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
@@ -392,10 +382,6 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 token_header_name="Authentication",
                 token_prefix="Bearer",
             ),
-            HttpApiRequest(method=HttpApiMethod.GET, path="/items"),
-            allow_write=False,
-            timeout_seconds=5,
-            max_results=10,
         )
 
         self.assertEqual(result.status, 200)
@@ -408,10 +394,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             calls.append("request")
             return httpx.Response(200, json={"access_token": "token-123", "expires_in": 60})
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-        )
+        broker = self._broker(handler)
 
         with self.assertRaisesRegex(ValueError, "token_header_name"):
             await broker.execute(
@@ -444,10 +427,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             calls.append("request")
             return httpx.Response(200, json={"access_token": "token-123", "expires_in": 60})
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-        )
+        broker = self._broker(handler)
 
         with self.assertRaisesRegex(ValueError, "Header 'X-Tenant'"):
             await broker.execute(
@@ -663,13 +643,9 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(401, json={"error": "expired"})
             return httpx.Response(200, json=[{"id": 1}])
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-            clock=lambda: 1000.0,
-        )
-        result = await broker.execute(
-            "tool-1",
+        broker = self._broker(handler, clock=lambda: 1000.0)
+        result = await self._execute(
+            broker,
             HttpApiConnectionConfig(
                 base_url="https://api.example.com",
                 auth_mode=HttpApiAuthMode.LOGIN_EXCHANGE,
@@ -677,10 +653,6 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 login_username="demo",
                 login_password="super-secret",
             ),
-            HttpApiRequest(method=HttpApiMethod.GET, path="/items"),
-            allow_write=False,
-            timeout_seconds=5,
-            max_results=10,
         )
 
         self.assertEqual(seen_auth, ["Bearer token-1", "Bearer token-2"])
@@ -697,11 +669,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200, json={"access_token": "token-1", "expires_in": 60})
             return httpx.Response(200, json=[{"id": 1}])
 
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-            clock=lambda: 1000.0,
-        )
+        broker = self._broker(handler, clock=lambda: 1000.0)
         config = HttpApiConnectionConfig(
             base_url="https://api.example.com",
             auth_mode=HttpApiAuthMode.LOGIN_EXCHANGE,

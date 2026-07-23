@@ -14,9 +14,10 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.core.logging import get_logger
-from ragtime.core.sql_utils import DB_TYPE_MSSQL, enforce_max_results, format_query_result, normalize_mssql_error_message, validate_sql_query
+from ragtime.core.sql_utils import DB_TYPE_MSSQL, format_query_result, normalize_mssql_error_message
 from ragtime.core.ssh import SSHTunnel, ssh_tunnel_config_from_dict
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.tools._query_helpers import validate_and_prepare_query
 from ragtime.tools.descriptions import format_tool_write_access_sentence
 
 logger = get_logger(__name__)
@@ -140,21 +141,19 @@ async def execute_mssql_query_async(
     logger.info(f"MSSQL Query: {description}")
     logger.debug(f"SQL: {query[:200]}...")
 
-    # Validate the query
-    is_safe, reason = validate_sql_query(
+    is_safe, prepared_query = validate_and_prepare_query(
         query,
-        enable_write=allow_write,
+        max_results=max_results,
+        allow_write=allow_write,
         db_type=DB_TYPE_MSSQL,
         require_result_limit=require_result_limit,
+        enforce_result_limit=enforce_result_limit,
     )
     if not is_safe:
-        error_msg = f"Security validation failed: {reason}"
+        error_msg = f"Security validation failed: {prepared_query}"
         logger.warning(error_msg)
         return f"Error: {error_msg}"
-
-    # Enforce max results when this executor is used as an ordinary query tool.
-    if enforce_result_limit:
-        query = enforce_max_results(query, max_results, db_type=DB_TYPE_MSSQL)
+    query = prepared_query
 
     def run_query() -> str:
         """Execute query in thread pool."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
@@ -98,6 +99,71 @@ async def _execute_runtime_bridge_tool_request(
         )
 
     return service, response, tool, build_tool
+
+
+@contextmanager
+def _patch_sql_write_execution(
+    *,
+    allow_write: bool,
+    create_subprocess_exec: mock.AsyncMock,
+):
+    with (
+        mock.patch.object(
+            userspace_service_module.repository,
+            "get_tool_config",
+            mock.AsyncMock(
+                return_value=_make_tool_config(
+                    allow_write=allow_write,
+                    connection_config={"container": "ragtime-db-test"},
+                )
+            ),
+        ),
+        mock.patch.object(userspace_service_module.asyncio, "create_subprocess_exec", create_subprocess_exec),
+    ):
+        yield
+
+
+@contextmanager
+def _patch_http_api_execution(
+    *,
+    broker_execute: mock.AsyncMock,
+    allow_write: bool,
+    connection_config: dict[str, object],
+):
+    with (
+        mock.patch.object(
+            userspace_service_module.repository,
+            "get_tool_config",
+            mock.AsyncMock(
+                return_value=_make_tool_config(
+                    tool_type="http_api",
+                    allow_write=allow_write,
+                    connection_config=connection_config,
+                )
+            ),
+        ),
+        mock.patch.object(
+            userspace_service_module,
+            "http_api_broker",
+            SimpleNamespace(execute=broker_execute),
+            create=True,
+        ),
+    ):
+        yield
+
+
+class _SuccessfulSubprocess:
+    returncode = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"", b""
+
+    def kill(self) -> None:
+        raise AssertionError("kill should not be called")
+
+
+def _successful_subprocess_mock() -> mock.AsyncMock:
+    return mock.AsyncMock(return_value=_SuccessfulSubprocess())
 
 
 class _RuntimeBridgeRecordingMixin:
@@ -272,25 +338,9 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
         service = _RuntimeBridgeWorkspaceService(workspace)
 
-        class _Process:
-            returncode = 0
+        create_subprocess_exec = _successful_subprocess_mock()
 
-            async def communicate(self) -> tuple[bytes, bytes]:
-                return b"", b""
-
-            def kill(self) -> None:
-                raise AssertionError("kill should not be called")
-
-        create_subprocess_exec = mock.AsyncMock(return_value=_Process())
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(allow_write=False, connection_config={"container": "ragtime-db-test"})),
-            ),
-            mock.patch.object(userspace_service_module.asyncio, "create_subprocess_exec", create_subprocess_exec),
-        ):
+        with _patch_sql_write_execution(allow_write=False, create_subprocess_exec=create_subprocess_exec):
             response = await service.execute_component_from_runtime_bridge(
                 "workspace-1",
                 ExecuteComponentRequest(component_id="tool-1", request={"query": "UPDATE x SET y = 1"}),
@@ -308,25 +358,9 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
         service = _RuntimeBridgeWorkspaceService(workspace)
 
-        class _Process:
-            returncode = 0
+        create_subprocess_exec = _successful_subprocess_mock()
 
-            async def communicate(self) -> tuple[bytes, bytes]:
-                return b"", b""
-
-            def kill(self) -> None:
-                raise AssertionError("kill should not be called")
-
-        create_subprocess_exec = mock.AsyncMock(return_value=_Process())
-
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(return_value=_make_tool_config(allow_write=True, connection_config={"container": "ragtime-db-test"})),
-            ),
-            mock.patch.object(userspace_service_module.asyncio, "create_subprocess_exec", create_subprocess_exec),
-        ):
+        with _patch_sql_write_execution(allow_write=True, create_subprocess_exec=create_subprocess_exec):
             response = await service.execute_component_from_runtime_bridge(
                 "workspace-1",
                 ExecuteComponentRequest(component_id="tool-1", request={"query": "UPDATE widgets SET enabled = true"}),
@@ -423,22 +457,13 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(
-                    return_value=_make_tool_config(
-                        tool_type="http_api",
-                        allow_write=True,
-                        connection_config={
-                            "base_url": "https://api.example.com",
-                            "method_policies": {"GET": "read", "POST": "write"},
-                        },
-                    )
-                ),
-            ),
-            mock.patch.object(userspace_service_module, "http_api_broker", SimpleNamespace(execute=broker_execute), create=True),
+        with _patch_http_api_execution(
+            broker_execute=broker_execute,
+            allow_write=True,
+            connection_config={
+                "base_url": "https://api.example.com",
+                "method_policies": {"GET": "read", "POST": "write"},
+            },
         ):
             browser_response = await service.execute_component(
                 "workspace-1",
@@ -469,22 +494,13 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         service = _RuntimeBridgeWorkspaceService()
         broker_execute = mock.AsyncMock(side_effect=PermissionError("HTTP method POST requires write access"))
 
-        with (
-            mock.patch.object(
-                userspace_service_module.repository,
-                "get_tool_config",
-                mock.AsyncMock(
-                    return_value=_make_tool_config(
-                        tool_type="http_api",
-                        allow_write=True,
-                        connection_config={
-                            "base_url": "https://api.example.com",
-                            "method_policies": {"GET": "read", "POST": "write"},
-                        },
-                    )
-                ),
-            ),
-            mock.patch.object(userspace_service_module, "http_api_broker", SimpleNamespace(execute=broker_execute), create=True),
+        with _patch_http_api_execution(
+            broker_execute=broker_execute,
+            allow_write=True,
+            connection_config={
+                "base_url": "https://api.example.com",
+                "method_policies": {"GET": "read", "POST": "write"},
+            },
         ):
             response = await service.execute_component_from_runtime_bridge(
                 "workspace-1",

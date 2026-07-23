@@ -1,5 +1,6 @@
 import { useCallback, useState, type ReactNode } from 'react';
-import { Check, Square, Trash2, X } from 'lucide-react';
+import { Square, Trash2 } from 'lucide-react';
+import { DeleteConfirmationActions } from './DeleteConfirmationActions';
 import { MiniLoadingSpinner } from './MiniLoadingSpinner';
 import type { Conversation, ConversationSummary } from '@/types';
 
@@ -133,36 +134,12 @@ export function UserConversationRowList({
                 )}
 
                 {isConfirmingDelete ? (
-                  <>
-                    <button
-                      type="button"
-                      className="chat-action-btn confirm-delete"
-                      disabled={rowBusy}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleDelete(conversation.id);
-                      }}
-                      title="Confirm delete"
-                    >
-                      {isDeleting ? (
-                        <MiniLoadingSpinner variant="icon" size={12} />
-                      ) : (
-                        <Check size={12} />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-action-btn cancel-delete"
-                      disabled={rowBusy}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setDeleteConfirmId(null);
-                      }}
-                      title="Cancel"
-                    >
-                      <X size={12} />
-                    </button>
-                  </>
+                  <DeleteConfirmationActions
+                    disabled={rowBusy}
+                    deleting={isDeleting}
+                    onConfirm={() => void handleDelete(conversation.id)}
+                    onCancel={() => setDeleteConfirmId(null)}
+                  />
                 ) : (
                   <button
                     type="button"
