@@ -9,6 +9,7 @@ _NESTED_SECRET_ROW_FIELDS: tuple[str, ...] = (
     "request_headers",
     "token_request_headers",
     "token_request_fields",
+    "request_body_fields",
 )
 
 
@@ -19,18 +20,11 @@ def _copy_rows(config: dict[str, Any], field: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows if isinstance(row, dict)]
 
 
-def _is_secret_bearing_row(field: str, row: dict[str, Any]) -> bool:
-    if field == "token_request_fields":
-        return bool(row.get("secret"))
-    return True
-
-
 def _iter_nested_secret_rows(config: dict[str, Any] | None) -> Iterable[tuple[str, dict[str, Any]]]:
     payload = dict(config or {})
     for field in _NESTED_SECRET_ROW_FIELDS:
         for row in _copy_rows(payload, field):
-            if _is_secret_bearing_row(field, row):
-                yield field, row
+            yield field, row
 
 
 def _secret_row_path(field: str, row: dict[str, Any]) -> str:
@@ -51,7 +45,7 @@ def encrypt_http_api_nested_secrets(config: dict[str, Any] | None) -> dict[str, 
     for field in _NESTED_SECRET_ROW_FIELDS:
         rows = _copy_rows(result, field)
         for row in rows:
-            if _is_secret_bearing_row(field, row) and row.get("value"):
+            if row.get("value"):
                 row["value"] = encrypt_secret(str(row["value"]))
         if field in result:
             result[field] = rows
@@ -65,16 +59,23 @@ def decrypt_http_api_nested_secrets(config: dict[str, Any] | None) -> dict[str, 
     for field in _NESTED_SECRET_ROW_FIELDS:
         rows = _copy_rows(result, field)
         for row in rows:
-            if _is_secret_bearing_row(field, row):
-                row["value"] = decrypt_secret(_secret_row_value(row))
+            row["value"] = decrypt_secret(_secret_row_value(row))
         if field in result:
             result[field] = rows
 
     return result
 
 
-def configured_http_api_secret_paths(config: dict[str, Any] | None) -> list[str]:
-    return [_secret_row_path(field, row) for field, row in _iter_nested_secret_rows(config) if row.get("value")]
+def configured_http_api_secret_paths(
+    config: dict[str, Any] | None,
+    *,
+    include_explicit_non_secret: bool = True,
+) -> list[str]:
+    return [
+        _secret_row_path(field, row)
+        for field, row in _iter_nested_secret_rows(config)
+        if row.get("value") and (include_explicit_non_secret or row.get("secret", True) is not False)
+    ]
 
 
 def undecryptable_http_api_secret_paths(config: dict[str, Any] | None) -> list[str]:
@@ -95,7 +96,7 @@ def clear_undecryptable_http_api_nested_secrets(config: dict[str, Any] | None) -
         cleaned_rows: list[dict[str, Any]] = []
         for row in _copy_rows(payload, field):
             value = _secret_row_value(row)
-            if _is_secret_bearing_row(field, row) and _is_encrypted_secret_value(value) and not attempt_decrypt(value):
+            if _is_encrypted_secret_value(value) and not attempt_decrypt(value):
                 cleared_paths.append(_secret_row_path(field, row))
                 continue
             cleaned_rows.append(row)

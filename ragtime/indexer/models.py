@@ -2342,7 +2342,8 @@ class ToolConfig(BaseModel):
     def _serialize_connection_config(self, value: dict) -> dict:
         if self.tool_type != ToolType.HTTP_API:
             return value
-        return redact_http_api_connection_config(value)
+        secret_paths = set(self.configured_secret_fields) if self.configured_secret_fields else None
+        return redact_http_api_connection_config(value, secret_paths=secret_paths)
 
 
 class CreateToolConfigRequest(BaseModel):

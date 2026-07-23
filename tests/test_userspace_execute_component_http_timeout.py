@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
 
-from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
+from tests.rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 
 inserted_fake_rag_prompts = install_fake_rag_prompts()
 

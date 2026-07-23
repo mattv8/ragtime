@@ -3,12 +3,146 @@ import sys
 import unittest
 from types import SimpleNamespace
 
-from ragtime.http_api.models import HttpApiAuthMode, HttpApiMethodPolicy
+from ragtime.http_api.models import (
+    HttpApiAuthMode,
+    HttpApiBodyFormat,
+    HttpApiLoginBodyFormat,
+    HttpApiMethod,
+    HttpApiMethodPolicy,
+)
 from ragtime.indexer.models import ToolConfig, ToolType
 from ragtime.indexer.repository import IndexerRepository
 
 
 class HttpApiModelContractTests(unittest.TestCase):
+    def test_oauth_model_validates_flow_endpoints_and_client_auth(self) -> None:
+        from pydantic import ValidationError
+
+        from ragtime.http_api.models import HttpApiConnectionConfig
+
+        with self.assertRaises(ValidationError):
+            HttpApiConnectionConfig.model_validate({"auth_mode": "oauth2", "oauth_client_id": "client", "oauth_token_url": "https://auth.test/token"})
+        with self.assertRaises(ValidationError):
+            HttpApiConnectionConfig.model_validate(
+                {
+                    "auth_mode": "oauth2",
+                    "oauth_client_id": "client",
+                    "oauth_token_url": "https://auth.test/token",
+                    "oauth_device_authorization_url": "https://auth.test/device",
+                    "oauth_client_auth_method": "client_secret_basic",
+                }
+            )
+        config = HttpApiConnectionConfig.model_validate(
+            {
+                "auth_mode": "oauth2",
+                "oauth_flow": "device_code",
+                "oauth_client_id": "client",
+                "oauth_token_url": "https://auth.test/token",
+                "oauth_device_authorization_url": "https://auth.test/device",
+                "oauth_scopes": "openid read openid",
+                "oauth_client_auth_method": "client_secret_basic",
+                "oauth_client_secret": "secret",
+                "oauth_session_id": "transient",
+            }
+        )
+        self.assertEqual(config.oauth_scopes, ["openid", "read"])
+        dumped = config.model_dump(mode="json")
+        self.assertNotIn("oauth_session_id", dumped)
+        self.assertEqual(dumped["oauth_client_secret"], "")
+        self.assertEqual(dumped["oauth_access_token"], "")
+        self.assertEqual(dumped["oauth_refresh_token"], "")
+
+    def test_config_accepts_resource_body_fields_and_absolute_token_url(self) -> None:
+        from ragtime.http_api.models import HttpApiConnectionConfig
+
+        config = HttpApiConnectionConfig.model_validate(
+            {
+                "base_url": "https://api.example.com",
+                "auth_mode": "token_exchange",
+                "token_url": "https://auth.example.com/oauth2/token",
+                "request_body_format": "multipart",
+                "request_body_fields": [
+                    {"name": "tenant", "value": "north", "secret": False},
+                    {"name": "client_secret", "value": "secret", "secret": True},
+                ],
+            }
+        )
+
+        self.assertEqual(config.request_body_format, HttpApiBodyFormat.MULTIPART)
+        self.assertEqual(config.token_url, "https://auth.example.com/oauth2/token")
+        self.assertEqual(config.request_body_fields[1].value, "secret")
+
+    def test_token_fields_normalize_legacy_non_secret_rows_to_secret(self) -> None:
+        from ragtime.http_api.models import HttpApiConnectionConfig
+
+        config = HttpApiConnectionConfig.model_validate(
+            {
+                "token_request_fields": [{"name": "grant_type", "value": "client_credentials", "secret": False}],
+                "request_body_fields": [{"name": "tenant", "value": "", "secret": False}],
+            }
+        )
+
+        self.assertTrue(config.token_request_fields[0].secret)
+        self.assertTrue(config.request_body_fields[0].secret)
+
+    def test_json_serialization_redacts_all_resource_body_values(self) -> None:
+        from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiTokenField
+
+        config = HttpApiConnectionConfig(
+            request_body_fields=[
+                HttpApiTokenField(name="grant_type", value="client_credentials", secret=False),
+                HttpApiTokenField(name="client_secret", value="secret", secret=True),
+            ]
+        )
+
+        self.assertEqual(
+            config.model_dump(mode="json")["request_body_fields"],
+            [
+                {"name": "grant_type", "value": "", "secret": True},
+                {"name": "client_secret", "value": "", "secret": True},
+            ],
+        )
+
+    def test_config_rejects_duplicate_resource_body_field_names_case_sensitively(self) -> None:
+        from pydantic import ValidationError
+
+        from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiTokenField
+
+        with self.assertRaisesRegex(ValidationError, "Duplicate request body field name"):
+            HttpApiConnectionConfig(
+                request_body_fields=[
+                    HttpApiTokenField(name="tenant", value="one", secret=False),
+                    HttpApiTokenField(name="tenant", value="two", secret=False),
+                ]
+            )
+
+        config = HttpApiConnectionConfig(
+            request_body_fields=[
+                HttpApiTokenField(name="Tenant", value="one", secret=False),
+                HttpApiTokenField(name="tenant", value="two", secret=False),
+            ]
+        )
+        self.assertEqual(len(config.request_body_fields), 2)
+
+    def test_config_rejects_conflicting_resource_and_token_content_types(self) -> None:
+        from pydantic import ValidationError
+
+        from ragtime.http_api.models import HttpApiConfiguredHeader, HttpApiConnectionConfig, HttpApiTokenField
+
+        with self.assertRaisesRegex(ValidationError, "request body.*Content-Type"):
+            HttpApiConnectionConfig(
+                request_body_format=HttpApiBodyFormat.JSON,
+                request_body_fields=[HttpApiTokenField(name="tenant", value="north", secret=False)],
+                request_headers=[HttpApiConfiguredHeader(name="Content-Type", value="application/x-www-form-urlencoded")],
+            )
+
+        with self.assertRaisesRegex(ValidationError, "token request body.*Content-Type"):
+            HttpApiConnectionConfig(
+                login_body_format=HttpApiLoginBodyFormat.FORM,
+                token_request_fields=[HttpApiTokenField(name="grant_type", value="client_credentials", secret=False)],
+                token_request_headers=[HttpApiConfiguredHeader(name="Content-Type", value="application/json; charset=utf-8")],
+            )
+
     def test_http_api_connection_config_supports_nested_auth_fields_and_json_redacts_nested_secrets(self) -> None:
         from ragtime.http_api.models import HttpApiConnectionConfig
 
@@ -38,8 +172,8 @@ class HttpApiModelContractTests(unittest.TestCase):
         self.assertEqual(
             json_dumped["token_request_fields"],
             [
-                {"name": "grant_type", "value": "client_credentials", "secret": False},
-                {"name": "client_id", "value": "client-id", "secret": False},
+                {"name": "grant_type", "value": "", "secret": True},
+                {"name": "client_id", "value": "", "secret": True},
                 {"name": "client_secret", "value": "", "secret": True},
             ],
         )
@@ -174,8 +308,11 @@ class HttpApiModelContractTests(unittest.TestCase):
         self.assertEqual(dumped["auth_mode"], "none")
         self.assertEqual(dumped["api_key_location"], "header")
         self.assertEqual(dumped["login_path"], "")
+        self.assertEqual(dumped["token_url"], "")
         self.assertEqual(dumped["login_method"], "POST")
         self.assertEqual(dumped["login_body_format"], "json")
+        self.assertEqual(dumped["request_body_format"], "json")
+        self.assertEqual(dumped["request_body_fields"], [])
         self.assertEqual(dumped["token_response_path"], "access_token")
         self.assertEqual(dumped["token_header_name"], "Authorization")
         self.assertEqual(dumped["token_prefix"], "Bearer")
@@ -194,6 +331,39 @@ class HttpApiModelContractTests(unittest.TestCase):
                 "DELETE": "disabled",
             },
         )
+
+    def test_http_api_connection_config_documentation_url_is_optional_and_preserves_http_url(self) -> None:
+        from ragtime.http_api.models import HttpApiConnectionConfig
+
+        self.assertEqual(HttpApiConnectionConfig().documentation_url, "")
+        documentation_url = "https://docs.example.com/api/index.html?version=1#users"
+        config = HttpApiConnectionConfig(documentation_url=documentation_url)
+
+        self.assertEqual(config.documentation_url, documentation_url)
+
+    def test_http_api_connection_config_rejects_non_http_or_relative_documentation_urls(self) -> None:
+        from pydantic import ValidationError
+
+        from ragtime.http_api.models import HttpApiConnectionConfig
+
+        for documentation_url in ("ftp://docs.example.com/api", "//docs.example.com/api", "/api/docs", "docs/index.html"):
+            with self.subTest(documentation_url=documentation_url):
+                with self.assertRaises(ValidationError):
+                    HttpApiConnectionConfig(documentation_url=documentation_url)
+
+    def test_http_api_connection_config_rejects_control_characters_in_documentation_url(self) -> None:
+        from pydantic import ValidationError
+
+        from ragtime.http_api.models import HttpApiConnectionConfig
+
+        for documentation_url in (
+            "https://docs.example.com/api\rreference",
+            "https://docs.example.com/api\nreference",
+            "https://docs.example.com/api\x00reference",
+        ):
+            with self.subTest(documentation_url=repr(documentation_url)):
+                with self.assertRaises(ValidationError):
+                    HttpApiConnectionConfig(documentation_url=documentation_url)
 
     def test_http_api_connection_config_python_dump_keeps_secret_values(self) -> None:
         from ragtime.http_api.models import HttpApiConnectionConfig
@@ -296,14 +466,12 @@ class HttpApiModelContractTests(unittest.TestCase):
         self.assertEqual(
             merged["token_request_fields"],
             [
-                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                {"name": "grant_type", "value": "client_credentials", "secret": True},
                 {"name": "client_secret", "value": "stored-client-secret", "secret": True},
             ],
         )
 
-    def test_merge_http_api_secret_updates_does_not_preserve_secret_when_row_toggles_to_non_secret_blank(self) -> None:
-        from pydantic import ValidationError
-
+    def test_merge_http_api_secret_updates_preserves_secret_when_legacy_marker_is_false(self) -> None:
         from ragtime.core.encryption import ENCRYPTED_PREFIX
         from ragtime.http_api.models import merge_http_api_secret_updates
         from ragtime.http_api.secrets import decrypt_http_api_nested_secrets, encrypt_http_api_nested_secrets
@@ -323,16 +491,15 @@ class HttpApiModelContractTests(unittest.TestCase):
             "stored-client-secret",
         )
 
-        with self.assertRaises(ValidationError):
-            merge_http_api_secret_updates(
-                existing,
-                {
-                    "auth_mode": "token_exchange",
-                    "token_request_fields": [
-                        {"name": "client_secret", "value": "", "secret": False},
-                    ],
-                },
-            )
+        merged = merge_http_api_secret_updates(
+            existing,
+            {
+                "auth_mode": "token_exchange",
+                "token_request_fields": [{"name": "client_secret", "value": "", "secret": False}],
+            },
+        )
+        self.assertEqual(merged["token_request_fields"][0]["value"], existing["token_request_fields"][0]["value"])
+        self.assertTrue(merged["token_request_fields"][0]["secret"])
 
     def test_http_api_nested_secret_helpers_encrypt_decrypt_and_report_scoped_paths(self) -> None:
         from ragtime.core.encryption import ENCRYPTED_PREFIX
@@ -354,33 +521,48 @@ class HttpApiModelContractTests(unittest.TestCase):
                 {"name": "grant_type", "value": "client_credentials", "secret": False},
                 {"name": "client_secret", "value": "client-secret", "secret": True},
             ],
+            "request_body_fields": [
+                {"name": "tenant", "value": "north", "secret": False},
+                {"name": "resource_secret", "value": "resource-secret", "secret": True},
+            ],
         }
 
         encrypted = encrypt_http_api_nested_secrets(config)
 
         self.assertTrue(encrypted["request_headers"][0]["value"].startswith(ENCRYPTED_PREFIX))
         self.assertTrue(encrypted["token_request_headers"][0]["value"].startswith(ENCRYPTED_PREFIX))
-        self.assertEqual(encrypted["token_request_fields"][0]["value"], "client_credentials")
+        self.assertTrue(encrypted["token_request_fields"][0]["value"].startswith(ENCRYPTED_PREFIX))
         self.assertTrue(encrypted["token_request_fields"][1]["value"].startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(encrypted["request_body_fields"][0]["value"].startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(encrypted["request_body_fields"][1]["value"].startswith(ENCRYPTED_PREFIX))
         self.assertEqual(
             configured_http_api_secret_paths(encrypted),
             [
                 "request_headers.X-Tenant",
                 "token_request_headers.X-Token-Key",
+                "token_request_fields.grant_type",
                 "token_request_fields.client_secret",
+                "request_body_fields.tenant",
+                "request_body_fields.resource_secret",
             ],
         )
 
         decrypted = decrypt_http_api_nested_secrets(encrypted)
         self.assertEqual(decrypted["request_headers"][0]["value"], "tenant-secret")
         self.assertEqual(decrypted["token_request_headers"][0]["value"], "endpoint-secret")
+        self.assertEqual(decrypted["token_request_fields"][0]["value"], "client_credentials")
         self.assertEqual(decrypted["token_request_fields"][1]["value"], "client-secret")
+        self.assertEqual(decrypted["request_body_fields"][0]["value"], "north")
+        self.assertEqual(decrypted["request_body_fields"][1]["value"], "resource-secret")
         self.assertEqual(
             iter_http_api_encrypted_secret_values(encrypted),
             [
                 encrypted["request_headers"][0]["value"],
                 encrypted["token_request_headers"][0]["value"],
+                encrypted["token_request_fields"][0]["value"],
                 encrypted["token_request_fields"][1]["value"],
+                encrypted["request_body_fields"][0]["value"],
+                encrypted["request_body_fields"][1]["value"],
             ],
         )
 
@@ -391,6 +573,25 @@ class HttpApiModelContractTests(unittest.TestCase):
         cleared, cleared_paths = clear_undecryptable_http_api_nested_secrets(broken)
         self.assertEqual(cleared_paths, ["token_request_fields.client_secret"])
         self.assertEqual(cleared["token_request_fields"], [])
+
+    def test_legacy_non_secret_resource_field_remains_available_to_request_encoding(self) -> None:
+        from ragtime.http_api.models import HttpApiConnectionConfig, HttpApiRequest
+        from ragtime.http_api.secrets import decrypt_http_api_nested_secrets, encrypt_http_api_nested_secrets
+        from ragtime.http_api.service import HttpApiBroker
+
+        encrypted = encrypt_http_api_nested_secrets(
+            {
+                "auth_mode": "headers",
+                "request_body_fields": [{"name": "tenant", "value": "north", "secret": False}],
+            }
+        )
+        config = HttpApiConnectionConfig(**decrypt_http_api_nested_secrets(encrypted))
+        prepared = HttpApiBroker()._prepare_resource_body(
+            config,
+            HttpApiRequest(method=HttpApiMethod.POST, path="/items", json_body={"name": "item"}),
+        )
+
+        self.assertEqual(prepared.json_body, {"name": "item", "tenant": "north"})
 
     def test_method_policies_reject_invalid_keys_and_values(self) -> None:
         from pydantic import ValidationError

@@ -23,6 +23,8 @@ from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
+from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
+from ragtime.http_api.models import HttpApiConnectionConfig
 from ragtime.indexer.schema_service import search_schema_index
 from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
 from ragtime.rag import rag
@@ -898,6 +900,10 @@ class MCPToolAdapter:
                 timeout_schema["maximum"] = timeout_max_seconds
             schema["properties"]["timeout"] = timeout_schema
 
+        if tool_type == "http_api":
+            conn_config = HttpApiConnectionConfig(**(config.get("connection_config") or {}))
+            schema["properties"]["headers"]["description"] = build_http_api_headers_description(conn_config)
+
         return schema
 
     def _build_schema_tool_name(self, config: dict) -> str | None:
@@ -1067,6 +1073,10 @@ class MCPToolAdapter:
 
         if description:
             base_desc += f" This resource contains: {description}"
+
+        if tool_type == "http_api":
+            conn_config = HttpApiConnectionConfig(**(config.get("connection_config") or {}))
+            base_desc += f" {build_http_api_request_guidance(conn_config)}"
 
         return base_desc
 

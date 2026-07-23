@@ -60,6 +60,7 @@ function isSystemMount(containerPath: string): boolean {
 }
 
 const SQL_TOOLS_HOVER_EXPAND_DELAY_MS = 500;
+const HTTP_API_EDIT_LOAD_ERROR = 'Failed to load saved HTTP API credentials.';
 
 function ReadOnlySecurityNotice() {
   return (
@@ -119,24 +120,31 @@ function normalizeHttpApiConnectionConfig(
         value: row.value,
       }))
       .filter((row) => row.name || row.value || hasSavedHeaderSecret(prefix, row.name));
-  const normalizeTokenFieldRows = (rows: typeof config.token_request_fields) =>
+  const normalizeBodyFieldRows = (
+    rows: typeof config.token_request_fields,
+    prefix: 'token_request_fields' | 'request_body_fields',
+  ) =>
     (rows ?? [])
       .map((row) => ({
         name: row.name.trim(),
         value: row.value,
-        secret: Boolean(row.secret),
+        secret: true,
       }))
       .filter(
         (row) =>
           row.name ||
           row.value ||
-          (row.secret && secrets.has(`token_request_fields.${row.name}` as HttpApiSecretField)),
+          (row.secret && secrets.has(`${prefix}.${row.name}` as HttpApiSecretField)),
       );
 
   if (config.auth_mode === 'headers') {
     return {
       ...config,
       request_headers: normalizeHeaderRows(config.request_headers, 'request_headers'),
+      request_body_fields: normalizeBodyFieldRows(
+        config.request_body_fields,
+        'request_body_fields',
+      ),
     };
   }
 
@@ -145,16 +153,32 @@ function normalizeHttpApiConnectionConfig(
       ...config,
       login_method: config.login_method ?? 'POST',
       login_body_format: config.login_body_format ?? 'json',
-      token_request_fields: normalizeTokenFieldRows(config.token_request_fields),
+      token_request_fields: normalizeBodyFieldRows(
+        config.token_request_fields,
+        'token_request_fields',
+      ),
       token_request_headers: normalizeHeaderRows(
         config.token_request_headers,
         'token_request_headers',
       ),
       request_headers: normalizeHeaderRows(config.request_headers, 'request_headers'),
+      request_body_fields: normalizeBodyFieldRows(
+        config.request_body_fields,
+        'request_body_fields',
+      ),
       token_response_path: config.token_response_path ?? 'access_token',
       token_expires_in_path: config.token_expires_in_path ?? '',
       token_header_name: config.token_header_name ?? 'Authorization',
       token_prefix: config.token_prefix ?? 'Bearer',
+    };
+  }
+
+  if (config.auth_mode === 'oauth2') {
+    return {
+      ...config,
+      oauth_flow: config.oauth_flow ?? 'device_code',
+      oauth_client_auth_method: config.oauth_client_auth_method ?? 'none',
+      oauth_scopes: config.oauth_scopes ?? [],
     };
   }
 
@@ -2242,6 +2266,7 @@ export function ToolWizard({
 }: ToolWizardProps) {
   const isEditing = existingTool !== null;
   const progressRef = useRef<HTMLDivElement>(null);
+  const httpApiHydrationRequestRef = useRef(0);
 
   // Form state - use defaultToolType if provided
   const [toolType, setToolType] = useState<ToolType>(
@@ -2374,11 +2399,12 @@ export function ToolWizard({
   const [httpApiConfig, setHttpApiConfig] = useState<HttpApiConnectionConfig>(() =>
     getInitialHttpApiConfig(existingTool),
   );
-  const [httpApiNormalizeStatus, setHttpApiNormalizeStatus] = useState<{
-    state: 'idle' | 'pending' | 'success' | 'error';
-    message?: string | null;
-    operationCount?: number | null;
-  }>({ state: 'idle' });
+  const httpApiEditToolId = existingTool?.tool_type === 'http_api' ? existingTool.id : undefined;
+  const requiresHttpApiEditHydration = Boolean(httpApiEditToolId);
+  const [httpApiHydrationStatus, setHttpApiHydrationStatus] = useState<
+    'idle' | 'loading' | 'loaded' | 'error'
+  >(requiresHttpApiEditHydration ? 'loading' : 'idle');
+  const [httpApiHydrationError, setHttpApiHydrationError] = useState<string | null>(null);
 
   const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
     existingTool?.tool_type === 'odoo_shell' &&
@@ -2649,6 +2675,49 @@ export function ToolWizard({
     }
   }, [filesystemConfig.base_path, toolType, isEditing, name]);
 
+  useEffect(() => {
+    const initialConfig = getInitialHttpApiConfig(existingTool);
+    setHttpApiConfig(initialConfig);
+
+    if (!httpApiEditToolId) {
+      setHttpApiHydrationStatus('idle');
+      setHttpApiHydrationError(null);
+      return;
+    }
+
+    const requestId = ++httpApiHydrationRequestRef.current;
+    let cancelled = false;
+    setHttpApiHydrationStatus('loading');
+    setHttpApiHydrationError(null);
+
+    api
+      .getHttpApiEditConfig(httpApiEditToolId)
+      .then(({ connection_config }) => {
+        if (cancelled || httpApiHydrationRequestRef.current !== requestId) {
+          return;
+        }
+
+        setHttpApiConfig({
+          ...initialConfig,
+          ...connection_config,
+          auth_mode: connection_config.auth_mode ?? initialConfig.auth_mode ?? 'none',
+        });
+        setHttpApiHydrationStatus('loaded');
+      })
+      .catch(() => {
+        if (cancelled || httpApiHydrationRequestRef.current !== requestId) {
+          return;
+        }
+
+        setHttpApiHydrationStatus('error');
+        setHttpApiHydrationError(HTTP_API_EDIT_LOAD_ERROR);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [existingTool, httpApiEditToolId]);
+
   // Auto-discover PDM schema when entering the pdm_filtering step
   const handleDiscoverPdmSchemaRef = useRef<(() => Promise<void>) | null>(null);
   useEffect(() => {
@@ -2828,8 +2897,22 @@ export function ToolWizard({
         return withSchemaSchedule(mssqlConfig);
       case 'influxdb':
         return influxdbConfig;
-      case 'http_api':
-        return normalizeHttpApiConnectionConfig(httpApiConfig, getHttpApiConfiguredSecretFields());
+      case 'http_api': {
+        const normalized = normalizeHttpApiConnectionConfig(
+          httpApiConfig,
+          getHttpApiConfiguredSecretFields(),
+        );
+        if (normalized.auth_mode === 'oauth2') {
+          const payload = { ...normalized };
+          delete payload.oauth_access_token;
+          delete payload.oauth_refresh_token;
+          if (!payload.oauth_client_secret) {
+            delete payload.oauth_client_secret;
+          }
+          return payload;
+        }
+        return normalized;
+      }
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
@@ -3377,6 +3460,7 @@ export function ToolWizard({
   const canNavigateToStep = (stepIndex: number): boolean => {
     // Can always go back to previous steps
     if (stepIndex <= getCurrentStepIndex()) return true;
+    if (requiresHttpApiEditHydration && httpApiHydrationStatus !== 'loaded') return false;
     // Can only go forward one step at a time, and current step must be valid
     if (stepIndex === getCurrentStepIndex() + 1 && canProceed()) return true;
     return false;
@@ -3454,37 +3538,6 @@ export function ToolWizard({
       setError(err instanceof Error ? err.message : 'Test failed');
     } finally {
       setTesting(false);
-    }
-  };
-
-  const handleNormalizeHttpApiOpenApi = async (input: {
-    spec_url?: string;
-    document?: string;
-    document_name?: string;
-  }) => {
-    setHttpApiNormalizeStatus({ state: 'pending' });
-    try {
-      const result = await api.normalizeHttpApiOpenApi(input);
-      if (!result?.openapi_catalog || !Array.isArray(result.openapi_catalog.operations)) {
-        throw new Error('Malformed OpenAPI normalize response.');
-      }
-      setHttpApiConfig((current) => ({
-        ...current,
-        openapi_source_url: result.openapi_source_url ?? current.openapi_source_url,
-        openapi_source_name: result.openapi_source_name ?? current.openapi_source_name,
-        openapi_source_hash: result.openapi_source_hash ?? current.openapi_source_hash,
-        openapi_catalog: result.openapi_catalog,
-      }));
-      setHttpApiNormalizeStatus({
-        state: 'success',
-        message: 'OpenAPI normalized successfully.',
-        operationCount: result.openapi_catalog.operations.length,
-      });
-    } catch (err) {
-      setHttpApiNormalizeStatus({
-        state: 'error',
-        message: err instanceof Error ? err.message : 'Failed to normalize OpenAPI.',
-      });
     }
   };
 
@@ -3659,6 +3712,10 @@ export function ToolWizard({
   };
 
   const canProceed = (): boolean => {
+    if (requiresHttpApiEditHydration && httpApiHydrationStatus !== 'loaded') {
+      return false;
+    }
+
     switch (currentStep) {
       case 'type':
         return true;
@@ -3736,7 +3793,7 @@ export function ToolWizard({
       }
       return false;
     };
-    const hasDuplicateTokenFieldNames = (
+    const hasDuplicateBodyFieldNames = (
       rows: typeof normalizedConfig.token_request_fields,
     ): boolean => {
       const seen = new Set<string>();
@@ -3752,6 +3809,22 @@ export function ToolWizard({
       }
       return false;
     };
+    const bodyFieldRowsAreValid = (
+      rows: typeof normalizedConfig.token_request_fields,
+      prefix: 'token_request_fields' | 'request_body_fields',
+    ): boolean =>
+      (rows ?? []).every((row) => {
+        if (!row.name.trim()) {
+          return false;
+        }
+        if (row.secret) {
+          return (
+            Boolean(row.value) ||
+            hasSavedScopedSecret(`${prefix}.${row.name}` as HttpApiSecretField)
+          );
+        }
+        return Boolean(row.value);
+      });
     const headerRowsAreValid = (
       rows: typeof normalizedConfig.request_headers,
       prefix: 'request_headers' | 'token_request_headers',
@@ -3762,27 +3835,25 @@ export function ToolWizard({
           (Boolean(row.value) || hasSavedHeaderSecret(prefix, row.name)),
       );
     const tokenFieldRows = normalizedConfig.token_request_fields ?? [];
-    const tokenFieldRowsAreValid = tokenFieldRows.every((row) => {
-      if (!row.name.trim()) {
-        return false;
-      }
-      if (row.secret) {
-        return (
-          Boolean(row.value) ||
-          hasSavedScopedSecret(`token_request_fields.${row.name}` as HttpApiSecretField)
-        );
-      }
-      return Boolean(row.value);
-    });
+    const requestBodyFieldRows = normalizedConfig.request_body_fields ?? [];
+    const tokenFieldRowsAreValid = bodyFieldRowsAreValid(tokenFieldRows, 'token_request_fields');
+    const requestBodyFieldRowsAreValid = bodyFieldRowsAreValid(
+      requestBodyFieldRows,
+      'request_body_fields',
+    );
+    const requestBodyIsValid =
+      !hasDuplicateBodyFieldNames(requestBodyFieldRows) && requestBodyFieldRowsAreValid;
 
     switch (httpApiConfig.auth_mode ?? 'none') {
       case 'none':
         return true;
       case 'headers':
         return (
-          (normalizedConfig.request_headers?.length ?? 0) > 0 &&
+          ((normalizedConfig.request_headers?.length ?? 0) > 0 ||
+            requestBodyFieldRows.length > 0) &&
           !hasDuplicateHeaderNames(normalizedConfig.request_headers) &&
-          headerRowsAreValid(normalizedConfig.request_headers, 'request_headers')
+          headerRowsAreValid(normalizedConfig.request_headers, 'request_headers') &&
+          requestBodyIsValid
         );
       case 'api_key':
         return Boolean(httpApiConfig.api_key_name && hasSecret('api_key'));
@@ -3796,16 +3867,38 @@ export function ToolWizard({
         );
       case 'token_exchange':
         return Boolean(
-          normalizedConfig.login_path?.trim() &&
+          (normalizedConfig.token_url?.trim() || normalizedConfig.login_path?.trim()) &&
           normalizedConfig.token_response_path?.trim() &&
           tokenFieldRows.length > 0 &&
-          !hasDuplicateTokenFieldNames(tokenFieldRows) &&
+          !hasDuplicateBodyFieldNames(tokenFieldRows) &&
           tokenFieldRowsAreValid &&
           !hasDuplicateHeaderNames(normalizedConfig.token_request_headers) &&
           headerRowsAreValid(normalizedConfig.token_request_headers, 'token_request_headers') &&
           !hasDuplicateHeaderNames(normalizedConfig.request_headers) &&
-          headerRowsAreValid(normalizedConfig.request_headers, 'request_headers'),
+          headerRowsAreValid(normalizedConfig.request_headers, 'request_headers') &&
+          requestBodyIsValid,
         );
+      case 'oauth2': {
+        const flow = httpApiConfig.oauth_flow ?? 'device_code';
+        const hasSavedCredential =
+          configuredSecrets.has('oauth_access_token') ||
+          configuredSecrets.has('oauth_refresh_token');
+        const hasSession = Boolean(httpApiConfig.oauth_session_id);
+        const hasClientSecret =
+          (httpApiConfig.oauth_client_auth_method ?? 'none') === 'none' ||
+          hasSecret('oauth_client_secret');
+        return Boolean(
+          httpApiConfig.oauth_issuer_url?.trim() &&
+          httpApiConfig.oauth_client_id?.trim() &&
+          httpApiConfig.oauth_token_url?.trim() &&
+          httpApiConfig.oauth_scopes?.length &&
+          (flow === 'device_code'
+            ? httpApiConfig.oauth_device_authorization_url?.trim()
+            : httpApiConfig.oauth_authorization_url?.trim()) &&
+          hasClientSecret &&
+          (hasSession || hasSavedCredential),
+        );
+      }
     }
   };
 
@@ -6469,15 +6562,21 @@ export function ToolWizard({
   };
 
   const renderConnectionConfig = () => {
+    const httpApiPanelDisabled =
+      toolType === 'http_api' &&
+      requiresHttpApiEditHydration &&
+      httpApiHydrationStatus !== 'loaded';
     const content = (() => {
       switch (toolType) {
         case 'http_api':
           return (
-            <HttpApiConnectionPanel
-              section="connection"
-              value={httpApiConfig}
-              onChange={setHttpApiConfig}
-            />
+            <fieldset disabled={httpApiPanelDisabled} style={{ border: 0, margin: 0, padding: 0 }}>
+              <HttpApiConnectionPanel
+                section="connection"
+                value={httpApiConfig}
+                onChange={setHttpApiConfig}
+              />
+            </fieldset>
           );
         case 'postgres':
           return renderPostgresConnection();
@@ -6559,36 +6658,47 @@ export function ToolWizard({
   };
 
   const renderHttpApiAuthentication = () => (
-    <HttpApiConnectionPanel
-      section="authentication"
-      value={httpApiConfig}
-      onChange={setHttpApiConfig}
-      configuredSecretFields={getHttpApiConfiguredSecretFields()}
-      onTestConnection={handleTestConnection}
-      testDisabled={!validateHttpApiAuthentication()}
-      testStatus={
-        testing
-          ? { state: 'pending' }
-          : testResult
-            ? {
-                state: testResult.success ? 'success' : 'error',
-                message: testResult.message,
-              }
-            : { state: 'idle' }
-      }
-    />
+    <fieldset
+      disabled={requiresHttpApiEditHydration && httpApiHydrationStatus !== 'loaded'}
+      style={{ border: 0, margin: 0, padding: 0 }}
+    >
+      <HttpApiConnectionPanel
+        section="authentication"
+        value={httpApiConfig}
+        onChange={setHttpApiConfig}
+        toolId={existingTool?.tool_type === 'http_api' ? existingTool.id : undefined}
+        configuredSecretFields={getHttpApiConfiguredSecretFields()}
+        onTestConnection={handleTestConnection}
+        testDisabled={!validateHttpApiAuthentication()}
+        testStatus={
+          testing
+            ? { state: 'pending' }
+            : testResult
+              ? {
+                  state: testResult.success ? 'success' : 'error',
+                  message: testResult.message,
+                }
+              : { state: 'idle' }
+        }
+        onOAuthConnected={(sessionId) =>
+          setHttpApiConfig((current) => ({ ...current, oauth_session_id: sessionId }))
+        }
+      />
+    </fieldset>
   );
 
   const renderHttpApiApiDetails = () => (
-    <HttpApiConnectionPanel
-      section="api_details"
-      value={httpApiConfig}
-      onChange={setHttpApiConfig}
-      configuredSecretFields={getHttpApiConfiguredSecretFields()}
-      onNormalizeOpenApi={handleNormalizeHttpApiOpenApi}
-      normalizeDisabled={testing}
-      openApiNormalizeStatus={httpApiNormalizeStatus}
-    />
+    <fieldset
+      disabled={requiresHttpApiEditHydration && httpApiHydrationStatus !== 'loaded'}
+      style={{ border: 0, margin: 0, padding: 0 }}
+    >
+      <HttpApiConnectionPanel
+        section="api_details"
+        value={httpApiConfig}
+        onChange={setHttpApiConfig}
+        configuredSecretFields={getHttpApiConfiguredSecretFields()}
+      />
+    </fieldset>
   );
 
   const renderExecutionConstraints = () => {
@@ -6857,29 +6967,29 @@ export function ToolWizard({
       };
       redactHeaderRows('request_headers');
       redactHeaderRows('token_request_headers');
-      const tokenFields = Array.isArray(config.token_request_fields)
-        ? (config.token_request_fields as Array<Record<string, unknown>>)
-        : [];
-      config.token_request_fields = tokenFields.map((row) => {
-        const name = String(row.name ?? '');
-        const secret = Boolean(row.secret);
-        const savedPath = `token_request_fields.${name}` as HttpApiSecretField;
-        return {
-          name,
-          value:
-            secret && typeof row.value === 'string' && row.value
-              ? '[redacted]'
-              : secret && configuredSecrets.has(savedPath)
-                ? 'Saved value not shown'
-                : (row.value ?? ''),
-          secret,
-        };
-      });
+      const redactBodyRows = (field: 'token_request_fields' | 'request_body_fields') => {
+        const rows = Array.isArray(config[field])
+          ? (config[field] as Array<Record<string, unknown>>)
+          : [];
+        config[field] = rows.map((row) => {
+          const name = String(row.name ?? '');
+          const savedPath = `${field}.${name}` as HttpApiSecretField;
+          return {
+            name,
+            value:
+              typeof row.value === 'string' && row.value
+                ? '[redacted]'
+                : configuredSecrets.has(savedPath)
+                  ? 'Saved value not shown'
+                  : '',
+            secret: true,
+          };
+        });
+      };
+      redactBodyRows('token_request_fields');
+      redactBodyRows('request_body_fields');
       return config;
     })();
-    const httpApiOperationCount =
-      toolType === 'http_api' ? (httpApiConfig.openapi_catalog?.operations.length ?? 0) : 0;
-
     return (
       <div className="wizard-content">
         <p className="wizard-help">Review your tool configuration before saving.</p>
@@ -6909,12 +7019,6 @@ export function ToolWizard({
         <div className="review-section">
           <h4>Connection</h4>
           <pre className="review-config">{JSON.stringify(reviewConnectionConfig, null, 2)}</pre>
-          {toolType === 'http_api' && httpApiOperationCount > 0 && (
-            <p className="field-help">
-              OpenAPI catalog: {httpApiOperationCount} operation
-              {httpApiOperationCount === 1 ? '' : 's'}
-            </p>
-          )}
         </div>
 
         <div className="review-section">
@@ -6986,7 +7090,9 @@ export function ToolWizard({
         })}
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      {(httpApiHydrationError ?? error) && (
+        <div className="error-banner">{httpApiHydrationError ?? error}</div>
+      )}
 
       <div className="wizard-body">{renderStepContent()}</div>
 

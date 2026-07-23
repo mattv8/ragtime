@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import unittest
 from unittest import mock
@@ -8,6 +9,7 @@ import httpx
 from ragtime.http_api.models import (
     HttpApiApiKeyLocation,
     HttpApiAuthMode,
+    HttpApiBodyFormat,
     HttpApiConfiguredHeader,
     HttpApiConnectionConfig,
     HttpApiLoginBodyFormat,
@@ -17,7 +19,13 @@ from ragtime.http_api.models import (
     HttpApiTokenField,
 )
 from ragtime.http_api.security import HttpApiSecurityError
-from ragtime.http_api.service import HttpApiBroker, http_api_broker, resolve_http_api_hostname
+from ragtime.http_api.service import (
+    HttpApiBroker,
+    HttpApiConfigurationError,
+    _sanitize_json_value,
+    http_api_broker,
+    resolve_http_api_hostname,
+)
 
 
 def _header(name: str, value: str) -> HttpApiConfiguredHeader:
@@ -387,6 +395,65 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, 200)
         self.assertEqual(seen_resource_headers, ["Bearer token-1", "Bearer token-2"])
 
+    async def test_token_exchange_reports_non_success_status_before_token_selection(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/oauth2/token"):
+                return httpx.Response(400, json={"error": "invalid_client"})
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+            token_url="/oauth2/token",
+            login_body_format=HttpApiLoginBodyFormat.FORM,
+            token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+        )
+
+        with self.assertRaisesRegex(HttpApiConfigurationError, r"^Token exchange failed with HTTP 400$"):
+            await self._execute(broker, config)
+
+    async def test_token_exchange_ignores_resource_default_selector(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/oauth2/token"):
+                return httpx.Response(200, json={"access_token": "access-1"})
+            return httpx.Response(200, json={"data": {"items": [{"id": 1}]}})
+
+        broker = self._broker(handler)
+        result = await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com",
+                auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+                token_url="/oauth2/token",
+                login_body_format=HttpApiLoginBodyFormat.FORM,
+                token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+                default_response_selector="data.items",
+            ),
+        )
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.output, [{"id": 1}])
+        self.assertEqual(result.rows, [{"id": 1}])
+
+    async def test_token_exchange_success_missing_token_path_preserves_selector_error(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/oauth2/token"):
+                return httpx.Response(200, json={"expires_in": 60})
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+            token_url="/oauth2/token",
+            login_body_format=HttpApiLoginBodyFormat.FORM,
+            token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+        )
+
+        with self.assertRaisesRegex(ValueError, r"Response selector segment not found: access_token"):
+            await self._execute(broker, config)
+
     async def test_execute_token_exchange_rejects_resource_header_conflict_before_network_io(self) -> None:
         calls: list[str] = []
 
@@ -508,6 +575,261 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output, {"ok": True})
         self.assertEqual(captured, {"authorization": "Bearer fake-token", "authentication": "Bearer fake-authentication-token", "tenant": "tenant-a"})
 
+    async def test_execute_merges_configured_json_fields_with_precedence(self) -> None:
+        captured: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["content_type"] = request.headers["content-type"]
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com",
+                auth_mode=HttpApiAuthMode.HEADERS,
+                method_policies={"POST": HttpApiMethodPolicy.READ},
+                request_body_fields=[_token_field("tenant", "configured", secret=False)],
+            ),
+            HttpApiRequest(method=HttpApiMethod.POST, path="/items", json_body={"tenant": "operation", "name": "Ada"}),
+        )
+        self.assertEqual(captured, {"content_type": "application/json", "body": {"tenant": "configured", "name": "Ada"}})
+
+    async def test_execute_encodes_configured_form_and_multipart_fields(self) -> None:
+        captured: list[tuple[str, str, bytes]] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured.append((request.headers["content-type"], request.url.path, request.content))
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        form_config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.HEADERS,
+            request_body_format=HttpApiBodyFormat.FORM,
+            method_policies={"POST": HttpApiMethodPolicy.READ},
+            request_body_fields=[_token_field("tenant", "configured", secret=False)],
+        )
+        await self._execute(broker, form_config, HttpApiRequest(method=HttpApiMethod.POST, path="/form", form_body={"name": "Ada"}))
+        multipart_config = form_config.model_copy(update={"request_body_format": HttpApiBodyFormat.MULTIPART})
+        await self._execute(broker, multipart_config, HttpApiRequest(method=HttpApiMethod.POST, path="/multipart"))
+        self.assertEqual(captured[0], ("application/x-www-form-urlencoded", "/form", b"name=Ada&tenant=configured"))
+        self.assertIn("multipart/form-data; boundary=", captured[1][0])
+        self.assertIn(b'name="tenant"', captured[1][2])
+        self.assertIn(b"configured", captured[1][2])
+
+    async def test_execute_rejects_body_format_mismatch_and_non_object_json(self) -> None:
+        broker = self._broker(lambda _request: httpx.Response(200, json={}))
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.HEADERS,
+            method_policies={"POST": HttpApiMethodPolicy.READ},
+            request_body_fields=[_token_field("tenant", "configured", secret=False)],
+        )
+        with self.assertRaisesRegex(HttpApiConfigurationError, "JSON fields require"):
+            await self._execute(broker, config, HttpApiRequest(method=HttpApiMethod.POST, path="/items", json_body=["not", "object"]))
+        with self.assertRaisesRegex(HttpApiConfigurationError, "does not match"):
+            await self._execute(broker, config, HttpApiRequest(method=HttpApiMethod.POST, path="/items", form_body={"x": "1"}))
+
+    async def test_execute_enforces_encoded_multipart_size_limit(self) -> None:
+        calls: list[str] = []
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            calls.append("sent")
+            return httpx.Response(200, json={})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.HEADERS,
+            request_body_format=HttpApiBodyFormat.MULTIPART,
+            method_policies={"POST": HttpApiMethodPolicy.READ},
+            request_body_fields=[_token_field("payload", "x" * (256 * 1024), secret=False)],
+        )
+        with self.assertRaisesRegex(HttpApiConfigurationError, "exceeds"):
+            await self._execute(broker, config, HttpApiRequest(method=HttpApiMethod.POST, path="/items"))
+        self.assertEqual(calls, [])
+
+    async def test_headers_connectivity_is_bodyless_and_credential_free(self) -> None:
+        captured: httpx.Request | None = None
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured
+            captured = request
+            return httpx.Response(401)
+
+        broker = self._broker(handler)
+        result = await broker.validate_connectivity(
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com/base",
+                auth_mode=HttpApiAuthMode.HEADERS,
+                request_headers=[_header("X-Api-Key", "secret")],
+                request_body_fields=[_token_field("tenant", "north", secret=False)],
+                method_policies={"HEAD": HttpApiMethodPolicy.DISABLED},
+            )
+        )
+        assert captured is not None
+        self.assertEqual(captured.method, "HEAD")
+        self.assertEqual(captured.url.path, "/base")
+        self.assertEqual(captured.content, b"")
+        self.assertNotIn("x-api-key", captured.headers)
+        self.assertTrue(result.success)
+        self.assertEqual(result.details, {"status": 401, "auth_tested": False})
+
+    async def test_absolute_token_endpoint_uses_separate_pinned_client_and_no_credential_crossover(self) -> None:
+        resolver_calls: list[str] = []
+        seen: list[tuple[str, str | None, str | None]] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.host, request.headers.get("x-resource-secret"), request.headers.get("x-token-secret")))
+            if request.url.path == "/oauth2/token":
+                return httpx.Response(200, json={"access_token": "access-1"})
+            return httpx.Response(200, json={"ok": True})
+
+        def resolver(host: str) -> list[str]:
+            resolver_calls.append(host)
+            return {"api.example.com": ["8.8.8.8"], "auth.example.com": ["8.8.4.4"]}[host]
+
+        broker = self._broker(handler, resolver=resolver)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com/base",
+                auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+                token_url="https://auth.example.com/oauth2/token",
+                login_body_format=HttpApiLoginBodyFormat.FORM,
+                token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+                token_request_headers=[_header("X-Token-Secret", "token-secret")],
+                request_headers=[_header("X-Resource-Secret", "resource-secret")],
+            ),
+        )
+        self.assertEqual(resolver_calls, ["api.example.com", "auth.example.com"])
+        self.assertEqual(seen, [("8.8.4.4", None, "token-secret"), ("8.8.8.8", "resource-secret", None)])
+
+    async def test_same_origin_absolute_token_url_ignores_resource_base_path_and_reuses_pin(self) -> None:
+        resolver_calls: list[str] = []
+        seen_paths: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen_paths.append(request.url.path)
+            if request.url.path == "/oauth2/token":
+                return httpx.Response(200, json={"access_token": "access-1"})
+            return httpx.Response(200, json={"ok": True})
+
+        def resolver(host: str) -> list[str]:
+            resolver_calls.append(host)
+            return ["8.8.8.8"]
+
+        broker = self._broker(handler, resolver=resolver)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com/base",
+                auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+                token_url="https://api.example.com:443/oauth2/token",
+                login_body_format=HttpApiLoginBodyFormat.FORM,
+                token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+            ),
+        )
+        self.assertEqual(resolver_calls, ["api.example.com"])
+        self.assertEqual(seen_paths, ["/oauth2/token", "/base/items"])
+
+    async def test_absolute_token_url_supports_public_ipv6_origin_with_bracketed_wire_url(self) -> None:
+        resolver_calls: list[str] = []
+        seen_urls: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen_urls.append(str(request.url))
+            if request.url.path == "/oauth2/token":
+                return httpx.Response(200, json={"access_token": "access-1"})
+            return httpx.Response(200, json={"ok": True})
+
+        def resolver(host: str) -> list[str]:
+            resolver_calls.append(host)
+            return ["2606:4700:4700::1111"] if host == "2606:4700:4700::1111" else ["8.8.8.8"]
+
+        broker = self._broker(handler, resolver=resolver)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com",
+                auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+                token_url="https://[2606:4700:4700::1111]/oauth2/token",
+                login_body_format=HttpApiLoginBodyFormat.FORM,
+                token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+            ),
+        )
+        self.assertEqual(resolver_calls, ["api.example.com", "2606:4700:4700::1111"])
+        self.assertTrue(seen_urls[0].startswith("https://[2606:4700:4700::1111]/oauth2/token"))
+
+    async def test_token_target_validation_error_does_not_include_endpoint_value(self) -> None:
+        broker = self._broker(lambda _request: httpx.Response(200, json={"access_token": "unused"}))
+        secret_endpoint = "https://api.example.com:token-secret/oauth2/token"
+        with self.assertRaisesRegex(HttpApiSecurityError, "Token target validation failed") as caught:
+            await self._execute(
+                broker,
+                HttpApiConnectionConfig(
+                    base_url="https://api.example.com",
+                    auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+                    token_url=secret_endpoint,
+                    token_request_fields=[_token_field("grant_type", "client_credentials", secret=False)],
+                ),
+            )
+        self.assertNotIn(secret_endpoint, str(caught.exception))
+
+    async def test_get_with_configured_json_body_sends_body(self) -> None:
+        captured: httpx.Request | None = None
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured
+            captured = request
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com",
+                auth_mode=HttpApiAuthMode.HEADERS,
+                request_body_fields=[_token_field("tenant", "configured", secret=False)],
+            ),
+        )
+        assert captured is not None
+        self.assertEqual(captured.method, "GET")
+        self.assertEqual(json.loads(captured.content), {"tenant": "configured"})
+
+    async def test_ukg_shaped_token_exchange_keeps_token_and_resource_credentials_separate(self) -> None:
+        requests: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path.endswith("/oauth2/token"):
+                return httpx.Response(200, json={"access_token": "access-1"})
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://secure6.saashr.com",
+                auth_mode=HttpApiAuthMode.TOKEN_EXCHANGE,
+                token_url="/ta/rest/v2/companies/100713024/oauth2/token",
+                login_body_format=HttpApiLoginBodyFormat.FORM,
+                token_request_fields=[
+                    _token_field("grant_type", "client_credentials", secret=False),
+                    _token_field("client_id", "client-id", secret=True),
+                    _token_field("client_secret", "client-secret", secret=True),
+                ],
+                token_header_name="Authentication",
+                token_prefix="Bearer",
+                request_headers=[_header("Content-Type", "application/json")],
+            ),
+        )
+        self.assertEqual(requests[0].headers["content-type"], "application/x-www-form-urlencoded")
+        self.assertEqual(requests[1].headers["authentication"], "Bearer access-1")
+        self.assertNotIn("client-secret", requests[1].content.decode())
+
     async def test_execute_blocks_unapproved_and_sensitive_headers(self) -> None:
         broker = HttpApiBroker(resolver=lambda _host: ["8.8.8.8"])
         config = HttpApiConnectionConfig(base_url="https://api.example.com", approved_request_headers=["x-trace-id"])
@@ -526,7 +848,7 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
             await broker.execute(
                 "tool-1",
                 config,
-                HttpApiRequest(method=HttpApiMethod.GET, path="/items", headers={"X-Unapproved": "1"}),
+                HttpApiRequest(method=HttpApiMethod.GET, path="/items", headers={"Accept": "application/json"}),
                 allow_write=False,
                 timeout_seconds=5,
                 max_results=10,
@@ -597,39 +919,27 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(captured["header"])
         self.assertEqual(result.output, {"ok": True})
 
-    async def test_execute_preserves_generic_token_fields_in_response_output(self) -> None:
-        messages: list[str] = []
-        logger = logging.getLogger("http-api-token-preserve")
+    def test_sanitize_json_value_redacts_generic_token_fields_recursively(self) -> None:
+        value = {
+            "safe": "visible",
+            "token": "also-visible",
+            "AcCeSs_ToKeN": "access-secret",
+            "nested": [
+                {"REFRESH_TOKEN": "refresh-secret", "safe_nested": True},
+                {"Client_Secret": "client-secret", "OAuth_Access_Token": "oauth-secret"},
+            ],
+        }
 
-        class Capture(logging.Handler):
-            def emit(self, record: logging.LogRecord) -> None:
-                messages.append(record.getMessage())
+        sanitized = _sanitize_json_value(value)
 
-        logger.handlers = [Capture()]
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-
-        async def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"token": "visible", "access_token": "also-visible", "value": 1})
-
-        broker = HttpApiBroker(
-            resolver=lambda _host: ["8.8.8.8"],
-            base_transport=httpx.MockTransport(handler),
-            logger=logger,
+        self.assertEqual(
+            sanitized,
+            {
+                "safe": "visible",
+                "token": "also-visible",
+                "nested": [{"safe_nested": True}, {}],
+            },
         )
-        result = await broker.execute(
-            "tool-1",
-            HttpApiConnectionConfig(base_url="https://api.example.com"),
-            HttpApiRequest(method=HttpApiMethod.GET, path="/items"),
-            allow_write=False,
-            timeout_seconds=5,
-            max_results=10,
-        )
-
-        self.assertEqual(result.output, {"token": "visible", "access_token": "also-visible", "value": 1})
-        for message in messages:
-            self.assertNotIn("visible", message)
-            self.assertNotIn("also-visible", message)
 
     async def test_execute_refreshes_login_token_once_after_401(self) -> None:
         seen_auth: list[str | None] = []
@@ -658,6 +968,212 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen_auth, ["Bearer token-1", "Bearer token-2"])
         self.assertEqual(result.status, 200)
         self.assertEqual(result.rows, [{"id": 1}])
+
+    async def test_execute_oauth_injects_access_token_and_refreshes_after_401(self) -> None:
+        seen: list[str | None] = []
+        refresh_calls = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal refresh_calls
+            if request.url.path == "/token":
+                refresh_calls += 1
+                return httpx.Response(200, json={"access_token": "fresh", "refresh_token": "rotated", "expires_in": 3600})
+            seen.append(request.headers.get("authorization"))
+            return httpx.Response(401 if len(seen) == 1 else 200, json={"ok": True})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.OAUTH2,
+            oauth_client_id="client",
+            oauth_token_url="https://api.example.com/token",
+            oauth_device_authorization_url="https://api.example.com/device",
+            oauth_access_token="stale",
+            oauth_refresh_token="refresh",
+            oauth_token_expires_at="2999-01-01T00:00:00Z",
+        )
+
+        result = await self._execute(broker, config)
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(seen, ["Bearer stale", "Bearer fresh"])
+        self.assertEqual(refresh_calls, 1)
+        self.assertEqual(config.oauth_refresh_token, "rotated")
+
+    async def test_oauth_resource_headers_and_body_fields_are_applied_with_precedence(self) -> None:
+        captured: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["headers"] = dict(request.headers)
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.OAUTH2,
+            oauth_client_id="client",
+            oauth_token_url="https://api.example.com/token",
+            oauth_device_authorization_url="https://api.example.com/device",
+            oauth_access_token="access",
+            oauth_token_expires_at="2999-01-01T00:00:00Z",
+            request_headers=[_header("X-Tenant", "configured")],
+            request_body_fields=[_token_field("tenant", "configured", secret=False)],
+        )
+
+        await self._execute(
+            broker,
+            config,
+            HttpApiRequest(method=HttpApiMethod.GET, path="/items", headers={}, json_body={"tenant": "operation", "name": "Ada"}),
+        )
+
+        headers = captured["headers"]
+        assert isinstance(headers, dict)
+        self.assertEqual(headers["x-tenant"], "configured")
+        self.assertEqual(headers["authorization"], "Bearer access")
+        self.assertEqual(captured["body"], {"tenant": "configured", "name": "Ada"})
+
+    async def test_oauth_resource_body_fields_encode_form_data(self) -> None:
+        captured: httpx.Request | None = None
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal captured
+            captured = request
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        await self._execute(
+            broker,
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com",
+                auth_mode=HttpApiAuthMode.OAUTH2,
+                oauth_client_id="client",
+                oauth_token_url="https://api.example.com/token",
+                oauth_device_authorization_url="https://api.example.com/device",
+                oauth_access_token="access",
+                oauth_token_expires_at="2999-01-01T00:00:00Z",
+                request_body_format=HttpApiBodyFormat.FORM,
+                request_body_fields=[_token_field("tenant", "configured", secret=False)],
+            ),
+            HttpApiRequest(method=HttpApiMethod.GET, path="/items", form_body={"tenant": "operation", "name": "Ada"}),
+        )
+        assert captured is not None
+        self.assertEqual(captured.headers["content-type"], "application/x-www-form-urlencoded")
+        self.assertEqual(captured.content, b"tenant=configured&name=Ada")
+
+    async def test_oauth_resource_token_header_conflict_is_rejected(self) -> None:
+        broker = self._broker(lambda _request: httpx.Response(200, json={"ok": True}))
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.OAUTH2,
+            oauth_client_id="client",
+            oauth_token_url="https://api.example.com/token",
+            oauth_device_authorization_url="https://api.example.com/device",
+            oauth_access_token="access",
+            request_headers=[_header("Authorization", "preset")],
+        )
+        with self.assertRaisesRegex(HttpApiSecurityError, "token_header_name"):
+            await self._execute(broker, config)
+
+    async def test_oauth_validate_configuration_without_login_validates_endpoints_without_provider_call(self) -> None:
+        calls: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(200, json={})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.OAUTH2,
+            oauth_client_id="client",
+            oauth_token_url="https://api.example.com/token",
+            oauth_device_authorization_url="https://api.example.com/device",
+            oauth_access_token="access",
+        )
+
+        result = await broker.validate_configuration(config, perform_login=False)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message, "Configuration is valid - no live request was sent.")
+        self.assertEqual(calls, [])
+
+    async def test_oauth_validate_configuration_login_requires_stored_unexpired_token_without_refresh(self) -> None:
+        broker = self._broker(lambda _request: httpx.Response(500, json={"error": "must not call"}))
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.OAUTH2,
+            oauth_client_id="client",
+            oauth_token_url="https://api.example.com/token",
+            oauth_device_authorization_url="https://api.example.com/device",
+            oauth_access_token="access",
+            oauth_token_expires_at="2999-01-01T00:00:00Z",
+        )
+
+        result = await broker.validate_configuration(config, perform_login=True)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message, "OAuth configuration validated - stored access token is available.")
+
+    async def test_oauth_validate_configuration_login_rejects_missing_or_expired_access_token_without_provider_call(self) -> None:
+        provider_calls: list[httpx.Request] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            provider_calls.append(request)
+            return httpx.Response(200, json={"access_token": "must-not-be-used"})
+
+        broker = self._broker(handler)
+        base_config = {
+            "base_url": "https://api.example.com",
+            "auth_mode": HttpApiAuthMode.OAUTH2,
+            "oauth_client_id": "client",
+            "oauth_token_url": "https://api.example.com/token",
+            "oauth_device_authorization_url": "https://api.example.com/device",
+            "oauth_refresh_token": "refresh",
+        }
+
+        for oauth_fields in (
+            {"oauth_access_token": ""},
+            {"oauth_access_token": "expired", "oauth_token_expires_at": "2000-01-01T00:00:00Z"},
+        ):
+            with self.subTest(oauth_fields=oauth_fields):
+                config = HttpApiConnectionConfig.model_validate({**base_config, **oauth_fields})
+                with self.assertRaisesRegex(ValueError, "OAuth validation requires a usable stored access token"):
+                    await broker.validate_configuration(config, perform_login=True)
+
+        self.assertEqual(provider_calls, [])
+
+    async def test_oauth_refresh_persists_rotation_only_through_callback(self) -> None:
+        updates: list[dict] = []
+
+        async def updater(update: dict) -> None:
+            updates.append(update)
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/token":
+                return httpx.Response(200, json={"access_token": "fresh", "refresh_token": "rotated", "expires_in": 3600})
+            return httpx.Response(200, json={"ok": True})
+
+        broker = self._broker(handler)
+        config = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            auth_mode=HttpApiAuthMode.OAUTH2,
+            oauth_client_id="client",
+            oauth_token_url="https://api.example.com/token",
+            oauth_device_authorization_url="https://api.example.com/device",
+            oauth_refresh_token="refresh",
+        )
+        await broker.execute(
+            "tool-1",
+            config,
+            HttpApiRequest(method=HttpApiMethod.GET, path="/items"),
+            allow_write=False,
+            timeout_seconds=5,
+            max_results=10,
+            oauth_credential_updater=updater,
+        )
+        self.assertEqual(updates[0]["oauth_refresh_token"], "rotated")
+        self.assertEqual(updates[0]["oauth_refresh_token_used"], "refresh")
 
     async def test_execute_login_token_cache_is_concurrency_safe(self) -> None:
         login_calls = 0
@@ -823,6 +1339,12 @@ class HttpApiServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         await broker.validate_configuration(HttpApiConnectionConfig(base_url="https://api.example.com"), perform_login=False)
         self.assertEqual(recorded, {"follow_redirects": False, "trust_env": False})
+
+    async def test_oauth_absolute_requests_reject_private_targets_outside_debug(self) -> None:
+        broker = self._broker(lambda _request: httpx.Response(200, json={}), resolver=lambda _host: ["127.0.0.1"])
+        with mock.patch("ragtime.http_api.service.settings.debug_mode", False):
+            with self.assertRaisesRegex(HttpApiSecurityError, "target"):
+                await broker.oauth_request_json("https://auth.example.com/token")
 
     async def test_fetch_openapi_document_uses_single_resolution_and_response_cap(self) -> None:
         resolver_calls: list[str] = []

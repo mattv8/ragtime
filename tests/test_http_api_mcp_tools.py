@@ -1,22 +1,16 @@
 import unittest
 from unittest import mock
 
+from ragtime.http_api.models import HttpApiAuthMode, HttpApiConnectionConfig, OpenApiCatalog
 from ragtime.mcp.tools import MCPToolAdapter, MCPToolDefinition
 
 
 class HttpApiMcpToolTests(unittest.IsolatedAsyncioTestCase):
     def _config(self, *, with_catalog: bool = True, allow_write: bool = False) -> dict:
-        return {
-            "id": "tool-http-1",
-            "name": "Customer API",
-            "tool_type": "http_api",
-            "description": "CRM endpoints",
-            "enabled": True,
-            "allow_write": allow_write,
-            "timeout_max_seconds": 45,
-            "connection_config": {
-                "base_url": "https://api.example.com",
-                "openapi_catalog": (
+        connection = HttpApiConnectionConfig(
+            base_url="https://api.example.com",
+            openapi_catalog=(
+                OpenApiCatalog.model_validate(
                     {
                         "title": "Customer API",
                         "version": "1.0",
@@ -31,10 +25,20 @@ class HttpApiMcpToolTests(unittest.IsolatedAsyncioTestCase):
                             }
                         ],
                     }
-                    if with_catalog
-                    else None
-                ),
-            },
+                )
+                if with_catalog
+                else None
+            ),
+        )
+        return {
+            "id": "tool-http-1",
+            "name": "Customer API",
+            "tool_type": "http_api",
+            "description": "CRM endpoints",
+            "enabled": True,
+            "allow_write": allow_write,
+            "timeout_max_seconds": 45,
+            "connection_config": connection.model_dump(),
         }
 
     def test_http_api_tool_name_and_schema(self) -> None:
@@ -106,3 +110,41 @@ class HttpApiMcpToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "catalog-ok")
         get_tool_configs.assert_awaited()
         create_catalog_def.assert_awaited_with(config)
+
+    def test_http_api_description_guidance_describes_automatic_auth_and_omitted_headers(self) -> None:
+        adapter = MCPToolAdapter()
+        config = self._config()
+        config["connection_config"] = HttpApiConnectionConfig(
+            **{**config["connection_config"], "auth_mode": HttpApiAuthMode.TOKEN_EXCHANGE},
+        ).model_dump()
+
+        description = adapter._build_tool_description(config)  # pyright: ignore[reportPrivateUsage]
+        schema = adapter._build_input_schema(config)  # pyright: ignore[reportPrivateUsage]
+
+        assert schema is not None
+        self.assertIn("Authentication is applied automatically", description)
+        self.assertIn("do not call login or token endpoints", description)
+        self.assertIn("No per-request headers are approved; omit headers", description)
+        self.assertIn(
+            "No per-request headers are approved; omit headers",
+            schema["properties"]["headers"]["description"],
+        )
+
+    def test_http_api_description_guidance_lists_exact_approved_headers(self) -> None:
+        adapter = MCPToolAdapter()
+        config = self._config()
+        config["connection_config"] = HttpApiConnectionConfig(
+            **{**config["connection_config"], "approved_request_headers": ["X-Trace-Id", "Accept"]},
+        ).model_dump()
+
+        description = adapter._build_tool_description(config)  # pyright: ignore[reportPrivateUsage]
+        schema = adapter._build_input_schema(config)  # pyright: ignore[reportPrivateUsage]
+
+        assert schema is not None
+        self.assertIn("X-Trace-Id", description)
+        self.assertIn("Accept", description)
+        self.assertNotIn("Authorization", description)
+        headers_description = schema["properties"]["headers"]["description"]
+        self.assertIn("X-Trace-Id", headers_description)
+        self.assertIn("Accept", headers_description)
+        self.assertNotIn("Authorization", headers_description)

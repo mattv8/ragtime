@@ -4868,7 +4868,9 @@ textarea:focus {
 .userspace-share-edit-title svg {
   opacity: 0;
   color: var(--color-text-muted);
-  transition: opacity var(--transition-fast), color var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .userspace-share-edit-title:hover svg,
@@ -9556,16 +9558,11 @@ fieldset legend.legend-with-status .legend-divider {
   padding: var(--space-lg);
 }
 
-.http-api-actions-row,
-.http-api-secret-row {
+.http-api-actions-row {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-sm);
   align-items: center;
-}
-
-.http-api-secret-row input {
-  flex: 1 1 240px;
 }
 
 .http-api-status {
@@ -9613,8 +9610,8 @@ fieldset legend.legend-with-status .legend-divider {
 
 .http-api-subsection {
   display: grid;
-  gap: var(--space-md);
-  margin-bottom: var(--space-lg);
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
 }
 
 .http-api-subsection-header {
@@ -9623,6 +9620,23 @@ fieldset legend.legend-with-status .legend-divider {
   justify-content: space-between;
   gap: var(--space-sm);
   flex-wrap: wrap;
+}
+
+.http-api-body-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: flex-start;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.http-api-body-toolbar .form-group {
+  margin-bottom: 0;
+}
+
+.http-api-body-toolbar select {
+  inline-size: fit-content;
+  min-inline-size: calc(var(--space-2xl) * 4);
 }
 
 .http-api-subsection-label {
@@ -9636,46 +9650,85 @@ fieldset legend.legend-with-status .legend-divider {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
   gap: var(--space-sm);
-  align-items: start;
+  align-items: end;
 }
 
 .http-api-field-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto;
   gap: var(--space-sm);
   align-items: start;
+}
+
+.http-api-row-list {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.http-api-header-row .form-group,
+.http-api-field-row .form-group {
+  margin-bottom: 0;
+}
+
+.http-api-add-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.http-api-optional-subsection-empty {
+  display: inline-flex;
+  vertical-align: top;
+}
+
+.http-api-optional-action + .http-api-optional-action {
+  margin-inline-start: var(--space-sm);
+}
+
+.http-api-optional-subsection-empty .http-api-add-row {
+  display: inline-flex;
+  margin-bottom: var(--space-md);
 }
 
 .http-api-row-actions {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
-  align-self: center;
+  align-self: end;
 }
 
-.http-api-saved-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius-full);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
+.http-api-row-actions-input-aligned {
+  align-self: start;
+  margin-top: calc(var(--text-sm) * var(--leading-normal) + var(--space-xs));
 }
 
-.http-api-secret-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  align-self: center;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
+.http-api-row-remove {
+  height: var(--control-height);
+  min-height: var(--control-height);
+  aspect-ratio: 1;
+}
+
+.http-api-secret-input-wrap {
+  position: relative;
+  width: 100%;
+}
+
+.http-api-secret-input-wrap input {
+  box-sizing: border-box;
+  padding-right: 42px;
+}
+
+.http-api-secret-input-wrap .http-api-secret-toggle-button {
+  right: 8px;
+}
+
+.http-api-secret-input-wrap:hover .http-api-secret-toggle-button,
+.http-api-secret-input-wrap:focus-within .http-api-secret-toggle-button {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .http-api-token-login-row {
   padding-bottom: var(--space-sm);
-  border-bottom: 1px solid var(--color-border);
 }
 
 .http-api-checkbox-row {
@@ -9684,6 +9737,79 @@ fieldset legend.legend-with-status .legend-divider {
   gap: var(--space-sm);
   color: var(--color-text-secondary);
   font-size: var(--text-sm);
+}
+
+.http-api-oauth-panel {
+  display: grid;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+
+.http-api-oauth-discover-row,
+.http-api-oauth-status-row {
+  display: flex;
+  align-items: end;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.http-api-oauth-discover-row .form-group {
+  flex: 1 1 18rem;
+  margin-bottom: 0;
+}
+
+.http-api-oauth-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.http-api-oauth-grid .form-group {
+  margin-bottom: 0;
+}
+
+.http-api-oauth-panel input.form-input,
+.http-api-oauth-panel select.form-input {
+  inline-size: 100%;
+}
+
+.http-api-oauth-scopes {
+  grid-column: 1 / -1;
+}
+
+.http-api-oauth-panel details {
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+}
+
+.http-api-oauth-panel details summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+.http-api-oauth-device {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: var(--space-sm);
+  border: 1px solid var(--color-info-border);
+  border-radius: var(--radius-md);
+  background: var(--color-info-light);
+}
+
+.http-api-oauth-status-row {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.http-api-oauth-status-row [role='status'] {
+  margin: 0;
+  color: var(--color-text-secondary);
 }
 
 @media (max-width: 720px) {
@@ -9704,18 +9830,60 @@ fieldset legend.legend-with-status .legend-divider {
   .http-api-header-row .form-group:nth-child(2),
   .http-api-field-row .form-group:first-child,
   .http-api-field-row .form-group:nth-child(2) {
-    grid-column: 1;
+    grid-column: 1 / -1;
   }
 
-  .http-api-secret-toggle,
-  .http-api-row-actions {
-    grid-column: 2;
-    align-self: center;
+  .http-api-header-row .http-api-row-actions {
+    grid-column: 1 / -1;
     justify-self: end;
+    align-self: end;
+    margin-top: 0;
+  }
+
+  .http-api-field-row .http-api-row-actions {
+    grid-column: 2;
+    align-self: end;
+    justify-self: end;
+    margin-top: 0;
+  }
+
+  .http-api-optional-subsection-empty {
+    display: block;
+  }
+
+  .http-api-optional-action + .http-api-optional-action {
+    margin-inline-start: 0;
+  }
+
+  .http-api-optional-subsection-empty .http-api-add-row {
+    display: flex;
+    margin-bottom: 0;
+  }
+
+  .http-api-body-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .http-api-body-toolbar select {
+    align-self: flex-start;
   }
 
   .http-api-panel-body {
     padding: var(--space-md);
+  }
+
+  .http-api-oauth-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .http-api-oauth-scopes {
+    grid-column: auto;
+  }
+
+  .http-api-oauth-discover-row,
+  .http-api-oauth-status-row {
+    align-items: stretch;
   }
 }
 

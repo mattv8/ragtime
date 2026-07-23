@@ -158,6 +158,7 @@ from ragtime.core.ssh import (
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
+from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
 from ragtime.http_api.models import (
     HttpApiConnectionConfig,
     HttpApiExecutionResult,
@@ -4941,8 +4942,37 @@ class RAGComponents:
         allow_write = bool(config.get("allow_write", False))
         description = config.get("description", "")
 
+        async def persist_oauth_credentials(update: dict[str, Any]) -> None:
+            nonlocal conn_config
+            current = await repository.get_tool_config(tool_id)
+            if current is None:
+                raise ValueError("HTTP API tool is unavailable")
+            current_config = dict(current.connection_config or {})
+            used_refresh = str(update.get("oauth_refresh_token_used") or "")
+            if used_refresh and current_config.get("oauth_refresh_token", "") != used_refresh:
+                conn_config = HttpApiConnectionConfig(**current_config)
+                return
+            credential_fields = {
+                key: value
+                for key, value in update.items()
+                if key in {"oauth_access_token", "oauth_refresh_token", "oauth_token_type", "oauth_token_expires_at"}
+            }
+            if credential_fields:
+                await repository.update_tool_config(tool_id, {"connection_config": {**current_config, **credential_fields}})
+                conn_config = HttpApiConnectionConfig(**{**current_config, **credential_fields})
+
         http_api_args_schema = self._add_timeout_field_to_schema(
-            HttpApiRequest,
+            create_model(
+                "HttpApiRequestWithConfiguredHeaders",
+                __base__=HttpApiRequest,
+                headers=(
+                    dict[str, str],
+                    Field(
+                        default_factory=dict,
+                        description=build_http_api_headers_description(conn_config),
+                    ),
+                ),
+            ),
             timeout_max_seconds=timeout_max_seconds,
             timeout_label="Request",
         )
@@ -4976,6 +5006,7 @@ class RAGComponents:
                     allow_write=allow_write,
                     timeout_seconds=effective_timeout,
                     max_results=100,
+                    oauth_credential_updater=persist_oauth_credentials,
                 )
             except Exception as exc:
                 result = HttpApiExecutionResult(
@@ -4999,7 +5030,14 @@ class RAGComponents:
         )
         if description:
             tool_description += f" This API provides access to: {description}"
+        if conn_config.documentation_url:
+            tool_description += (
+                f" API documentation is available at {conn_config.documentation_url}."
+                " Use the web_browse tool to consult this URL when endpoint paths, parameters, or response details are needed."
+            )
         tool_description += f" {format_tool_write_access_sentence(allow_write)}"
+        tool_description += " Configured resource body fields are merged into matching operation bodies and take precedence over duplicate keys."
+        tool_description += f" {build_http_api_request_guidance(conn_config)}"
 
         return StructuredTool.from_function(
             coroutine=execute_http_api_request,

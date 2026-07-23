@@ -1637,7 +1637,11 @@ export type HttpApiAuthMode =
   | 'bearer'
   | 'headers'
   | 'login_exchange'
-  | 'token_exchange';
+  | 'token_exchange'
+  | 'oauth2';
+export type HttpApiOAuthFlow = 'device_code' | 'authorization_code_pkce';
+export type HttpApiOAuthClientAuthMethod = 'none' | 'client_secret_post' | 'client_secret_basic';
+export type HttpApiBodyFormat = 'json' | 'form' | 'multipart';
 export type HttpApiMethodPolicy = 'disabled' | 'read' | 'write';
 export type HttpApiHttpMethod = 'GET' | 'HEAD' | 'OPTIONS' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type HttpApiApiKeyLocation = 'header' | 'query';
@@ -1646,12 +1650,16 @@ export const HTTP_API_SECRET_FIELDS = [
   'basic_password',
   'bearer_token',
   'login_password',
+  'oauth_client_secret',
+  'oauth_access_token',
+  'oauth_refresh_token',
 ] as const;
 export type HttpApiFixedSecretField = (typeof HTTP_API_SECRET_FIELDS)[number];
 export type HttpApiScopedSecretField =
   | `request_headers.${string}`
   | `token_request_headers.${string}`
-  | `token_request_fields.${string}`;
+  | `token_request_fields.${string}`
+  | `request_body_fields.${string}`;
 export type HttpApiSecretField = HttpApiFixedSecretField | HttpApiScopedSecretField;
 
 export interface HttpApiConfiguredHeader {
@@ -1680,19 +1688,6 @@ export interface OpenApiCatalog {
   operations: OpenApiCatalogOperation[];
 }
 
-export interface HttpApiOpenApiNormalizeRequest {
-  spec_url?: string;
-  document?: string;
-  document_name?: string;
-}
-
-export interface HttpApiOpenApiNormalizeResponse {
-  openapi_source_url?: string | null;
-  openapi_source_name?: string | null;
-  openapi_source_hash?: string | null;
-  openapi_catalog: OpenApiCatalog;
-}
-
 export const HTTP_API_METHODS: HttpApiHttpMethod[] = [
   'GET',
   'HEAD',
@@ -1715,6 +1710,7 @@ export const DEFAULT_HTTP_API_METHOD_POLICIES: Record<HttpApiHttpMethod, HttpApi
 
 export interface HttpApiConnectionConfig {
   base_url?: string;
+  token_url?: string;
   auth_mode?: HttpApiAuthMode;
   api_key_location?: HttpApiApiKeyLocation;
   api_key_name?: string;
@@ -1733,12 +1729,29 @@ export interface HttpApiConnectionConfig {
   request_headers?: HttpApiConfiguredHeader[];
   token_request_headers?: HttpApiConfiguredHeader[];
   token_request_fields?: HttpApiTokenField[];
+  request_body_format?: HttpApiBodyFormat;
+  request_body_fields?: HttpApiTokenField[];
   send_api_key_to_login?: boolean;
   send_api_key_to_requests?: boolean;
   token_response_path?: string;
   token_expires_in_path?: string;
   token_header_name?: string;
   token_prefix?: string;
+  oauth_flow?: HttpApiOAuthFlow;
+  oauth_issuer_url?: string;
+  oauth_authorization_url?: string;
+  oauth_device_authorization_url?: string;
+  oauth_token_url?: string;
+  oauth_client_id?: string;
+  oauth_client_secret?: string;
+  oauth_client_auth_method?: HttpApiOAuthClientAuthMethod;
+  oauth_scopes?: string[];
+  oauth_access_token?: string;
+  oauth_refresh_token?: string;
+  oauth_token_type?: string;
+  oauth_token_expires_at?: string;
+  oauth_session_id?: string;
+  documentation_url?: string;
   openapi_source_url?: string;
   openapi_source_name?: string;
   openapi_source_hash?: string;
@@ -1747,6 +1760,52 @@ export interface HttpApiConnectionConfig {
   method_policies?: Partial<Record<HttpApiHttpMethod, HttpApiMethodPolicy>>;
   default_response_selector?: string;
 }
+
+export interface HttpApiEditConfigResponse {
+  connection_config: HttpApiConnectionConfig;
+}
+
+export interface HttpApiOAuthDiscoveryRequest {
+  issuer_url: string;
+}
+
+export interface HttpApiOAuthDiscoveryResponse {
+  issuer: string;
+  authorization_endpoint?: string | null;
+  device_authorization_endpoint?: string | null;
+  token_endpoint?: string | null;
+  grant_types_supported: string[];
+  code_challenge_methods_supported: string[];
+  scopes_supported: string[];
+  token_endpoint_auth_methods_supported: string[];
+}
+
+export interface HttpApiOAuthStartRequest {
+  connection_config: HttpApiConnectionConfig;
+  tool_id?: string;
+}
+
+export type HttpApiOAuthSessionStatus = 'pending' | 'connected' | 'expired' | 'failed';
+
+export interface HttpApiOAuthStartResponse {
+  status: HttpApiOAuthSessionStatus;
+  session_id: string;
+  authorization_url?: string | null;
+  callback_url?: string | null;
+  verification_uri?: string | null;
+  verification_uri_complete?: string | null;
+  user_code?: string | null;
+  interval?: number | null;
+  expires_in?: number | null;
+  retry_after_seconds?: number | null;
+  message?: string | null;
+}
+
+export interface HttpApiOAuthPollRequest {
+  session_id: string;
+}
+
+export type HttpApiOAuthPollResponse = HttpApiOAuthStartResponse;
 
 export interface OdooShellConnectionConfig extends DockerSSHConfig {
   mode?: 'docker' | 'ssh';

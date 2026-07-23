@@ -91,6 +91,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
 )
+from ragtime.http_api.secrets import decrypt_http_api_nested_secrets
 
 logger = get_logger(__name__)
 
@@ -220,6 +221,13 @@ def _provider_connection_defaults() -> dict:
             }
         )
     return values
+
+
+def _decrypt_tool_connection_config(tool_type: str, connection_config: dict) -> dict:
+    decrypted_config = decrypt_json_passwords(connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
+    if tool_type == "http_api":
+        decrypted_config = decrypt_http_api_nested_secrets(decrypted_config)
+    return decrypted_config
 
 
 class SettingsCache:
@@ -694,7 +702,7 @@ class SettingsCache:
                     "name": cfg.name,
                     "tool_type": cfg.toolType,
                     "description": cfg.description,
-                    "connection_config": decrypt_json_passwords(dict(cfg.connectionConfig), CONNECTION_CONFIG_PASSWORD_FIELDS),
+                    "connection_config": _decrypt_tool_connection_config(cfg.toolType, dict(cfg.connectionConfig)),
                     "max_results": cfg.maxResults,
                     "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
                     "allow_write": cfg.allowWrite,

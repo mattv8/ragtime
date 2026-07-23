@@ -87,6 +87,7 @@
   --space-lg: 24px;
   --space-xl: 32px;
   --space-2xl: 48px;
+  --control-height: 44px;
 
   /* Border radius (theme packs may override; --radius-xs added: was referenced, never defined) */
   --radius-xs: 3px;

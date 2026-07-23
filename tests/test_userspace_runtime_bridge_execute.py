@@ -8,13 +8,13 @@ from types import SimpleNamespace
 from unittest import mock
 
 from fastapi import HTTPException
-from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 
 from ragtime.http_api.models import (
     HttpApiConnectionConfig,
     HttpApiExecutionResult,
     HttpApiRequest,
 )
+from tests.rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 
 inserted_fake_rag_prompts = install_fake_rag_prompts()
 

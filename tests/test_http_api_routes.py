@@ -1,17 +1,290 @@
 import json
 import unittest
 from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 from fastapi import HTTPException
+from prisma.models import User
 from pydantic import ValidationError
+from starlette.requests import Request
 
-from ragtime.http_api.models import HttpApiAuthMode, HttpApiConnectionConfig, HttpApiValidationResult
+from ragtime.http_api.models import HttpApiAuthMode, HttpApiConfiguredHeader, HttpApiConnectionConfig, HttpApiValidationResult
+from ragtime.http_api.oauth import OAuthCredentialUpdate, OAuthPollResult
 from ragtime.indexer import routes
 from ragtime.indexer.models import CreateToolConfigRequest, ToolConfig, ToolTestRequest, ToolType, UpdateToolConfigRequest
 
 
 class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
+    def _request(self, *, scheme: str = "https", host: str = "admin.example.test") -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/indexes/tools/http-api/oauth/start",
+                "scheme": scheme,
+                "headers": [(b"host", host.encode())],
+                "server": (host, 443 if scheme == "https" else 80),
+            }
+        )
+
+    async def test_http_api_oauth_start_uses_configured_external_base_url(self) -> None:
+        manager = SimpleNamespace(
+            start=mock.AsyncMock(return_value=SimpleNamespace(status="pending", session_id="session-1", authorization_url="https://idp.test/auth"))
+        )
+        user = cast(User, SimpleNamespace(id="admin-1"))
+        request = routes.HttpApiOAuthStartRequest(
+            connection_config={
+                "base_url": "https://api.example.test",
+                "auth_mode": "oauth2",
+                "oauth_flow": "authorization_code_pkce",
+                "oauth_authorization_url": "https://idp.example.test/authorize",
+                "oauth_client_id": "client-1",
+                "oauth_token_url": "https://idp.example.test/token",
+            }
+        )
+
+        with (
+            mock.patch.object(routes, "http_api_oauth_manager", manager),
+            mock.patch.object(routes.settings, "external_base_url", "https://ragtime.example.test/"),
+        ):
+            result = await routes.start_http_api_oauth(request, self._request(), user)
+
+        manager.start.assert_awaited_once()
+        self.assertEqual(manager.start.await_args.args[0], "admin-1")
+        self.assertEqual(manager.start.await_args.args[2], "https://ragtime.example.test/indexes/tools/http-api/oauth/callback")
+        self.assertEqual(result["callback_url"], "https://ragtime.example.test/indexes/tools/http-api/oauth/callback")
+
+    async def test_http_api_oauth_callback_does_not_reflect_provider_error(self) -> None:
+        manager = SimpleNamespace(complete_authorization_code=mock.AsyncMock(side_effect=RuntimeError("provider secret description")))
+
+        with mock.patch.object(routes, "http_api_oauth_manager", manager):
+            response = await routes.http_api_oauth_callback(state="state-1", code=None, error="provider secret description")
+
+        self.assertEqual(response.status_code, 200)
+        body = bytes(response.body).decode()
+        self.assertNotIn("provider secret description", body)
+        self.assertIn("window.close()", body)
+
+    async def test_http_api_oauth_session_is_consumed_only_after_create_persists(self) -> None:
+        request = CreateToolConfigRequest(
+            name="OAuth API",
+            tool_type=ToolType.HTTP_API,
+            connection_config={
+                "base_url": "https://api.example.test",
+                "auth_mode": "oauth2",
+                "oauth_flow": "authorization_code_pkce",
+                "oauth_authorization_url": "https://idp.example.test/authorize",
+                "oauth_client_id": "client-1",
+                "oauth_token_url": "https://idp.example.test/token",
+                "oauth_session_id": "session-1",
+            },
+        )
+        created = ToolConfig(
+            id="tool-1",
+            name="OAuth API",
+            tool_type=ToolType.HTTP_API,
+            connection_config={key: value for key, value in request.connection_config.items() if key != "oauth_session_id"},
+        )
+        manager = SimpleNamespace(
+            peek_credentials=mock.AsyncMock(return_value=OAuthCredentialUpdate(access_token="access-1", refresh_token="refresh-1")),
+            consume=mock.AsyncMock(),
+        )
+        repo = mock.AsyncMock()
+        repo.create_tool_config = mock.AsyncMock(return_value=created)
+
+        with (
+            mock.patch.object(routes, "http_api_oauth_manager", manager),
+            mock.patch.object(routes, "repository", repo),
+            mock.patch.object(routes.rag, "initialize", mock.AsyncMock()),
+            mock.patch.object(routes, "notify_tools_changed"),
+            mock.patch.object(routes, "invalidate_settings_cache"),
+        ):
+            await routes.create_tool_config(request, cast(User, SimpleNamespace(id="admin-1")))
+
+        persisted = repo.create_tool_config.await_args.args[0].connection_config
+        self.assertEqual(persisted["oauth_access_token"], "access-1")
+        self.assertEqual(persisted["oauth_refresh_token"], "refresh-1")
+        manager.consume.assert_awaited_once_with("admin-1", "session-1")
+
+    def test_http_api_oauth_poll_serializes_real_result_shape(self) -> None:
+        payload = routes._oauth_result_payload(OAuthPollResult(status="pending", session_id="session-1", retry_after=7))
+
+        self.assertEqual(payload["status"], "pending")
+        self.assertEqual(payload["session_id"], "session-1")
+        self.assertEqual(payload["retry_after_seconds"], 7)
+        self.assertNotIn("retry_after", payload)
+
+    async def test_http_api_oauth_update_persists_credentials_and_consumes_after_success(self) -> None:
+        base = {
+            "base_url": "https://api.example.test",
+            "auth_mode": "oauth2",
+            "oauth_flow": "authorization_code_pkce",
+            "oauth_authorization_url": "https://idp.example.test/authorize",
+            "oauth_client_id": "client-1",
+            "oauth_token_url": "https://idp.example.test/token",
+        }
+        original = ToolConfig(id="tool-1", name="OAuth API", tool_type=ToolType.HTTP_API, connection_config=base)
+        updated = original.model_copy(deep=True)
+        manager = SimpleNamespace(
+            peek_credentials=mock.AsyncMock(return_value=OAuthCredentialUpdate(access_token="access-2", refresh_token="refresh-2")),
+            consume=mock.AsyncMock(),
+        )
+        repo = mock.AsyncMock()
+        repo.get_tool_config = mock.AsyncMock(return_value=original)
+        repo.update_tool_config = mock.AsyncMock(return_value=updated)
+
+        with (
+            mock.patch.object(routes, "http_api_oauth_manager", manager),
+            mock.patch.object(routes, "repository", repo),
+            mock.patch.object(routes.rag, "initialize", mock.AsyncMock()),
+            mock.patch.object(routes, "notify_tools_changed"),
+            mock.patch.object(routes, "invalidate_settings_cache"),
+        ):
+            await routes.update_tool_config(
+                "tool-1",
+                UpdateToolConfigRequest(connection_config={**base, "oauth_session_id": "session-2"}),
+                cast(User, SimpleNamespace(id="admin-1")),
+            )
+
+        persisted = repo.update_tool_config.await_args.args[1]["connection_config"]
+        self.assertEqual(persisted["oauth_access_token"], "access-2")
+        self.assertEqual(persisted["oauth_refresh_token"], "refresh-2")
+        manager.consume.assert_awaited_once_with("admin-1", "session-2")
+
+    async def test_http_api_oauth_update_preserves_omitted_saved_secrets_without_consuming(self) -> None:
+        original_config = {
+            "base_url": "https://api.example.test",
+            "auth_mode": "oauth2",
+            "oauth_flow": "authorization_code_pkce",
+            "oauth_authorization_url": "https://idp.example.test/authorize",
+            "oauth_client_id": "client-1",
+            "oauth_client_secret": "client-secret",
+            "oauth_token_url": "https://idp.example.test/token",
+            "oauth_access_token": "access-saved",
+            "oauth_refresh_token": "refresh-saved",
+        }
+        original = ToolConfig(id="tool-1", name="OAuth API", tool_type=ToolType.HTTP_API, connection_config=original_config)
+        updated = original.model_copy(deep=True)
+        manager = SimpleNamespace(consume=mock.AsyncMock())
+        repo = mock.AsyncMock()
+        repo.get_tool_config = mock.AsyncMock(return_value=original)
+        repo.update_tool_config = mock.AsyncMock(return_value=updated)
+
+        with (
+            mock.patch.object(routes, "http_api_oauth_manager", manager),
+            mock.patch.object(routes, "repository", repo),
+            mock.patch.object(routes.rag, "initialize", mock.AsyncMock()),
+            mock.patch.object(routes, "notify_tools_changed"),
+            mock.patch.object(routes, "invalidate_settings_cache"),
+        ):
+            incoming_config = {
+                key: value for key, value in original_config.items() if key not in {"oauth_client_secret", "oauth_access_token", "oauth_refresh_token"}
+            }
+            incoming_config["base_url"] = "https://new-api.example.test"
+            await routes.update_tool_config(
+                "tool-1",
+                UpdateToolConfigRequest(connection_config=incoming_config),
+                cast(User, SimpleNamespace(id="admin-1")),
+            )
+
+        persisted = repo.update_tool_config.await_args.args[1]["connection_config"]
+        self.assertEqual(persisted["base_url"], "https://new-api.example.test")
+        self.assertEqual(persisted["oauth_client_secret"], "client-secret")
+        self.assertEqual(persisted["oauth_access_token"], "access-saved")
+        self.assertEqual(persisted["oauth_refresh_token"], "refresh-saved")
+        manager.consume.assert_not_awaited()
+
+    async def test_http_api_oauth_update_failure_keeps_session_for_retry(self) -> None:
+        config = {
+            "base_url": "https://api.example.test",
+            "auth_mode": "oauth2",
+            "oauth_flow": "authorization_code_pkce",
+            "oauth_authorization_url": "https://idp.example.test/authorize",
+            "oauth_client_id": "client-1",
+            "oauth_token_url": "https://idp.example.test/token",
+        }
+        original = ToolConfig(id="tool-1", name="OAuth API", tool_type=ToolType.HTTP_API, connection_config=config)
+        manager = SimpleNamespace(
+            peek_credentials=mock.AsyncMock(return_value=OAuthCredentialUpdate(access_token="access-3")),
+            consume=mock.AsyncMock(),
+        )
+        repo = mock.AsyncMock()
+        repo.get_tool_config = mock.AsyncMock(return_value=original)
+        repo.update_tool_config = mock.AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        with (
+            mock.patch.object(routes, "http_api_oauth_manager", manager),
+            mock.patch.object(routes, "repository", repo),
+        ):
+            with self.assertRaises(RuntimeError):
+                await routes.update_tool_config(
+                    "tool-1",
+                    UpdateToolConfigRequest(connection_config={**config, "oauth_session_id": "session-3"}),
+                    cast(User, SimpleNamespace(id="admin-1")),
+                )
+
+        manager.consume.assert_not_awaited()
+
+    async def test_get_http_api_tool_edit_config_returns_user_entered_values_excluding_provider_tokens(self) -> None:
+        config = ToolConfig(
+            id="tool-http-api",
+            name="Demo API",
+            tool_type=ToolType.HTTP_API,
+            connection_config={
+                "base_url": "https://api.example.test",
+                "api_key": "api-key-1",
+                "oauth_client_secret": "client-secret-1",
+                "request_headers": [{"name": "X-Tenant", "value": "tenant-secret"}],
+                "request_body_fields": [{"name": "tenant", "value": "north", "secret": False}],
+                "oauth_access_token": "access-token-1",
+                "oauth_refresh_token": "refresh-token-1",
+            },
+        )
+        mock_repo = mock.AsyncMock()
+        mock_repo.get_tool_config = mock.AsyncMock(return_value=config)
+
+        with mock.patch("ragtime.indexer.routes.repository", mock_repo):
+            response = await routes.get_http_api_tool_edit_config("tool-http-api")
+
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        payload = json.loads(bytes(response.body))
+        connection_config = payload["connection_config"]
+        self.assertEqual(connection_config["base_url"], "https://api.example.test")
+        self.assertEqual(connection_config["api_key"], "api-key-1")
+        self.assertEqual(connection_config["oauth_client_secret"], "client-secret-1")
+        self.assertEqual(connection_config["request_headers"], [{"name": "X-Tenant", "value": "tenant-secret"}])
+        self.assertEqual(connection_config["request_body_fields"], [{"name": "tenant", "value": "north", "secret": False}])
+        self.assertNotIn("oauth_access_token", connection_config)
+        self.assertNotIn("oauth_refresh_token", connection_config)
+
+    async def test_get_http_api_tool_edit_config_returns_404_for_missing_or_non_http_api_tools(self) -> None:
+        mock_repo = mock.AsyncMock()
+        mock_repo.get_tool_config = mock.AsyncMock(
+            side_effect=[None, ToolConfig(id="tool-1", name="Postgres", tool_type=ToolType.POSTGRES, connection_config={})]
+        )
+
+        with mock.patch("ragtime.indexer.routes.repository", mock_repo):
+            with self.assertRaises(HTTPException) as missing_ctx:
+                await routes.get_http_api_tool_edit_config("missing-tool")
+            with self.assertRaises(HTTPException) as wrong_type_ctx:
+                await routes.get_http_api_tool_edit_config("tool-1")
+
+        self.assertEqual(missing_ctx.exception.status_code, 404)
+        self.assertEqual(missing_ctx.exception.detail, "HTTP API tool configuration not found")
+        self.assertEqual(wrong_type_ctx.exception.status_code, 404)
+        self.assertEqual(wrong_type_ctx.exception.detail, "HTTP API tool configuration not found")
+
+    def test_get_http_api_tool_edit_config_route_requires_admin(self) -> None:
+        route = next(
+            (r for r in routes.router.routes if getattr(r, "path", None) == "/indexes/tools/{tool_id}/http-api-edit-config"),
+            None,
+        )
+
+        self.assertIsNotNone(route, "GET /indexes/tools/{tool_id}/http-api-edit-config route not found on router")
+        dep_calls = [dep.call for dep in getattr(route, "dependant", SimpleNamespace(dependencies=[])).dependencies]
+        self.assertIn(routes.require_admin, dep_calls)
+
     async def test_create_tool_config_accepts_nested_token_exchange_config_and_response_redacts_nested_secrets(self) -> None:
         request = CreateToolConfigRequest(
             name="UKG API",
@@ -26,6 +299,11 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
                     {"name": "grant_type", "value": "client_credentials", "secret": False},
                     {"name": "client_id", "value": "client-id", "secret": False},
                     {"name": "client_secret", "value": "client-secret", "secret": True},
+                ],
+                "request_body_format": "json",
+                "request_body_fields": [
+                    {"name": "tenant", "value": "north", "secret": False},
+                    {"name": "client_secret", "value": "resource-secret", "secret": True},
                 ],
             },
         )
@@ -52,14 +330,22 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted.connection_config["request_headers"][0]["value"], "tenant-secret")
         self.assertEqual(persisted.connection_config["token_request_headers"][0]["value"], "endpoint-secret")
         self.assertEqual(persisted.connection_config["token_request_fields"][2]["value"], "client-secret")
+        self.assertEqual(persisted.connection_config["request_body_fields"][1]["value"], "resource-secret")
         dumped = result.model_dump(mode="json")
         self.assertEqual(dumped["connection_config"]["request_headers"], [{"name": "X-Tenant", "value": ""}])
         self.assertEqual(dumped["connection_config"]["token_request_headers"], [{"name": "X-Token-Key", "value": ""}])
         self.assertEqual(
             dumped["connection_config"]["token_request_fields"],
             [
-                {"name": "grant_type", "value": "client_credentials", "secret": False},
-                {"name": "client_id", "value": "client-id", "secret": False},
+                {"name": "grant_type", "value": "", "secret": True},
+                {"name": "client_id", "value": "", "secret": True},
+                {"name": "client_secret", "value": "", "secret": True},
+            ],
+        )
+        self.assertEqual(
+            dumped["connection_config"]["request_body_fields"],
+            [
+                {"name": "tenant", "value": "", "secret": True},
                 {"name": "client_secret", "value": "", "secret": True},
             ],
         )
@@ -146,6 +432,11 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
                     {"name": "grant_type", "value": "client_credentials", "secret": False},
                     {"name": "client_secret", "value": "client-secret", "secret": True},
                 ],
+                "request_body_format": "json",
+                "request_body_fields": [
+                    {"name": "tenant", "value": "north", "secret": False},
+                    {"name": "client_secret", "value": "resource-secret", "secret": True},
+                ],
             },
         )
         updated = original.model_copy(deep=True)
@@ -173,6 +464,11 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
                             {"name": "grant_type", "value": "client_credentials", "secret": False},
                             {"name": "client_secret", "value": "", "secret": True},
                         ],
+                        "request_body_format": "json",
+                        "request_body_fields": [
+                            {"name": "tenant", "value": "north", "secret": False},
+                            {"name": "client_secret", "value": "", "secret": True},
+                        ],
                     }
                 ),
             )
@@ -182,6 +478,7 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted_updates["connection_config"]["request_headers"][0]["value"], "tenant-secret")
         self.assertEqual(persisted_updates["connection_config"]["token_request_headers"][0]["value"], "endpoint-secret")
         self.assertEqual(persisted_updates["connection_config"]["token_request_fields"][1]["value"], "client-secret")
+        self.assertEqual(persisted_updates["connection_config"]["request_body_fields"][1]["value"], "resource-secret")
 
     async def test_update_tool_config_rejects_duplicate_nested_header_without_secret_echo(self) -> None:
         original = ToolConfig(
@@ -218,7 +515,7 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("other-secret", detail)
         mock_repo.update_tool_config.assert_not_called()
 
-    async def test_update_tool_config_rejects_secret_row_toggled_non_secret_blank(self) -> None:
+    async def test_update_tool_config_normalizes_legacy_non_secret_blank_secret_row(self) -> None:
         original = ToolConfig(
             id="tool-http-api",
             name="Demo API",
@@ -231,24 +528,27 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         mock_repo = mock.AsyncMock()
         mock_repo.get_tool_config = mock.AsyncMock(return_value=original)
+        mock_repo.update_tool_config = mock.AsyncMock(return_value=original)
 
-        with self.assertRaises(HTTPException) as ctx:
-            with mock.patch("ragtime.indexer.routes.repository", mock_repo):
-                await routes.update_tool_config(
-                    "tool-http-api",
-                    UpdateToolConfigRequest(
-                        connection_config={
-                            "auth_mode": "token_exchange",
-                            "token_request_fields": [{"name": "client_secret", "value": "", "secret": False}],
-                        }
-                    ),
-                )
+        with (
+            mock.patch("ragtime.indexer.routes.repository", mock_repo),
+            mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
+            mock.patch("ragtime.indexer.routes.notify_tools_changed"),
+            mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+        ):
+            await routes.update_tool_config(
+                "tool-http-api",
+                UpdateToolConfigRequest(
+                    connection_config={
+                        "auth_mode": "token_exchange",
+                        "token_request_fields": [{"name": "client_secret", "value": "", "secret": False}],
+                    }
+                ),
+            )
 
-        self.assertEqual(ctx.exception.status_code, 400)
-        detail = str(ctx.exception.detail)
-        self.assertIn("token_request_fields", detail)
-        self.assertNotIn("client-secret", detail)
-        mock_repo.update_tool_config.assert_not_called()
+        persisted = mock_repo.update_tool_config.await_args.args[1]["connection_config"]
+        self.assertEqual(persisted["token_request_fields"][0]["value"], "client-secret")
+        self.assertTrue(persisted["token_request_fields"][0]["secret"])
 
     async def test_update_tool_config_allows_explicit_empty_http_api_secret_clear(self) -> None:
         original = ToolConfig(
@@ -340,6 +640,107 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
             ),
             perform_login=False,
         )
+
+    async def test_unsaved_http_api_test_connection_uses_connectivity_for_headers_mode(self) -> None:
+        broker = SimpleNamespace(
+            validate_connectivity=mock.AsyncMock(
+                return_value=HttpApiValidationResult(
+                    success=True,
+                    message="Connectivity succeeded with HTTP 401.",
+                    details={"status": 401, "auth_tested": False},
+                )
+            ),
+            validate_configuration=mock.AsyncMock(),
+        )
+
+        with mock.patch.object(routes, "http_api_broker", broker):
+            result = await routes.test_tool_connection(
+                ToolTestRequest(
+                    tool_type=ToolType.HTTP_API,
+                    connection_config={
+                        "base_url": "https://api.example.com",
+                        "auth_mode": "headers",
+                        "request_headers": [{"name": "X-Api-Key", "value": "secret-key"}],
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        broker.validate_connectivity.assert_awaited_once_with(
+            HttpApiConnectionConfig(
+                base_url="https://api.example.com",
+                auth_mode=HttpApiAuthMode.HEADERS,
+                request_headers=[HttpApiConfiguredHeader(name="X-Api-Key", value="secret-key")],
+            )
+        )
+        broker.validate_configuration.assert_not_awaited()
+
+    async def test_http_api_test_connection_returns_fixed_configuration_error_safely(self) -> None:
+        broker = SimpleNamespace(
+            validate_configuration=mock.AsyncMock(
+                side_effect=routes.HttpApiConfigurationError("Configured request body format does not match the operation body format")
+            )
+        )
+
+        with mock.patch.object(routes, "http_api_broker", broker):
+            result = await routes.test_tool_connection(
+                ToolTestRequest(
+                    tool_type=ToolType.HTTP_API,
+                    connection_config={
+                        "base_url": "https://api.example.com",
+                        "auth_mode": "bearer",
+                        "bearer_token": "planted-secret-token",
+                    },
+                )
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.message, "Configured request body format does not match the operation body format")
+        self.assertIsNone(result.details)
+        self.assertNotIn("planted-secret-token", json.dumps(result.model_dump()))
+
+    async def test_headers_connectivity_failure_propagates_safe_failure_result(self) -> None:
+        broker = SimpleNamespace(
+            validate_connectivity=mock.AsyncMock(
+                return_value=HttpApiValidationResult(
+                    success=False,
+                    message="Connectivity failed: ConnectError",
+                    details=None,
+                )
+            ),
+            validate_configuration=mock.AsyncMock(),
+        )
+
+        with mock.patch.object(routes, "http_api_broker", broker):
+            result = await routes.test_tool_connection(
+                ToolTestRequest(
+                    tool_type=ToolType.HTTP_API,
+                    connection_config={
+                        "base_url": "https://api.example.com",
+                        "auth_mode": "headers",
+                        "request_headers": [{"name": "X-Api-Key", "value": "network-secret"}],
+                    },
+                )
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.message, "Connectivity failed: ConnectError")
+        self.assertIsNone(result.details)
+        self.assertNotIn("network-secret", json.dumps(result.model_dump()))
+        broker.validate_configuration.assert_not_awaited()
+
+    def test_http_api_configuration_errors_preserve_fixed_structural_messages(self) -> None:
+        error = routes.HttpApiConfigurationError("Configured request body format does not match the operation body format")
+
+        self.assertEqual(
+            routes._sanitize_http_api_error_message(error, fallback="fallback"),
+            "Configured request body format does not match the operation body format",
+        )
+
+    def test_http_api_error_sanitizer_redacts_secret_bearing_messages(self) -> None:
+        error = ValueError("Configured request body format does not match secret-token")
+
+        self.assertEqual(routes._sanitize_http_api_error_message(error, fallback="fallback"), "fallback")
 
     async def test_unsaved_http_api_test_connection_performs_login_only_for_login_exchange(self) -> None:
         broker = SimpleNamespace(

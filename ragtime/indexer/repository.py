@@ -1937,6 +1937,16 @@ class IndexerRepository:
                         # Update only the fields provided in the request
                         if getattr(existing_config, "toolType", None) == ToolType.HTTP_API.value:
                             merged_config = merge_http_api_secret_updates(merged_config, value)
+                            for field in ("token_request_fields", "request_body_fields"):
+                                incoming_rows = value.get(field)
+                                stored_rows = merged_config.get(field)
+                                if not isinstance(incoming_rows, list) or not isinstance(stored_rows, list):
+                                    continue
+                                incoming_by_name = {str(row.get("name", "")): row for row in incoming_rows if isinstance(row, dict)}
+                                for row in stored_rows:
+                                    incoming = incoming_by_name.get(str(row.get("name", "")))
+                                    if isinstance(incoming, dict) and "secret" in incoming:
+                                        row["secret"] = incoming["secret"]
                         else:
                             merged_config.update(value)
                         value = merged_config
@@ -2203,7 +2213,7 @@ class IndexerRepository:
                 value = raw_config.get(field)
                 if isinstance(value, str) and value:
                     configured_secret_fields.append(field)
-            configured_secret_fields.extend(configured_http_api_secret_paths(raw_config))
+            configured_secret_fields.extend(configured_http_api_secret_paths(raw_config, include_explicit_non_secret=False))
 
         # Decrypt password fields in connection_config
         decrypted_config = decrypt_json_passwords(raw_config, CONNECTION_CONFIG_PASSWORD_FIELDS)

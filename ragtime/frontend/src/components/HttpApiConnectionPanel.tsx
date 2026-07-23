@@ -1,29 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Eye, EyeOff, Trash2 } from 'lucide-react';
 
 import {
   DEFAULT_HTTP_API_METHOD_POLICIES,
   HTTP_API_METHODS,
   type HttpApiAuthMode,
+  type HttpApiBodyFormat,
   type HttpApiConfiguredHeader,
   type HttpApiConnectionConfig,
   type HttpApiFixedSecretField,
   type HttpApiHttpMethod,
   type HttpApiMethodPolicy,
   type HttpApiSecretField,
+  type HttpApiTokenField,
 } from '@/types';
+
+import {
+  hasOAuthProviderConfigChanged,
+  HttpApiOAuthConnectPanel,
+} from './HttpApiOAuthConnectPanel';
 
 type HttpApiPanelSection = 'connection' | 'authentication' | 'api_details';
 
 interface ActionStatus {
   state: 'idle' | 'pending' | 'success' | 'error';
   message?: string | null;
-  operationCount?: number | null;
-}
-
-interface NormalizeOpenApiInput {
-  spec_url?: string;
-  document?: string;
-  document_name?: string;
 }
 
 interface HttpApiConnectionPanelProps {
@@ -34,13 +35,13 @@ interface HttpApiConnectionPanelProps {
   testStatus?: ActionStatus;
   onTestConnection?: () => void;
   testDisabled?: boolean;
-  openApiNormalizeStatus?: ActionStatus;
-  onNormalizeOpenApi?: (input: NormalizeOpenApiInput) => void | Promise<void>;
-  normalizeDisabled?: boolean;
+  toolId?: string;
+  onOAuthConnected?: (sessionId: string) => void;
 }
 
-type UrlFieldKey = 'base_url' | 'openapi_source_url';
+type UrlFieldKey = 'base_url' | 'documentation_url';
 type HeaderRowKey = 'request_headers' | 'token_request_headers';
+type BodyRowKey = 'token_request_fields' | 'request_body_fields';
 
 interface RowValidationState {
   nameError?: string;
@@ -54,7 +55,8 @@ const MODERN_AUTH_MODE_OPTIONS: Array<{ value: HttpApiAuthMode; label: string }>
   { value: 'none', label: 'None' },
   { value: 'headers', label: 'Headers' },
   { value: 'basic', label: 'Basic authentication' },
-  { value: 'token_exchange', label: 'Token exchange' },
+  { value: 'token_exchange', label: 'OAuth 2.0 / Token exchange' },
+  { value: 'oauth2', label: 'OAuth 2.0 / Interactive' },
 ];
 
 const LEGACY_AUTH_MODE_OPTIONS: Array<{ value: HttpApiAuthMode; label: string }> = [
@@ -83,19 +85,6 @@ function getMethodPolicy(
   method: HttpApiHttpMethod,
 ): HttpApiMethodPolicy {
   return config.method_policies?.[method] ?? DEFAULT_HTTP_API_METHOD_POLICIES[method];
-}
-
-async function readTextFile(file: File): Promise<string> {
-  if (typeof file.text === 'function') {
-    return await file.text();
-  }
-
-  return await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
-    reader.readAsText(file);
-  });
 }
 
 function validateHttpUrl(value: string | undefined): string | null {
@@ -142,17 +131,41 @@ function getClearedConfigForAuthModeChange(
 
   let nextValue: HttpApiConnectionConfig = { ...currentValue, auth_mode: nextAuthMode };
 
+  if (currentMode === 'oauth2' && nextAuthMode !== 'oauth2') {
+    nextValue = {
+      ...nextValue,
+      oauth_client_secret: '',
+      oauth_access_token: '',
+      oauth_refresh_token: '',
+    };
+    nextValue = removeConfigKeys(nextValue, [
+      'oauth_flow',
+      'oauth_issuer_url',
+      'oauth_authorization_url',
+      'oauth_device_authorization_url',
+      'oauth_token_url',
+      'oauth_client_id',
+      'oauth_client_auth_method',
+      'oauth_scopes',
+      'oauth_token_type',
+      'oauth_token_expires_at',
+      'oauth_session_id',
+    ]);
+  }
+
   if (
     currentMode === 'headers' &&
     nextAuthMode !== 'headers' &&
     nextAuthMode !== 'token_exchange'
   ) {
-    nextValue = { ...nextValue, request_headers: [] };
+    nextValue = { ...nextValue, request_headers: [], request_body_fields: [] };
+    nextValue = removeConfigKeys(nextValue, ['request_body_format']);
   }
 
   if (currentMode === 'token_exchange' && nextAuthMode !== 'token_exchange') {
     const keysToClear: Array<keyof HttpApiConnectionConfig> = [
       'login_path',
+      'token_url',
       'login_method',
       'login_body_format',
       'token_response_path',
@@ -163,11 +176,13 @@ function getClearedConfigForAuthModeChange(
     nextValue = {
       ...nextValue,
       token_request_fields: [],
+      request_body_fields: nextAuthMode === 'headers' ? currentValue.request_body_fields : [],
       token_request_headers: [],
       ...(nextAuthMode !== 'headers' ? { request_headers: [] } : {}),
     };
     if (nextAuthMode !== 'headers') {
       nextValue = { ...nextValue, request_headers: [] };
+      nextValue = removeConfigKeys(nextValue, ['request_body_format']);
     }
     nextValue = removeConfigKeys(nextValue, keysToClear);
   }
@@ -183,18 +198,44 @@ export function HttpApiConnectionPanel({
   testStatus,
   onTestConnection,
   testDisabled = false,
-  openApiNormalizeStatus,
-  onNormalizeOpenApi,
-  normalizeDisabled = false,
+  toolId,
+  onOAuthConnected,
 }: HttpApiConnectionPanelProps) {
-  const [uploadedOpenApiFile, setUploadedOpenApiFile] = useState<File>();
-  const [uploadedOpenApiDocument, setUploadedOpenApiDocument] = useState<string>();
-  const [uploadedOpenApiDocumentName, setUploadedOpenApiDocumentName] = useState<string>();
   const [urlErrors, setUrlErrors] = useState<Partial<Record<UrlFieldKey, string>>>({});
   const [legacyOptionsUnlocked, setLegacyOptionsUnlocked] = useState(() =>
     LEGACY_AUTH_MODES.includes(value.auth_mode ?? 'none'),
   );
+  const [revealedFixedSecrets, setRevealedFixedSecrets] = useState<
+    Partial<Record<HttpApiFixedSecretField, boolean>>
+  >({});
+  const [revealedSecretRows, setRevealedSecretRows] = useState<Record<string, boolean>>({});
+  const secretRowIds = useRef(new WeakMap<HttpApiConfiguredHeader | HttpApiTokenField, string>());
+  const nextSecretRowId = useRef(0);
   const authMode = value.auth_mode ?? 'none';
+
+  const getSecretRowId = (
+    prefix: string,
+    row: HttpApiConfiguredHeader | HttpApiTokenField,
+  ): string => {
+    const existingId = secretRowIds.current.get(row);
+    if (existingId) {
+      return existingId;
+    }
+    const id = `${prefix}-${nextSecretRowId.current++}`;
+    secretRowIds.current.set(row, id);
+    return id;
+  };
+
+  const preserveSecretRowId = <T extends HttpApiConfiguredHeader | HttpApiTokenField>(
+    previousRow: T,
+    nextRow: T,
+  ): T => {
+    const rowId = secretRowIds.current.get(previousRow);
+    if (rowId) {
+      secretRowIds.current.set(nextRow, rowId);
+    }
+    return nextRow;
+  };
 
   useEffect(() => {
     if (LEGACY_AUTH_MODES.includes(authMode)) {
@@ -213,15 +254,21 @@ export function HttpApiConnectionPanel({
     onChange({ ...value, [key]: nextValue });
   };
 
-  const clearSecret = (key: HttpApiFixedSecretField) => {
-    onChange({ ...value, [key]: '' });
-  };
-
   const handleAuthModeChange = (nextAuthMode: HttpApiAuthMode) => {
     if (LEGACY_AUTH_MODES.includes(nextAuthMode)) {
       setLegacyOptionsUnlocked(true);
     }
     onChange(getClearedConfigForAuthModeChange(value, nextAuthMode));
+  };
+
+  const handleOAuthChange = (nextValue: HttpApiConnectionConfig) => {
+    if (hasOAuthProviderConfigChanged(value, nextValue)) {
+      const invalidated = { ...nextValue };
+      delete invalidated.oauth_session_id;
+      onChange(invalidated);
+      return;
+    }
+    onChange(nextValue);
   };
 
   const hasSavedHeaderSecret = (key: HeaderRowKey, name: string): boolean => {
@@ -243,6 +290,11 @@ export function HttpApiConnectionPanel({
       return false;
     }
     return configuredSecretFields.includes(`token_request_fields.${name.trim()}`);
+  };
+
+  const hasSavedBodyFieldSecret = (key: BodyRowKey, name: string): boolean => {
+    if (!name.trim()) return false;
+    return configuredSecretFields.includes(`${key}.${name.trim()}` as HttpApiSecretField);
   };
 
   const buildHeaderRowValidation = (
@@ -293,9 +345,12 @@ export function HttpApiConnectionPanel({
     ),
   };
 
-  const tokenFieldValidation = (() => {
+  const buildBodyFieldValidation = (
+    rows: HttpApiTokenField[] | undefined,
+    key: BodyRowKey,
+  ): RowValidationState[] => {
     const counts = new Map<string, number>();
-    (value.token_request_fields ?? []).forEach((row) => {
+    (rows ?? []).forEach((row) => {
       const trimmedName = row.name.trim();
       if (!trimmedName) {
         return;
@@ -303,26 +358,36 @@ export function HttpApiConnectionPanel({
       counts.set(trimmedName, (counts.get(trimmedName) ?? 0) + 1);
     });
 
-    return (value.token_request_fields ?? []).map((row) => {
+    return (rows ?? []).map((row) => {
       const trimmedName = row.name.trim();
-      const hasSavedValue = row.secret && hasSavedTokenFieldSecret(trimmedName);
+      const hasSavedValue =
+        key === 'token_request_fields'
+          ? hasSavedTokenFieldSecret(trimmedName)
+          : hasSavedBodyFieldSecret(key, trimmedName);
       const errors: RowValidationState = {};
 
       if (!trimmedName) {
-        errors.nameError = 'Token request field name is required.';
+        errors.nameError = `${key === 'token_request_fields' ? 'Token request' : 'Request body'} field name is required.`;
       } else if ((counts.get(trimmedName) ?? 0) > 1) {
-        errors.nameError = 'Duplicate token request field name.';
+        errors.nameError = `Duplicate ${key === 'token_request_fields' ? 'token request' : 'request body'} field name.`;
       }
 
-      if (!row.value && (!row.secret || !hasSavedValue)) {
-        errors.valueError = row.secret
-          ? 'Field value is required.'
-          : 'Value is required when Secret is off.';
+      if (!row.value && !hasSavedValue) {
+        errors.valueError = 'Field value is required.';
       }
 
       return errors;
     });
-  })();
+  };
+
+  const tokenFieldValidation = buildBodyFieldValidation(
+    value.token_request_fields,
+    'token_request_fields',
+  );
+  const bodyFieldValidation = buildBodyFieldValidation(
+    value.request_body_fields,
+    'request_body_fields',
+  );
 
   const handleUrlBlur = (key: UrlFieldKey, nextValue: string | undefined) => {
     const normalizedValue = normalizeUrlValue(nextValue);
@@ -355,37 +420,42 @@ export function HttpApiConnectionPanel({
     field: HttpApiFixedSecretField;
     value: string | undefined;
   }) => {
-    const hasSavedSecret = configuredSecretFields.includes(field) && !fieldValue;
+    const isRevealed = Boolean(revealedFixedSecrets[field]);
 
     return (
       <div className="form-group">
         <label htmlFor={inputId}>{label}</label>
-        <div className="http-api-secret-row">
+        <div className="http-api-secret-input-wrap">
           <input
             id={inputId}
-            type="password"
+            type={isRevealed ? 'text' : 'password'}
             value={fieldValue ?? ''}
             onChange={(event) => updateSecret(field, event.target.value)}
-            placeholder={hasSavedSecret ? 'Saved value not shown' : `Enter ${label.toLowerCase()}`}
+            placeholder={`Enter ${label.toLowerCase()}`}
             autoComplete="off"
           />
-          {hasSavedSecret && (
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              onClick={() => clearSecret(field)}
-            >
-              Clear saved {label}
-            </button>
-          )}
+          <button
+            type="button"
+            className="settings-inline-copy settings-inline-copy-secondary http-api-secret-toggle-button"
+            onClick={() =>
+              setRevealedFixedSecrets((current) => ({ ...current, [field]: !isRevealed }))
+            }
+            title={`${isRevealed ? 'Hide' : 'Show'} ${label}`}
+            aria-label={`${isRevealed ? 'Hide' : 'Show'} ${label}`}
+          >
+            {isRevealed ? (
+              <EyeOff size={14} aria-hidden="true" />
+            ) : (
+              <Eye size={14} aria-hidden="true" />
+            )}
+          </button>
         </div>
-        {hasSavedSecret && <p className="field-help">Saved value not shown</p>}
       </div>
     );
   };
 
   const renderActionStatus = (status: ActionStatus | undefined) => {
-    if (!status || (!status.message && !status.operationCount)) {
+    if (!status || !status.message) {
       return null;
     }
 
@@ -396,9 +466,6 @@ export function HttpApiConnectionPanel({
     return (
       <div className={className} role="status" aria-live="polite">
         {status.message && <span>{status.message}</span>}
-        {typeof status.operationCount === 'number' && (
-          <span className="http-api-status-count">{status.operationCount} operations</span>
-        )}
       </div>
     );
   };
@@ -418,11 +485,112 @@ export function HttpApiConnectionPanel({
   }) => {
     const rows = value[valueKey] ?? [];
     const validation = headerRowValidation[valueKey];
+    const hasRows = rows.length > 0;
 
     return (
-      <div className="http-api-subsection">
-        <div className="http-api-subsection-header">
-          <p className="http-api-subsection-label">{groupLabel}</p>
+      <div
+        className={`http-api-subsection${hasRows ? '' : ' http-api-optional-subsection-empty http-api-optional-action'}`}
+      >
+        {hasRows && (
+          <div className="http-api-subsection-header">
+            <p className="http-api-subsection-label">{groupLabel}</p>
+          </div>
+        )}
+        {hasRows && (
+          <div className="http-api-row-list">
+            {rows.map((row, index) => {
+              const position = index + 1;
+              const rowValidation = validation[index] ?? {};
+              const rowId = getSecretRowId(namePrefix, row);
+              const isRevealed = Boolean(revealedSecretRows[rowId]);
+
+              return (
+                <div key={`${namePrefix}-${position}`} className="http-api-header-row">
+                  <div className="form-group">
+                    <label htmlFor={`http-api-${namePrefix}-name-${position}`}>Header name</label>
+                    <input
+                      id={`http-api-${namePrefix}-name-${position}`}
+                      aria-label={`${itemLabel} name ${position}`}
+                      aria-invalid={rowValidation.nameError ? 'true' : 'false'}
+                      type="text"
+                      value={row.name}
+                      onChange={(event) => {
+                        const nextRows = rows.map((currentRow, currentIndex) =>
+                          currentIndex === index
+                            ? { ...currentRow, name: event.target.value }
+                            : currentRow,
+                        );
+                        onChange({ ...value, [valueKey]: nextRows });
+                      }}
+                      autoComplete="off"
+                    />
+                    {rowValidation.nameError && (
+                      <p className="field-error">{rowValidation.nameError}</p>
+                    )}
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor={`http-api-${namePrefix}-value-${position}`}>Header value</label>
+                    <div className="http-api-secret-input-wrap">
+                      <input
+                        id={`http-api-${namePrefix}-value-${position}`}
+                        aria-label={`${itemLabel} value ${position}`}
+                        aria-invalid={rowValidation.valueError ? 'true' : 'false'}
+                        type={isRevealed ? 'text' : 'password'}
+                        value={row.value}
+                        onChange={(event) => {
+                          const nextRows = rows.map((currentRow, currentIndex) =>
+                            currentIndex === index
+                              ? preserveSecretRowId(row, {
+                                  ...currentRow,
+                                  value: event.target.value,
+                                })
+                              : currentRow,
+                          );
+                          onChange({ ...value, [valueKey]: nextRows });
+                        }}
+                        autoComplete="off"
+                      />
+                      <button
+                        type="button"
+                        className="settings-inline-copy settings-inline-copy-secondary http-api-secret-toggle-button"
+                        onClick={() =>
+                          setRevealedSecretRows((current) => ({ ...current, [rowId]: !isRevealed }))
+                        }
+                        title={`${isRevealed ? 'Hide' : 'Show'} ${itemLabel.toLowerCase()} value ${position}`}
+                        aria-label={`${isRevealed ? 'Hide' : 'Show'} ${itemLabel.toLowerCase()} value ${position}`}
+                      >
+                        {isRevealed ? (
+                          <EyeOff size={14} aria-hidden="true" />
+                        ) : (
+                          <Eye size={14} aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                    {rowValidation.valueError && (
+                      <p className="field-error">{rowValidation.valueError}</p>
+                    )}
+                  </div>
+                  <div className="http-api-row-actions http-api-row-actions-input-aligned">
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-icon http-api-row-remove"
+                      aria-label={`Remove ${itemLabel.toLowerCase()} ${position}`}
+                      onClick={() =>
+                        onChange({
+                          ...value,
+                          [valueKey]: rows.filter((_, currentIndex) => currentIndex !== index),
+                        })
+                      }
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="http-api-add-row">
           <button
             type="button"
             className="btn btn-secondary btn-sm"
@@ -432,241 +600,178 @@ export function HttpApiConnectionPanel({
             + Header
           </button>
         </div>
-        {rows.map((row, index) => {
-          const position = index + 1;
-          const hasSavedValue = hasSavedHeaderSecret(valueKey, row.name) && !row.value;
-          const rowValidation = validation[index] ?? {};
-
-          return (
-            <div key={`${namePrefix}-${position}`} className="http-api-header-row">
-              <div className="form-group">
-                <label htmlFor={`http-api-${namePrefix}-name-${position}`}>Header name</label>
-                <input
-                  id={`http-api-${namePrefix}-name-${position}`}
-                  aria-label={`${itemLabel} name ${position}`}
-                  aria-invalid={rowValidation.nameError ? 'true' : 'false'}
-                  type="text"
-                  value={row.name}
-                  onChange={(event) => {
-                    const nextRows = rows.map((currentRow, currentIndex) =>
-                      currentIndex === index
-                        ? { ...currentRow, name: event.target.value }
-                        : currentRow,
-                    );
-                    onChange({ ...value, [valueKey]: nextRows });
-                  }}
-                  autoComplete="off"
-                />
-                {rowValidation.nameError && (
-                  <p className="field-error">{rowValidation.nameError}</p>
-                )}
-              </div>
-              <div className="form-group">
-                <label htmlFor={`http-api-${namePrefix}-value-${position}`}>Header value</label>
-                <input
-                  id={`http-api-${namePrefix}-value-${position}`}
-                  aria-label={`${itemLabel} value ${position}`}
-                  aria-invalid={rowValidation.valueError ? 'true' : 'false'}
-                  type="password"
-                  value={row.value}
-                  onChange={(event) => {
-                    const nextRows = rows.map((currentRow, currentIndex) =>
-                      currentIndex === index
-                        ? { ...currentRow, value: event.target.value }
-                        : currentRow,
-                    );
-                    onChange({ ...value, [valueKey]: nextRows });
-                  }}
-                  placeholder={hasSavedValue ? 'Saved value not shown' : ''}
-                  autoComplete="off"
-                />
-                {rowValidation.valueError && (
-                  <p className="field-error">{rowValidation.valueError}</p>
-                )}
-                {!rowValidation.valueError && hasSavedValue && (
-                  <p className="field-help">Saved value not shown</p>
-                )}
-              </div>
-              <div className="http-api-row-actions">
-                {hasSavedValue && <span className="http-api-saved-badge">Saved</span>}
-                <button
-                  type="button"
-                  className="btn btn-danger btn-sm btn-icon"
-                  aria-label={`Remove ${itemLabel.toLowerCase()} ${position}`}
-                  onClick={() =>
-                    onChange({
-                      ...value,
-                      [valueKey]: rows.filter((_, currentIndex) => currentIndex !== index),
-                    })
-                  }
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          );
-        })}
       </div>
     );
   };
 
-  const renderTokenFieldRows = () => {
-    const rows = value.token_request_fields ?? [];
-
+  const renderBodyRows = ({
+    itemLabel,
+    addAriaLabel,
+    valueKey,
+    format,
+    formatLabel,
+    formatOptions,
+    onFormatChange,
+    namePrefix,
+  }: {
+    itemLabel: string;
+    addAriaLabel: string;
+    valueKey: BodyRowKey;
+    format: HttpApiBodyFormat;
+    formatLabel: string;
+    formatOptions: HttpApiBodyFormat[];
+    onFormatChange: (format: HttpApiBodyFormat) => void;
+    namePrefix: string;
+  }) => {
+    const rows = value[valueKey] ?? [];
+    const tokenRows = valueKey === 'token_request_fields';
+    const validation: RowValidationState[] = tokenRows ? tokenFieldValidation : bodyFieldValidation;
+    const hasRows = rows.length > 0;
     return (
-      <div className="http-api-subsection">
-        <div className="http-api-subsection-header">
-          <p className="http-api-subsection-label">Token request fields</p>
+      <div
+        className={`http-api-subsection${hasRows ? '' : ' http-api-optional-subsection-empty http-api-optional-action'}`}
+      >
+        {hasRows && (
+          <div className="http-api-body-toolbar">
+            <div className="form-group">
+              <label htmlFor={`http-api-${namePrefix}-format`}>{formatLabel}</label>
+              <select
+                id={`http-api-${namePrefix}-format`}
+                value={format}
+                onChange={(event) => onFormatChange(event.target.value as HttpApiBodyFormat)}
+              >
+                {formatOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+        {hasRows && (
+          <div className="http-api-row-list">
+            {rows.map((row, index) => {
+              const position = index + 1;
+              const rowValidation = validation[index] ?? {};
+              const rowId = getSecretRowId(namePrefix, row);
+              const isRevealed = Boolean(revealedSecretRows[rowId]);
+              const normalizedRows = () =>
+                rows.map((currentRow) =>
+                  currentRow.secret
+                    ? currentRow
+                    : preserveSecretRowId(currentRow, { ...currentRow, secret: true }),
+                );
+              return (
+                <div key={`${namePrefix}-${position}`} className="http-api-field-row">
+                  <div className="form-group">
+                    <label htmlFor={`http-api-${namePrefix}-name-${position}`}>Field name</label>
+                    <input
+                      id={`http-api-${namePrefix}-name-${position}`}
+                      aria-label={`${itemLabel} name ${position}`}
+                      aria-invalid={rowValidation.nameError ? 'true' : 'false'}
+                      type="text"
+                      value={row.name}
+                      onChange={(event) =>
+                        onChange({
+                          ...value,
+                          [valueKey]: normalizedRows().map((currentRow, currentIndex) =>
+                            currentIndex === index
+                              ? { ...currentRow, name: event.target.value, secret: true }
+                              : currentRow,
+                          ),
+                        })
+                      }
+                      autoComplete="off"
+                    />
+                    {rowValidation.nameError && (
+                      <p className="field-error">{rowValidation.nameError}</p>
+                    )}
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor={`http-api-${namePrefix}-value-${position}`}>Field value</label>
+                    <div className="http-api-secret-input-wrap">
+                      <input
+                        id={`http-api-${namePrefix}-value-${position}`}
+                        aria-label={`${itemLabel} value ${position}`}
+                        aria-invalid={rowValidation.valueError ? 'true' : 'false'}
+                        type={isRevealed ? 'text' : 'password'}
+                        value={row.value}
+                        onChange={(event) =>
+                          onChange({
+                            ...value,
+                            [valueKey]: normalizedRows().map((currentRow, currentIndex) =>
+                              currentIndex === index
+                                ? preserveSecretRowId(currentRow, {
+                                    ...currentRow,
+                                    value: event.target.value,
+                                  })
+                                : currentRow,
+                            ),
+                          })
+                        }
+                        autoComplete="off"
+                      />
+                      <button
+                        type="button"
+                        className="settings-inline-copy settings-inline-copy-secondary http-api-secret-toggle-button"
+                        onClick={() =>
+                          setRevealedSecretRows((current) => ({ ...current, [rowId]: !isRevealed }))
+                        }
+                        title={`${isRevealed ? 'Hide' : 'Show'} ${itemLabel.toLowerCase()} value ${position}`}
+                        aria-label={`${isRevealed ? 'Hide' : 'Show'} ${itemLabel.toLowerCase()} value ${position}`}
+                      >
+                        {isRevealed ? (
+                          <EyeOff size={14} aria-hidden="true" />
+                        ) : (
+                          <Eye size={14} aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                    {rowValidation.valueError && (
+                      <p className="field-error">{rowValidation.valueError}</p>
+                    )}
+                  </div>
+                  <div className="http-api-row-actions http-api-row-actions-input-aligned">
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-icon http-api-row-remove"
+                      aria-label={`Remove ${itemLabel.toLowerCase()} ${position}`}
+                      onClick={() =>
+                        onChange({
+                          ...value,
+                          [valueKey]: normalizedRows().filter(
+                            (_, currentIndex) => currentIndex !== index,
+                          ),
+                        })
+                      }
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="http-api-add-row">
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            aria-label="Add token request field"
+            aria-label={addAriaLabel}
             onClick={() =>
-              onChange({
-                ...value,
-                token_request_fields: [...rows, { name: '', value: '', secret: true }],
-              })
+              onChange({ ...value, [valueKey]: [...rows, { name: '', value: '', secret: true }] })
             }
           >
-            + Field
+            + Body
           </button>
         </div>
-        {rows.map((row, index) => {
-          const position = index + 1;
-          const hasSavedValue = row.secret && hasSavedTokenFieldSecret(row.name) && !row.value;
-          const rowValidation = tokenFieldValidation[index] ?? {};
-
-          return (
-            <div key={`token-request-field-${position}`} className="http-api-field-row">
-              <div className="form-group">
-                <label htmlFor={`http-api-token-request-field-name-${position}`}>Field name</label>
-                <input
-                  id={`http-api-token-request-field-name-${position}`}
-                  aria-label={`Token request field name ${position}`}
-                  aria-invalid={rowValidation.nameError ? 'true' : 'false'}
-                  type="text"
-                  value={row.name}
-                  onChange={(event) => {
-                    const nextRows = rows.map((currentRow, currentIndex) =>
-                      currentIndex === index
-                        ? { ...currentRow, name: event.target.value }
-                        : currentRow,
-                    );
-                    onChange({ ...value, token_request_fields: nextRows });
-                  }}
-                  autoComplete="off"
-                />
-                {rowValidation.nameError && (
-                  <p className="field-error">{rowValidation.nameError}</p>
-                )}
-              </div>
-              <div className="form-group">
-                <label htmlFor={`http-api-token-request-field-value-${position}`}>
-                  Field value
-                </label>
-                <input
-                  id={`http-api-token-request-field-value-${position}`}
-                  aria-label={`Token request field value ${position}`}
-                  aria-invalid={rowValidation.valueError ? 'true' : 'false'}
-                  type={row.secret ? 'password' : 'text'}
-                  value={row.value}
-                  onChange={(event) => {
-                    const nextRows = rows.map((currentRow, currentIndex) =>
-                      currentIndex === index
-                        ? { ...currentRow, value: event.target.value }
-                        : currentRow,
-                    );
-                    onChange({ ...value, token_request_fields: nextRows });
-                  }}
-                  placeholder={hasSavedValue ? 'Saved value not shown' : ''}
-                  autoComplete="off"
-                />
-                {rowValidation.valueError && (
-                  <p className="field-error">{rowValidation.valueError}</p>
-                )}
-                {!rowValidation.valueError && hasSavedValue && (
-                  <p className="field-help">Saved value not shown</p>
-                )}
-              </div>
-              <label
-                className="http-api-secret-toggle"
-                htmlFor={`http-api-token-request-field-secret-${position}`}
-              >
-                <input
-                  id={`http-api-token-request-field-secret-${position}`}
-                  aria-label={`Token request field secret ${position}`}
-                  type="checkbox"
-                  checked={row.secret}
-                  onChange={(event) => {
-                    const nextRows = rows.map((currentRow, currentIndex) =>
-                      currentIndex === index
-                        ? {
-                            ...currentRow,
-                            secret: event.target.checked,
-                            value: event.target.checked ? currentRow.value : '',
-                          }
-                        : currentRow,
-                    );
-                    onChange({ ...value, token_request_fields: nextRows });
-                  }}
-                />
-                Secret
-              </label>
-              <div className="http-api-row-actions">
-                {hasSavedValue && <span className="http-api-saved-badge">Saved</span>}
-                <button
-                  type="button"
-                  className="btn btn-danger btn-sm btn-icon"
-                  aria-label={`Remove token request field ${position}`}
-                  onClick={() =>
-                    onChange({
-                      ...value,
-                      token_request_fields: rows.filter(
-                        (_, currentIndex) => currentIndex !== index,
-                      ),
-                    })
-                  }
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          );
-        })}
       </div>
     );
   };
 
-  const handleOpenApiFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      setUploadedOpenApiFile(undefined);
-      setUploadedOpenApiDocument(undefined);
-      setUploadedOpenApiDocumentName(undefined);
-      return;
-    }
-
-    setUploadedOpenApiFile(file);
-    setUploadedOpenApiDocument(await readTextFile(file));
-    setUploadedOpenApiDocumentName(file.name);
-  };
-
-  const handleNormalizeOpenApi = async () => {
-    if (!onNormalizeOpenApi) {
-      return;
-    }
-    const document =
-      uploadedOpenApiDocument ??
-      (uploadedOpenApiFile ? await readTextFile(uploadedOpenApiFile) : undefined);
-    void onNormalizeOpenApi({
-      spec_url: value.openapi_source_url,
-      document,
-      document_name: uploadedOpenApiDocumentName ?? uploadedOpenApiFile?.name,
-    });
-  };
-
   const baseUrlError = urlErrors.base_url;
-  const openApiUrlError = urlErrors.openapi_source_url;
+  const documentationUrlError = urlErrors.documentation_url;
   const hasConfiguredApiKey = Boolean(
     value.api_key_name ||
     value.api_key_prefix ||
@@ -703,7 +808,8 @@ export function HttpApiConnectionPanel({
               </p>
             )}
             <p className="field-help">
-              Required. Requests will use relative paths under this origin only.
+              Required. Requests use relative paths under this origin; this is separate from the
+              optional documentation URL in API Details.
             </p>
           </div>
         </div>
@@ -736,6 +842,18 @@ export function HttpApiConnectionPanel({
               addAriaLabel: 'Add configured header',
               valueKey: 'request_headers',
               namePrefix: 'configured-header',
+            })}
+
+          {authMode === 'headers' &&
+            renderBodyRows({
+              itemLabel: 'Request body field',
+              addAriaLabel: 'Add request body field',
+              valueKey: 'request_body_fields',
+              format: value.request_body_format ?? 'json',
+              formatLabel: 'Request body content type',
+              formatOptions: ['json', 'form', 'multipart'],
+              onFormatChange: (format) => updateValue('request_body_format', format),
+              namePrefix: 'request-body',
             })}
 
           {showSharedApiKeyConfig && (
@@ -979,15 +1097,20 @@ export function HttpApiConnectionPanel({
           {authMode === 'token_exchange' && (
             <>
               <div className="http-api-subsection http-api-token-login-row">
-                <div className="http-api-subsection-label">Token exchange</div>
                 <div className="http-api-grid">
                   <div className="form-group">
-                    <label htmlFor="http-api-login-path">Login path</label>
+                    <label htmlFor="http-api-token-url">Token endpoint</label>
                     <input
-                      id="http-api-login-path"
+                      id="http-api-token-url"
                       type="text"
-                      value={value.login_path ?? ''}
-                      onChange={(event) => updateValue('login_path', event.target.value)}
+                      value={value.token_url || value.login_path || ''}
+                      onChange={(event) =>
+                        onChange({
+                          ...value,
+                          token_url: event.target.value,
+                          ...(!value.token_url ? { login_path: '' } : {}),
+                        })
+                      }
                       autoComplete="off"
                     />
                   </div>
@@ -1005,29 +1128,26 @@ export function HttpApiConnectionPanel({
                       <option value="PATCH">PATCH</option>
                     </select>
                   </div>
-                  <div className="form-group">
-                    <label htmlFor="http-api-login-body-format">Login body format</label>
-                    <select
-                      id="http-api-login-body-format"
-                      value={value.login_body_format ?? 'json'}
-                      onChange={(event) =>
-                        updateValue('login_body_format', event.target.value as 'json' | 'form')
-                      }
-                    >
-                      <option value="json">json</option>
-                      <option value="form">form</option>
-                    </select>
-                  </div>
                 </div>
               </div>
 
-              {renderTokenFieldRows()}
               {renderHeaderRows({
                 groupLabel: 'Token request headers',
                 itemLabel: 'Token request header',
                 addAriaLabel: 'Add token request header',
                 valueKey: 'token_request_headers',
                 namePrefix: 'token-request-header',
+              })}
+              {renderBodyRows({
+                itemLabel: 'Token request field',
+                addAriaLabel: 'Add token request field',
+                valueKey: 'token_request_fields',
+                format: value.login_body_format ?? 'json',
+                formatLabel: 'Token request body content type',
+                formatOptions: ['json', 'form'],
+                onFormatChange: (format) =>
+                  updateValue('login_body_format', format as 'json' | 'form'),
+                namePrefix: 'token-request-field',
               })}
 
               <div className="http-api-subsection">
@@ -1083,61 +1203,79 @@ export function HttpApiConnectionPanel({
                 valueKey: 'request_headers',
                 namePrefix: 'configured-header',
               })}
+              {renderBodyRows({
+                itemLabel: 'Request body field',
+                addAriaLabel: 'Add request body field',
+                valueKey: 'request_body_fields',
+                format: value.request_body_format ?? 'json',
+                formatLabel: 'Request body content type',
+                formatOptions: ['json', 'form', 'multipart'],
+                onFormatChange: (format) => updateValue('request_body_format', format),
+                namePrefix: 'request-body',
+              })}
             </>
           )}
 
-          <div className="http-api-actions-row">
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={onTestConnection}
-              disabled={!onTestConnection || testDisabled}
-            >
-              Test connection
-            </button>
-          </div>
+          {authMode === 'oauth2' && (
+            <HttpApiOAuthConnectPanel
+              value={value}
+              toolId={toolId}
+              configuredSecretFields={configuredSecretFields}
+              onChange={handleOAuthChange}
+              onConnected={(sessionId) => onOAuthConnected?.(sessionId)}
+            />
+          )}
+
+          {(authMode !== 'oauth2' ||
+            configuredSecretFields.includes('oauth_access_token') ||
+            configuredSecretFields.includes('oauth_refresh_token')) && (
+            <div className="http-api-actions-row">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={onTestConnection}
+                disabled={!onTestConnection || testDisabled}
+              >
+                Test connection
+              </button>
+            </div>
+          )}
           {renderActionStatus(testStatus)}
         </div>
       )}
 
       {section === 'api_details' && (
         <div className="http-api-panel-body">
-          <div className="http-api-grid">
-            <div className="form-group">
-              <label htmlFor="http-api-openapi-url">OpenAPI URL</label>
-              <input
-                id="http-api-openapi-url"
-                type="url"
-                value={value.openapi_source_url ?? ''}
-                onChange={(event) => updateValue('openapi_source_url', event.target.value)}
-                onBlur={(event) => handleUrlBlur('openapi_source_url', event.target.value)}
-                placeholder="https://api.example.com/openapi.json"
-                autoComplete="off"
-                aria-invalid={openApiUrlError ? 'true' : 'false'}
-                aria-describedby={openApiUrlError ? 'http-api-openapi-url-error' : undefined}
-              />
-              {openApiUrlError && (
-                <p id="http-api-openapi-url-error" className="field-error">
-                  {openApiUrlError}
-                </p>
-              )}
-            </div>
-            <div className="form-group">
-              <label htmlFor="http-api-openapi-file">OpenAPI file</label>
-              <input
-                id="http-api-openapi-file"
-                type="file"
-                accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml,text/x-yaml"
-                onChange={handleOpenApiFileChange}
-              />
-              {uploadedOpenApiDocumentName && (
-                <p className="field-help">Selected file: {uploadedOpenApiDocumentName}</p>
-              )}
-            </div>
+          <div className="form-group">
+            <label htmlFor="http-api-documentation-url">API documentation URL (optional)</label>
+            <input
+              id="http-api-documentation-url"
+              type="url"
+              value={value.documentation_url ?? ''}
+              onChange={(event) => updateValue('documentation_url', event.target.value)}
+              onBlur={(event) => handleUrlBlur('documentation_url', event.target.value)}
+              placeholder="https://api.example.com/docs"
+              autoComplete="off"
+              aria-invalid={documentationUrlError ? 'true' : 'false'}
+              aria-describedby={
+                documentationUrlError ? 'http-api-documentation-url-error' : undefined
+              }
+            />
+            {documentationUrlError && (
+              <p id="http-api-documentation-url-error" className="field-error">
+                {documentationUrlError}
+              </p>
+            )}
+            <p className="field-help">
+              Optional reference for endpoint paths, parameters, and response details. It is not
+              used as the request Base URL.
+            </p>
           </div>
 
           <div className="form-group">
-            <label htmlFor="http-api-approved-request-headers">Approved request headers</label>
+            <label htmlFor="http-api-approved-request-headers">
+              Approved request headers (optional)
+            </label>
             <textarea
               id="http-api-approved-request-headers"
               value={(value.approved_request_headers ?? []).join('\n')}
@@ -1148,12 +1286,15 @@ export function HttpApiConnectionPanel({
               placeholder={'X-Trace-Id\nX-Request-Id'}
             />
             <p className="field-help">
-              Agent-settable header names only. This does not configure fixed header values.
+              Optional agent-settable header names only. This does not configure fixed header values
+              or expose secrets.
             </p>
           </div>
 
           <div className="form-group">
-            <label htmlFor="http-api-default-response-selector">Default response selector</label>
+            <label htmlFor="http-api-default-response-selector">
+              Default response selector (optional)
+            </label>
             <input
               id="http-api-default-response-selector"
               type="text"
@@ -1162,6 +1303,9 @@ export function HttpApiConnectionPanel({
               placeholder="items"
               autoComplete="off"
             />
+            <p className="field-help">
+              Optional dot-path used to select the useful collection from a response.
+            </p>
           </div>
 
           <div className="http-api-method-policy-grid">
@@ -1188,18 +1332,6 @@ export function HttpApiConnectionPanel({
               </div>
             ))}
           </div>
-
-          <div className="http-api-actions-row">
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={handleNormalizeOpenApi}
-              disabled={!onNormalizeOpenApi || normalizeDisabled}
-            >
-              Normalize OpenAPI
-            </button>
-          </div>
-          {renderActionStatus(openApiNormalizeStatus)}
         </div>
       )}
     </section>

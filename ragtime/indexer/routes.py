@@ -5,6 +5,7 @@ Indexer API routes.
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib
 import io
 import json
@@ -40,7 +41,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
@@ -54,6 +55,7 @@ from ragtime.chat_runtime.payloads import (
 )
 from ragtime.chat_runtime.presets import CHAT_DIAGNOSTIC_BUILTIN_TOOL_IDS, CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, CHAT_LEGACY_BUILTIN_TOOL_ID_ALIASES
 from ragtime.chat_runtime.service import chat_runtime_service
+from ragtime.config.settings import settings
 from ragtime.core import llama_cpp, lmstudio, omlx, openrouter
 from ragtime.core.app_settings import invalidate_settings_cache
 from ragtime.core.auth import get_browser_matched_origin
@@ -198,9 +200,10 @@ from ragtime.http_api.models import (
     OpenApiCatalog,
     merge_http_api_secret_updates,
 )
+from ragtime.http_api.oauth import OAuthCredentialUpdate, http_api_oauth_manager
 from ragtime.http_api.openapi import normalize_openapi_source
 from ragtime.http_api.security import HttpApiSecurityError
-from ragtime.http_api.service import http_api_broker
+from ragtime.http_api.service import HttpApiConfigurationError, http_api_broker
 from ragtime.indexer.background_tasks import (
     _find_compaction_split_index,
     background_task_service,
@@ -410,6 +413,9 @@ def _merge_http_api_connection_config(existing_config: dict[str, Any], incoming_
 def _sanitize_http_api_error_message(exc: Exception, *, fallback: str) -> str:
     if isinstance(exc, ValidationError):
         return _format_validation_error(exc)
+    if isinstance(exc, HttpApiConfigurationError):
+        # HttpApiConfigurationError messages must remain fixed and value-free.
+        return str(exc)
     if isinstance(exc, HttpApiSecurityError):
         return str(exc)
     if isinstance(exc, httpx.HTTPError):
@@ -2448,11 +2454,141 @@ async def reorder_tool_configs(request: ReorderToolsRequest, _user: User = Depen
     return {"message": "Tools reordered"}
 
 
+class HttpApiOAuthDiscoverRequest(BaseModel):
+    issuer_url: str = Field(description="OAuth issuer URL")
+
+
+class HttpApiOAuthStartRequest(BaseModel):
+    connection_config: dict[str, Any] = Field(description="Unsaved HTTP API connection configuration")
+    tool_id: Optional[str] = Field(default=None, description="Existing tool being reconnected")
+
+
+class HttpApiOAuthPollRequest(BaseModel):
+    session_id: str = Field(description="Temporary OAuth session identifier")
+
+
+def _http_api_oauth_callback_url(request: Request) -> str:
+    configured = str(getattr(settings, "external_base_url", "") or "").strip().rstrip("/")
+    origin = configured or str(request.base_url).rstrip("/")
+    return f"{origin}/indexes/tools/http-api/oauth/callback"
+
+
+def _oauth_result_payload(result: Any) -> dict[str, Any]:
+    if isinstance(result, BaseModel):
+        payload = result.model_dump(mode="json")
+    elif isinstance(result, dict):
+        payload = dict(result)
+    else:
+        payload = {key: value for key, value in vars(result).items() if not key.startswith("_")}
+    for key in ("device_code", "access_token", "refresh_token", "client_secret", "error_description", "provider_error"):
+        payload.pop(key, None)
+    if "retry_after" in payload:
+        payload["retry_after_seconds"] = payload.pop("retry_after")
+    return payload
+
+
+def _oauth_credentials_payload(credentials: Any) -> dict[str, Any]:
+    if not isinstance(credentials, OAuthCredentialUpdate):
+        raise TypeError("OAuth manager returned an invalid credential update")
+    return credentials.as_config()
+
+
+async def _merge_http_api_oauth_session(
+    connection_config: dict[str, Any],
+    *,
+    owner_id: str,
+) -> tuple[dict[str, Any], Optional[str]]:
+    session_id = connection_config.pop("oauth_session_id", None)
+    if not session_id or connection_config.get("auth_mode") != HttpApiAuthMode.OAUTH2.value:
+        return connection_config, None
+    try:
+        credentials = await http_api_oauth_manager.peek_credentials(owner_id, str(session_id))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="OAuth session is invalid or expired") from exc
+    connection_config.update(_oauth_credentials_payload(credentials))
+    return connection_config, str(session_id)
+
+
+@router.post("/tools/http-api/oauth/discover", tags=["Tools"])
+async def discover_http_api_oauth(request: HttpApiOAuthDiscoverRequest, _user: User = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        result = await http_api_oauth_manager.discover(request.issuer_url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="OAuth discovery failed") from exc
+    return _oauth_result_payload(result)
+
+
+@router.post("/tools/http-api/oauth/start", tags=["Tools"])
+async def start_http_api_oauth(
+    request: HttpApiOAuthStartRequest,
+    http_request: Request,
+    _user: User = Depends(require_admin),
+) -> dict[str, Any]:
+    config_data = dict(request.connection_config)
+    config_data.pop("oauth_session_id", None)
+    try:
+        if request.tool_id:
+            existing = await repository.get_tool_config(request.tool_id)
+            if existing is None or existing.tool_type != ToolType.HTTP_API:
+                raise HTTPException(status_code=404, detail="Tool configuration not found")
+            config_data = _merge_http_api_connection_config(existing.connection_config or {}, config_data)
+        config = HttpApiConnectionConfig(**config_data)
+        callback_url = _http_api_oauth_callback_url(http_request)
+        result = await http_api_oauth_manager.start(str(_user.id), config, callback_url)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Unable to start OAuth connection") from exc
+    payload = _oauth_result_payload(result)
+    payload["callback_url"] = callback_url
+    return payload
+
+
+@router.post("/tools/http-api/oauth/poll", tags=["Tools"])
+async def poll_http_api_oauth(request: HttpApiOAuthPollRequest, _user: User = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        result = await http_api_oauth_manager.poll(str(_user.id), request.session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="OAuth session is invalid or expired") from exc
+    return _oauth_result_payload(result)
+
+
+@router.get("/tools/http-api/oauth/callback", response_class=HTMLResponse, include_in_schema=False)
+async def http_api_oauth_callback(
+    state: Optional[str] = Query(default=None),
+    code: Optional[str] = Query(default=None),
+    error: Optional[str] = Query(default=None),
+) -> HTMLResponse:
+    connected = False
+    if state:
+        try:
+            result = await http_api_oauth_manager.complete_authorization_code(state, code, error)
+            connected = str(getattr(result, "status", result.get("status") if isinstance(result, dict) else "")) == "connected"
+        except Exception:
+            connected = False
+    nonce = secrets.token_urlsafe(16)
+    message = "OAuth connection completed. You may close this window." if connected else "OAuth connection could not be completed. You may close this window."
+    body = (
+        "<!doctype html><html><head><meta charset='utf-8'><title>OAuth</title></head>"
+        f"<body><p>{message}</p><script nonce='{nonce}'>window.close();</script></body></html>"
+    )
+    headers = {
+        "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'none'; base-uri 'none'",
+        "Cache-Control": "no-store",
+    }
+    return HTMLResponse(content=body, headers=headers)
+
+
 @router.post("/tools", response_model=ToolConfig, tags=["Tools"])
 async def create_tool_config(request: CreateToolConfigRequest, _user: User = Depends(require_admin)):
     """Create a new tool configuration. Admin only."""
     connection_config = _sanitize_tool_connection_int_fields(request.connection_config)
+    oauth_session_id: Optional[str] = None
     if request.tool_type == ToolType.HTTP_API:
+        connection_config, oauth_session_id = await _merge_http_api_oauth_session(
+            connection_config,
+            owner_id=str(getattr(_user, "id", "")),
+        )
         connection_config = _parse_http_api_connection_config(connection_config)
 
     # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
@@ -2485,6 +2621,9 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
         group_id=request.group_id,
     )
     result = await repository.create_tool_config(config)
+
+    if oauth_session_id:
+        await http_api_oauth_manager.consume(str(_user.id), oauth_session_id)
 
     # Reinitialize RAG agent to make the new tool available immediately
     invalidate_settings_cache()
@@ -2608,6 +2747,28 @@ async def stream_tool_health_events(_user: User = Depends(get_current_user)):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+def _get_http_api_tool_edit_connection_config(config: ToolConfig) -> dict[str, Any]:
+    connection_config = copy.deepcopy(config.connection_config or {})
+    connection_config.pop("oauth_access_token", None)
+    connection_config.pop("oauth_refresh_token", None)
+    return connection_config
+
+
+@router.get("/tools/{tool_id}/http-api-edit-config", tags=["Tools"])
+async def get_http_api_tool_edit_config(
+    tool_id: str,
+    _user: User = Depends(require_admin),
+) -> JSONResponse:
+    config = await repository.get_tool_config(tool_id)
+    if config is None or config.tool_type != ToolType.HTTP_API:
+        raise HTTPException(status_code=404, detail="HTTP API tool configuration not found")
+
+    return JSONResponse(
+        {"connection_config": _get_http_api_tool_edit_connection_config(config)},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/tools/{tool_id}", response_model=ToolConfig, tags=["Tools"])
 async def get_tool_config(tool_id: str, _user: User = Depends(require_admin)):
     """Get a specific tool configuration. Admin only."""
@@ -2626,10 +2787,13 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
     to maintain consistency.
     """
     updates = request.model_dump(exclude_unset=True)
+    oauth_session_id: Optional[str] = None
 
     # Sanitize connection_config if present
     if "connection_config" in updates and isinstance(updates["connection_config"], dict):
         updates["connection_config"] = _sanitize_tool_connection_int_fields(updates["connection_config"])
+        raw_session_id = updates["connection_config"].pop("oauth_session_id", None)
+        oauth_session_id = str(raw_session_id) if raw_session_id else None
 
     # Capture the current config to detect changes (e.g., schema indexing enablement)
     original_config = await repository.get_tool_config(tool_id)
@@ -2641,6 +2805,15 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
             original_config.connection_config or {},
             updates["connection_config"],
         )
+        if oauth_session_id:
+            if updates["connection_config"].get("auth_mode") != HttpApiAuthMode.OAUTH2.value:
+                oauth_session_id = None
+            else:
+                try:
+                    credentials = await http_api_oauth_manager.peek_credentials(str(_user.id), oauth_session_id)
+                except Exception as exc:
+                    raise HTTPException(status_code=400, detail="OAuth session is invalid or expired") from exc
+                updates["connection_config"].update(_oauth_credentials_payload(credentials))
 
     # Check if name is being changed - if so, use rename_tool_config for consistency
     if "name" in updates and updates["name"] is not None:
@@ -2704,6 +2877,9 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
         config = await repository.update_tool_config(tool_id, updates)
         if config is None:
             raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if oauth_session_id:
+        await http_api_oauth_manager.consume(str(_user.id), oauth_session_id)
 
     # Make MCP observe persisted tool changes before the slower RAG rebuild.
     invalidate_settings_cache()
@@ -3201,10 +3377,13 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
 async def _test_http_api_connection(config: dict) -> ToolTestResponse:
     try:
         parsed_config = HttpApiConnectionConfig(**config)
-        result = await http_api_broker.validate_configuration(
-            parsed_config,
-            perform_login=(parsed_config.auth_mode in {HttpApiAuthMode.LOGIN_EXCHANGE, HttpApiAuthMode.TOKEN_EXCHANGE}),
-        )
+        if parsed_config.auth_mode == HttpApiAuthMode.HEADERS:
+            result = await http_api_broker.validate_connectivity(parsed_config)
+        else:
+            result = await http_api_broker.validate_configuration(
+                parsed_config,
+                perform_login=(parsed_config.auth_mode in {HttpApiAuthMode.LOGIN_EXCHANGE, HttpApiAuthMode.TOKEN_EXCHANGE}),
+            )
         return ToolTestResponse(success=result.success, message=result.message, details=result.details)
     except Exception as exc:
         return ToolTestResponse(

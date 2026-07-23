@@ -2,9 +2,8 @@ import unittest
 from typing import Optional
 from unittest import mock
 
-from asgi_test_utils import basic_auth_header, capture_response, form_receive
-
 from ragtime.mcp import oauth
+from tests.asgi_test_utils import basic_auth_header, capture_response, form_receive
 
 
 def _scope(

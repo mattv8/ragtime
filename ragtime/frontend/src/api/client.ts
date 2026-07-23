@@ -34,6 +34,13 @@ import type {
   ImportToolConfigRequest,
   ToolTestRequest,
   ToolTestResponse,
+  HttpApiOAuthDiscoveryRequest,
+  HttpApiOAuthDiscoveryResponse,
+  HttpApiEditConfigResponse,
+  HttpApiOAuthPollRequest,
+  HttpApiOAuthPollResponse,
+  HttpApiOAuthStartRequest,
+  HttpApiOAuthStartResponse,
   ToolGroup,
   CreateToolGroupRequest,
   UpdateToolGroupRequest,
@@ -505,6 +512,42 @@ export interface ChatTaskStreamEvent {
 export const api = {
   getConversationEventsUrl(conversationId: string, workspaceId?: string): string {
     return withWorkspaceQuery(`${API_BASE}/conversations/${conversationId}/events`, workspaceId);
+  },
+
+  async discoverHttpApiOAuth(
+    request: HttpApiOAuthDiscoveryRequest,
+  ): Promise<HttpApiOAuthDiscoveryResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/http-api/oauth/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<HttpApiOAuthDiscoveryResponse>(response);
+  },
+
+  async startHttpApiOAuth(request: HttpApiOAuthStartRequest): Promise<HttpApiOAuthStartResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/http-api/oauth/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<HttpApiOAuthStartResponse>(response);
+  },
+
+  async pollHttpApiOAuth(request: HttpApiOAuthPollRequest): Promise<HttpApiOAuthPollResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/http-api/oauth/poll`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<HttpApiOAuthPollResponse>(response);
+  },
+
+  async getHttpApiEditConfig(toolId: string): Promise<HttpApiEditConfigResponse> {
+    const response = await apiFetch(
+      `${API_BASE}/tools/${encodeURIComponent(toolId)}/http-api-edit-config`,
+    );
+    return handleResponse<HttpApiEditConfigResponse>(response);
   },
 
   // ===========================================================================
@@ -1833,17 +1876,6 @@ export const api = {
       body: JSON.stringify(request),
     });
     return handleResponse<ToolTestResponse>(response);
-  },
-
-  async normalizeHttpApiOpenApi(
-    request: import('@/types').HttpApiOpenApiNormalizeRequest,
-  ): Promise<import('@/types').HttpApiOpenApiNormalizeResponse> {
-    const response = await apiFetch(`${API_BASE}/tools/http-api/openapi/normalize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-    return handleResponse<import('@/types').HttpApiOpenApiNormalizeResponse>(response);
   },
 
   // =========================================================================

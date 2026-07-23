@@ -10,8 +10,9 @@ from typing import Any
 from unittest import mock
 
 from fastapi import HTTPException
-from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 from starlette.requests import Request
+
+from tests.rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
