@@ -106,7 +106,7 @@ describe('userSpaceTools workspace capping', () => {
     ).toEqual(['tool-c']);
   });
 
-  it('caps workspace write access to globally writable tools only', () => {
+  it('honors an explicit workspace write grant even when the tool is globally read-only', () => {
     const options: Record<string, WorkspaceToolOptionState> = {
       'tool-a': { write_access_enabled: true },
       'tool-c': { write_access_enabled: true },
@@ -117,31 +117,28 @@ describe('userSpaceTools workspace capping', () => {
     ).toBe(true);
     expect(
       isUserSpaceToolWriteEnabledForWorkspace({ ...tools[2], allow_write: false }, options),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it('returns enabled when a globally writable tool is enabled for the workspace', () => {
+  it('returns enabled when a tool is enabled for the workspace, even if globally read-only', () => {
     expect(
       getUserSpaceToolWorkspaceWriteState(
-        { ...tools[0], allow_write: true },
+        { ...tools[0], allow_write: false },
         { 'tool-a': { write_access_enabled: true } },
       ),
     ).toBe('enabled');
+  });
+
+  it('returns eligible when a globally read-only tool has no workspace write grant', () => {
+    expect(getUserSpaceToolWorkspaceWriteState({ ...tools[0], allow_write: false }, {})).toBe(
+      'eligible',
+    );
   });
 
   it('returns eligible when a globally writable tool has no workspace opt-in', () => {
     expect(getUserSpaceToolWorkspaceWriteState({ ...tools[0], allow_write: true }, {})).toBe(
       'eligible',
     );
-  });
-
-  it('returns ineligible when a globally read-only tool has a stale workspace opt-in', () => {
-    expect(
-      getUserSpaceToolWorkspaceWriteState(
-        { ...tools[0], allow_write: false },
-        { 'tool-a': { write_access_enabled: true } },
-      ),
-    ).toBe('ineligible');
   });
 
   it('adds and removes workspace write option entries without leaving empty records', () => {
@@ -159,15 +156,18 @@ describe('userSpaceTools workspace capping', () => {
     expect(mixed).toEqual({ 'tool-b': { write_access_enabled: true } });
   });
 
-  it('omits workspace write management for globally read-only tools', () => {
-    expect(canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, true)).toBe(
-      true,
-    );
-    expect(canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true)).toBe(
-      false,
-    );
-    expect(canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, false)).toBe(
-      false,
-    );
+  it('allows only global admins to manage workspace grants for globally read-only tools', () => {
+    expect(
+      canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, true, false),
+    ).toBe(true);
+    expect(
+      canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true, false),
+    ).toBe(false);
+    expect(
+      canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true, true),
+    ).toBe(true);
+    expect(
+      canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, false, true),
+    ).toBe(false);
   });
 });

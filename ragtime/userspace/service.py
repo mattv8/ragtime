@@ -3204,6 +3204,7 @@ class UserSpaceService:
         created_workspace_id: str | None = None
         try:
             async with self._workspace_duplicate_semaphore:
+                acting_is_admin = await self._is_admin_user(user_id)
                 source_workspace = await self._enforce_workspace_access(
                     source_workspace_id,
                     user_id,
@@ -3221,13 +3222,17 @@ class UserSpaceService:
 
                 create_request_kwargs: dict[str, Any] = {"name": target_name}
                 if copy_metadata:
+                    filtered_tool_options = await self._filter_workspace_tool_options_for_actor(
+                        dict(source_workspace.tool_options),
+                        is_admin=acting_is_admin,
+                    )
                     create_request_kwargs.update(
                         {
                             "description": source_workspace.description,
                             "sqlite_persistence_mode": source_workspace.sqlite_persistence_mode,
                             "selected_tool_ids": list(source_workspace.selected_tool_ids),
                             "selected_tool_group_ids": list(source_workspace.selected_tool_group_ids),
-                            "tool_options": dict(source_workspace.tool_options),
+                            "tool_options": filtered_tool_options,
                         }
                     )
 
@@ -3265,7 +3270,7 @@ class UserSpaceService:
                 self._seed_runtime_entrypoint_config(workspace.id)
                 await self._ensure_workspace_git_repo(workspace.id)
 
-                if copy_metadata and (getattr(source_workspace, "owner_user_id", None) == user_id or await self._is_admin_user(user_id)):
+                if copy_metadata and (getattr(source_workspace, "owner_user_id", None) == user_id or acting_is_admin):
                     await self._copy_workspace_env_vars_for_duplicate(
                         source_workspace_id,
                         workspace.id,
@@ -4072,6 +4077,10 @@ class UserSpaceService:
             )
             if raw_tool_options
             else {}
+        )
+        normalized_tool_options = await self._filter_workspace_tool_options_for_actor(
+            normalized_tool_options,
+            is_admin=is_admin,
         )
         request_tool_options = {
             tool_id: WorkspaceToolOptionState(
@@ -12973,16 +12982,79 @@ class UserSpaceService:
             candidate_tool_ids = _dedupe_preserve_order([*(selected_tool_ids or []), *expanded_group_tool_ids])
             effective_selected_tool_ids = {tool_id for tool_id in candidate_tool_ids if tool_id in allowed_tool_ids}
 
-        write_capable_tool_ids = {
-            str(getattr(tool_config, "id", "") or "")
-            for tool_config in tool_configs
-            if getattr(tool_config, "allow_write", False) and getattr(tool_config, "enabled", True) and getattr(tool_config, "id", None)
-        }
         return normalize_workspace_tool_options(
             tool_options,
             selected_tool_ids=effective_selected_tool_ids,
-            write_capable_tool_ids=write_capable_tool_ids,
+            write_capable_tool_ids=allowed_tool_ids,
         )
+
+    @staticmethod
+    def _normalize_workspace_tool_option_state_map(tool_options: dict[str, Any] | None) -> dict[str, dict[str, bool]]:
+        normalized: dict[str, dict[str, bool]] = {}
+        for tool_id, raw_options in (tool_options or {}).items():
+            options = load_workspace_tool_options(cast(dict[str, Any] | None, raw_options))
+            if options:
+                normalized[str(tool_id)] = options
+        return normalized
+
+    async def _restricted_workspace_tool_option_ids(self, tool_ids: set[str]) -> set[str]:
+        if not tool_ids:
+            return set()
+        tool_configs = await repository.list_tool_configs(enabled_only=True)
+        return {
+            str(getattr(tool_config, "id", "") or "")
+            for tool_config in tool_configs
+            if str(getattr(tool_config, "id", "") or "") in tool_ids and not getattr(tool_config, "allow_write", False)
+        }
+
+    async def _filter_workspace_tool_options_for_actor(
+        self,
+        tool_options: dict[str, Any] | None,
+        *,
+        is_admin: bool,
+    ) -> dict[str, Any]:
+        if not tool_options:
+            return {}
+        if is_admin:
+            return dict(tool_options)
+        restricted_ids = await self._restricted_workspace_tool_option_ids(set(tool_options))
+        return {tool_id: options for tool_id, options in tool_options.items() if tool_id not in restricted_ids}
+
+    async def _enforce_workspace_tool_option_create_permissions(
+        self,
+        tool_options: dict[str, dict[str, bool]],
+        *,
+        is_admin: bool,
+    ) -> None:
+        if is_admin or not tool_options:
+            return
+        restricted_ids = await self._restricted_workspace_tool_option_ids(set(tool_options))
+        if restricted_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="Only admins can grant workspace write access for globally read-only tools.",
+            )
+
+    async def _enforce_workspace_tool_option_update_permissions(
+        self,
+        current_workspace: UserSpaceWorkspace,
+        next_tool_options: dict[str, dict[str, bool]],
+        *,
+        is_admin: bool,
+    ) -> None:
+        if is_admin:
+            return
+        current_tool_options = self._normalize_workspace_tool_option_state_map(getattr(current_workspace, "tool_options", {}))
+        restricted_ids = await self._restricted_workspace_tool_option_ids(set(current_tool_options) | set(next_tool_options))
+        if not restricted_ids:
+            return
+        current_restricted = {tool_id: current_tool_options[tool_id] for tool_id in restricted_ids if tool_id in current_tool_options}
+        next_restricted = {tool_id: next_tool_options[tool_id] for tool_id in restricted_ids if tool_id in next_tool_options}
+        if current_restricted != next_restricted:
+            raise HTTPException(
+                status_code=403,
+                detail="Only admins can change workspace write access for globally read-only tools.",
+            )
 
     async def _persist_workspace_tool_options(
         self,
@@ -13011,6 +13083,7 @@ class UserSpaceService:
 
     async def create_workspace(self, request: CreateWorkspaceRequest, user_id: str) -> UserSpaceWorkspace:
         db = await get_db()
+        is_admin = await self._is_admin_user(user_id)
 
         now = utc_now()
         workspace_id = str(uuid4())
@@ -13026,6 +13099,21 @@ class UserSpaceService:
             raise HTTPException(status_code=400, detail="Workspace name is required")
         tool_selection_mode = request.tool_selection_mode or (
             "default_all" if request.selected_tool_ids is None and request.selected_tool_group_ids is None else "custom"
+        )
+
+        requested_tool_ids = request.selected_tool_ids
+        if requested_tool_ids is None and tool_selection_mode == "custom":
+            requested_tool_ids = await repository.list_healthy_enabled_tool_ids()
+
+        normalized_tool_options = await self._normalize_workspace_tool_options_for_request(
+            cast(dict[str, Any] | None, request.tool_options),
+            tool_selection_mode=tool_selection_mode,
+            selected_tool_ids=requested_tool_ids,
+            selected_tool_group_ids=request.selected_tool_group_ids,
+        )
+        await self._enforce_workspace_tool_option_create_permissions(
+            normalized_tool_options,
+            is_admin=is_admin,
         )
 
         try:
@@ -13068,17 +13156,6 @@ class UserSpaceService:
                     "role": "owner",
                 },
             )
-        )
-
-        requested_tool_ids = request.selected_tool_ids
-        if requested_tool_ids is None and tool_selection_mode == "custom":
-            requested_tool_ids = await repository.list_healthy_enabled_tool_ids()
-
-        normalized_tool_options = await self._normalize_workspace_tool_options_for_request(
-            cast(dict[str, Any] | None, request.tool_options),
-            tool_selection_mode=tool_selection_mode,
-            selected_tool_ids=requested_tool_ids,
-            selected_tool_group_ids=request.selected_tool_group_ids,
         )
 
         await self._persist_workspace_tool_selections(
@@ -14383,6 +14460,12 @@ class UserSpaceService:
             if has_tool_options_update
             else None
         )
+        if normalized_tool_options is not None:
+            await self._enforce_workspace_tool_option_update_permissions(
+                current_ws,
+                normalized_tool_options,
+                is_admin=is_admin,
+            )
 
         try:
             await db.workspace.update(where={"id": workspace_id}, data=cast(Any, update_data))

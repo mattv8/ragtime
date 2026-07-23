@@ -920,7 +920,7 @@ export function getWorkspaceToolStatusBadgeForState(
       label: 'WORKSPACE READ',
       tone: 'read',
       scope: 'workspace',
-      title: 'Selected for this workspace with read access. Right-click to enable write access.',
+      title: 'Selected for this workspace with read access.',
     };
   }
   return null;
@@ -930,7 +930,12 @@ export function getWorkspaceToolReadOnlyDescription(
   isAdmin: boolean,
   toolId: string,
   onNavigateToTools?: (section?: string) => void,
+  isGloballyWritable = true,
 ): ReactNode {
+  if (!isGloballyWritable) {
+    return 'Only global admins may manage workspace write access for a globally read-only tool.';
+  }
+
   if (!isAdmin) {
     return 'Ask an admin to enable "Allow Write Operations" for this tool in Settings > Tools.';
   }
@@ -4469,28 +4474,16 @@ export function UserSpacePanel({
   const getWorkspaceToolMenuItems = useCallback(
     (tool: UserSpaceAvailableTool) => {
       if (!activeWorkspace) return [];
-      const state = getUserSpaceToolWorkspaceWriteState(tool, workspaceToolOptions);
       const checked = isUserSpaceToolWriteEnabledForWorkspace(tool, workspaceToolOptions);
-      if (state === 'ineligible') {
-        return [
-          {
-            label: 'Write access unavailable',
-            description: getWorkspaceToolReadOnlyDescription(
-              currentUser.role === 'admin',
-              tool.id,
-              onNavigateToTools,
-            ),
-            checked: false,
-            disabled: true,
-            onChange: () => undefined,
-          },
-        ];
-      }
-      if (!canManageUserSpaceToolWriteForWorkspace(tool, isOwner)) {
+      const isAdmin = currentUser.role === 'admin';
+      if (!canManageUserSpaceToolWriteForWorkspace(tool, isOwner, isAdmin)) {
         return [
           {
             label: 'Enable write access for this workspace',
-            description: 'Only the workspace owner or an admin can change this.',
+            description:
+              tool.allow_write === true
+                ? 'Only the workspace owner or an admin can change this.'
+                : getWorkspaceToolReadOnlyDescription(isAdmin, tool.id, onNavigateToTools, false),
             checked,
             disabled: true,
             onChange: () => undefined,

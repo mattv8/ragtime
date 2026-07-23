@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from ragtime.rag.prompts import _WORKSPACE_CONTINUITY_EXISTING_RULES
+from ragtime.userspace.models import WorkspaceToolOptionState
 
 
 def _fake_workspace() -> SimpleNamespace:
@@ -18,7 +19,7 @@ def _fake_workspace() -> SimpleNamespace:
         tool_selection_mode="custom",
         selected_tool_ids=["tool-1"],
         selected_tool_group_ids=[],
-        tool_options={},
+        tool_options={"tool-1": WorkspaceToolOptionState(write_access_enabled=True)},
         owner_user_id="user-1",
         members=[],
         updated_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
@@ -128,6 +129,7 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context["architecture"]["file_count"], 2)
         self.assertNotIn(".ragtime/runtime-entrypoint.json", context["architecture"]["key_files"])
         self.assertEqual(context["selected_tools"][0]["component_id"], "tool-1")
+        self.assertTrue(context["selected_tools"][0]["server_write_enabled"])
         self.assertTrue(context["context_revision"])
 
     async def test_context_never_leaks_secrets(self) -> None:

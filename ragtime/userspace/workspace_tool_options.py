@@ -67,4 +67,5 @@ def resolve_workspace_tool_write_access(
     global_allow_write: bool,
     options: Optional[dict[str, bool]],
 ) -> bool:
-    return bool(global_allow_write) and bool(options and options.get("write_access_enabled") is True)
+    _ = global_allow_write
+    return bool(options and options.get("write_access_enabled") is True)

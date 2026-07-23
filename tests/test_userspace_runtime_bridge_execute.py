@@ -261,15 +261,29 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.proofs_recorded, [])
         self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_only")
 
-    async def test_bridge_execute_rejects_write_query_when_global_allow_write_is_false(self) -> None:
+    async def test_bridge_execute_allows_write_query_with_workspace_grant_when_global_allow_write_is_false(self) -> None:
         workspace = _make_workspace()
         workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
         service = _RuntimeBridgeWorkspaceService(workspace)
 
-        with mock.patch.object(
-            userspace_service_module.repository,
-            "get_tool_config",
-            mock.AsyncMock(return_value=_make_tool_config(allow_write=False)),
+        class _Process:
+            returncode = 0
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return b"", b""
+
+            def kill(self) -> None:
+                raise AssertionError("kill should not be called")
+
+        create_subprocess_exec = mock.AsyncMock(return_value=_Process())
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_config",
+                mock.AsyncMock(return_value=_make_tool_config(allow_write=False, connection_config={"container": "ragtime-db-test"})),
+            ),
+            mock.patch.object(userspace_service_module.asyncio, "create_subprocess_exec", create_subprocess_exec),
         ):
             response = await service.execute_component_from_runtime_bridge(
                 "workspace-1",
@@ -277,9 +291,11 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
                 session_id="sess-1",
             )
 
-        self.assertIsNotNone(response.error)
-        self.assertEqual(service.proofs_recorded, [])
-        self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_only")
+        self.assertIsNone(response.error)
+        self.assertEqual(response.row_count, 0)
+        self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_write")
+        self.assertEqual(len(service.proofs_recorded), 1)
+        create_subprocess_exec.assert_awaited_once()
 
     async def test_bridge_execute_allows_sql_write_only_when_workspace_opt_in_and_global_allow_write(self) -> None:
         workspace = _make_workspace()

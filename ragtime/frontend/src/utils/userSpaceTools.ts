@@ -25,24 +25,22 @@ export function isUserSpaceToolWriteEnabledForWorkspace(
   tool: UserSpaceAvailableTool,
   toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
 ): boolean {
-  return tool.allow_write === true && toolOptions?.[tool.id]?.write_access_enabled === true;
+  return toolOptions?.[tool.id]?.write_access_enabled === true;
 }
 
 export function getUserSpaceToolWorkspaceWriteState(
   tool: UserSpaceAvailableTool,
   toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
 ): 'enabled' | 'eligible' | 'ineligible' {
-  if (tool.allow_write !== true) {
-    return 'ineligible';
-  }
   return isUserSpaceToolWriteEnabledForWorkspace(tool, toolOptions) ? 'enabled' : 'eligible';
 }
 
 export function canManageUserSpaceToolWriteForWorkspace(
   tool: UserSpaceAvailableTool,
   canManageWorkspace: boolean,
+  isGlobalAdmin: boolean,
 ): boolean {
-  return canManageWorkspace && tool.allow_write === true;
+  return canManageWorkspace && (tool.allow_write === true || isGlobalAdmin);
 }
 
 export function getNextWorkspaceToolOptions(
