@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional, Tuple, cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 from fastapi import (
     APIRouter,
@@ -171,6 +171,24 @@ def _redirect_uri_origin(uri: str) -> str:
         return ""
     port = f":{parsed_uri.port}" if parsed_uri.port is not None else ""
     return f"{parsed_uri.scheme.lower()}://{parsed_uri.hostname.lower()}{port}"
+
+
+def build_oauth_redirect_url(redirect_uri: str, code: str, state: str = "") -> str:
+    """Append OAuth success parameters while preserving the callback URI."""
+    parsed_uri = urlsplit(redirect_uri)
+    query_params = [(key, value) for key, value in parse_qsl(parsed_uri.query, keep_blank_values=True) if key not in {"code", "state"}]
+    query_params.append(("code", code))
+    if state:
+        query_params.append(("state", state))
+    return urlunsplit(
+        (
+            parsed_uri.scheme,
+            parsed_uri.netloc,
+            parsed_uri.path,
+            urlencode(query_params, doseq=True),
+            parsed_uri.fragment,
+        )
+    )
 
 
 def _redirect_uri_allow_origin_step(origin: str) -> Optional[str]:

@@ -46,6 +46,7 @@ from ragtime.api.auth import (
     _auth_codes,
     _cleanup_expired_auth_codes,
     authenticate,
+    build_oauth_redirect_url,
     validate_redirect_uri,
 )
 from ragtime.api.auth import oauth2_token as _oauth2_token_handler
@@ -816,11 +817,7 @@ async def authorize_post(
     logger.info(f"OAuth2 authorization code issued for '{username}'")
 
     # Build redirect URL with authorization code
-    params = {"code": code}
-    if state:
-        params["state"] = state
-
-    redirect_url = f"{redirect_uri}?{urlencode(params)}"
+    redirect_url = build_oauth_redirect_url(redirect_uri, code, state)
 
     # Return JSON response - frontend will navigate to redirect_url
     # Cannot use RedirectResponse because fetch would try to follow it
@@ -913,11 +910,7 @@ async def authorize_with_session(
     )
 
     # Build redirect URL with authorization code
-    params = {"code": code}
-    if state:
-        params["state"] = state
-
-    redirect_url = f"{redirect_uri}?{urlencode(params)}"
+    redirect_url = build_oauth_redirect_url(redirect_uri, code, state)
 
     # Return JSON with redirect URL (frontend will navigate)
     return JSONResponse(status_code=200, content={"redirect_url": redirect_url})
