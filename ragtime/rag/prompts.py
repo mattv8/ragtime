@@ -1148,6 +1148,9 @@ browser modules:
 - Contract: POST {RAGTIME_BRIDGE_URL}/execute-component with header
   `Authorization: Bearer $RAGTIME_BRIDGE_TOKEN` and JSON body
   `{"component_id": "<selected component id>", "request": {"query": "SELECT ... LIMIT 100"}}`.
+- For HTTP API-backed components, the same JSON body can instead be
+  `{"component_id": "<selected component id>", "request": {"method": "GET", "path": "/customers"}}` (plus optional `query`, approved
+  `headers`, `json_body`, `form_body`, or `response_selector`). Do not include credentials in app code.
 - Responses are `{rows, columns, row_count, error}` — same shape as the browser bridge.
 - Write access has two lanes; do not mix them:
   - SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.

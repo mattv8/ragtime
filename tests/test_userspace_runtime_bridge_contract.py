@@ -42,6 +42,19 @@ app.get("/api/cash", async (req, res) => {
 });
 """
 
+SERVER_HTTP_API_SRC = """
+const BRIDGE = process.env.RAGTIME_BRIDGE_URL;
+app.get("/api/items", async (_req, res) => {
+  const r = await fetch(`${BRIDGE}/execute-component`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.RAGTIME_BRIDGE_TOKEN}`,
+               "Content-Type": "application/json" },
+    body: JSON.stringify({ component_id: "comp-1", request: { method: "GET", path: "/items", headers: { "X-Trace": "1" } } }),
+  });
+  res.json(await r.json());
+});
+"""
+
 ENTRYPOINT_CONFIG = json.dumps({"command": "node server.js"})
 DASHBOARD_FETCH_SRC = 'export async function render(_container, _context) { const res = await fetch("/api/cash"); return await res.json(); }'
 
@@ -56,6 +69,11 @@ class ServerDelegatedContractTests(unittest.TestCase):
         ok, missing = validate_server_delegated_live_data({"server.js": SERVER_SRC}, ["comp-2"])
         self.assertFalse(ok)
         self.assertEqual(missing, ["comp-2"])
+
+    def test_http_api_server_source_with_component_id_satisfies_delegation(self) -> None:
+        ok, missing = validate_server_delegated_live_data({"server.js": SERVER_HTTP_API_SRC}, ["comp-1"])
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
 
     def test_bridge_reference_without_component_id_fails(self) -> None:
         src = 'fetch(process.env.RAGTIME_BRIDGE_URL + "/execute-component")'

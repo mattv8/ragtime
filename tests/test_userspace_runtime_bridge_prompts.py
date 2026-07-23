@@ -45,6 +45,8 @@ class RuntimeBridgePromptTests(unittest.TestCase):
             "The runtime token is the backend service identity; backend mutation routes must enforce their own authz/authn and must never expose that token to browser code.",
             text,
         )
+        self.assertIn('"request": {"query": "SELECT ... LIMIT 100"}', text)
+        self.assertIn('"request": {"method": "GET", "path": "/customers"}', text)
         self.assertNotIn(
             "Runtime bridge component calls are enforced as read-only and platform-limited; do not attempt writes through this bridge.",
             text,

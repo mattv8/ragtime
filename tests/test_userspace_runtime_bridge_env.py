@@ -28,6 +28,14 @@ class RuntimeBridgeEnvTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(claims["workspace_id"], "ws-1")
         self.assertEqual(claims["session_id"], "sess-1")
 
+    def test_bridge_env_exposes_only_bridge_url_and_token(self) -> None:
+        env = self.service._build_runtime_bridge_env("ws-1", "sess-1")
+        self.assertEqual(set(env.keys()), {"RAGTIME_BRIDGE_URL", "RAGTIME_BRIDGE_TOKEN"})
+        dumped = str(env)
+        self.assertNotIn("bearer_token", dumped)
+        self.assertNotIn("api_key", dumped)
+        self.assertNotIn("basic_password", dumped)
+
     def test_runtime_bridge_origin_keeps_non_local_public_origin(self) -> None:
         with (
             mock.patch.object(settings, "external_base_url", "https://public.example.com/app"),

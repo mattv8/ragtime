@@ -19,8 +19,11 @@ import type {
   DirectoryEntry,
   OcrProvider,
   SolidworksPdmConnectionConfig,
+  HttpApiConnectionConfig,
+  HttpApiFixedSecretField,
+  HttpApiSecretField,
 } from '@/types';
-import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO } from '@/types';
+import { TOOL_TYPE_INFO, MOUNT_TYPE_INFO, HTTP_API_SECRET_FIELDS } from '@/types';
 import { DisabledPopover } from './Popover';
 import { Icon, getToolIconType } from './Icon';
 import { OcrVectorStoreFields, OCR_PROVIDER_LABELS } from './OcrVectorStoreFields';
@@ -30,6 +33,7 @@ import { WarningsBanner } from './WarningsBanner';
 import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
 import { DirectoryBrowser } from './DirectoryBrowser';
+import { HttpApiConnectionPanel } from './HttpApiConnectionPanel';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -65,6 +69,96 @@ function ReadOnlySecurityNotice() {
       timeouts, audit logs, and network boundaries for tools used by agents.
     </p>
   );
+}
+
+function getInitialHttpApiConfig(existingTool: ToolConfig | null): HttpApiConnectionConfig {
+  if (existingTool?.tool_type !== 'http_api') {
+    return { auth_mode: 'none' };
+  }
+
+  const existing = existingTool.connection_config as HttpApiConnectionConfig;
+  return {
+    ...existing,
+    auth_mode: existing.auth_mode ?? 'none',
+  };
+}
+
+function getHttpApiSecretPathSet(
+  configuredSecretFields: HttpApiSecretField[],
+): Set<HttpApiSecretField> {
+  return new Set(configuredSecretFields);
+}
+
+function normalizeHttpApiConnectionConfig(
+  config: HttpApiConnectionConfig,
+  configuredSecretFields: HttpApiSecretField[],
+): HttpApiConnectionConfig {
+  const secrets = getHttpApiSecretPathSet(configuredSecretFields);
+  const hasSavedHeaderSecret = (
+    prefix: 'request_headers' | 'token_request_headers',
+    name: string,
+  ): boolean => {
+    const trimmedName = name.trim().toLowerCase();
+    if (!trimmedName) {
+      return false;
+    }
+    return configuredSecretFields.some((field) => {
+      if (!field.startsWith(`${prefix}.`)) {
+        return false;
+      }
+      return field.slice(prefix.length + 1).toLowerCase() === trimmedName;
+    });
+  };
+  const normalizeHeaderRows = (
+    rows: typeof config.request_headers,
+    prefix: 'request_headers' | 'token_request_headers',
+  ) =>
+    (rows ?? [])
+      .map((row) => ({
+        name: row.name.trim(),
+        value: row.value,
+      }))
+      .filter((row) => row.name || row.value || hasSavedHeaderSecret(prefix, row.name));
+  const normalizeTokenFieldRows = (rows: typeof config.token_request_fields) =>
+    (rows ?? [])
+      .map((row) => ({
+        name: row.name.trim(),
+        value: row.value,
+        secret: Boolean(row.secret),
+      }))
+      .filter(
+        (row) =>
+          row.name ||
+          row.value ||
+          (row.secret && secrets.has(`token_request_fields.${row.name}` as HttpApiSecretField)),
+      );
+
+  if (config.auth_mode === 'headers') {
+    return {
+      ...config,
+      request_headers: normalizeHeaderRows(config.request_headers, 'request_headers'),
+    };
+  }
+
+  if (config.auth_mode === 'token_exchange') {
+    return {
+      ...config,
+      login_method: config.login_method ?? 'POST',
+      login_body_format: config.login_body_format ?? 'json',
+      token_request_fields: normalizeTokenFieldRows(config.token_request_fields),
+      token_request_headers: normalizeHeaderRows(
+        config.token_request_headers,
+        'token_request_headers',
+      ),
+      request_headers: normalizeHeaderRows(config.request_headers, 'request_headers'),
+      token_response_path: config.token_response_path ?? 'access_token',
+      token_expires_in_path: config.token_expires_in_path ?? '',
+      token_header_name: config.token_header_name ?? 'Authorization',
+      token_prefix: config.token_prefix ?? 'Bearer',
+    };
+  }
+
+  return config;
 }
 
 // =============================================================================
@@ -2061,6 +2155,8 @@ interface ToolWizardProps {
 type WizardStep =
   | 'type'
   | 'connection'
+  | 'authentication'
+  | 'api_details'
   | 'pdm_filtering'
   | 'execution_constraints'
   | 'description'
@@ -2070,6 +2166,15 @@ type ToolTypeInfoEntry = [ToolType, (typeof TOOL_TYPE_INFO)[ToolType]];
 
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
 const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
+const HTTP_API_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'authentication',
+  'api_details',
+  'description',
+  'options',
+  'review',
+];
 const PDM_WIZARD_STEPS: WizardStep[] = [
   'type',
   'connection',
@@ -2110,6 +2215,10 @@ function getStepTitle(step: WizardStep): string {
       return 'Select Tool Type';
     case 'connection':
       return 'Configure Connection';
+    case 'authentication':
+      return 'Configure Authentication';
+    case 'api_details':
+      return 'API Details';
     case 'pdm_filtering':
       return 'Document Filtering';
     case 'execution_constraints':
@@ -2142,7 +2251,8 @@ export function ToolWizard({
   // Get the appropriate wizard steps based on tool type
   const getWizardSteps = useCallback((): WizardStep[] => {
     let steps = BASE_WIZARD_STEPS;
-    if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
+    if (toolType === 'http_api') steps = HTTP_API_WIZARD_STEPS;
+    else if (toolType === 'solidworks_pdm') steps = PDM_WIZARD_STEPS;
     else if (toolType === 'ssh_shell') steps = SSH_WIZARD_STEPS;
     else if (toolType === 'odoo_shell') steps = ODOO_WIZARD_STEPS;
     else if (toolType === 'filesystem_indexer')
@@ -2261,6 +2371,14 @@ export function ToolWizard({
       ? (existingTool.connection_config as InfluxdbConnectionConfig)
       : { host: '', port: 8086, use_https: false, token: '', org: '', bucket: '' },
   );
+  const [httpApiConfig, setHttpApiConfig] = useState<HttpApiConnectionConfig>(() =>
+    getInitialHttpApiConfig(existingTool),
+  );
+  const [httpApiNormalizeStatus, setHttpApiNormalizeStatus] = useState<{
+    state: 'idle' | 'pending' | 'success' | 'error';
+    message?: string | null;
+    operationCount?: number | null;
+  }>({ state: 'idle' });
 
   const [odooConnectionMode, setOdooConnectionMode] = useState<'docker' | 'ssh'>(
     existingTool?.tool_type === 'odoo_shell' &&
@@ -2710,6 +2828,8 @@ export function ToolWizard({
         return withSchemaSchedule(mssqlConfig);
       case 'influxdb':
         return influxdbConfig;
+      case 'http_api':
+        return normalizeHttpApiConnectionConfig(httpApiConfig, getHttpApiConfiguredSecretFields());
       case 'odoo_shell':
         return { ...odooConfig, mode: odooConnectionMode };
       case 'ssh_shell':
@@ -3300,8 +3420,7 @@ export function ToolWizard({
     setError(null);
 
     try {
-      // Auto-save when editing an existing tool before testing
-      if (isEditing && existingTool) {
+      if (toolType === 'http_api' && isEditing && existingTool) {
         await api.updateToolConfig(existingTool.id, {
           name,
           description,
@@ -3310,17 +3429,62 @@ export function ToolWizard({
           timeout_max_seconds: timeoutMaxSeconds,
           allow_write: allowWrite,
         });
-      }
+        const result = await api.testSavedToolConnection(existingTool.id);
+        setTestResult(result);
+      } else {
+        // Auto-save when editing an existing tool before testing
+        if (isEditing && existingTool) {
+          await api.updateToolConfig(existingTool.id, {
+            name,
+            description,
+            connection_config: getConnectionConfig(),
+            max_results: maxResults,
+            timeout_max_seconds: timeoutMaxSeconds,
+            allow_write: allowWrite,
+          });
+        }
 
-      const result = await api.testToolConnection({
-        tool_type: toolType,
-        connection_config: getConnectionConfig(),
-      });
-      setTestResult(result);
+        const result = await api.testToolConnection({
+          tool_type: toolType,
+          connection_config: getConnectionConfig(),
+        });
+        setTestResult(result);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Test failed');
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleNormalizeHttpApiOpenApi = async (input: {
+    spec_url?: string;
+    document?: string;
+    document_name?: string;
+  }) => {
+    setHttpApiNormalizeStatus({ state: 'pending' });
+    try {
+      const result = await api.normalizeHttpApiOpenApi(input);
+      if (!result?.openapi_catalog || !Array.isArray(result.openapi_catalog.operations)) {
+        throw new Error('Malformed OpenAPI normalize response.');
+      }
+      setHttpApiConfig((current) => ({
+        ...current,
+        openapi_source_url: result.openapi_source_url ?? current.openapi_source_url,
+        openapi_source_name: result.openapi_source_name ?? current.openapi_source_name,
+        openapi_source_hash: result.openapi_source_hash ?? current.openapi_source_hash,
+        openapi_catalog: result.openapi_catalog,
+      }));
+      setHttpApiNormalizeStatus({
+        state: 'success',
+        message: 'OpenAPI normalized successfully.',
+        operationCount: result.openapi_catalog.operations.length,
+      });
+    } catch (err) {
+      setHttpApiNormalizeStatus({
+        state: 'error',
+        message: err instanceof Error ? err.message : 'Failed to normalize OpenAPI.',
+      });
     }
   };
 
@@ -3500,6 +3664,10 @@ export function ToolWizard({
         return true;
       case 'connection':
         return validateConnection();
+      case 'authentication':
+        return validateHttpApiAuthentication();
+      case 'api_details':
+        return true;
       case 'execution_constraints':
         // Optional, but if entering manually must be valid?
         // For now just allow proceeding (empty = no constraints or root)
@@ -3516,6 +3684,131 @@ export function ToolWizard({
     }
   };
 
+  const getHttpApiConfiguredSecretFields = (): HttpApiSecretField[] => {
+    if (existingTool?.tool_type !== 'http_api') {
+      return [];
+    }
+
+    return existingTool.configured_secret_fields as HttpApiSecretField[];
+  };
+
+  const validateHttpApiAuthentication = (): boolean => {
+    if (toolType !== 'http_api') {
+      return true;
+    }
+
+    const normalizedConfig = normalizeHttpApiConnectionConfig(
+      httpApiConfig,
+      getHttpApiConfiguredSecretFields(),
+    );
+    const configuredSecrets = new Set(getHttpApiConfiguredSecretFields());
+    const hasSavedHeaderSecret = (
+      prefix: 'request_headers' | 'token_request_headers',
+      name: string,
+    ): boolean => {
+      const trimmedName = name.trim().toLowerCase();
+      if (!trimmedName) {
+        return false;
+      }
+      return getHttpApiConfiguredSecretFields().some((field) => {
+        if (!field.startsWith(`${prefix}.`)) {
+          return false;
+        }
+        return field.slice(prefix.length + 1).toLowerCase() === trimmedName;
+      });
+    };
+    const hasSecret = (field: HttpApiFixedSecretField): boolean =>
+      typeof httpApiConfig[field] === 'string'
+        ? httpApiConfig[field] !== ''
+        : configuredSecrets.has(field);
+    const hasSavedScopedSecret = (path: HttpApiSecretField): boolean => configuredSecrets.has(path);
+    const hasDuplicateHeaderNames = (rows: typeof normalizedConfig.request_headers): boolean => {
+      const seen = new Set<string>();
+      for (const row of rows ?? []) {
+        const trimmedName = row.name.trim().toLowerCase();
+        if (!trimmedName) {
+          continue;
+        }
+        if (seen.has(trimmedName)) {
+          return true;
+        }
+        seen.add(trimmedName);
+      }
+      return false;
+    };
+    const hasDuplicateTokenFieldNames = (
+      rows: typeof normalizedConfig.token_request_fields,
+    ): boolean => {
+      const seen = new Set<string>();
+      for (const row of rows ?? []) {
+        const trimmedName = row.name.trim();
+        if (!trimmedName) {
+          continue;
+        }
+        if (seen.has(trimmedName)) {
+          return true;
+        }
+        seen.add(trimmedName);
+      }
+      return false;
+    };
+    const headerRowsAreValid = (
+      rows: typeof normalizedConfig.request_headers,
+      prefix: 'request_headers' | 'token_request_headers',
+    ): boolean =>
+      (rows ?? []).every(
+        (row) =>
+          Boolean(row.name.trim()) &&
+          (Boolean(row.value) || hasSavedHeaderSecret(prefix, row.name)),
+      );
+    const tokenFieldRows = normalizedConfig.token_request_fields ?? [];
+    const tokenFieldRowsAreValid = tokenFieldRows.every((row) => {
+      if (!row.name.trim()) {
+        return false;
+      }
+      if (row.secret) {
+        return (
+          Boolean(row.value) ||
+          hasSavedScopedSecret(`token_request_fields.${row.name}` as HttpApiSecretField)
+        );
+      }
+      return Boolean(row.value);
+    });
+
+    switch (httpApiConfig.auth_mode ?? 'none') {
+      case 'none':
+        return true;
+      case 'headers':
+        return (
+          (normalizedConfig.request_headers?.length ?? 0) > 0 &&
+          !hasDuplicateHeaderNames(normalizedConfig.request_headers) &&
+          headerRowsAreValid(normalizedConfig.request_headers, 'request_headers')
+        );
+      case 'api_key':
+        return Boolean(httpApiConfig.api_key_name && hasSecret('api_key'));
+      case 'basic':
+        return Boolean(httpApiConfig.basic_username && hasSecret('basic_password'));
+      case 'bearer':
+        return hasSecret('bearer_token');
+      case 'login_exchange':
+        return Boolean(
+          httpApiConfig.login_path && httpApiConfig.login_username && hasSecret('login_password'),
+        );
+      case 'token_exchange':
+        return Boolean(
+          normalizedConfig.login_path?.trim() &&
+          normalizedConfig.token_response_path?.trim() &&
+          tokenFieldRows.length > 0 &&
+          !hasDuplicateTokenFieldNames(tokenFieldRows) &&
+          tokenFieldRowsAreValid &&
+          !hasDuplicateHeaderNames(normalizedConfig.token_request_headers) &&
+          headerRowsAreValid(normalizedConfig.token_request_headers, 'token_request_headers') &&
+          !hasDuplicateHeaderNames(normalizedConfig.request_headers) &&
+          headerRowsAreValid(normalizedConfig.request_headers, 'request_headers'),
+        );
+    }
+  };
+
   const validateConnection = (): boolean => {
     const hasRemoteDockerAuth = (config: DockerSSHConfig): boolean =>
       Boolean(
@@ -3525,6 +3818,8 @@ export function ToolWizard({
       );
 
     switch (toolType) {
+      case 'http_api':
+        return Boolean(httpApiConfig.base_url);
       case 'postgres':
         // Either host or container must be specified
         if (
@@ -6176,6 +6471,14 @@ export function ToolWizard({
   const renderConnectionConfig = () => {
     const content = (() => {
       switch (toolType) {
+        case 'http_api':
+          return (
+            <HttpApiConnectionPanel
+              section="connection"
+              value={httpApiConfig}
+              onChange={setHttpApiConfig}
+            />
+          );
         case 'postgres':
           return renderPostgresConnection();
         case 'mysql':
@@ -6199,7 +6502,7 @@ export function ToolWizard({
       <>
         {content}
         {/* Only show test button for tools that need connection testing (not filesystem) */}
-        {toolType !== 'filesystem_indexer' && (
+        {toolType !== 'filesystem_indexer' && toolType !== 'http_api' && (
           <div className="wizard-test-section">
             <button
               type="button"
@@ -6254,6 +6557,39 @@ export function ToolWizard({
       </>
     );
   };
+
+  const renderHttpApiAuthentication = () => (
+    <HttpApiConnectionPanel
+      section="authentication"
+      value={httpApiConfig}
+      onChange={setHttpApiConfig}
+      configuredSecretFields={getHttpApiConfiguredSecretFields()}
+      onTestConnection={handleTestConnection}
+      testDisabled={!validateHttpApiAuthentication()}
+      testStatus={
+        testing
+          ? { state: 'pending' }
+          : testResult
+            ? {
+                state: testResult.success ? 'success' : 'error',
+                message: testResult.message,
+              }
+            : { state: 'idle' }
+      }
+    />
+  );
+
+  const renderHttpApiApiDetails = () => (
+    <HttpApiConnectionPanel
+      section="api_details"
+      value={httpApiConfig}
+      onChange={setHttpApiConfig}
+      configuredSecretFields={getHttpApiConfiguredSecretFields()}
+      onNormalizeOpenApi={handleNormalizeHttpApiOpenApi}
+      normalizeDisabled={testing}
+      openApiNormalizeStatus={httpApiNormalizeStatus}
+    />
+  );
 
   const renderExecutionConstraints = () => {
     if (toolType !== 'ssh_shell') return null;
@@ -6387,9 +6723,14 @@ export function ToolWizard({
 
   const renderOptions = () => {
     // SQL-based tools need Max Results for query limiting
-    const showMaxResults = ['postgres', 'mysql', 'mssql', 'influxdb', 'solidworks_pdm'].includes(
-      toolType,
-    );
+    const showMaxResults = [
+      'postgres',
+      'mysql',
+      'mssql',
+      'influxdb',
+      'solidworks_pdm',
+      'http_api',
+    ].includes(toolType);
 
     return (
       <div className="wizard-content">
@@ -6406,7 +6747,11 @@ export function ToolWizard({
                 min={1}
                 max={1000}
               />
-              <p className="field-help">Maximum number of rows/results returned per query.</p>
+              <p className="field-help">
+                {toolType === 'http_api'
+                  ? 'Maximum rows/results returned when a response selector normalizes API output.'
+                  : 'Maximum number of rows/results returned per query.'}
+              </p>
             </div>
           )}
         </div>
@@ -6448,7 +6793,16 @@ export function ToolWizard({
           </label>
           {allowWrite && (
             <p className="warning-text">
-              Warning: Write operations are enabled. The AI will be able to modify data.
+              Warning: Write operations are enabled. The AI will be able to modify
+              {toolType === 'http_api'
+                ? ' data when method policies also allow write methods.'
+                : ' data.'}
+            </p>
+          )}
+          {toolType === 'http_api' && (
+            <p className="field-help">
+              HTTP API write methods still require this tool option and the per-method policy to be
+              set to write.
             </p>
           )}
           <ReadOnlySecurityNotice />
@@ -6459,6 +6813,72 @@ export function ToolWizard({
 
   const renderReview = () => {
     const typeInfo = TOOL_TYPE_INFO[toolType];
+    const connectionConfig = getConnectionConfig();
+    const reviewConnectionConfig = (() => {
+      if (toolType !== 'http_api') {
+        return connectionConfig;
+      }
+
+      const config = { ...(connectionConfig as HttpApiConnectionConfig) } as Record<
+        string,
+        unknown
+      >;
+      const configuredSecrets = new Set(getHttpApiConfiguredSecretFields());
+      HTTP_API_SECRET_FIELDS.forEach((field) => {
+        if (typeof config[field] === 'string' && config[field]) {
+          config[field] = '[redacted]';
+        } else if (configuredSecrets.has(field)) {
+          config[field] = 'Saved value not shown';
+        }
+      });
+      const redactHeaderRows = (field: 'request_headers' | 'token_request_headers') => {
+        const rows = Array.isArray(config[field])
+          ? (config[field] as Array<Record<string, unknown>>)
+          : [];
+        config[field] = rows.map((row) => {
+          const name = String(row.name ?? '');
+          const lowerName = name.trim().toLowerCase();
+          const hasSavedValue = getHttpApiConfiguredSecretFields().some((configuredField) => {
+            if (!configuredField.startsWith(`${field}.`)) {
+              return false;
+            }
+            return configuredField.slice(field.length + 1).toLowerCase() === lowerName;
+          });
+          return {
+            name,
+            value:
+              typeof row.value === 'string' && row.value
+                ? '[redacted]'
+                : hasSavedValue
+                  ? 'Saved value not shown'
+                  : '',
+          };
+        });
+      };
+      redactHeaderRows('request_headers');
+      redactHeaderRows('token_request_headers');
+      const tokenFields = Array.isArray(config.token_request_fields)
+        ? (config.token_request_fields as Array<Record<string, unknown>>)
+        : [];
+      config.token_request_fields = tokenFields.map((row) => {
+        const name = String(row.name ?? '');
+        const secret = Boolean(row.secret);
+        const savedPath = `token_request_fields.${name}` as HttpApiSecretField;
+        return {
+          name,
+          value:
+            secret && typeof row.value === 'string' && row.value
+              ? '[redacted]'
+              : secret && configuredSecrets.has(savedPath)
+                ? 'Saved value not shown'
+                : (row.value ?? ''),
+          secret,
+        };
+      });
+      return config;
+    })();
+    const httpApiOperationCount =
+      toolType === 'http_api' ? (httpApiConfig.openapi_catalog?.operations.length ?? 0) : 0;
 
     return (
       <div className="wizard-content">
@@ -6488,7 +6908,13 @@ export function ToolWizard({
 
         <div className="review-section">
           <h4>Connection</h4>
-          <pre className="review-config">{JSON.stringify(getConnectionConfig(), null, 2)}</pre>
+          <pre className="review-config">{JSON.stringify(reviewConnectionConfig, null, 2)}</pre>
+          {toolType === 'http_api' && httpApiOperationCount > 0 && (
+            <p className="field-help">
+              OpenAPI catalog: {httpApiOperationCount} operation
+              {httpApiOperationCount === 1 ? '' : 's'}
+            </p>
+          )}
         </div>
 
         <div className="review-section">
@@ -6509,6 +6935,10 @@ export function ToolWizard({
         return renderTypeSelection();
       case 'connection':
         return renderConnectionConfig();
+      case 'authentication':
+        return renderHttpApiAuthentication();
+      case 'api_details':
+        return renderHttpApiApiDetails();
       case 'pdm_filtering':
         return renderPdmFiltering();
       case 'execution_constraints':

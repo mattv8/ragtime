@@ -207,6 +207,11 @@ function getToolConnectionSummary(tool: ToolConfig): string {
         return `${config.paths.length} path(s)`;
       }
       return 'Filesystem indexer';
+    case 'http_api': {
+      const baseUrl = 'base_url' in config && config.base_url ? config.base_url : 'HTTP API';
+      const authMode = 'auth_mode' in config && config.auth_mode ? config.auth_mode : 'none';
+      return `${baseUrl} (${authMode})`;
+    }
     default:
       return 'Unknown';
   }

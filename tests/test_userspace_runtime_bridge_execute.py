@@ -9,6 +9,12 @@ from unittest import mock
 from fastapi import HTTPException
 from rag_prompts_stub import install_fake_rag_prompts, remove_fake_rag_prompts
 
+from ragtime.http_api.models import (
+    HttpApiConnectionConfig,
+    HttpApiExecutionResult,
+    HttpApiRequest,
+)
+
 inserted_fake_rag_prompts = install_fake_rag_prompts()
 
 from ragtime.userspace import service as userspace_service_module
@@ -402,7 +408,216 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
                     )
 
             self.assertEqual(ctx.exception.status_code, 400)
-            self.assertIn("Live preview execution supports SQL tools only", str(ctx.exception.detail))
+            self.assertIn("Live preview execution supports postgres, mysql, mssql, influxdb, and http_api tools only.", str(ctx.exception.detail))
+
+    async def test_browser_and_shared_http_api_execution_use_read_only_broker_mode(self) -> None:
+        workspace = _make_workspace()
+        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
+        service = _RuntimeBridgeWorkspaceService(workspace)
+        broker_execute = mock.AsyncMock(
+            return_value=HttpApiExecutionResult(
+                output={"items": [{"id": 1}]},
+                rows=[{"id": 1}],
+                columns=["id"],
+                row_count=1,
+            )
+        )
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_config",
+                mock.AsyncMock(
+                    return_value=_make_tool_config(
+                        tool_type="http_api",
+                        allow_write=True,
+                        connection_config={
+                            "base_url": "https://api.example.com",
+                            "method_policies": {"GET": "read", "POST": "write"},
+                        },
+                    )
+                ),
+            ),
+            mock.patch.object(userspace_service_module, "http_api_broker", SimpleNamespace(execute=broker_execute), create=True),
+        ):
+            browser_response = await service.execute_component(
+                "workspace-1",
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"method": "GET", "path": "/items", "headers": {"X-Trace": "ok"}},
+                ),
+                user_id="user-1",
+            )
+            shared_response = await service.execute_component_from_authorized_shared_preview(
+                "workspace-1",
+                ExecuteComponentRequest(
+                    component_id="tool-1",
+                    request={"method": "GET", "path": "/items", "headers": {"X-Trace": "ok"}},
+                ),
+            )
+
+        self.assertEqual(browser_response.rows, [{"id": 1}])
+        self.assertEqual(shared_response.rows, [{"id": 1}])
+        self.assertEqual(broker_execute.await_count, 2)
+        for call in broker_execute.await_args_list:
+            self.assertFalse(call.kwargs["allow_write"])
+            self.assertIsInstance(call.args[1], HttpApiConnectionConfig)
+            self.assertIsInstance(call.args[2], HttpApiRequest)
+        self.assertEqual(service.bridge_audit_calls, [])
+
+    async def test_runtime_bridge_http_api_write_requires_effective_workspace_write_access(self) -> None:
+        service = _RuntimeBridgeWorkspaceService()
+        broker_execute = mock.AsyncMock(side_effect=PermissionError("HTTP method POST requires write access"))
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_config",
+                mock.AsyncMock(
+                    return_value=_make_tool_config(
+                        tool_type="http_api",
+                        allow_write=True,
+                        connection_config={
+                            "base_url": "https://api.example.com",
+                            "method_policies": {"GET": "read", "POST": "write"},
+                        },
+                    )
+                ),
+            ),
+            mock.patch.object(userspace_service_module, "http_api_broker", SimpleNamespace(execute=broker_execute), create=True),
+        ):
+            response = await service.execute_component_from_runtime_bridge(
+                "workspace-1",
+                ExecuteComponentRequest(component_id="tool-1", request={"method": "POST", "path": "/items", "json_body": {"id": 1}}),
+                session_id="sess-1",
+            )
+
+        self.assertEqual(response.row_count, 0)
+        self.assertEqual(response.error, "HTTP method POST requires write access")
+        broker_execute.assert_awaited_once()
+        broker_call = broker_execute.await_args
+        self.assertIsNotNone(broker_call)
+        assert broker_call is not None
+        self.assertFalse(broker_call.kwargs["allow_write"])
+        self.assertEqual(service.proofs_recorded, [])
+        self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_only")
+
+    async def test_runtime_bridge_http_api_executes_through_shared_broker_and_maps_result(self) -> None:
+        workspace = _make_workspace()
+        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
+        service = _RuntimeBridgeWorkspaceService(workspace)
+        request_payload = {
+            "method": "POST",
+            "path": "/items",
+            "json_body": {"name": "Widget"},
+            "headers": {"X-Trace": "trace-1"},
+            "response_selector": "data",
+        }
+        broker_execute = mock.AsyncMock(
+            return_value=HttpApiExecutionResult(
+                status=201,
+                output={"data": [{"id": 7, "name": "Widget"}]},
+                rows=[{"id": 7, "name": "Widget"}],
+                columns=["id", "name"],
+                row_count=1,
+            )
+        )
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_config",
+                mock.AsyncMock(
+                    return_value=_make_tool_config(
+                        tool_type="http_api",
+                        allow_write=True,
+                        connection_config={
+                            "base_url": "https://api.example.com",
+                            "bearer_token": "super-secret-token",
+                            "approved_request_headers": ["X-Trace"],
+                            "method_policies": {"GET": "read", "POST": "write"},
+                        },
+                    )
+                ),
+            ),
+            mock.patch.object(userspace_service_module, "http_api_broker", SimpleNamespace(execute=broker_execute), create=True),
+            mock.patch(
+                "ragtime.rag.components.rag.build_primary_runtime_tool_from_config",
+                mock.AsyncMock(side_effect=AssertionError("runtime tool builder should not be used for http_api")),
+            ),
+        ):
+            response = await service.execute_component_from_runtime_bridge(
+                "workspace-1",
+                ExecuteComponentRequest(component_id="tool-1", request=request_payload),
+                session_id="sess-1",
+            )
+
+        self.assertEqual(response.output, {"data": [{"id": 7, "name": "Widget"}]})
+        self.assertEqual(response.rows, [{"id": 7, "name": "Widget"}])
+        self.assertEqual(response.columns, ["id", "name"])
+        self.assertEqual(response.row_count, 1)
+        self.assertIsNone(response.error)
+        broker_execute.assert_awaited_once()
+        broker_call = broker_execute.await_args
+        assert broker_call is not None
+        self.assertEqual(broker_call.args[0], "tool-1")
+        self.assertIsInstance(broker_call.args[1], HttpApiConnectionConfig)
+        self.assertIsInstance(broker_call.args[2], HttpApiRequest)
+        self.assertTrue(broker_call.kwargs["allow_write"])
+        self.assertEqual(
+            service.proofs_recorded,
+            [
+                (
+                    "workspace-1",
+                    "tool-1",
+                    1,
+                    '{"headers":{"X-Trace":"trace-1"},"json_body":{"name":"Widget"},"method":"POST","path":"/items","response_selector":"data"}',
+                )
+            ],
+        )
+        self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_write")
+
+    async def test_runtime_bridge_http_api_response_does_not_expose_credentials(self) -> None:
+        workspace = _make_workspace()
+        service = _RuntimeBridgeWorkspaceService(workspace)
+        broker_execute = mock.AsyncMock(
+            return_value=HttpApiExecutionResult(
+                output={"data": [{"id": 1}], "request_headers": {"X-Trace": "ok"}},
+                rows=[{"id": 1}],
+                columns=["id"],
+                row_count=1,
+            )
+        )
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "get_tool_config",
+                mock.AsyncMock(
+                    return_value=_make_tool_config(
+                        tool_type="http_api",
+                        allow_write=False,
+                        connection_config={
+                            "base_url": "https://api.example.com",
+                            "bearer_token": "super-secret-token",
+                            "api_key": "hidden-key",
+                        },
+                    )
+                ),
+            ),
+            mock.patch.object(userspace_service_module, "http_api_broker", SimpleNamespace(execute=broker_execute), create=True),
+        ):
+            response = await service.execute_component_from_runtime_bridge(
+                "workspace-1",
+                ExecuteComponentRequest(component_id="tool-1", request={"method": "GET", "path": "/items"}),
+                session_id="sess-1",
+            )
+
+        dumped = response.model_dump_json()
+        self.assertNotIn("super-secret-token", dumped)
+        self.assertNotIn("hidden-key", dumped)
+        self.assertNotIn("bearer_token", dumped)
+        self.assertNotIn("api_key", dumped)
 
     async def test_shared_preview_execution_rejects_insert_even_with_workspace_opt_in(self) -> None:
         workspace = _make_workspace()

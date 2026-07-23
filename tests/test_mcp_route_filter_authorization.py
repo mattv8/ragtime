@@ -155,6 +155,87 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(allowed)
 
+    async def test_selected_http_api_request_and_search_tools_are_allowed_by_name(self) -> None:
+        adapter = MCPToolAdapter()
+        route_filter = McpRouteFilter(
+            tool_config_ids=["tool-http-1"],
+            include_knowledge_search=False,
+            include_git_history=False,
+        )
+        tool_configs = [
+            {
+                "id": "tool-http-1",
+                "name": "Customer API",
+                "tool_type": "http_api",
+                "enabled": True,
+                "connection_config": {
+                    "base_url": "https://api.example.com",
+                    "openapi_catalog": {
+                        "title": "Customer API",
+                        "version": "1.0",
+                        "operations": [
+                            {
+                                "operation_id": "listCustomers",
+                                "method": "GET",
+                                "path": "/customers",
+                                "summary": "List customers",
+                                "description": "Fetch customer records",
+                                "tags": ["customers"],
+                            }
+                        ],
+                    },
+                },
+            }
+        ]
+
+        with mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=tool_configs)):
+            request_allowed = await adapter.is_tool_allowed_by_route_filter("request_customer_api", route_filter)
+            search_allowed = await adapter.is_tool_allowed_by_route_filter("search_customer_api_api", route_filter)
+
+        self.assertTrue(request_allowed)
+        self.assertTrue(search_allowed)
+
+    async def test_http_api_catalog_search_is_rejected_when_catalog_is_empty(self) -> None:
+        adapter = MCPToolAdapter()
+        route_filter = McpRouteFilter(
+            tool_config_ids=["tool-http-1"],
+            include_knowledge_search=False,
+            include_git_history=False,
+        )
+        tool_configs = [
+            {
+                "id": "tool-http-1",
+                "name": "Customer API",
+                "tool_type": "http_api",
+                "enabled": True,
+                "connection_config": {
+                    "base_url": "https://api.example.com",
+                    "openapi_catalog": {"title": "Customer API", "version": "1.0", "operations": []},
+                },
+            }
+        ]
+
+        with mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=tool_configs)):
+            search_allowed = await adapter.is_tool_allowed_by_route_filter("search_customer_api_api", route_filter)
+
+        self.assertFalse(search_allowed)
+
+    async def test_knowledge_search_filter_does_not_authorize_http_api_catalog_search_name(self) -> None:
+        adapter = MCPToolAdapter()
+        route_filter = McpRouteFilter(
+            tool_config_ids=[],
+            include_knowledge_search=True,
+            include_git_history=False,
+        )
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[])),
+            mock.patch("ragtime.mcp.tools.get_app_settings", mock.AsyncMock(return_value={"aggregate_search": False})),
+        ):
+            allowed = await adapter.is_tool_allowed_by_route_filter("search_customer_api_api", route_filter)
+
+        self.assertFalse(allowed)
+
     def test_ssh_schema_uses_configured_max_as_default(self) -> None:
         adapter = MCPToolAdapter()
 

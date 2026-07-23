@@ -1535,6 +1535,7 @@ export type ToolType =
   | 'mysql'
   | 'mssql'
   | 'influxdb'
+  | 'http_api'
   | 'odoo_shell'
   | 'ssh_shell'
   | 'filesystem_indexer'
@@ -1627,6 +1628,124 @@ export interface InfluxdbConnectionConfig extends SSHTunnelConfig {
   token?: string;
   org?: string;
   bucket?: string;
+}
+
+export type HttpApiAuthMode =
+  | 'none'
+  | 'api_key'
+  | 'basic'
+  | 'bearer'
+  | 'headers'
+  | 'login_exchange'
+  | 'token_exchange';
+export type HttpApiMethodPolicy = 'disabled' | 'read' | 'write';
+export type HttpApiHttpMethod = 'GET' | 'HEAD' | 'OPTIONS' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+export type HttpApiApiKeyLocation = 'header' | 'query';
+export const HTTP_API_SECRET_FIELDS = [
+  'api_key',
+  'basic_password',
+  'bearer_token',
+  'login_password',
+] as const;
+export type HttpApiFixedSecretField = (typeof HTTP_API_SECRET_FIELDS)[number];
+export type HttpApiScopedSecretField =
+  | `request_headers.${string}`
+  | `token_request_headers.${string}`
+  | `token_request_fields.${string}`;
+export type HttpApiSecretField = HttpApiFixedSecretField | HttpApiScopedSecretField;
+
+export interface HttpApiConfiguredHeader {
+  name: string;
+  value: string;
+}
+
+export interface HttpApiTokenField {
+  name: string;
+  value: string;
+  secret: boolean;
+}
+
+export interface OpenApiCatalogOperation {
+  operation_id: string;
+  method: HttpApiHttpMethod;
+  path: string;
+  summary: string;
+  description: string;
+  tags: string[];
+}
+
+export interface OpenApiCatalog {
+  title: string;
+  version: string;
+  operations: OpenApiCatalogOperation[];
+}
+
+export interface HttpApiOpenApiNormalizeRequest {
+  spec_url?: string;
+  document?: string;
+  document_name?: string;
+}
+
+export interface HttpApiOpenApiNormalizeResponse {
+  openapi_source_url?: string | null;
+  openapi_source_name?: string | null;
+  openapi_source_hash?: string | null;
+  openapi_catalog: OpenApiCatalog;
+}
+
+export const HTTP_API_METHODS: HttpApiHttpMethod[] = [
+  'GET',
+  'HEAD',
+  'OPTIONS',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+];
+
+export const DEFAULT_HTTP_API_METHOD_POLICIES: Record<HttpApiHttpMethod, HttpApiMethodPolicy> = {
+  GET: 'read',
+  HEAD: 'read',
+  OPTIONS: 'read',
+  POST: 'disabled',
+  PUT: 'disabled',
+  PATCH: 'disabled',
+  DELETE: 'disabled',
+};
+
+export interface HttpApiConnectionConfig {
+  base_url?: string;
+  auth_mode?: HttpApiAuthMode;
+  api_key_location?: HttpApiApiKeyLocation;
+  api_key_name?: string;
+  api_key_prefix?: string;
+  api_key?: string;
+  basic_username?: string;
+  basic_password?: string;
+  bearer_token?: string;
+  login_path?: string;
+  login_method?: HttpApiHttpMethod;
+  login_body_format?: 'json' | 'form';
+  login_username?: string;
+  login_password?: string;
+  login_username_field?: string;
+  login_password_field?: string;
+  request_headers?: HttpApiConfiguredHeader[];
+  token_request_headers?: HttpApiConfiguredHeader[];
+  token_request_fields?: HttpApiTokenField[];
+  send_api_key_to_login?: boolean;
+  send_api_key_to_requests?: boolean;
+  token_response_path?: string;
+  token_expires_in_path?: string;
+  token_header_name?: string;
+  token_prefix?: string;
+  openapi_source_url?: string;
+  openapi_source_name?: string;
+  openapi_source_hash?: string;
+  openapi_catalog?: OpenApiCatalog | null;
+  approved_request_headers?: string[];
+  method_policies?: Partial<Record<HttpApiHttpMethod, HttpApiMethodPolicy>>;
+  default_response_selector?: string;
 }
 
 export interface OdooShellConnectionConfig extends DockerSSHConfig {
@@ -1751,6 +1870,7 @@ export type ConnectionConfig =
   | MysqlConnectionConfig
   | MssqlConnectionConfig
   | InfluxdbConnectionConfig
+  | HttpApiConnectionConfig
   | OdooShellConnectionConfig
   | SSHShellConnectionConfig
   | FilesystemConnectionConfig
@@ -1783,6 +1903,7 @@ export interface ToolConfig {
   disabled_reason?: string;
   /** Credential field names that are encrypted but cannot be decrypted with the current server key. */
   undecryptable_fields: string[];
+  configured_secret_fields: string[];
   last_test_at: string | null;
   last_test_result: boolean | null;
   last_test_error: string | null;
@@ -2036,6 +2157,11 @@ export const TOOL_TYPE_INFO: Record<
     name: 'InfluxDB (Flux)',
     description: 'Connect to InfluxDB 2.x to execute Flux queries',
     icon: 'database',
+  },
+  http_api: {
+    name: 'HTTP API',
+    description: 'Connect to an HTTP or HTTPS API through a Ragtime-managed credential broker',
+    icon: 'globe',
   },
   odoo_shell: {
     name: 'Odoo Shell',

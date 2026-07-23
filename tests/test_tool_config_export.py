@@ -218,6 +218,103 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
         mock_notify.assert_called_once()
         mock_invalidate.assert_called_once()
 
+    async def test_export_keeps_http_api_secret_values(self) -> None:
+        from ragtime.http_api.models import HTTP_API_SECRET_FIELDS
+
+        original = ToolConfig(
+            id="tool-http-api",
+            name="Exportable HTTP API",
+            tool_type=ToolType.HTTP_API,
+            enabled=True,
+            description="Round-trip test",
+            connection_config={
+                "base_url": "https://api.example.com",
+                "auth_mode": "login_exchange",
+                "api_key": "api-secret",
+                "api_key_location": "query",
+                "api_key_name": "api_key",
+                "basic_password": "basic-secret",
+                "bearer_token": "bearer-secret",
+                "login_path": "/auth/token",
+                "login_password": "login-secret",
+                "send_api_key_to_login": True,
+                "send_api_key_to_requests": False,
+                "token_response_path": "data.access_token",
+                "token_header_name": "X-Access-Token",
+                "token_prefix": "Token",
+                "raw_openapi_document": "openapi: 3.1.0",
+            },
+            configured_secret_fields=list(HTTP_API_SECRET_FIELDS),
+        )
+
+        envelope = routes._build_tool_export_envelope(original, EXPORT_PASSWORD)
+        payload = json.loads(
+            encryption.decrypt_with_password(
+                envelope["payload"],
+                EXPORT_PASSWORD,
+                envelope["kdf"]["salt"],
+            )
+        )
+
+        self.assertEqual(payload["tool_type"], "http_api")
+        self.assertEqual(payload["connection_config"]["api_key"], "api-secret")
+        self.assertEqual(payload["connection_config"]["basic_password"], "basic-secret")
+        self.assertEqual(payload["connection_config"]["bearer_token"], "bearer-secret")
+        self.assertEqual(payload["connection_config"]["login_password"], "login-secret")
+        self.assertEqual(payload["connection_config"]["auth_mode"], "login_exchange")
+        self.assertEqual(payload["connection_config"]["api_key_location"], "query")
+        self.assertEqual(payload["connection_config"]["api_key_name"], "api_key")
+        self.assertEqual(payload["connection_config"]["login_path"], "/auth/token")
+        self.assertNotIn("raw_openapi_document", payload["connection_config"])
+
+    async def test_export_keeps_http_api_nested_secret_values_without_placeholder_blanks(self) -> None:
+        original = ToolConfig(
+            id="tool-http-api",
+            name="Exportable HTTP API",
+            tool_type=ToolType.HTTP_API,
+            enabled=True,
+            description="Nested secret export test",
+            connection_config={
+                "base_url": "https://api.example.test",
+                "auth_mode": "token_exchange",
+                "request_headers": [{"name": "X-Tenant", "value": "tenant-secret"}],
+                "token_request_headers": [{"name": "X-Token-Key", "value": "endpoint-secret"}],
+                "token_request_fields": [
+                    {"name": "grant_type", "value": "client_credentials", "secret": False},
+                    {"name": "client_id", "value": "client-id", "secret": False},
+                    {"name": "client_secret", "value": "client-secret", "secret": True},
+                ],
+            },
+            configured_secret_fields=[
+                "request_headers.X-Tenant",
+                "token_request_headers.X-Token-Key",
+                "token_request_fields.client_secret",
+            ],
+        )
+
+        envelope = routes._build_tool_export_envelope(original, EXPORT_PASSWORD)
+        payload = json.loads(
+            encryption.decrypt_with_password(
+                envelope["payload"],
+                EXPORT_PASSWORD,
+                envelope["kdf"]["salt"],
+            )
+        )
+
+        self.assertEqual(payload["connection_config"]["request_headers"], [{"name": "X-Tenant", "value": "tenant-secret"}])
+        self.assertEqual(
+            payload["connection_config"]["token_request_headers"],
+            [{"name": "X-Token-Key", "value": "endpoint-secret"}],
+        )
+        self.assertEqual(
+            payload["connection_config"]["token_request_fields"],
+            [
+                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                {"name": "client_id", "value": "client-id", "secret": False},
+                {"name": "client_secret", "value": "client-secret", "secret": True},
+            ],
+        )
+
     async def test_import_renames_on_collision(self) -> None:
         envelope = routes._build_tool_export_envelope(
             ToolConfig(
@@ -390,6 +487,39 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
         self.assertIn("invalid imported tool config", str(ctx.exception).lower())
+
+    async def test_import_invalid_http_api_config_returns_400(self) -> None:
+        envelope = routes._build_tool_export_envelope(
+            ToolConfig(
+                name="HTTP API",
+                tool_type=ToolType.HTTP_API,
+                connection_config={
+                    "base_url": "https://api.example.com",
+                },
+            ),
+            EXPORT_PASSWORD,
+        )
+        payload = json.loads(
+            encryption.decrypt_with_password(
+                envelope["payload"],
+                EXPORT_PASSWORD,
+                envelope["kdf"]["salt"],
+            )
+        )
+        payload["connection_config"]["unexpected"] = True
+        salt, token = encryption.encrypt_with_password(json.dumps(payload), EXPORT_PASSWORD)
+        envelope["payload"] = token
+        envelope["kdf"]["salt"] = salt
+
+        mock_repo = mock.AsyncMock()
+        mock_repo.list_tool_configs = mock.AsyncMock(return_value=[])
+
+        with mock.patch("ragtime.indexer.routes.repository", mock_repo):
+            with self.assertRaises(Exception) as ctx:
+                await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
+        self.assertIn("invalid http api configuration", str(ctx.exception).lower())
 
     async def test_import_filesystem_faiss_index_collision_returns_409(self) -> None:
         envelope = routes._build_tool_export_envelope(
@@ -679,6 +809,86 @@ class ToolConfigRepositoryTests(unittest.IsolatedAsyncioTestCase):
         assert result is not None
         self.assertEqual(result.undecryptable_fields, [])
         db.toolconfig.update.assert_not_awaited()
+
+    async def test_update_http_api_config_preserves_nested_secret_rows_encrypted_at_rest_and_redacts_model_json(self) -> None:
+        repo = IndexerRepository()
+        stored_connection_config = {
+            "base_url": "https://api.example.test",
+            "auth_mode": "token_exchange",
+            "request_headers": [{"name": "X-Tenant", "value": encrypt_secret("tenant-secret")}],
+            "token_request_headers": [{"name": "X-Token-Key", "value": encrypt_secret("endpoint-secret")}],
+            "token_request_fields": [
+                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                {"name": "client_secret", "value": encrypt_secret("client-secret"), "secret": True},
+            ],
+            "token_prefix": "Bearer",
+        }
+
+        prisma_tool = self._fake_prisma_tool(
+            connection_config=stored_connection_config,
+            id="tool-http-api",
+            name="HTTP API",
+            toolType="http_api",
+        )
+        updated_connection_config: dict | None = None
+
+        async def fake_find_unique(where, include=None):
+            del include
+            if where.get("id") == "tool-http-api":
+                return self._fake_prisma_tool(
+                    connection_config=updated_connection_config if updated_connection_config is not None else stored_connection_config,
+                    id="tool-http-api",
+                    name="HTTP API",
+                    toolType="http_api",
+                )
+            return None
+
+        async def fake_update(where, data):
+            nonlocal updated_connection_config
+            if where.get("id") == "tool-http-api":
+                json_value = data.get("connectionConfig")
+                updated_connection_config = dict(json_value.data if hasattr(json_value, "data") else json_value or stored_connection_config)
+
+        db = mock.AsyncMock()
+        db.toolconfig.find_unique = fake_find_unique
+        db.toolconfig.update = fake_update
+
+        with mock.patch.object(repo, "_get_db", return_value=db):
+            result = await repo.update_tool_config(
+                "tool-http-api",
+                {
+                    "connection_config": {
+                        "auth_mode": "token_exchange",
+                        "token_prefix": "Token",
+                        "request_headers": [{"name": "X-Tenant", "value": ""}],
+                        "token_request_headers": [{"name": "X-Token-Key", "value": ""}],
+                        "token_request_fields": [
+                            {"name": "grant_type", "value": "client_credentials", "secret": False},
+                            {"name": "client_secret", "value": "", "secret": True},
+                        ],
+                    }
+                },
+            )
+
+        assert updated_connection_config is not None
+        self.assertEqual(updated_connection_config["token_prefix"], "Token")
+        self.assertTrue(updated_connection_config["request_headers"][0]["value"].startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(updated_connection_config["token_request_headers"][0]["value"].startswith(ENCRYPTED_PREFIX))
+        self.assertTrue(updated_connection_config["token_request_fields"][1]["value"].startswith(ENCRYPTED_PREFIX))
+        assert result is not None
+        self.assertEqual(result.connection_config["request_headers"][0]["value"], "tenant-secret")
+        self.assertEqual(result.connection_config["token_request_headers"][0]["value"], "endpoint-secret")
+        self.assertEqual(result.connection_config["token_request_fields"][1]["value"], "client-secret")
+        dumped = result.model_dump(mode="json")
+        self.assertEqual(dumped["connection_config"]["request_headers"], [{"name": "X-Tenant", "value": ""}])
+        self.assertEqual(dumped["connection_config"]["token_request_headers"], [{"name": "X-Token-Key", "value": ""}])
+        self.assertEqual(
+            dumped["connection_config"]["token_request_fields"],
+            [
+                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                {"name": "client_secret", "value": "", "secret": True},
+            ],
+        )
 
 
 class ClearUndecryptableCredentialsRouteTests(unittest.IsolatedAsyncioTestCase):

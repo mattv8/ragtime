@@ -132,6 +132,7 @@ const groupedTool: ToolConfig = {
   group_id: 'group-1',
   group_name: 'Alpha Group',
   undecryptable_fields: [],
+  configured_secret_fields: [],
   last_test_at: null,
   last_test_result: null,
   last_test_error: null,
@@ -153,6 +154,7 @@ const ungroupedTool: ToolConfig = {
   group_id: null,
   group_name: null,
   undecryptable_fields: [],
+  configured_secret_fields: [],
   last_test_at: null,
   last_test_result: null,
   last_test_error: null,
@@ -180,6 +182,32 @@ const pdmTool: ToolConfig = {
   group_id: null,
   group_name: null,
   undecryptable_fields: [],
+  configured_secret_fields: [],
+  last_test_at: null,
+  last_test_result: null,
+  last_test_error: null,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+};
+
+const httpApiTool: ToolConfig = {
+  id: 'tool-http-api',
+  name: 'Orders API',
+  tool_type: 'http_api',
+  enabled: true,
+  description: 'HTTP API connection',
+  connection_config: {
+    base_url: 'https://api.example.com',
+    auth_mode: 'bearer',
+  },
+  max_results: 50,
+  timeout_max_seconds: 300,
+  allow_write: false,
+  sort_order: 400,
+  group_id: null,
+  group_name: null,
+  undecryptable_fields: [],
+  configured_secret_fields: ['bearer_token'],
   last_test_at: null,
   last_test_result: null,
   last_test_error: null,
@@ -625,5 +653,16 @@ describe('ToolsPanel', () => {
     expect(toolCardPopover.dataset.ignoreSelector).toContain('button');
     expect(toolCardPopover.dataset.ignoreSelector).toContain('input');
     expect(toolCardPopover.dataset.ignoreSelector).toContain('textarea');
+  });
+
+  it('shows an HTTP API summary with base URL and auth mode without secrets', async () => {
+    apiMock.listToolConfigs.mockResolvedValue([httpApiTool]);
+
+    render(<ToolsPanel />);
+
+    expect(await screen.findByText('Orders API')).toBeTruthy();
+    expect(screen.getByText(/https:\/\/api\.example\.com/i)).toBeTruthy();
+    expect(screen.getByText(/bearer/i)).toBeTruthy();
+    expect(screen.queryByText(/token/i)).toBeNull();
   });
 });

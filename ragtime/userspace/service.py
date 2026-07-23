@@ -92,6 +92,12 @@ from ragtime.core.workspace_ops import (
     workspace_mount_target_repo_relative_path,
     workspace_path_matches_mount_prefix,
 )
+from ragtime.http_api.models import (
+    HttpApiConnectionConfig,
+    HttpApiExecutionResult,
+    HttpApiRequest,
+)
+from ragtime.http_api.service import http_api_broker
 from ragtime.indexer.file_utils import (
     build_authenticated_git_url,
     git_clone_fraction_from_line,
@@ -1007,7 +1013,8 @@ _SNAPSHOT_BRANCH_REF_PREFIX = "userspace/"
 _GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf899d8e13f7beb2c"
 
 _USPACE_EXEC_SUPPORTED_SQL_TOOLS = {"postgres", "mysql", "mssql", "influxdb"}
-_USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES = _USPACE_EXEC_SUPPORTED_SQL_TOOLS | {"odoo_shell", "ssh_shell"}
+_USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES = _USPACE_EXEC_SUPPORTED_SQL_TOOLS | {"http_api"}
+_USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES = _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES | {"odoo_shell", "ssh_shell"}
 _USERSPACE_PREVIEW_ENTRY_PATH = "dashboard/main.ts"
 _DEFAULT_WORKSPACE_DASHBOARD_CONTENT = (
     "export function render(container: HTMLElement) {\n"
@@ -21637,21 +21644,33 @@ class UserSpaceService:
                     raw_output=raw_output,
                 )
             else:
-                output = await self._invoke_runtime_bridge_tool(
-                    config.tool_type,
-                    config.tool_config,
-                    request_payload,
-                    allow_write=config.effective_allow_write,
-                )
-                generic_error = _classify_generic_tool_output_error(output)
-                response = ExecuteComponentResponse(
-                    component_id=component_id,
-                    rows=[],
-                    columns=[],
-                    row_count=0,
-                    output=output,
-                    error=generic_error,
-                )
+                if config.tool_type == "http_api":
+                    response = self._build_http_api_execute_component_response(
+                        component_id=component_id,
+                        result=await self._execute_http_api_request(
+                            tool_id=config.resolved_id,
+                            conn_config=config.conn_config,
+                            tool_config=config.tool_config,
+                            request_payload=request_payload,
+                            allow_write=config.effective_allow_write,
+                        ),
+                    )
+                else:
+                    output = await self._invoke_runtime_bridge_tool(
+                        config.tool_type,
+                        config.tool_config,
+                        request_payload,
+                        allow_write=config.effective_allow_write,
+                    )
+                    generic_error = _classify_generic_tool_output_error(output)
+                    response = ExecuteComponentResponse(
+                        component_id=component_id,
+                        rows=[],
+                        columns=[],
+                        row_count=0,
+                        output=output,
+                        error=generic_error,
+                    )
         except Exception as exc:
             logger.error(
                 "%s for %s: %s",
@@ -21727,14 +21746,14 @@ class UserSpaceService:
             )
 
         tool_type = tool_config.tool_type.value
-        supported_tool_types = _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES if allow_runtime_bridge_tools else _USPACE_EXEC_SUPPORTED_SQL_TOOLS
+        supported_tool_types = _USPACE_RUNTIME_BRIDGE_SUPPORTED_TOOL_TYPES if allow_runtime_bridge_tools else _USPACE_EXEC_BROWSER_SUPPORTED_TOOL_TYPES
         if tool_type not in supported_tool_types:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"Runtime bridge execution does not support {tool_type} tools."
                     if allow_runtime_bridge_tools
-                    else "Live preview execution supports SQL tools only (postgres, mysql, mssql, influxdb)."
+                    else "Live preview execution supports postgres, mysql, mssql, influxdb, and http_api tools only."
                 ),
             )
 
@@ -21824,6 +21843,24 @@ class UserSpaceService:
             rows=rows,
             columns=columns,
             row_count=len(rows),
+        )
+
+    @staticmethod
+    def _build_http_api_execute_component_response(
+        component_id: str,
+        result: HttpApiExecutionResult,
+    ) -> ExecuteComponentResponse:
+        rows = list(result.rows or [])
+        columns = list(result.columns or [])
+        row_count = int(result.row_count) if result.row_count is not None else len(rows)
+        return ExecuteComponentResponse(
+            component_id=component_id,
+            rows=rows,
+            columns=columns,
+            row_count=row_count,
+            output=result.output,
+            error=result.error,
+            error_kind="timeout" if result.error_kind == "timeout" else None,
         )
 
     async def _dispatch_tool_query(
@@ -21953,6 +21990,32 @@ class UserSpaceService:
         if runtime_tool is None:
             raise ValueError(f"Failed to build runtime bridge tool for {tool_type}")
         return await runtime_tool.ainvoke(self._build_runtime_bridge_tool_request(tool_type, request_payload))
+
+    async def _execute_http_api_request(
+        self,
+        *,
+        tool_id: str,
+        conn_config: dict[str, Any],
+        tool_config: Any,
+        request_payload: dict[str, Any] | str,
+        allow_write: bool,
+    ) -> HttpApiExecutionResult:
+        if isinstance(request_payload, str):
+            raise ValueError("HTTP API component requests must be objects.")
+
+        request = HttpApiRequest.model_validate(request_payload)
+        config = HttpApiConnectionConfig.model_validate(conn_config or {})
+        timeout_max_seconds = getattr(tool_config, "timeout_max_seconds", 300) or 300
+        timeout_seconds = self._resolve_effective_timeout(timeout_max_seconds, timeout_max_seconds)
+        max_results = getattr(tool_config, "max_results", 100) or 100
+        return await http_api_broker.execute(
+            tool_id,
+            config,
+            request,
+            allow_write=allow_write,
+            timeout_seconds=timeout_seconds,
+            max_results=max_results,
+        )
 
     async def _execute_postgres_query(
         self,

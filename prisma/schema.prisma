@@ -413,6 +413,7 @@ enum ToolType {
   ssh_shell
   filesystem_indexer
   solidworks_pdm
+  http_api
 }
 
 /// Mount type for filesystem indexer

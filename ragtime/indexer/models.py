@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_serializer, field_validator, model_validator
 
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
@@ -100,6 +100,7 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_FLAG_OPTIONS,
     normalize_userspace_preview_sandbox_flags,
 )
+from ragtime.http_api.models import HTTP_API_SECRET_FIELDS, redact_http_api_connection_config, sanitize_persisted_http_api_connection_config
 
 DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
 MIN_USERSPACE_CODE_INDEX_MAX_CONCURRENCY = 1
@@ -1748,6 +1749,7 @@ class ToolType(str, Enum):
     SSH_SHELL = "ssh_shell"
     FILESYSTEM_INDEXER = "filesystem_indexer"
     SOLIDWORKS_PDM = "solidworks_pdm"
+    HTTP_API = "http_api"
 
 
 # Tool types that support schema indexing (use for ToolType enum comparisons)
@@ -2317,6 +2319,10 @@ class ToolConfig(BaseModel):
     # are never exposed; only field names are returned so admins can clear and
     # re-enter those credentials.
     undecryptable_fields: List[str] = Field(default_factory=list, description="Names of encrypted credential fields that failed decryption")
+    configured_secret_fields: List[str] = Field(
+        default_factory=list,
+        description="Names of configured HTTP API secret fields",
+    )
 
     # Test results
     last_test_at: Optional[datetime] = None
@@ -2325,6 +2331,18 @@ class ToolConfig(BaseModel):
 
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _normalize_http_api_connection_config(self) -> "ToolConfig":
+        if self.tool_type == ToolType.HTTP_API:
+            self.connection_config = sanitize_persisted_http_api_connection_config(self.connection_config)
+        return self
+
+    @field_serializer("connection_config", when_used="json")
+    def _serialize_connection_config(self, value: dict) -> dict:
+        if self.tool_type != ToolType.HTTP_API:
+            return value
+        return redact_http_api_connection_config(value)
 
 
 class CreateToolConfigRequest(BaseModel):

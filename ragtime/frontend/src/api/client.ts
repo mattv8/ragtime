@@ -1835,6 +1835,17 @@ export const api = {
     return handleResponse<ToolTestResponse>(response);
   },
 
+  async normalizeHttpApiOpenApi(
+    request: import('@/types').HttpApiOpenApiNormalizeRequest,
+  ): Promise<import('@/types').HttpApiOpenApiNormalizeResponse> {
+    const response = await apiFetch(`${API_BASE}/tools/http-api/openapi/normalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    return handleResponse<import('@/types').HttpApiOpenApiNormalizeResponse>(response);
+  },
+
   // =========================================================================
   // Tool Group API
   // =========================================================================

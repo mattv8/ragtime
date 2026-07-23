@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from ragtime.config.settings import settings
 from ragtime.core.logging import get_logger
+from ragtime.http_api.models import HTTP_API_SECRET_FIELDS
 
 logger = get_logger(__name__)
 
@@ -344,4 +345,5 @@ CONNECTION_CONFIG_PASSWORD_FIELDS = [
     "docker_ssh_password",
     "docker_ssh_key_content",
     "docker_ssh_key_passphrase",
+    *HTTP_API_SECRET_FIELDS,
 ]

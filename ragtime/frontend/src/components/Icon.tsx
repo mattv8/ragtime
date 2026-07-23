@@ -26,6 +26,7 @@ import {
   RotateCcw,
   Activity,
   Download,
+  Globe,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -56,7 +57,8 @@ export type IconType =
   | 'folder-search'
   | 'rotate-ccw'
   | 'activity'
-  | 'download';
+  | 'download'
+  | 'globe';
 
 const iconMap: Record<IconType, LucideIcon> = {
   database: Database,
@@ -86,6 +88,7 @@ const iconMap: Record<IconType, LucideIcon> = {
   'rotate-ccw': RotateCcw,
   activity: Activity,
   download: Download,
+  globe: Globe,
 };
 
 interface IconProps {
@@ -113,6 +116,8 @@ export function getToolIconType(iconField: string | undefined): IconType {
       return 'folder';
     case 'harddrive':
       return 'harddrive';
+    case 'globe':
+      return 'globe';
     default:
       return 'server';
   }

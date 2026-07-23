@@ -180,6 +180,12 @@
   color: var(--color-text-muted);
 }
 
+.http-api-panel .field-error {
+  margin-top: var(--space-xs);
+  font-size: var(--text-xs);
+  color: var(--color-error);
+}
+
 .password-requirements {
   display: flex;
   flex-wrap: wrap;
@@ -233,6 +239,7 @@ input[type='text'],
 input[type='number'],
 input[type='password'],
 input[type='email'],
+input[type='url'],
 select,
 textarea {
   width: 100%;
@@ -9537,6 +9544,179 @@ fieldset legend.legend-with-status .legend-divider {
 
 .server-backup-column {
   min-width: 0;
+}
+
+.http-api-panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.http-api-panel-body {
+  padding: var(--space-lg);
+}
+
+.http-api-actions-row,
+.http-api-secret-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.http-api-secret-row input {
+  flex: 1 1 240px;
+}
+
+.http-api-status {
+  margin-top: var(--space-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.http-api-status.is-success {
+  border-color: var(--color-success-border);
+  background: var(--color-success-light);
+  color: var(--color-text-primary);
+}
+
+.http-api-status.is-error {
+  border-color: var(--color-error-border);
+  background: var(--color-error-light);
+  color: var(--color-text-primary);
+}
+
+.http-api-status.is-pending {
+  border-color: var(--color-info-border);
+  background: var(--color-info-light);
+  color: var(--color-text-primary);
+}
+
+.http-api-status-count {
+  color: var(--color-text-muted);
+}
+
+.http-api-grid,
+.http-api-method-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.http-api-subsection {
+  display: grid;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.http-api-subsection-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.http-api-subsection-label {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.http-api-header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+  align-items: start;
+}
+
+.http-api-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto auto;
+  gap: var(--space-sm);
+  align-items: start;
+}
+
+.http-api-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  align-self: center;
+}
+
+.http-api-saved-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.http-api-secret-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  align-self: center;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.http-api-token-login-row {
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.http-api-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 720px) {
+  .http-api-grid,
+  .http-api-method-policy-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .http-api-header-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .http-api-field-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .http-api-header-row .form-group:first-child,
+  .http-api-header-row .form-group:nth-child(2),
+  .http-api-field-row .form-group:first-child,
+  .http-api-field-row .form-group:nth-child(2) {
+    grid-column: 1;
+  }
+
+  .http-api-secret-toggle,
+  .http-api-row-actions {
+    grid-column: 2;
+    align-self: center;
+    justify-self: end;
+  }
+
+  .http-api-panel-body {
+    padding: var(--space-md);
+  }
 }
 
 .server-backup-column > .form-group:first-of-type,

@@ -44,7 +44,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from prisma import Json, Prisma
 from prisma.enums import WorkspaceRole
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ragtime.chat_runtime.payloads import (
     build_chat_diagnostic_command_payload,
@@ -192,6 +192,15 @@ from ragtime.core.vision_models import list_provider_vision_models, list_vision_
 from ragtime.git_webhooks.models import GitWebhookConfigResponse, GitWebhookDeliveryResponse, GitWebhookEnableResponse, GitWebhookTargetType
 from ragtime.git_webhooks.repository import git_webhook_repository
 from ragtime.git_webhooks.service import git_webhook_service
+from ragtime.http_api.models import (
+    HttpApiAuthMode,
+    HttpApiConnectionConfig,
+    OpenApiCatalog,
+    merge_http_api_secret_updates,
+)
+from ragtime.http_api.openapi import normalize_openapi_source
+from ragtime.http_api.security import HttpApiSecurityError
+from ragtime.http_api.service import http_api_broker
 from ragtime.indexer.background_tasks import (
     _find_compaction_split_index,
     background_task_service,
@@ -370,6 +379,48 @@ def _sanitize_tool_connection_int_fields(connection_config: dict[str, Any]) -> d
             except (ValueError, TypeError):
                 pass
     return sanitized
+
+
+def _format_validation_error(exc: Exception) -> str:
+    if not isinstance(exc, ValidationError):
+        return str(exc) or "Invalid configuration"
+    parts: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ())) or "input"
+        message = str(error.get("msg", "Invalid value"))
+        parts.append(f"{location}: {message}")
+    return "; ".join(parts) or "Invalid configuration"
+
+
+def _parse_http_api_connection_config(connection_config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return HttpApiConnectionConfig(**connection_config).model_dump()
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid HTTP API configuration: {_format_validation_error(exc)}") from exc
+
+
+def _merge_http_api_connection_config(existing_config: dict[str, Any], incoming_config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        merged_config = merge_http_api_secret_updates(existing_config, incoming_config)
+        return HttpApiConnectionConfig(**merged_config).model_dump()
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid HTTP API configuration: {_format_validation_error(exc)}") from exc
+
+
+def _sanitize_http_api_error_message(exc: Exception, *, fallback: str) -> str:
+    if isinstance(exc, ValidationError):
+        return _format_validation_error(exc)
+    if isinstance(exc, HttpApiSecurityError):
+        return str(exc)
+    if isinstance(exc, httpx.HTTPError):
+        return fallback
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        lowered = message.lower()
+        if any(marker in lowered for marker in ("token", "password", "authorization", "raw_openapi_document", "openapi:")):
+            return fallback
+        return message
+    return fallback
 
 
 # GitHub Copilot OAuth device flow
@@ -2295,6 +2346,48 @@ class ToolTestResponse(BaseModel):
     details: Optional[dict] = None
 
 
+class HttpApiOpenApiNormalizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    spec_url: Optional[str] = Field(default=None, description="Remote OpenAPI URL to fetch and normalize")
+    document: Optional[str] = Field(default=None, description="Inline OpenAPI JSON or YAML document")
+    document_name: Optional[str] = Field(default=None, description="Optional source filename for inline OpenAPI documents")
+
+
+class HttpApiOpenApiNormalizeResponse(BaseModel):
+    openapi_source_url: str = Field(default="", description="Original OpenAPI URL when normalized from a URL source")
+    openapi_source_name: str = Field(default="", description="Uploaded or provided source name")
+    openapi_source_hash: str = Field(default="", description="Stable SHA-256 hash of the normalized source document")
+    openapi_catalog: OpenApiCatalog = Field(description="Normalized OpenAPI catalog")
+
+
+@router.post("/tools/http-api/openapi/normalize", response_model=HttpApiOpenApiNormalizeResponse, tags=["Tools"])
+async def normalize_http_api_openapi(
+    request: HttpApiOpenApiNormalizeRequest,
+    _user: User = Depends(require_admin),
+) -> HttpApiOpenApiNormalizeResponse:
+    spec_url = str(request.spec_url or "").strip()
+    document = request.document
+    has_url = bool(spec_url)
+    has_document = bool((document or "").strip())
+    if has_url == has_document:
+        raise HTTPException(status_code=400, detail="Provide exactly one of spec_url or document.")
+
+    try:
+        if has_url:
+            document = await http_api_broker.fetch_openapi_document(spec_url)
+            catalog, metadata = normalize_openapi_source(spec_url=spec_url, document=document)
+        else:
+            catalog, metadata = normalize_openapi_source(document=document, document_name=request.document_name)
+    except (HttpApiSecurityError, ValidationError, ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_sanitize_http_api_error_message(exc, fallback="OpenAPI source could not be normalized."),
+        ) from exc
+
+    return HttpApiOpenApiNormalizeResponse(openapi_catalog=catalog, **metadata)
+
+
 @router.get("/tools", response_model=List[ToolConfig], tags=["Tools"])
 async def list_tool_configs(enabled_only: bool = False, _user: User = Depends(require_admin)):
     """List all tool configurations. Admin only."""
@@ -2359,6 +2452,8 @@ async def reorder_tool_configs(request: ReorderToolsRequest, _user: User = Depen
 async def create_tool_config(request: CreateToolConfigRequest, _user: User = Depends(require_admin)):
     """Create a new tool configuration. Admin only."""
     connection_config = _sanitize_tool_connection_int_fields(request.connection_config)
+    if request.tool_type == ToolType.HTTP_API:
+        connection_config = _parse_http_api_connection_config(connection_config)
 
     # For filesystem indexers, ensure index_name is sanitized for safe filesystem/DB usage
     if request.tool_type == ToolType.FILESYSTEM_INDEXER:
@@ -2540,6 +2635,12 @@ async def update_tool_config(tool_id: str, request: UpdateToolConfigRequest, _us
     original_config = await repository.get_tool_config(tool_id)
     if original_config is None:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+    if original_config.tool_type == ToolType.HTTP_API and isinstance(updates.get("connection_config"), dict):
+        updates["connection_config"] = _merge_http_api_connection_config(
+            original_config.connection_config or {},
+            updates["connection_config"],
+        )
 
     # Check if name is being changed - if so, use rename_tool_config for consistency
     if "name" in updates and updates["name"] is not None:
@@ -2963,6 +3064,8 @@ async def import_tool_config(
         raise HTTPException(status_code=400, detail="Invalid connection_config: expected JSON object")
 
     connection_config = _sanitize_tool_connection_int_fields(payload.get("connection_config") or {})
+    if tool_type == ToolType.HTTP_API:
+        connection_config = _parse_http_api_connection_config(connection_config)
 
     existing_tools = await repository.list_tool_configs()
     existing_names = {tool.name for tool in existing_tools}
@@ -3089,8 +3192,25 @@ async def test_tool_connection(request: ToolTestRequest, _user: User = Depends(r
         return await _test_filesystem_connection(config)
     elif tool_type == ToolType.SOLIDWORKS_PDM:
         return await _test_pdm_connection(config)
+    elif tool_type == ToolType.HTTP_API:
+        return await _test_http_api_connection(config)
     else:
         return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type}")
+
+
+async def _test_http_api_connection(config: dict) -> ToolTestResponse:
+    try:
+        parsed_config = HttpApiConnectionConfig(**config)
+        result = await http_api_broker.validate_configuration(
+            parsed_config,
+            perform_login=(parsed_config.auth_mode in {HttpApiAuthMode.LOGIN_EXCHANGE, HttpApiAuthMode.TOKEN_EXCHANGE}),
+        )
+        return ToolTestResponse(success=result.success, message=result.message, details=result.details)
+    except Exception as exc:
+        return ToolTestResponse(
+            success=False,
+            message=_sanitize_http_api_error_message(exc, fallback="HTTP API configuration could not be validated."),
+        )
 
 
 async def _test_filesystem_connection(config: dict) -> ToolTestResponse:
@@ -4176,8 +4296,22 @@ async def _heartbeat_check(tool_type, config: dict) -> ToolTestResponse:
         return await _heartbeat_filesystem(config)
     elif tool_type_str == "solidworks_pdm":
         return await _heartbeat_pdm(config)
+    elif tool_type_str == "http_api":
+        return await _heartbeat_http_api(config)
     else:
         return ToolTestResponse(success=False, message=f"Unknown tool type: {tool_type_str}")
+
+
+async def _heartbeat_http_api(config: dict) -> ToolTestResponse:
+    try:
+        parsed_config = HttpApiConnectionConfig(**config)
+        result = await http_api_broker.validate_configuration(parsed_config, perform_login=False)
+        return ToolTestResponse(success=result.success, message=result.message, details=result.details)
+    except Exception as exc:
+        return ToolTestResponse(
+            success=False,
+            message=_sanitize_http_api_error_message(exc, fallback="HTTP API heartbeat failed."),
+        )
 
 
 def _start_ssh_tunnel_if_enabled(config: dict, host: str, port: int) -> tuple[Optional["SSHTunnel"], str, int]:

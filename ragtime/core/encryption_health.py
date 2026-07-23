@@ -12,6 +12,7 @@ from ragtime.core.encryption import (
     attempt_decrypt,
     reset_key_mismatch_state,
 )
+from ragtime.http_api.secrets import iter_http_api_encrypted_secret_values
 
 _APP_SETTINGS_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "openaiApiKey",
@@ -55,6 +56,9 @@ def _iter_connection_config_secret_values(rows: Iterable[Any], field_name: str =
                 for password_field in CONNECTION_CONFIG_PASSWORD_FIELDS:
                     encrypted_value = _encrypted_value(connection_config.get(password_field))
                     if encrypted_value is not None:
+                        yield encrypted_value
+                if getattr(row, "toolType", None) == "http_api":
+                    for encrypted_value in iter_http_api_encrypted_secret_values(connection_config):
                         yield encrypted_value
             case _:
                 continue

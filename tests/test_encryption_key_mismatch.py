@@ -200,6 +200,113 @@ class EncryptionKeyHealthRecheckTests(unittest.IsolatedAsyncioTestCase):
         with patch("ragtime.core.encryption_health.get_db", new=fake_get_db):
             self.assertTrue(await recheck_encryption_key_health())
 
+    async def test_recheck_accepts_healthy_nested_http_api_secrets(self) -> None:
+        db = _build_encryption_health_db(
+            toolconfig=_FindManyDelegate(
+                [
+                    SimpleNamespace(
+                        toolType="http_api",
+                        connectionConfig={
+                            "base_url": "https://api.example.test",
+                            "request_headers": [{"name": "X-Tenant", "value": encrypt_secret("tenant-secret")}],
+                            "token_request_headers": [{"name": "X-Token-Key", "value": encrypt_secret("endpoint-secret")}],
+                            "token_request_fields": [
+                                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                                {"name": "client_secret", "value": encrypt_secret("client-secret"), "secret": True},
+                            ],
+                        },
+                    )
+                ]
+            )
+        )
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.encryption_health.get_db", new=fake_get_db):
+            self.assertTrue(await recheck_encryption_key_health())
+
+    async def test_recheck_detects_broken_nested_http_api_secrets(self) -> None:
+        db = _build_encryption_health_db(
+            toolconfig=_FindManyDelegate(
+                [
+                    SimpleNamespace(
+                        toolType="http_api",
+                        connectionConfig={
+                            "base_url": "https://api.example.test",
+                            "request_headers": [{"name": "X-Tenant", "value": f"enc::broken-tenant"}],
+                            "token_request_headers": [{"name": "X-Token-Key", "value": encrypt_secret("endpoint-secret")}],
+                            "token_request_fields": [
+                                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                                {"name": "client_secret", "value": encrypt_secret("client-secret"), "secret": True},
+                            ],
+                        },
+                    )
+                ]
+            )
+        )
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.encryption_health.get_db", new=fake_get_db):
+            self.assertFalse(await recheck_encryption_key_health())
+
+    async def test_recheck_ignores_plaintext_nested_http_api_values(self) -> None:
+        db = _build_encryption_health_db(
+            toolconfig=_FindManyDelegate(
+                [
+                    SimpleNamespace(
+                        toolType="http_api",
+                        connectionConfig={
+                            "base_url": "https://api.example.test",
+                            "request_headers": [{"name": "X-Tenant", "value": "tenant-secret"}],
+                            "token_request_headers": [{"name": "X-Token-Key", "value": "endpoint-secret"}],
+                            "token_request_fields": [
+                                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                                {"name": "client_secret", "value": "client-secret", "secret": True},
+                            ],
+                        },
+                    )
+                ]
+            )
+        )
+
+        async def fake_get_db():
+            return db
+
+        with (
+            patch("ragtime.core.encryption_health.get_db", new=fake_get_db),
+            patch(
+                "ragtime.core.encryption_health.attempt_decrypt",
+                wraps=attempt_decrypt,
+            ) as attempt_decrypt_mock,
+        ):
+            self.assertTrue(await recheck_encryption_key_health())
+
+        self.assertEqual(attempt_decrypt_mock.call_count, 0)
+
+    async def test_recheck_scans_nested_values_only_for_http_api_tool_configs(self) -> None:
+        db = _build_encryption_health_db(
+            toolconfig=_FindManyDelegate(
+                [
+                    SimpleNamespace(
+                        toolType="postgres",
+                        connectionConfig={
+                            "request_headers": [{"name": "X-Tenant", "value": f"enc::broken-tenant"}],
+                            "token_request_fields": [{"name": "client_secret", "value": f"enc::broken-client-secret", "secret": True}],
+                        },
+                    )
+                ]
+            )
+        )
+
+        async def fake_get_db():
+            return db
+
+        with patch("ragtime.core.encryption_health.get_db", new=fake_get_db):
+            self.assertTrue(await recheck_encryption_key_health())
+
     async def test_get_settings_rechecks_before_building_configuration_warnings(self) -> None:
         decrypt_secret("enc::bad-token")
         self.assertTrue(encryption_key_mismatch_detected())
@@ -296,6 +403,82 @@ class ToolConfigCredentialHealthTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(encryption_key_mismatch_detected())
         self.assertNotIn("password", captured_config or {})
         self.assertEqual((captured_config or {}).get("token"), good_token)
+
+    async def test_clearing_broken_nested_http_api_credentials_removes_only_affected_rows(self) -> None:
+        from ragtime.core.encryption import ENCRYPTED_PREFIX
+
+        repo = IndexerRepository()
+        bad_tenant = f"{ENCRYPTED_PREFIX}broken-tenant"
+        bad_client_secret = f"{ENCRYPTED_PREFIX}broken-client-secret"
+        good_endpoint = encrypt_secret("endpoint-secret")
+        good_shared_secret = encrypt_secret("shared-secret")
+        raw_config = {
+            "base_url": "https://api.example.test",
+            "auth_mode": "token_exchange",
+            "request_headers": [
+                {"name": "X-Tenant", "value": bad_tenant},
+                {"name": "X-Shared", "value": good_shared_secret},
+            ],
+            "token_request_headers": [{"name": "X-Token-Key", "value": good_endpoint}],
+            "token_request_fields": [
+                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                {"name": "client_secret", "value": bad_client_secret, "secret": True},
+                {"name": "scope", "value": "read", "secret": False},
+            ],
+        }
+        captured_config: dict | None = None
+
+        async def fake_find_unique(where, include=None):
+            del include
+            if where.get("id") == "tool-http-api":
+                return SimpleNamespace(
+                    id="tool-http-api",
+                    name="HTTP API",
+                    toolType="http_api",
+                    enabled=True,
+                    description="",
+                    connectionConfig=captured_config if captured_config is not None else raw_config,
+                    maxResults=100,
+                    timeoutMaxSeconds=300,
+                    allowWrite=False,
+                    sortOrder=0,
+                    groupId=None,
+                    group=None,
+                    lastTestAt=None,
+                    lastTestResult=None,
+                    lastTestError=None,
+                    createdAt=None,
+                    updatedAt=None,
+                )
+            return None
+
+        async def fake_update(where, data):
+            nonlocal captured_config
+            if where.get("id") == "tool-http-api":
+                json_value = data.get("connectionConfig")
+                captured_config = dict(json_value.data if hasattr(json_value, "data") else json_value or raw_config)
+
+        db = AsyncMock()
+        db.toolconfig.find_unique = fake_find_unique
+        db.toolconfig.update = fake_update
+
+        with patch.object(repo, "_get_db", return_value=db):
+            result = await repo.clear_tool_undecryptable_credentials("tool-http-api")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(encryption_key_mismatch_detected())
+        assert captured_config is not None
+        self.assertEqual(captured_config["request_headers"], [{"name": "X-Shared", "value": good_shared_secret}])
+        self.assertEqual(captured_config["token_request_headers"], [{"name": "X-Token-Key", "value": good_endpoint}])
+        self.assertEqual(
+            captured_config["token_request_fields"],
+            [
+                {"name": "grant_type", "value": "client_credentials", "secret": False},
+                {"name": "scope", "value": "read", "secret": False},
+            ],
+        )
+        self.assertEqual(result.undecryptable_fields, [])
 
 
 if __name__ == "__main__":

@@ -115,6 +115,18 @@ from ragtime.core.userspace_preview_sandbox import (
     USERSPACE_PREVIEW_SANDBOX_DEFAULT_FLAGS,
     normalize_userspace_preview_sandbox_flags,
 )
+from ragtime.http_api.models import (
+    HTTP_API_SECRET_FIELDS,
+    merge_http_api_secret_updates,
+    sanitize_persisted_http_api_connection_config,
+)
+from ragtime.http_api.secrets import (
+    clear_undecryptable_http_api_nested_secrets,
+    configured_http_api_secret_paths,
+    decrypt_http_api_nested_secrets,
+    encrypt_http_api_nested_secrets,
+    undecryptable_http_api_secret_paths,
+)
 from ragtime.indexer.chat_events import with_event_channel
 from ragtime.indexer.models import (
     DEFAULT_USERSPACE_CODE_INDEX_MAX_CONCURRENCY,
@@ -1809,7 +1821,11 @@ class IndexerRepository:
         db = await self._get_db()
 
         # Encrypt password fields in connection_config
-        encrypted_config = encrypt_json_passwords(config.connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
+        connection_config = config.connection_config
+        if config.tool_type == ToolType.HTTP_API:
+            connection_config = sanitize_persisted_http_api_connection_config(connection_config)
+            connection_config = encrypt_http_api_nested_secrets(connection_config)
+        encrypted_config = encrypt_json_passwords(connection_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
 
         create_data: dict[str, Any] = {
             "name": config.name,
@@ -1919,8 +1935,14 @@ class IndexerRepository:
                     if existing_config and existing_config.connectionConfig:
                         merged_config = dict(existing_config.connectionConfig)
                         # Update only the fields provided in the request
-                        merged_config.update(value)
+                        if getattr(existing_config, "toolType", None) == ToolType.HTTP_API.value:
+                            merged_config = merge_http_api_secret_updates(merged_config, value)
+                        else:
+                            merged_config.update(value)
                         value = merged_config
+                    if getattr(existing_config, "toolType", None) == ToolType.HTTP_API.value:
+                        value = sanitize_persisted_http_api_connection_config(value)
+                        value = encrypt_http_api_nested_secrets(value)
 
                     # Encrypt password fields
                     value = encrypt_json_passwords(value, CONNECTION_CONFIG_PASSWORD_FIELDS)
@@ -2135,18 +2157,26 @@ class IndexerRepository:
 
         cleaned_config = dict(raw_config)
         changed = False
+        cleared_paths: list[str] = []
         for field in CONNECTION_CONFIG_PASSWORD_FIELDS:
             value = cleaned_config.get(field)
             if isinstance(value, str) and value.startswith(ENCRYPTED_PREFIX) and not attempt_decrypt(value):
                 cleaned_config.pop(field, None)
                 changed = True
+                cleared_paths.append(field)
+
+        if getattr(prisma_config, "toolType", None) == ToolType.HTTP_API.value:
+            cleaned_config, nested_cleared_paths = clear_undecryptable_http_api_nested_secrets(cleaned_config)
+            if nested_cleared_paths:
+                changed = True
+                cleared_paths.extend(nested_cleared_paths)
 
         if changed:
             await db.toolconfig.update(
                 where={"id": config_id},
                 data={"connectionConfig": Json(cleaned_config)},  # type: ignore[arg-type]
             )
-            logger.info(f"Cleared undecryptable credential fields for tool config {config_id}: {list(set(raw_config) - set(cleaned_config))}")
+            logger.info(f"Cleared undecryptable credential fields for tool config {config_id}: {cleared_paths}")
 
         return await self.get_tool_config(config_id)
 
@@ -2164,8 +2194,21 @@ class IndexerRepository:
             if isinstance(value, str) and value.startswith(ENCRYPTED_PREFIX) and not attempt_decrypt(value):
                 undecryptable_fields.append(field)
 
+        if getattr(prisma_config, "toolType", None) == ToolType.HTTP_API.value:
+            undecryptable_fields.extend(undecryptable_http_api_secret_paths(raw_config))
+
+        configured_secret_fields: list[str] = []
+        if getattr(prisma_config, "toolType", None) == ToolType.HTTP_API.value:
+            for field in HTTP_API_SECRET_FIELDS:
+                value = raw_config.get(field)
+                if isinstance(value, str) and value:
+                    configured_secret_fields.append(field)
+            configured_secret_fields.extend(configured_http_api_secret_paths(raw_config))
+
         # Decrypt password fields in connection_config
         decrypted_config = decrypt_json_passwords(raw_config, CONNECTION_CONFIG_PASSWORD_FIELDS)
+        if getattr(prisma_config, "toolType", None) == ToolType.HTTP_API.value:
+            decrypted_config = decrypt_http_api_nested_secrets(decrypted_config)
 
         # Resolve group fields if relation or raw field present
         group_id = getattr(prisma_config, "groupId", None)
@@ -2193,6 +2236,7 @@ class IndexerRepository:
             created_at=prisma_config.createdAt,
             updated_at=prisma_config.updatedAt,
             undecryptable_fields=undecryptable_fields,
+            configured_secret_fields=configured_secret_fields,
         )
 
     # -------------------------------------------------------------------------
