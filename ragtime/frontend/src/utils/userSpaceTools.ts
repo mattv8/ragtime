@@ -23,26 +23,35 @@ export interface UserSpaceToolSelection {
 
 export type UserSpaceToolGroupCheckState = 'all' | 'some' | 'none';
 
+export function hasUserSpaceToolWriteAccessLevel(tool: UserSpaceAvailableTool): boolean {
+  return tool.access_level === 'read_write';
+}
+
 export function isUserSpaceToolWriteEnabledForWorkspace(
   tool: UserSpaceAvailableTool,
   toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
 ): boolean {
-  return toolOptions?.[tool.id]?.write_access_enabled === true;
+  return (
+    hasUserSpaceToolWriteAccessLevel(tool) && toolOptions?.[tool.id]?.write_access_enabled === true
+  );
 }
 
 export function getUserSpaceToolWorkspaceWriteState(
   tool: UserSpaceAvailableTool,
   toolOptions: Record<string, WorkspaceToolOptionState> | undefined,
 ): 'enabled' | 'eligible' | 'ineligible' {
-  return isUserSpaceToolWriteEnabledForWorkspace(tool, toolOptions) ? 'enabled' : 'eligible';
+  if (isUserSpaceToolWriteEnabledForWorkspace(tool, toolOptions)) {
+    return 'enabled';
+  }
+  return hasUserSpaceToolWriteAccessLevel(tool) ? 'eligible' : 'ineligible';
 }
 
 export function canManageUserSpaceToolWriteForWorkspace(
-  _tool: UserSpaceAvailableTool,
+  tool: UserSpaceAvailableTool,
   canManageWorkspace: boolean,
   _isGlobalAdmin: boolean,
 ): boolean {
-  return canManageWorkspace;
+  return canManageWorkspace && hasUserSpaceToolWriteAccessLevel(tool);
 }
 
 export function getNextWorkspaceToolOptions(

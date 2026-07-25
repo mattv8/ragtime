@@ -53,9 +53,14 @@ def _workspace() -> UserSpaceWorkspace:
 
 
 class UserSpaceToolCatalogAclTests(unittest.IsolatedAsyncioTestCase):
-    async def test_tools_union_filters_by_requester_and_preserves_catalog_order(self) -> None:
+    async def test_tools_union_uses_strongest_access_level_and_preserves_catalog_order(self) -> None:
         user = SimpleNamespace(id="user-1", role="user")
-        filter_mock = mock.AsyncMock(side_effect=[["tool-b"], ["tool-a", "tool-c"]])
+        resolve_mock = mock.AsyncMock(
+            side_effect=[
+                {"tool-a": "deny", "tool-b": "read", "tool-c": "read_write"},
+                {"tool-a": "read", "tool-b": "deny", "tool-c": "read"},
+            ]
+        )
 
         with (
             mock.patch.object(
@@ -64,18 +69,19 @@ class UserSpaceToolCatalogAclTests(unittest.IsolatedAsyncioTestCase):
                 mock.AsyncMock(return_value=[_tool("tool-a"), _tool("tool-b"), _tool("tool-c")]),
             ),
             mock.patch.object(userspace_routes.tool_health_monitor, "is_tool_healthy", side_effect=lambda _tool_id: True),
-            mock.patch("ragtime.userspace.routes.filter_tool_ids_by_access", filter_mock),
+            mock.patch("ragtime.userspace.routes.resolve_tool_access", resolve_mock),
         ):
             result = await list_userspace_tools(user=user)
 
         self.assertEqual([tool.id for tool in result], ["tool-a", "tool-b", "tool-c"])
-        self.assertEqual(filter_mock.await_count, 2)
-        self.assertEqual(filter_mock.await_args_list[0].kwargs["surface"], "chat")
-        self.assertEqual(filter_mock.await_args_list[1].kwargs["surface"], "workspace")
+        self.assertEqual([tool.access_level for tool in result], ["read", "read", "read_write"])
+        self.assertEqual(resolve_mock.await_count, 2)
+        self.assertEqual(resolve_mock.await_args_list[0].kwargs["surface"], "chat")
+        self.assertEqual(resolve_mock.await_args_list[1].kwargs["surface"], "workspace")
 
-    async def test_tools_single_surface_filters_only_requested_surface(self) -> None:
+    async def test_tools_single_surface_omits_denied_tools_and_sets_access_level(self) -> None:
         user = SimpleNamespace(id="user-1", role="user")
-        filter_mock = mock.AsyncMock(return_value=["tool-b"])
+        resolve_mock = mock.AsyncMock(return_value={"tool-a": "deny", "tool-b": "read"})
 
         with (
             mock.patch.object(
@@ -84,20 +90,21 @@ class UserSpaceToolCatalogAclTests(unittest.IsolatedAsyncioTestCase):
                 mock.AsyncMock(return_value=[_tool("tool-a"), _tool("tool-b")]),
             ),
             mock.patch.object(userspace_routes.tool_health_monitor, "is_tool_healthy", side_effect=lambda _tool_id: True),
-            mock.patch("ragtime.userspace.routes.filter_tool_ids_by_access", filter_mock),
+            mock.patch("ragtime.userspace.routes.resolve_tool_access", resolve_mock),
         ):
             result = await list_userspace_tools(surface="workspace", user=user)
 
         self.assertEqual([tool.id for tool in result], ["tool-b"])
-        filter_mock.assert_awaited_once()
-        await_args = filter_mock.await_args
+        self.assertEqual([tool.access_level for tool in result], ["read"])
+        resolve_mock.assert_awaited_once()
+        await_args = resolve_mock.await_args
         self.assertIsNotNone(await_args)
         assert await_args is not None
         self.assertEqual(await_args.kwargs["surface"], "workspace")
 
     async def test_tools_admin_bypass_returns_all_without_acl_filter(self) -> None:
         user = SimpleNamespace(id="admin-1", role="admin")
-        filter_mock = mock.AsyncMock()
+        resolve_mock = mock.AsyncMock()
 
         with (
             mock.patch.object(
@@ -106,12 +113,13 @@ class UserSpaceToolCatalogAclTests(unittest.IsolatedAsyncioTestCase):
                 mock.AsyncMock(return_value=[_tool("tool-a"), _tool("tool-b")]),
             ),
             mock.patch.object(userspace_routes.tool_health_monitor, "is_tool_healthy", side_effect=lambda _tool_id: True),
-            mock.patch("ragtime.userspace.routes.filter_tool_ids_by_access", filter_mock),
+            mock.patch("ragtime.userspace.routes.resolve_tool_access", resolve_mock),
         ):
             result = await list_userspace_tools(surface="chat", user=user)
 
         self.assertEqual([tool.id for tool in result], ["tool-a", "tool-b"])
-        filter_mock.assert_not_awaited()
+        self.assertEqual([tool.access_level for tool in result], ["read_write", "read_write"])
+        resolve_mock.assert_not_awaited()
 
     async def test_tool_groups_omit_empty_groups_after_acl_filtering(self) -> None:
         user = SimpleNamespace(id="user-1", role="user")
@@ -132,7 +140,10 @@ class UserSpaceToolCatalogAclTests(unittest.IsolatedAsyncioTestCase):
                 "list_tool_configs",
                 mock.AsyncMock(return_value=[_tool("tool-a", group_id="group-a"), _tool("tool-b", group_id="group-b")]),
             ),
-            mock.patch("ragtime.userspace.routes.filter_tool_ids_by_access", mock.AsyncMock(side_effect=[["tool-a"], []])),
+            mock.patch(
+                "ragtime.userspace.routes.resolve_tool_access",
+                mock.AsyncMock(side_effect=[{"tool-a": "read", "tool-b": "deny"}, {"tool-a": "deny", "tool-b": "deny"}]),
+            ),
         ):
             result = await list_userspace_tool_groups(user=user)
 

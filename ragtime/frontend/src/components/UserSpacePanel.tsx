@@ -930,10 +930,10 @@ export function getWorkspaceToolReadOnlyDescription(
   isAdmin: boolean,
   toolId: string,
   onNavigateToTools?: (section?: string) => void,
-  isGloballyWritable = true,
+  isAclRestricted = false,
 ): ReactNode {
-  if (!isGloballyWritable) {
-    return 'Only the workspace owner or an admin can change this.';
+  if (isAclRestricted) {
+    return 'This workspace only has Read access to this tool via its access policy. Ask an admin to grant Read+Write before enabling workspace writes.';
   }
 
   if (!isAdmin) {
@@ -4476,14 +4476,27 @@ export function UserSpacePanel({
       if (!activeWorkspace) return [];
       const checked = isUserSpaceToolWriteEnabledForWorkspace(tool, workspaceToolOptions);
       const isAdmin = currentUser.role === 'admin';
+      if (!isOwner && !isAdmin) {
+        return [
+          {
+            label: 'Enable write access for this workspace',
+            description: 'Only the workspace owner or an admin can change this.',
+            checked,
+            disabled: true,
+            onChange: () => undefined,
+          },
+        ];
+      }
       if (!canManageUserSpaceToolWriteForWorkspace(tool, isOwner, isAdmin)) {
         return [
           {
             label: 'Enable write access for this workspace',
-            description:
-              tool.allow_write === true
-                ? 'Only the workspace owner or an admin can change this.'
-                : getWorkspaceToolReadOnlyDescription(isAdmin, tool.id, onNavigateToTools, false),
+            description: getWorkspaceToolReadOnlyDescription(
+              isAdmin,
+              tool.id,
+              onNavigateToTools,
+              true,
+            ),
             checked,
             disabled: true,
             onChange: () => undefined,

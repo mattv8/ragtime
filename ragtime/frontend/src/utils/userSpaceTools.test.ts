@@ -7,6 +7,7 @@ import {
   getCappedUserSpaceToolIdSet,
   getNextWorkspaceToolOptions,
   getUserSpaceToolWorkspaceWriteState,
+  hasUserSpaceToolWriteAccessLevel,
   isUserSpaceToolWriteEnabledForWorkspace,
   type UserSpaceToolSelection,
 } from './userSpaceTools';
@@ -25,6 +26,7 @@ const tools: UserSpaceAvailableTool[] = [
     name: 'Tool A',
     tool_type: 'postgres',
     available: true,
+    access_level: 'read_write',
     group_id: 'group-1',
     group_name: 'Group 1',
   },
@@ -33,6 +35,7 @@ const tools: UserSpaceAvailableTool[] = [
     name: 'Tool B',
     tool_type: 'ssh_shell',
     available: true,
+    access_level: 'read',
     group_id: 'group-1',
     group_name: 'Group 1',
   },
@@ -41,6 +44,7 @@ const tools: UserSpaceAvailableTool[] = [
     name: 'Tool C',
     tool_type: 'odoo',
     available: true,
+    access_level: 'read_write',
   },
 ];
 
@@ -141,6 +145,15 @@ describe('userSpaceTools workspace capping', () => {
     ).toBe(true);
   });
 
+  it('rejects workspace write enablement when ACL is only read', () => {
+    expect(
+      isUserSpaceToolWriteEnabledForWorkspace(
+        { ...tools[1], allow_write: true },
+        { 'tool-b': { write_access_enabled: true } },
+      ),
+    ).toBe(false);
+  });
+
   it('returns enabled when a tool is enabled for the workspace, even if globally read-only', () => {
     expect(
       getUserSpaceToolWorkspaceWriteState(
@@ -150,15 +163,15 @@ describe('userSpaceTools workspace capping', () => {
     ).toBe('enabled');
   });
 
-  it('returns eligible when a globally read-only tool has no workspace write grant', () => {
+  it('returns eligible when a globally read-only tool has ACL read_write but no workspace write grant', () => {
     expect(getUserSpaceToolWorkspaceWriteState({ ...tools[0], allow_write: false }, {})).toBe(
       'eligible',
     );
   });
 
-  it('returns eligible when a globally writable tool has no workspace opt-in', () => {
-    expect(getUserSpaceToolWorkspaceWriteState({ ...tools[0], allow_write: true }, {})).toBe(
-      'eligible',
+  it('returns ineligible when ACL does not allow workspace writes even if global write is enabled', () => {
+    expect(getUserSpaceToolWorkspaceWriteState({ ...tools[1], allow_write: true }, {})).toBe(
+      'ineligible',
     );
   });
 
@@ -177,7 +190,7 @@ describe('userSpaceTools workspace capping', () => {
     expect(mixed).toEqual({ 'tool-b': { write_access_enabled: true } });
   });
 
-  it('allows workspace owners to manage workspace grants for globally read-only tools', () => {
+  it('allows workspace owners to manage workspace grants only for ACL read_write tools', () => {
     expect(
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, true, false),
     ).toBe(true);
@@ -185,10 +198,22 @@ describe('userSpaceTools workspace capping', () => {
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true, false),
     ).toBe(true);
     expect(
+      canManageUserSpaceToolWriteForWorkspace({ ...tools[1], allow_write: true }, true, false),
+    ).toBe(false);
+    expect(
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, false, true),
     ).toBe(false);
     expect(
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, false, true),
     ).toBe(false);
+  });
+
+  it('fails closed when workspace tool ACL context is missing', () => {
+    const { access_level: _accessLevel, ...toolWithoutAccessLevel } = tools[0];
+
+    expect(hasUserSpaceToolWriteAccessLevel(toolWithoutAccessLevel)).toBe(false);
+    expect(canManageUserSpaceToolWriteForWorkspace(toolWithoutAccessLevel, true, false)).toBe(
+      false,
+    );
   });
 });

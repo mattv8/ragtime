@@ -1061,6 +1061,117 @@ export interface ActiveToolCall {
   generating_lines?: number;
 }
 
+function hasConversationToolWriteAccessLevel(tool: UserSpaceAvailableTool): boolean {
+  return tool.access_level === 'read_write';
+}
+
+function getConversationToolAclWriteBlockedDescription(): string {
+  return 'This conversation only has Read access to this tool via its access policy. An admin must grant Read+Write before writes can be enabled here.';
+}
+
+export function isToolEffectivelyWritableForConversation(
+  tool: UserSpaceAvailableTool,
+  options: ConversationToolOptionState = {},
+): boolean {
+  if (!hasConversationToolWriteAccessLevel(tool)) return false;
+  if (options.read_only_enabled === true) return false;
+  if (options.write_access_enabled === true) return true;
+  return tool.allow_write === true;
+}
+
+export function getConversationToolGroupWriteMenuItem(
+  tools: UserSpaceAvailableTool[],
+  toolOptions: Record<string, ConversationToolOptionState>,
+  savingTools: boolean,
+): Pick<ToolSelectorMenuItem, 'label' | 'checked' | 'disabled' | 'description'> | null {
+  if (tools.length === 0) return null;
+
+  const eligibleTools = tools.filter(hasConversationToolWriteAccessLevel);
+  if (eligibleTools.length === 0) {
+    return {
+      label: 'Write access unavailable for this group',
+      checked: false,
+      disabled: true,
+      description: getConversationToolAclWriteBlockedDescription(),
+    };
+  }
+
+  const checked = eligibleTools.every((tool) =>
+    isToolEffectivelyWritableForConversation(tool, toolOptions[tool.id] || {}),
+  );
+  const eligibleLabel =
+    eligibleTools.length === tools.length
+      ? 'Enable write access for all tools in this group'
+      : `Enable write access for ${eligibleTools.length} eligible tool${eligibleTools.length === 1 ? '' : 's'} in this group`;
+
+  return {
+    label: eligibleLabel,
+    checked,
+    disabled: savingTools || false,
+    description:
+      eligibleTools.length === tools.length
+        ? undefined
+        : 'Only tools with Read+Write access can be changed here.',
+  };
+}
+
+export function applyConversationToolGroupWriteToggle(
+  tools: UserSpaceAvailableTool[],
+  previous: Record<string, ConversationToolOptionState>,
+  checked: boolean,
+): Record<string, ConversationToolOptionState> {
+  const nextOptions: Record<string, ConversationToolOptionState> = { ...previous };
+
+  for (const tool of tools) {
+    const current = nextOptions[tool.id] || {};
+    if (!hasConversationToolWriteAccessLevel(tool)) {
+      const { write_access_enabled: _write, read_only_enabled: _readOnly, ...rest } = current;
+      if (Object.keys(rest).length === 0) {
+        delete nextOptions[tool.id];
+      } else {
+        nextOptions[tool.id] = rest;
+      }
+      continue;
+    }
+
+    if (!checked) {
+      if (tool.allow_write === true) {
+        const { write_access_enabled: _write, ...rest } = current;
+        if (rest.read_only_enabled === true) {
+          const { read_only_enabled: _readOnly, ...afterReadOnly } = rest;
+          if (Object.keys(afterReadOnly).length === 0) {
+            delete nextOptions[tool.id];
+          } else {
+            nextOptions[tool.id] = afterReadOnly;
+          }
+        } else if (Object.keys(rest).length === 0) {
+          delete nextOptions[tool.id];
+        } else {
+          nextOptions[tool.id] = rest;
+        }
+      } else {
+        nextOptions[tool.id] = { ...current, write_access_enabled: true };
+        delete nextOptions[tool.id].read_only_enabled;
+      }
+      continue;
+    }
+
+    if (tool.allow_write === true) {
+      nextOptions[tool.id] = { ...current, read_only_enabled: true };
+      delete nextOptions[tool.id].write_access_enabled;
+    } else {
+      const { write_access_enabled: _write, ...rest } = current;
+      if (Object.keys(rest).length === 0) {
+        delete nextOptions[tool.id];
+      } else {
+        nextOptions[tool.id] = rest;
+      }
+    }
+  }
+
+  return nextOptions;
+}
+
 function getToolCallPillName(
   toolCall: Pick<ActiveToolCall, 'tool' | 'connection' | 'mcp'>,
 ): string {
@@ -11081,12 +11192,9 @@ export function ChatPanel({
     [activeConversation, isConversationViewer, saveConversationToolOptions],
   );
 
-  const isToolEffectivelyWritableForConversation = useCallback(
+  const isConversationToolWritable = useCallback(
     (tool: UserSpaceAvailableTool): boolean => {
-      const options = conversationToolOptions[tool.id] || {};
-      if (options.read_only_enabled === true) return false;
-      if (options.write_access_enabled === true) return true;
-      return tool.allow_write === true;
+      return isToolEffectivelyWritableForConversation(tool, conversationToolOptions[tool.id] || {});
     },
     [conversationToolOptions],
   );
@@ -11096,6 +11204,19 @@ export function ChatPanel({
       if (!activeConversation || isConversationViewer || tool.allow_write === undefined) return [];
       const options = conversationToolOptions[tool.id] || {};
       const disabled = savingTools || false;
+      if (!hasConversationToolWriteAccessLevel(tool)) {
+        return [
+          {
+            label: tool.allow_write
+              ? 'Write access unavailable for this conversation'
+              : 'Enable write access for this conversation only',
+            checked: false,
+            disabled: true,
+            description: getConversationToolAclWriteBlockedDescription(),
+            onChange: () => undefined,
+          },
+        ];
+      }
       if (tool.allow_write) {
         return [
           {
@@ -11138,7 +11259,7 @@ export function ChatPanel({
   const getToolStatusBadge = useCallback(
     (tool: UserSpaceAvailableTool): ToolSelectorStatusBadge | null => {
       if (tool.allow_write === undefined) return null;
-      const writable = isToolEffectivelyWritableForConversation(tool);
+      const writable = isConversationToolWritable(tool);
       if (!writable) return null;
       const options = conversationToolOptions[tool.id] || {};
       const title =
@@ -11152,7 +11273,7 @@ export function ChatPanel({
         title,
       };
     },
-    [conversationToolOptions, isToolEffectivelyWritableForConversation],
+    [conversationToolOptions, isConversationToolWritable],
   );
 
   const getToolGroupMenuItems = useCallback(
@@ -11160,50 +11281,31 @@ export function ChatPanel({
       if (!activeConversation || isConversationViewer) return [];
       const tools = group.tools.filter((tool): tool is UserSpaceAvailableTool => Boolean(tool.id));
       if (tools.length === 0) return [];
-      const checked = tools.every(isToolEffectivelyWritableForConversation);
-      const disabled = savingTools || false;
+      const groupItem = getConversationToolGroupWriteMenuItem(
+        tools,
+        conversationToolOptions,
+        savingTools,
+      );
+      if (!groupItem) return [];
       return [
         {
-          label: 'Enable write access for all tools in this group',
-          checked,
-          disabled,
+          label: groupItem.label,
+          checked: groupItem.checked,
+          disabled: groupItem.disabled,
+          description: groupItem.description,
           onChange: () => {
             const previous = conversationToolOptionsRef.current;
-            const nextOptions: Record<string, ConversationToolOptionState> = { ...previous };
-            for (const tool of tools) {
-              const current = nextOptions[tool.id] || {};
-              if (!checked) {
-                if (tool.allow_write === true) {
-                  const { write_access_enabled: _write, ...rest } = current;
-                  nextOptions[tool.id] = { ...rest, read_only_enabled: false };
-                  delete nextOptions[tool.id].read_only_enabled;
-                  if (Object.keys(nextOptions[tool.id]).length === 0) delete nextOptions[tool.id];
-                } else {
-                  nextOptions[tool.id] = { write_access_enabled: true };
-                }
-              } else if (tool.allow_write === true) {
-                nextOptions[tool.id] = { read_only_enabled: true };
-              } else {
-                const { write_access_enabled: _write, ...rest } = current;
-                if (Object.keys(rest).length === 0) {
-                  delete nextOptions[tool.id];
-                } else {
-                  nextOptions[tool.id] = rest;
-                }
-              }
-            }
+            const nextOptions = applyConversationToolGroupWriteToggle(
+              tools,
+              previous,
+              groupItem.checked,
+            );
             void saveConversationToolOptions(nextOptions, previous);
           },
         },
       ];
     },
-    [
-      activeConversation,
-      isConversationViewer,
-      isToolEffectivelyWritableForConversation,
-      saveConversationToolOptions,
-      savingTools,
-    ],
+    [activeConversation, isConversationViewer, saveConversationToolOptions, savingTools],
   );
 
   const hasWorkspaceChatCollaboration = Boolean(workspaceId);

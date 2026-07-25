@@ -5,7 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Conversation, ConversationSummary, User, WorkspaceChatStateResponse } from '@/types';
 import { AvailableModelsProvider } from '@/contexts/AvailableModelsContext';
-import { ChatPanel, ToolCallDisplay, type ActiveToolCall } from './ChatPanel';
+import {
+  ChatPanel,
+  ToolCallDisplay,
+  applyConversationToolGroupWriteToggle,
+  getConversationToolGroupWriteMenuItem,
+  isToolEffectivelyWritableForConversation,
+  type ActiveToolCall,
+} from './ChatPanel';
 
 const apiMock = vi.hoisted(() => ({
   getConversation: vi.fn().mockResolvedValue(null),
@@ -883,5 +890,85 @@ describe('ChatPanel streaming subagent placement', () => {
     if (typeof release === 'function') {
       release();
     }
+  });
+});
+
+describe('ChatPanel ACL-aware conversation write helpers', () => {
+  it('fails closed when chat tool ACL context is missing', () => {
+    expect(
+      isToolEffectivelyWritableForConversation(
+        {
+          id: 'tool-1',
+          name: 'CRM',
+          tool_type: 'http_api',
+          allow_write: true,
+        },
+        {},
+      ),
+    ).toBe(false);
+  });
+
+  it('requires read_write ACL before a globally writable tool is writable in conversation', () => {
+    expect(
+      isToolEffectivelyWritableForConversation(
+        {
+          id: 'tool-1',
+          name: 'CRM',
+          tool_type: 'http_api',
+          allow_write: true,
+          access_level: 'read',
+        },
+        {},
+      ),
+    ).toBe(false);
+  });
+
+  it('allows per-conversation write enablement for globally read-only tools when ACL grants read_write', () => {
+    expect(
+      isToolEffectivelyWritableForConversation(
+        {
+          id: 'tool-1',
+          name: 'ERP',
+          tool_type: 'odoo',
+          allow_write: false,
+          access_level: 'read_write',
+        },
+        { write_access_enabled: true },
+      ),
+    ).toBe(true);
+  });
+
+  it('only persists group write options for ACL read_write tools and labels partial eligibility', () => {
+    const tools = [
+      {
+        id: 'tool-rw-global',
+        name: 'RW Global',
+        tool_type: 'postgres',
+        allow_write: true,
+        access_level: 'read_write' as const,
+      },
+      {
+        id: 'tool-rw-acl',
+        name: 'RW ACL',
+        tool_type: 'postgres',
+        allow_write: false,
+        access_level: 'read_write' as const,
+      },
+      {
+        id: 'tool-read',
+        name: 'Read Only ACL',
+        tool_type: 'postgres',
+        allow_write: true,
+        access_level: 'read' as const,
+      },
+    ];
+
+    expect(getConversationToolGroupWriteMenuItem(tools, {}, false)?.label).toBe(
+      'Enable write access for 2 eligible tools in this group',
+    );
+
+    expect(applyConversationToolGroupWriteToggle(tools, {}, false)).toEqual({
+      'tool-rw-acl': { write_access_enabled: true },
+    });
   });
 });

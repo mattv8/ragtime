@@ -3267,6 +3267,7 @@ export interface UserSpaceAvailableTool {
   available?: boolean;
   disabled_reason?: string | null;
   allow_write?: boolean;
+  access_level?: 'deny' | 'read' | 'read_write';
 }
 
 export type ToolSelectionMode = 'default_all' | 'custom';

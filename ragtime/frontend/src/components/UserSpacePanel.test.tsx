@@ -402,11 +402,13 @@ describe('UserSpacePanel workspace tool descriptions', () => {
 
   it('explains that only workspace owners may manage workspace write access for a globally read-only tool', () => {
     render(
-      <div>{getWorkspaceToolReadOnlyDescription(false, 'tool-read-only', undefined, false)}</div>,
+      <div>{getWorkspaceToolReadOnlyDescription(false, 'tool-read-only', undefined, true)}</div>,
     );
 
     expect(screen.queryByRole('link', { name: 'Settings > Tools' })).toBeNull();
-    expect(screen.getByText(/Only the workspace owner or an admin can change this/)).toBeTruthy();
+    expect(
+      screen.getByText(/This workspace only has Read access to this tool via its access policy/i),
+    ).toBeTruthy();
   });
 
   it('does not render a badge for globally read-only tools', () => {

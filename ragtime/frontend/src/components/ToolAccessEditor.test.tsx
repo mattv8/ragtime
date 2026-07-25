@@ -212,10 +212,13 @@ describe('ToolAccessEditor', () => {
     expect(blockedDefaultOption.getAttribute('aria-disabled')).toBe('true');
 
     await user.hover(blockedDefaultOption);
-    expect(
-      await screen.findByText(/enable write operations on the tool to allow Read\+Write access/i),
-    ).toBeTruthy();
-    expect(screen.getByRole('tooltip').style.zIndex).toBe('9101');
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip.textContent).toContain('would grant everyone write access');
+    expect(tooltip.textContent).toContain('Enable Write Access on this tool first');
+    expect(tooltip.textContent).toContain(
+      'Specific users and groups can still be granted Read+Write below.',
+    );
+    expect(tooltip.style.zIndex).toBe('9101');
   });
 
   it('preserves explicit read+write overrides when tool writes are disabled globally', () => {

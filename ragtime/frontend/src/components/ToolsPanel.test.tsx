@@ -368,6 +368,46 @@ describe('ToolsPanel', () => {
     });
   });
 
+  it('adds soft wrap opportunities only to heartbeat error tokens longer than 30 characters', async () => {
+    apiMock.getToolHeartbeats.mockResolvedValue({
+      statuses: {
+        [ungroupedTool.id]: {
+          tool_id: ungroupedTool.id,
+          alive: false,
+          latency_ms: null,
+          error: `Error: ${'a'.repeat(30)} ${'b'.repeat(31)}`,
+          checked_at: '2026-01-01T00:00:00Z',
+        },
+      },
+    });
+
+    const { container } = render(<ToolsPanel />);
+
+    await screen.findByText(`Error: ${'a'.repeat(30)} ${'b'.repeat(31)}`);
+
+    expect(container.querySelectorAll('.tool-card-heartbeat-error wbr')).toHaveLength(1);
+  });
+
+  it('does not add soft wrap opportunities to a 30-character heartbeat error token', async () => {
+    apiMock.getToolHeartbeats.mockResolvedValue({
+      statuses: {
+        [ungroupedTool.id]: {
+          tool_id: ungroupedTool.id,
+          alive: false,
+          latency_ms: null,
+          error: `Error: ${'a'.repeat(30)}`,
+          checked_at: '2026-01-01T00:00:00Z',
+        },
+      },
+    });
+
+    const { container } = render(<ToolsPanel />);
+
+    await screen.findByText(`Error: ${'a'.repeat(30)}`);
+
+    expect(container.querySelectorAll('.tool-card-heartbeat-error wbr')).toHaveLength(0);
+  });
+
   it('duplicates a tool from the right-click card menu and keeps the copy after the original', async () => {
     const user = userEvent.setup();
 

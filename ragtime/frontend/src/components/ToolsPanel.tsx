@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from 'react';
+import {
+  Fragment,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  useMemo,
+  useLayoutEffect,
+} from 'react';
 import { api } from '@/api';
 import type {
   ToolConfig,
@@ -43,6 +51,11 @@ import type { ToolAccessPolicy } from '@/types';
 type EditingField = 'name' | 'description' | null;
 
 const DRAG_REORDER_PREVIEW_DELAY_MS = 80;
+const HEARTBEAT_ERROR_SOFT_WRAP_LENGTH = 30;
+const HEARTBEAT_ERROR_LONG_TOKEN_PATTERN = new RegExp(
+  `(\\S{${HEARTBEAT_ERROR_SOFT_WRAP_LENGTH + 1},})`,
+);
+const HEARTBEAT_ERROR_CHUNK_PATTERN = new RegExp(`.{1,${HEARTBEAT_ERROR_SOFT_WRAP_LENGTH}}`, 'g');
 type DragPreviewTarget = { toolId: string; insertBefore: boolean };
 
 interface ToolHealthEventPayload {
@@ -217,6 +230,26 @@ function getToolConnectionSummary(tool: ToolConfig): string {
     default:
       return 'Unknown';
   }
+}
+
+function addHeartbeatErrorSoftWraps(error: string) {
+  return error.split(HEARTBEAT_ERROR_LONG_TOKEN_PATTERN).map((part, partIndex) => {
+    if (!HEARTBEAT_ERROR_LONG_TOKEN_PATTERN.test(part)) {
+      return part;
+    }
+
+    const chunks = part.match(HEARTBEAT_ERROR_CHUNK_PATTERN);
+    if (!chunks) {
+      return part;
+    }
+
+    return chunks.map((chunk, chunkIndex) => (
+      <Fragment key={`${partIndex}-${chunkIndex}`}>
+        {chunk}
+        {chunkIndex < chunks.length - 1 && <wbr />}
+      </Fragment>
+    ));
+  });
 }
 
 interface ToolCardProps {
@@ -552,7 +585,7 @@ function ToolCard({
           <span className="error-icon">
             <Icon name="alert-circle" size={16} />
           </span>
-          <span>{heartbeat.error || 'Connection failed'}</span>
+          <span>{addHeartbeatErrorSoftWraps(heartbeat.error || 'Connection failed')}</span>
         </div>
       )}
 

@@ -11,6 +11,7 @@ WorkspaceRole = Literal["owner", "editor", "viewer"]
 ArtifactType = Literal["module_ts"]
 SqlitePersistenceMode = Literal["include", "exclude"]
 ToolSelectionMode = Literal["default_all", "custom"]
+UserSpaceToolAccessLevel = Literal["deny", "read", "read_write"]
 ShareAccessMode = Literal[
     "token",
     "password",
@@ -215,6 +216,7 @@ class UserSpaceAvailableTool(BaseModel):
     id: str
     name: str
     tool_type: str
+    access_level: UserSpaceToolAccessLevel = "read"
     description: str | None = None
     allow_write: bool = False
     group_id: str | None = None

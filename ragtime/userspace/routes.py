@@ -37,7 +37,7 @@ from ragtime.core.security import (
     get_current_user_optional,
     require_admin,
 )
-from ragtime.core.tool_access import filter_tool_ids_by_access
+from ragtime.core.tool_access import ToolAccessLevel, resolve_tool_access
 from ragtime.core.userspace_limits import (
     clamp_archive_max_total_size_bytes,
     clamp_userspace_primitive_upload_max_bytes,
@@ -341,40 +341,53 @@ async def _normalize_selected_tool_ids(
     return normalized
 
 
-async def _filter_userspace_tool_ids_for_surface(
+def _strongest_tool_access_level(*levels: ToolAccessLevel) -> ToolAccessLevel:
+    if "read_write" in levels:
+        return "read_write"
+    if "read" in levels:
+        return "read"
+    return "deny"
+
+
+async def _resolve_userspace_tool_access_levels(
     tool_ids: list[str],
     *,
     user: Any,
     surface: Literal["chat", "workspace"] | None,
-) -> list[str]:
+) -> dict[str, ToolAccessLevel]:
     if surface not in {"chat", "workspace"}:
         surface = None
     if getattr(user, "role", "") == "admin":
-        return tool_ids
+        return {tool_id: "read_write" for tool_id in tool_ids}
     if surface is not None:
-        return await filter_tool_ids_by_access(
+        return await resolve_tool_access(
             user_id=user.id,
             is_admin=False,
             surface=surface,
             tool_config_ids=tool_ids,
         )
 
-    chat_visible, workspace_visible = await asyncio.gather(
-        filter_tool_ids_by_access(
+    chat_access, workspace_access = await asyncio.gather(
+        resolve_tool_access(
             user_id=user.id,
             is_admin=False,
             surface="chat",
             tool_config_ids=tool_ids,
         ),
-        filter_tool_ids_by_access(
+        resolve_tool_access(
             user_id=user.id,
             is_admin=False,
             surface="workspace",
             tool_config_ids=tool_ids,
         ),
     )
-    visible = set(chat_visible) | set(workspace_visible)
-    return [tool_id for tool_id in tool_ids if tool_id in visible]
+    return {
+        tool_id: _strongest_tool_access_level(
+            chat_access.get(tool_id, "deny"),
+            workspace_access.get(tool_id, "deny"),
+        )
+        for tool_id in tool_ids
+    }
 
 
 @router.get("/tools", response_model=list[UserSpaceAvailableTool])
@@ -383,12 +396,11 @@ async def list_userspace_tools(
     user: Any = Depends(get_current_user),
 ):
     tool_configs = await repository.list_tool_configs(enabled_only=True)
-    visible_tool_ids = await _filter_userspace_tool_ids_for_surface(
+    access_by_tool_id = await _resolve_userspace_tool_access_levels(
         [str(getattr(tool, "id", "") or "") for tool in tool_configs if getattr(tool, "id", None)],
         user=user,
         surface=surface,
     )
-    visible_tool_id_set = set(visible_tool_ids)
     results: list[UserSpaceAvailableTool] = []
     for tool in tool_configs:
         # Filesystem indexes are background services, not user-facing tools
@@ -397,7 +409,8 @@ async def list_userspace_tools(
         tool_id = tool.id
         if not tool_id:
             continue
-        if tool_id not in visible_tool_id_set:
+        access_level = access_by_tool_id.get(tool_id, "deny")
+        if access_level == "deny":
             continue
         available = tool_health_monitor.is_tool_healthy(tool_id)
         results.append(
@@ -405,6 +418,7 @@ async def list_userspace_tools(
                 id=tool_id,
                 name=tool.name,
                 tool_type=tool.tool_type.value,
+                access_level=access_level,
                 description=tool.description,
                 allow_write=tool.allow_write,
                 group_id=tool.group_id,
@@ -419,7 +433,7 @@ async def list_userspace_tools(
 @router.get("/tool-groups")
 async def list_userspace_tool_groups(user: Any = Depends(get_current_user)):
     tool_configs = await repository.list_tool_configs(enabled_only=True)
-    visible_tool_ids = await _filter_userspace_tool_ids_for_surface(
+    access_by_tool_id = await _resolve_userspace_tool_access_levels(
         [str(getattr(tool, "id", "") or "") for tool in tool_configs if getattr(tool, "id", None)],
         user=user,
         surface=None,
@@ -427,7 +441,7 @@ async def list_userspace_tool_groups(user: Any = Depends(get_current_user)):
     visible_group_ids = {
         str(getattr(tool, "group_id", "") or "")
         for tool in tool_configs
-        if getattr(tool, "id", None) in set(visible_tool_ids)
+        if access_by_tool_id.get(str(getattr(tool, "id", "") or ""), "deny") != "deny"
         and getattr(tool, "tool_type", None) != ToolType.FILESYSTEM_INDEXER
         and getattr(tool, "group_id", None)
     }

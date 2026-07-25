@@ -323,7 +323,7 @@ function AccessSelect({
                 return (
                   <Popover
                     key={optionValue}
-                    content="Enable write operations on the tool to allow Read+Write access."
+                    content="Setting Default to Read+Write would grant everyone write access. Enable Write Access on this tool first. Specific users and groups can still be granted Read+Write below."
                     zIndexAboveTrigger
                   >
                     {optionButton}
