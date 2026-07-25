@@ -48,6 +48,8 @@ class UserSpacePlanningService:
         return bool(user and getattr(user, "role", "") == "admin")
 
     async def _selected_tools(self, workspace: Any) -> list[dict[str, Any]]:
+        from ragtime.userspace.service import userspace_service
+
         selected_ids = await resolve_effective_tool_ids(
             tool_selection_mode=getattr(workspace, "tool_selection_mode", ""),
             selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
@@ -55,7 +57,9 @@ class UserSpacePlanningService:
             list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
             get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
         )
+        selected_ids = await userspace_service.filter_tool_ids_for_workspace_owner(workspace, selected_ids)
         selected = set(selected_ids)
+        owner_access = await userspace_service._resolve_workspace_owner_tool_access(workspace, selected_ids)
         configs = await repository.list_tool_configs(enabled_only=True)
         tool_options = getattr(workspace, "tool_options", {}) or {}
         tools: list[dict[str, Any]] = []
@@ -64,9 +68,12 @@ class UserSpacePlanningService:
                 continue
             option_state = tool_options.get(cfg.id)
             raw_option = option_state.model_dump() if option_state is not None else None
-            write_enabled = resolve_workspace_tool_write_access(
-                bool(getattr(cfg, "allow_write", False)),
-                load_workspace_tool_options(raw_option),
+            write_enabled = (
+                resolve_workspace_tool_write_access(
+                    bool(getattr(cfg, "allow_write", False)),
+                    load_workspace_tool_options(raw_option),
+                )
+                and owner_access.get(cfg.id, "deny") == "read_write"
             )
             tools.append(
                 {

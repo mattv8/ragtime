@@ -400,13 +400,13 @@ describe('UserSpacePanel workspace tool descriptions', () => {
     expect(screen.getByText(/Ask an admin to enable/)).toBeTruthy();
   });
 
-  it('explains that only global admins may manage workspace write access for a globally read-only tool', () => {
+  it('explains that only workspace owners may manage workspace write access for a globally read-only tool', () => {
     render(
       <div>{getWorkspaceToolReadOnlyDescription(false, 'tool-read-only', undefined, false)}</div>,
     );
 
     expect(screen.queryByRole('link', { name: 'Settings > Tools' })).toBeNull();
-    expect(screen.getByText(/Only global admins may manage workspace write access/)).toBeTruthy();
+    expect(screen.getByText(/Only the workspace owner or an admin can change this/)).toBeTruthy();
   });
 
   it('does not render a badge for globally read-only tools', () => {

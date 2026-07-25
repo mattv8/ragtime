@@ -730,6 +730,52 @@
   }
 }
 
+@media (max-width: 640px) {
+  .tool-access-table-row-header {
+    display: none;
+  }
+
+  .tool-access-search-option {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .tool-access-search-option-detail {
+    margin-left: 0;
+  }
+
+  .tool-access-table-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    gap: var(--space-sm);
+    align-items: start;
+  }
+
+  .tool-access-principal-cell {
+    grid-column: 1 / -1;
+  }
+
+  .tool-access-principal-meta {
+    flex-wrap: wrap;
+  }
+
+  .tool-access-badges {
+    flex-wrap: wrap;
+  }
+
+  .tool-access-table-cell {
+    width: 100%;
+  }
+
+  .tool-access-mobile-label {
+    display: block;
+  }
+
+  .tool-access-select {
+    min-width: 0;
+  }
+}
+
 /* Small phone breakpoint (480px and below) */
 @media (max-width: 480px) {
   body {

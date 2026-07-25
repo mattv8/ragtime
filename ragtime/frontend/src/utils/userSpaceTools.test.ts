@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyUserSpaceToolAvailabilityCap,
   canManageUserSpaceToolWriteForWorkspace,
+  fetchUserSpaceToolCatalog,
   getCappedUserSpaceToolIdSet,
   getNextWorkspaceToolOptions,
   getUserSpaceToolWorkspaceWriteState,
@@ -10,6 +11,13 @@ import {
   type UserSpaceToolSelection,
 } from './userSpaceTools';
 import type { UserSpaceAvailableTool, WorkspaceToolOptionState } from '@/types';
+
+const apiMock = vi.hoisted(() => ({
+  listUserSpaceAvailableTools: vi.fn(),
+  listUserSpaceToolGroups: vi.fn(),
+}));
+
+vi.mock('@/api', () => ({ api: apiMock }));
 
 const tools: UserSpaceAvailableTool[] = [
   {
@@ -37,6 +45,19 @@ const tools: UserSpaceAvailableTool[] = [
 ];
 
 describe('userSpaceTools workspace capping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes the requested catalog surface to the available-tools API', async () => {
+    apiMock.listUserSpaceAvailableTools.mockResolvedValue([]);
+    apiMock.listUserSpaceToolGroups.mockResolvedValue([]);
+
+    await fetchUserSpaceToolCatalog('chat');
+
+    expect(apiMock.listUserSpaceAvailableTools).toHaveBeenCalledWith('chat');
+  });
+
   it('marks tools outside the workspace effective selection unavailable', () => {
     const workspaceSelection: UserSpaceToolSelection = {
       mode: 'custom',
@@ -156,18 +177,18 @@ describe('userSpaceTools workspace capping', () => {
     expect(mixed).toEqual({ 'tool-b': { write_access_enabled: true } });
   });
 
-  it('allows only global admins to manage workspace grants for globally read-only tools', () => {
+  it('allows workspace owners to manage workspace grants for globally read-only tools', () => {
     expect(
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, true, false),
     ).toBe(true);
     expect(
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true, false),
-    ).toBe(false);
-    expect(
-      canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, true, true),
     ).toBe(true);
     expect(
       canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: true }, false, true),
+    ).toBe(false);
+    expect(
+      canManageUserSpaceToolWriteForWorkspace({ ...tools[0], allow_write: false }, false, true),
     ).toBe(false);
   });
 });

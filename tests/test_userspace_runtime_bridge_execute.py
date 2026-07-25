@@ -198,6 +198,10 @@ class _RuntimeBridgeSuccessService(_RuntimeBridgeRecordingMixin, UserSpaceServic
     async def _resolve_effective_workspace_tool_ids(self, workspace: UserSpaceWorkspace) -> list[str]:  # type: ignore[override]
         return ["tool-1"]
 
+    async def _resolve_workspace_owner_tool_access(self, workspace: UserSpaceWorkspace, tool_config_ids: list[str]):  # type: ignore[override]
+        _ = workspace
+        return {tool_id: "read_write" for tool_id in tool_config_ids}
+
     async def _execute_component_for_workspace(self, workspace: UserSpaceWorkspace, request: ExecuteComponentRequest, **kwargs):  # type: ignore[no-untyped-def,override]
         self.bridge_workspace_calls.append((workspace.id, request, kwargs))
         return await super()._execute_component_for_workspace(workspace, request, **kwargs)
@@ -236,6 +240,10 @@ class _RuntimeBridgeWorkspaceService(_RuntimeBridgeRecordingMixin, UserSpaceServ
 
     async def _resolve_effective_workspace_tool_ids(self, workspace: UserSpaceWorkspace) -> list[str]:  # type: ignore[override]
         return list(workspace.selected_tool_ids)
+
+    async def _resolve_workspace_owner_tool_access(self, workspace: UserSpaceWorkspace, tool_config_ids: list[str]):  # type: ignore[override]
+        _ = workspace
+        return {tool_id: "read_write" for tool_id in tool_config_ids}
 
 
 class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
@@ -333,7 +341,7 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.proofs_recorded, [])
         self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_only")
 
-    async def test_bridge_execute_allows_write_query_with_workspace_grant_when_global_allow_write_is_false(self) -> None:
+    async def test_bridge_execute_allows_write_query_when_workspace_opt_in_overrides_global_read_only(self) -> None:
         workspace = _make_workspace()
         workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
         service = _RuntimeBridgeWorkspaceService(workspace)
@@ -352,6 +360,28 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_write")
         self.assertEqual(len(service.proofs_recorded), 1)
         create_subprocess_exec.assert_awaited_once()
+
+    async def test_bridge_execute_keeps_write_query_read_only_when_owner_acl_is_not_read_write(self) -> None:
+        workspace = _make_workspace()
+        workspace.tool_options = {"tool-1": WorkspaceToolOptionState(write_access_enabled=True)}
+        service = _RuntimeBridgeWorkspaceService(workspace)
+
+        create_subprocess_exec = _successful_subprocess_mock()
+
+        with (
+            _patch_sql_write_execution(allow_write=True, create_subprocess_exec=create_subprocess_exec),
+            mock.patch.object(service, "_resolve_workspace_owner_tool_access", mock.AsyncMock(return_value={"tool-1": "read"})),
+        ):
+            response = await service.execute_component_from_runtime_bridge(
+                "workspace-1",
+                ExecuteComponentRequest(component_id="tool-1", request={"query": "UPDATE widgets SET enabled = true"}),
+                session_id="sess-1",
+            )
+
+        self.assertIsNotNone(response.error)
+        self.assertEqual(service.bridge_audit_calls[-1]["access_mode"], "read_only")
+        self.assertEqual(len(service.proofs_recorded), 0)
+        create_subprocess_exec.assert_not_awaited()
 
     async def test_bridge_execute_allows_sql_write_only_when_workspace_opt_in_and_global_allow_write(self) -> None:
         workspace = _make_workspace()

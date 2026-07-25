@@ -105,6 +105,7 @@ class WorkspaceBuildTaskService:
                 list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
                 get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
             )
+            selected = await userspace_service.filter_tool_ids_for_workspace_owner(workspace, selected)
             invalid = [cid for cid in brief.data_component_ids if cid not in set(selected)]
             if invalid:
                 raise HTTPException(

@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, List, Optional
+from typing import Any, AsyncIterator, List, Literal, Optional
 
 from fastapi import (
     APIRouter,
@@ -37,6 +37,7 @@ from ragtime.core.security import (
     get_current_user_optional,
     require_admin,
 )
+from ragtime.core.tool_access import filter_tool_ids_by_access
 from ragtime.core.userspace_limits import (
     clamp_archive_max_total_size_bytes,
     clamp_userspace_primitive_upload_max_bytes,
@@ -340,10 +341,54 @@ async def _normalize_selected_tool_ids(
     return normalized
 
 
+async def _filter_userspace_tool_ids_for_surface(
+    tool_ids: list[str],
+    *,
+    user: Any,
+    surface: Literal["chat", "workspace"] | None,
+) -> list[str]:
+    if surface not in {"chat", "workspace"}:
+        surface = None
+    if getattr(user, "role", "") == "admin":
+        return tool_ids
+    if surface is not None:
+        return await filter_tool_ids_by_access(
+            user_id=user.id,
+            is_admin=False,
+            surface=surface,
+            tool_config_ids=tool_ids,
+        )
+
+    chat_visible, workspace_visible = await asyncio.gather(
+        filter_tool_ids_by_access(
+            user_id=user.id,
+            is_admin=False,
+            surface="chat",
+            tool_config_ids=tool_ids,
+        ),
+        filter_tool_ids_by_access(
+            user_id=user.id,
+            is_admin=False,
+            surface="workspace",
+            tool_config_ids=tool_ids,
+        ),
+    )
+    visible = set(chat_visible) | set(workspace_visible)
+    return [tool_id for tool_id in tool_ids if tool_id in visible]
+
+
 @router.get("/tools", response_model=list[UserSpaceAvailableTool])
-async def list_userspace_tools(user: Any = Depends(get_current_user)):
-    del user
+async def list_userspace_tools(
+    surface: Literal["chat", "workspace"] | None = Query(default=None),
+    user: Any = Depends(get_current_user),
+):
     tool_configs = await repository.list_tool_configs(enabled_only=True)
+    visible_tool_ids = await _filter_userspace_tool_ids_for_surface(
+        [str(getattr(tool, "id", "") or "") for tool in tool_configs if getattr(tool, "id", None)],
+        user=user,
+        surface=surface,
+    )
+    visible_tool_id_set = set(visible_tool_ids)
     results: list[UserSpaceAvailableTool] = []
     for tool in tool_configs:
         # Filesystem indexes are background services, not user-facing tools
@@ -351,6 +396,8 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
             continue
         tool_id = tool.id
         if not tool_id:
+            continue
+        if tool_id not in visible_tool_id_set:
             continue
         available = tool_health_monitor.is_tool_healthy(tool_id)
         results.append(
@@ -371,9 +418,21 @@ async def list_userspace_tools(user: Any = Depends(get_current_user)):
 
 @router.get("/tool-groups")
 async def list_userspace_tool_groups(user: Any = Depends(get_current_user)):
-    del user
+    tool_configs = await repository.list_tool_configs(enabled_only=True)
+    visible_tool_ids = await _filter_userspace_tool_ids_for_surface(
+        [str(getattr(tool, "id", "") or "") for tool in tool_configs if getattr(tool, "id", None)],
+        user=user,
+        surface=None,
+    )
+    visible_group_ids = {
+        str(getattr(tool, "group_id", "") or "")
+        for tool in tool_configs
+        if getattr(tool, "id", None) in set(visible_tool_ids)
+        and getattr(tool, "tool_type", None) != ToolType.FILESYSTEM_INDEXER
+        and getattr(tool, "group_id", None)
+    }
     groups = await repository.list_tool_groups()
-    return [g.model_dump() for g in groups]
+    return [(g.model_dump() if hasattr(g, "model_dump") else dict(vars(g))) for g in groups if g.id in visible_group_ids]
 
 
 @router.get("/workspaces", response_model=PaginatedWorkspacesResponse)

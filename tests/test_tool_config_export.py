@@ -138,7 +138,9 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
             created["config"] = config
             if result_builder is not None:
                 return result_builder(config)
-            return config
+            data = config.model_dump()
+            data["id"] = "imported-1"
+            return ToolConfig(**data)
 
         mock_repo.create_tool_config = fake_create
         return mock_repo, created
@@ -160,9 +162,11 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
             mock.patch("ragtime.indexer.routes.notify_tools_changed"),
             mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+            mock.patch("ragtime.indexer.routes.ensure_tool_access_policy", mock.AsyncMock()) as mock_ensure_policy,
         ):
-            await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
+            imported = await routes.import_tool_config(routes.ToolImportRequest(password=EXPORT_PASSWORD, file_content=json.dumps(envelope)))
 
+        mock_ensure_policy.assert_awaited_once_with(imported.id)
         self.assertIsNotNone(created["config"])
         return cast(ToolConfig, created["config"])
 
@@ -202,6 +206,7 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
             mock.patch("ragtime.indexer.routes.notify_tools_changed") as mock_notify,
             mock.patch("ragtime.indexer.routes.invalidate_settings_cache") as mock_invalidate,
+            mock.patch("ragtime.indexer.routes.ensure_tool_access_policy", mock.AsyncMock()) as mock_ensure_policy,
         ):
             response = await routes.export_tool_config("tool-abc", routes.ToolExportRequest(password=EXPORT_PASSWORD))
             body_bytes = response.body if isinstance(response.body, bytes) else bytes(response.body)
@@ -215,6 +220,7 @@ class ToolExportImportRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(imported.name, "Exportable Postgres")
         self.assertEqual(imported.connection_config["password"], "hunter2")
         self.assertEqual(imported.enabled, False)
+        mock_ensure_policy.assert_awaited_once_with("imported-123")
         mock_notify.assert_called_once()
         mock_invalidate.assert_called_once()
 

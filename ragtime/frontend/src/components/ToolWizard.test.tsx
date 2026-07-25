@@ -29,6 +29,13 @@ const apiMock = vi.hoisted(() => ({
   discoverSmbShares: vi.fn(),
   browseSmbShare: vi.fn(),
   getHttpApiEditConfig: vi.fn(),
+  getToolAccessPolicy: vi.fn(),
+  updateToolAccessPolicy: vi.fn(),
+  listUsers: vi.fn(),
+  listUsersDirectory: vi.fn(),
+  listAuthGroups: vi.fn(),
+  getSettings: vi.fn(),
+  checkContainerCapabilities: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -245,6 +252,31 @@ beforeEach(() => {
     configured_secret_fields: [],
   });
   apiMock.updateToolConfig.mockResolvedValue(existingHttpApiTool);
+  apiMock.getToolAccessPolicy.mockImplementation(async (toolId: string) => ({
+    tool_id: toolId,
+    default_chat_access: 'deny',
+    default_workspace_access: 'deny',
+    users: [],
+    groups: [],
+  }));
+  apiMock.updateToolAccessPolicy.mockImplementation(async (_toolId: string, policy: unknown) => ({
+    tool_id: 'tool-http-api-created',
+    ...(policy as Record<string, unknown>),
+  }));
+  apiMock.listUsers.mockResolvedValue([]);
+  apiMock.listAuthGroups.mockResolvedValue([]);
+  apiMock.getSettings.mockResolvedValue({ settings: {} });
+  apiMock.checkContainerCapabilities.mockResolvedValue({
+    privileged: false,
+    has_sys_admin: false,
+    can_mount: false,
+    message: 'ok',
+  });
+  apiMock.discoverMounts.mockResolvedValue({
+    mounts: [{ container_path: '/workspace', host_path: '/host/workspace' }],
+    docker_compose_example: '',
+  });
+  apiMock.browseFilesystem.mockResolvedValue({ entries: [] });
 });
 
 afterEach(() => {
@@ -254,6 +286,179 @@ afterEach(() => {
 });
 
 describe('ToolWizard', () => {
+  it('adds an Access step before review for every wizard variant', async () => {
+    const cases: Array<{
+      label: string;
+      existingTool: ToolConfig | null;
+      defaultToolType?: ToolConfig['tool_type'];
+      mountOnly?: boolean;
+    }> = [
+      { label: 'base', existingTool: null, defaultToolType: 'postgres' },
+      { label: 'http api', existingTool: null, defaultToolType: 'http_api' },
+      { label: 'pdm', existingTool: null, defaultToolType: 'solidworks_pdm' },
+      { label: 'ssh', existingTool: null, defaultToolType: 'ssh_shell' },
+      { label: 'odoo', existingTool: null, defaultToolType: 'odoo_shell' },
+      { label: 'filesystem', existingTool: null, defaultToolType: 'filesystem_indexer' },
+      {
+        label: 'mount only',
+        existingTool: null,
+        defaultToolType: 'filesystem_indexer',
+        mountOnly: true,
+      },
+      { label: 'edit', existingTool: existingHttpApiTool },
+    ];
+
+    for (const testCase of cases) {
+      const { unmount } = render(
+        <ToolWizard
+          existingTool={testCase.existingTool}
+          onClose={vi.fn()}
+          onSave={vi.fn()}
+          defaultToolType={testCase.defaultToolType}
+          mountOnly={testCase.mountOnly}
+        />,
+      );
+
+      if (testCase.existingTool?.tool_type === 'http_api') {
+        await waitForHttpApiEditHydration(testCase.existingTool.id);
+      }
+
+      const progressTitles = Array.from(document.querySelectorAll('.wizard-step .step-title')).map(
+        (node) => node.textContent?.trim(),
+      );
+      const accessIndex = progressTitles.indexOf('User Access');
+      const reviewIndex = progressTitles.indexOf('Review & Save');
+      expect(accessIndex, `${testCase.label} access step`).toBeGreaterThanOrEqual(0);
+      expect(reviewIndex, `${testCase.label} review step`).toBeGreaterThan(accessIndex);
+
+      unmount();
+    }
+  });
+
+  it('saves tool access after creating a tool and keeps the wizard open if ACL save fails', async () => {
+    const onSave = vi.fn();
+    apiMock.updateToolAccessPolicy.mockRejectedValueOnce(new Error('ACL failed closed'));
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={onSave}
+        defaultToolType="ssh_shell"
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('server.example.com'), {
+      target: { value: 'server.example.com' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('ubuntu'), { target: { value: 'deploy' } });
+    fireEvent.change(screen.getByPlaceholderText('Enter SSH password'), {
+      target: { value: 'secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
+      target: { value: 'Deploy Shell' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await waitFor(() => {
+      expect(apiMock.createToolConfig).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(apiMock.updateToolAccessPolicy).toHaveBeenCalledWith(
+        'tool-http-api-created',
+        expect.objectContaining({
+          default_chat_access: 'deny',
+          default_workspace_access: 'deny',
+          users: [],
+          groups: [],
+        }),
+      );
+    });
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Create Tool' })).toBeTruthy();
+    expect(screen.getByText('ACL failed closed')).toBeTruthy();
+  });
+
+  it('applies access policy to filesystem tools auto-created during analysis when saving later', async () => {
+    apiMock.createToolConfig.mockResolvedValueOnce({
+      ...postgresContainerTool,
+      id: 'tool-filesystem-created',
+      name: 'Workspace Files',
+      tool_type: 'filesystem_indexer',
+      connection_config: { mount_type: 'docker_volume', base_path: '/workspace' },
+    });
+    apiMock.startFilesystemAnalysis.mockResolvedValue({
+      id: 'job-1',
+      status: 'completed',
+      result: {
+        suggested_exclusions: [],
+        total_files: 0,
+        total_size_mb: 0,
+        estimated_chunks: 0,
+        analysis_duration_seconds: 0,
+        directories_scanned: 0,
+        file_type_stats: [],
+        warnings: [],
+      },
+    });
+    apiMock.getFilesystemAnalysisJob.mockResolvedValue({
+      id: 'job-1',
+      status: 'completed',
+      result: {
+        suggested_exclusions: [],
+        total_files: 0,
+        total_size_mb: 0,
+        estimated_chunks: 0,
+        analysis_duration_seconds: 0,
+        directories_scanned: 0,
+        file_type_stats: [],
+        warnings: [],
+      },
+    });
+
+    render(
+      <ToolWizard
+        existingTool={null}
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+        defaultToolType="filesystem_indexer"
+      />,
+    );
+
+    await screen.findByText('/workspace');
+    fireEvent.click(screen.getByText('/workspace'));
+    await waitFor(() => {
+      expect(apiMock.browseFilesystem).toHaveBeenCalledWith('/workspace');
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze Filesystem' }));
+
+    await waitFor(() => {
+      expect(apiMock.createToolConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ tool_type: 'filesystem_indexer' }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateToolAccessPolicy).toHaveBeenCalledWith(
+        'tool-filesystem-created',
+        expect.objectContaining({
+          default_chat_access: 'deny',
+          default_workspace_access: 'deny',
+        }),
+      );
+    });
+  });
   it('groups SSH host, port, and user in one compact row with a flat auth panel', () => {
     const { container } = render(
       <ToolWizard existingTool={postgresContainerTool} onClose={vi.fn()} onSave={vi.fn()} />,
@@ -334,6 +539,7 @@ describe('ToolWizard', () => {
 
     expect(screen.getAllByRole('spinbutton')[0]).toBeTruthy();
     expect(screen.getByText(/write methods still require this tool option/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.queryByText('tenant-secret')).toBeNull();
@@ -631,6 +837,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(screen.queryByText('login-secret')).toBeNull();
     expect(document.querySelector('.review-config')?.textContent).toContain(
@@ -649,6 +856,7 @@ describe('ToolWizard', () => {
     fireEvent.change(screen.getByLabelText('Authentication mode'), {
       target: { value: 'none' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -736,6 +944,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     expect(document.querySelector('.review-config')?.textContent).toContain('"name": "client_id"');
     expect(document.querySelector('.review-config')?.textContent).toContain(
@@ -760,6 +969,7 @@ describe('ToolWizard', () => {
     fireEvent.change(screen.getByLabelText('Configured header name 1'), {
       target: { value: 'X-TENANT' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -854,6 +1064,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     await waitFor(() => expect(apiMock.updateToolConfig).toHaveBeenCalledTimes(3));
@@ -870,6 +1081,7 @@ describe('ToolWizard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.change(screen.getByLabelText('Authentication mode'), { target: { value: 'none' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -905,6 +1117,7 @@ describe('ToolWizard', () => {
       target: { value: 'data.access_token' },
     });
 
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -956,6 +1169,7 @@ describe('ToolWizard', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));
 
     await waitFor(() => {
@@ -977,6 +1191,7 @@ describe('ToolWizard', () => {
     fireEvent.change(screen.getByLabelText('Authentication mode'), {
       target: { value: 'none' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -1036,6 +1251,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
     const review = document.querySelector('.review-config')?.textContent ?? '';
     expect(review).toContain('"value": "[redacted]"');
@@ -1072,6 +1288,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     await waitFor(() => {
@@ -1095,6 +1312,7 @@ describe('ToolWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     expect(screen.getByRole('region', { name: 'OAuth 2.0 connection' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Test connection' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -1187,6 +1405,7 @@ describe('ToolWizard', () => {
     fireEvent.change(screen.getByPlaceholderText('e.g., Production Database, Staging Odoo'), {
       target: { value: 'OAuth API' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create Tool' }));

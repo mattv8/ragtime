@@ -1154,8 +1154,8 @@ browser modules:
 - Responses are `{rows, columns, row_count, error}` — same shape as the browser bridge.
 - Write access has two lanes; do not mix them:
   - SERVER lane (this bridge, bearer token): follows Workspace Tools access policy.
-    Tools default read-only unless a workspace owner/admin explicitly enables write
-    access and the global tool config permits writes.
+    Tools default read-only unless the workspace owner has Read+Write access and explicitly enables write
+    access for the workspace.
   - BROWSER lane (`context.components[...].execute()` in preview/shared pages):
     ALWAYS read-only, regardless of the workspace write toggle. Its request payload
     comes from the browser, so the platform rejects writes on this lane by design.

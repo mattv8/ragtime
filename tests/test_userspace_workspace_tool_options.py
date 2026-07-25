@@ -61,7 +61,7 @@ class WorkspaceToolOptionHelperTests(unittest.TestCase):
             {"tool-write": {"write_access_enabled": True}},
         )
 
-    def test_load_and_resolve_workspace_write_grant_without_global_ceiling(self) -> None:
+    def test_load_and_resolve_workspace_write_grant_with_global_ceiling(self) -> None:
         self.assertEqual(load_workspace_tool_options({"write_access_enabled": True, "ignored": True}), {"write_access_enabled": True})
         self.assertEqual(load_workspace_tool_options({"write_access_enabled": False}), {})
         self.assertFalse(resolve_workspace_tool_write_access(False, None))
@@ -140,6 +140,17 @@ class _CaptureTable:
     async def create(self, *, data: dict[str, Any]) -> SimpleNamespace:
         self.created.append(data)
         return SimpleNamespace(**data)
+
+
+class _WorkspaceMemberTable(_CaptureTable):
+    async def find_first(self, *, where: dict[str, Any]) -> SimpleNamespace | None:
+        if where.get("userId") == "owner-1":
+            return SimpleNamespace(id="member-owner-1", workspaceId=where.get("workspaceId"), userId="owner-1", role="owner")
+        return None
+
+    async def update(self, *, where: dict[str, Any], data: dict[str, Any]) -> SimpleNamespace:
+        self.created.append({"where": where, "data": data})
+        return SimpleNamespace(id=where.get("id"), **data)
 
 
 class _WorkspaceToolOptionTable(_CaptureTable):
@@ -222,6 +233,7 @@ def _make_workspace_create_db() -> SimpleNamespace:
         workspacetoolselection=_CaptureTable(),
         workspacetoolgroupselection=_CaptureTable(),
         workspacetooloption=_CaptureTable(),
+        user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(id="owner-1", role="user"))),
         toolconfig=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(id="tool-read", enabled=True))),
         toolgroup=SimpleNamespace(find_unique=mock.AsyncMock(return_value=None)),
     )
@@ -268,6 +280,7 @@ def _make_workspace_update_db() -> SimpleNamespace:
     workspace_table = _FakeWorkspaceTable()
     return SimpleNamespace(
         workspace=workspace_table,
+        workspacemember=_WorkspaceMemberTable(),
         workspacetoolselection=_CaptureTable(),
         workspacetoolgroupselection=_CaptureTable(),
         workspacetooloption=_WorkspaceToolOptionTable(workspace_table),
@@ -303,6 +316,132 @@ def _patch_workspace_update_dependencies(
 
 
 class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_filters_changed_selection_ids_and_groups_for_new_owner(self) -> None:
+        service = _WorkspaceUpdateService("owner")
+        fake_db = _make_workspace_update_db()
+        fake_db.user.find_unique = mock.AsyncMock(return_value=SimpleNamespace(id="owner-2", role="user"))
+
+        with (
+            _patch_workspace_update_dependencies(
+                fake_db,
+                tool_configs=[SimpleNamespace(id="tool-read", enabled=True, allow_write=True)],
+                healthy_enabled_tool_ids=["tool-read"],
+            ),
+            mock.patch.object(
+                service,
+                "_filter_workspace_selection_inputs_for_owner",
+                mock.AsyncMock(return_value=(["tool-read"], ["group-a"])),
+            ) as filter_inputs,
+            mock.patch.object(
+                service,
+                "_resolve_workspace_owner_tool_access",
+                mock.AsyncMock(return_value={"tool-read": "read_write"}),
+            ),
+            mock.patch.object(service, "_persist_workspace_tool_selections", mock.AsyncMock()) as persist_tool_selections,
+            mock.patch.object(service, "_persist_workspace_tool_group_selections", mock.AsyncMock()) as persist_tool_groups,
+        ):
+            await service.update_workspace(
+                "ws-1",
+                UpdateWorkspaceRequest(
+                    owner_user_id="owner-2",
+                    selected_tool_ids=["tool-read", "tool-write"],
+                    selected_tool_group_ids=["group-a", "group-b"],
+                ),
+                "owner-1",
+                is_admin=True,
+            )
+
+        filter_inputs.assert_awaited_once_with("owner-2", ["tool-read", "tool-write"], ["group-a", "group-b"])
+        persist_tool_selections.assert_awaited_once_with(fake_db, "ws-1", ["tool-read"], replace_existing=True)
+        persist_tool_groups.assert_awaited_once_with(fake_db, "ws-1", ["group-a"], replace_existing=True)
+
+    async def test_update_owner_transfer_without_selection_fields_preserves_partial_update_semantics(self) -> None:
+        service = _WorkspaceUpdateService("owner")
+        fake_db = _make_workspace_update_db()
+        fake_db.user.find_unique = mock.AsyncMock(return_value=SimpleNamespace(id="owner-2", role="user"))
+
+        with (
+            _patch_workspace_update_dependencies(
+                fake_db,
+                tool_configs=[SimpleNamespace(id="tool-read", enabled=True, allow_write=True)],
+                healthy_enabled_tool_ids=["tool-read"],
+            ),
+            mock.patch.object(
+                service,
+                "_filter_workspace_selection_inputs_for_owner",
+                mock.AsyncMock(return_value=(["tool-write", "tool-read"], [])),
+            ),
+            mock.patch.object(
+                service,
+                "_resolve_workspace_owner_tool_access",
+                mock.AsyncMock(return_value={"tool-read": "read_write"}),
+            ),
+            mock.patch.object(service, "_persist_workspace_tool_selections", mock.AsyncMock()) as persist_tool_selections,
+            mock.patch.object(service, "_persist_workspace_tool_group_selections", mock.AsyncMock()) as persist_tool_groups,
+        ):
+            await service.update_workspace(
+                "ws-1",
+                UpdateWorkspaceRequest(owner_user_id="owner-2", description="updated"),
+                "owner-1",
+                is_admin=True,
+            )
+
+        persist_tool_selections.assert_not_awaited()
+        persist_tool_groups.assert_not_awaited()
+
+    async def test_owner_transfer_removes_write_opt_ins_without_read_write_acl_and_logs_removed_ids(self) -> None:
+        service = _WorkspaceUpdateService(
+            "owner",
+            tool_options={
+                "tool-denied": WorkspaceToolOptionState(write_access_enabled=True),
+                "tool-read": WorkspaceToolOptionState(write_access_enabled=True),
+                "tool-write": WorkspaceToolOptionState(write_access_enabled=True),
+            },
+        )
+        fake_db = _make_workspace_update_db()
+        fake_db.user.find_unique = mock.AsyncMock(return_value=SimpleNamespace(id="owner-2", role="user"))
+        fake_db.workspace.workspace_record.toolOptions = [
+            SimpleNamespace(toolConfigId="tool-denied", options={"write_access_enabled": True}),
+            SimpleNamespace(toolConfigId="tool-read", options={"write_access_enabled": True}),
+            SimpleNamespace(toolConfigId="tool-write", options={"write_access_enabled": True}),
+        ]
+
+        with (
+            _patch_workspace_update_dependencies(
+                fake_db,
+                tool_configs=[
+                    SimpleNamespace(id="tool-denied", enabled=True, allow_write=True),
+                    SimpleNamespace(id="tool-read", enabled=True, allow_write=True),
+                    SimpleNamespace(id="tool-write", enabled=True, allow_write=True),
+                ],
+                healthy_enabled_tool_ids=["tool-denied", "tool-read", "tool-write"],
+            ),
+            mock.patch.object(
+                service,
+                "_filter_workspace_selection_inputs_for_owner",
+                mock.AsyncMock(return_value=(["tool-write"], [])),
+            ),
+            mock.patch.object(
+                service,
+                "_resolve_workspace_owner_tool_access",
+                mock.AsyncMock(return_value={"tool-denied": "deny", "tool-read": "read", "tool-write": "read_write"}),
+            ),
+            mock.patch("ragtime.userspace.service.logger.info") as log_info,
+        ):
+            result = await service.update_workspace(
+                "ws-1",
+                UpdateWorkspaceRequest(owner_user_id="owner-2"),
+                "owner-1",
+                is_admin=True,
+            )
+
+        self.assertEqual(result.tool_options, {"tool-write": WorkspaceToolOptionState(write_access_enabled=True)})
+        self.assertEqual(fake_db.workspacetooloption.deleted, [{"workspaceId": "ws-1"}])
+        self.assertEqual([created["toolConfigId"] for created in fake_db.workspacetooloption.created], ["tool-write"])
+        log_info.assert_called_once()
+        self.assertEqual(log_info.call_args.args[1], "ws-1")
+        self.assertEqual(set(log_info.call_args.args[2].split(", ")), {"tool-denied", "tool-read"})
+
     async def test_owner_update_persists_true_rows_only(self) -> None:
         service = _WorkspaceUpdateService("owner")
         fake_db = _make_workspace_update_db()
@@ -374,7 +513,7 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(fake_db.workspacetooloption.created), 1)
 
-    async def test_owner_can_retain_existing_restricted_grant_when_payload_is_unchanged(self) -> None:
+    async def test_owner_can_update_tool_options_for_globally_read_only_tool(self) -> None:
         service = _WorkspaceUpdateService("owner")
         fake_db = _make_workspace_update_db()
 
@@ -400,7 +539,7 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
         created = fake_db.workspacetooloption.created[0]
         self.assertEqual(created["toolConfigId"], "tool-read")
 
-    async def test_owner_cannot_remove_existing_restricted_grant(self) -> None:
+    async def test_owner_can_remove_existing_tool_option_for_globally_read_only_tool(self) -> None:
         service = _WorkspaceUpdateService("owner")
         fake_db = _make_workspace_update_db()
 
@@ -412,16 +551,16 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
             ],
             healthy_enabled_tool_ids=["tool-write", "tool-read"],
         ):
-            with self.assertRaises(HTTPException) as raised:
-                await service.update_workspace(
-                    "ws-1",
-                    UpdateWorkspaceRequest(tool_options={}),
-                    "owner-1",
-                )
+            result = await service.update_workspace(
+                "ws-1",
+                UpdateWorkspaceRequest(tool_options={}),
+                "owner-1",
+            )
 
-        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(result.tool_options, {})
+        self.assertEqual(fake_db.workspacetooloption.created, [])
 
-    async def test_owner_cannot_add_new_restricted_grant(self) -> None:
+    async def test_owner_can_add_tool_option_for_globally_read_only_tool(self) -> None:
         service = _WorkspaceUpdateService("owner", tool_options={})
         fake_db = _make_workspace_update_db()
         fake_db.workspace.workspace_record.toolOptions = []
@@ -434,14 +573,13 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
             ],
             healthy_enabled_tool_ids=["tool-write", "tool-read"],
         ):
-            with self.assertRaises(HTTPException) as raised:
-                await service.update_workspace(
-                    "ws-1",
-                    UpdateWorkspaceRequest(tool_options={"tool-read": WorkspaceToolOptionState(write_access_enabled=True)}),
-                    "owner-1",
-                )
+            result = await service.update_workspace(
+                "ws-1",
+                UpdateWorkspaceRequest(tool_options={"tool-read": WorkspaceToolOptionState(write_access_enabled=True)}),
+                "owner-1",
+            )
 
-        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(result.tool_options, {"tool-read": WorkspaceToolOptionState(write_access_enabled=True)})
 
     async def test_omitted_or_false_tool_options_delete_rows(self) -> None:
         service = _WorkspaceUpdateService("owner")
@@ -463,9 +601,20 @@ class WorkspaceToolOptionUpdateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkspaceToolOptionCreateTests(unittest.IsolatedAsyncioTestCase):
-    async def test_non_admin_restricted_grant_fails_before_workspace_persistence(self) -> None:
+    async def test_create_filters_selected_tool_ids_and_groups_by_owner_acl(self) -> None:
         service = UserSpaceService()
         fake_db = _make_workspace_create_db()
+        created_workspace = UserSpaceWorkspace(
+            id="ws-create-1",
+            name="Workspace",
+            description="desc",
+            owner_user_id="owner-1",
+            tool_selection_mode="custom",
+            selected_tool_ids=["tool-read"],
+            selected_tool_group_ids=["group-a"],
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
 
         async def _fake_get_db() -> SimpleNamespace:
             return fake_db
@@ -475,27 +624,110 @@ class WorkspaceToolOptionCreateTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(service, "_is_admin_user", mock.AsyncMock(return_value=False)),
             mock.patch(
                 "ragtime.userspace.service.repository.list_tool_configs",
+                mock.AsyncMock(
+                    return_value=[
+                        SimpleNamespace(id="tool-read", enabled=True, allow_write=True),
+                        SimpleNamespace(id="tool-write", enabled=True, allow_write=True),
+                    ]
+                ),
+            ),
+            mock.patch(
+                "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-read", "tool-write"]),
+            ),
+            mock.patch(
+                "ragtime.userspace.service.repository.get_tool_ids_for_groups",
+                mock.AsyncMock(side_effect=[["tool-read", "tool-write"], ["tool-write"], ["tool-read", "tool-write"]]),
+            ),
+            mock.patch.object(
+                service,
+                "filter_tool_ids_for_workspace_owner",
+                mock.AsyncMock(side_effect=[["tool-read"], ["tool-read"], []]),
+            ),
+            mock.patch.object(service, "_persist_workspace_tool_selections", mock.AsyncMock()) as persist_tool_selections,
+            mock.patch.object(service, "_persist_workspace_tool_group_selections", mock.AsyncMock()) as persist_tool_groups,
+            mock.patch.object(service, "_persist_workspace_tool_options", mock.AsyncMock()) as persist_tool_options,
+            mock.patch.object(service, "_workspace_files_dir", return_value=Path(".")),
+            mock.patch.object(service, "_ensure_object_storage_config"),
+            mock.patch.object(service, "_seed_runtime_bootstrap_config"),
+            mock.patch.object(service, "_seed_runtime_entrypoint_config"),
+            mock.patch.object(service, "_ensure_workspace_git_repo", mock.AsyncMock()),
+            mock.patch.object(service, "_workspace_from_record", return_value=created_workspace),
+        ):
+            await service.create_workspace(
+                CreateWorkspaceRequest(
+                    name="Workspace",
+                    selected_tool_ids=["tool-read", "tool-write"],
+                    selected_tool_group_ids=["group-a", "group-b"],
+                    tool_selection_mode="custom",
+                ),
+                "owner-1",
+            )
+
+        persist_tool_selections.assert_awaited_once_with(fake_db, fake_db.workspace.workspace_record.id, ["tool-read"])
+        persist_tool_groups.assert_awaited_once_with(fake_db, fake_db.workspace.workspace_record.id, ["group-a"])
+        persist_tool_options.assert_awaited_once()
+
+    async def test_owner_can_create_workspace_with_globally_read_only_tool_option(self) -> None:
+        service = UserSpaceService()
+        fake_db = _make_workspace_create_db()
+        created_workspace = UserSpaceWorkspace(
+            id="ws-create-1",
+            name="Workspace",
+            description="desc",
+            owner_user_id="owner-1",
+            tool_selection_mode="custom",
+            selected_tool_ids=["tool-read"],
+            tool_options={"tool-read": WorkspaceToolOptionState(write_access_enabled=True)},
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with (
+            mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db),
+            mock.patch.object(service, "_is_admin_user", mock.AsyncMock(return_value=False)),
+            mock.patch.object(service, "_filter_workspace_selection_inputs_for_owner", mock.AsyncMock(return_value=(["tool-read"], None))),
+            mock.patch(
+                "ragtime.userspace.service.repository.list_tool_configs",
                 mock.AsyncMock(return_value=[SimpleNamespace(id="tool-read", enabled=True, allow_write=False)]),
             ),
             mock.patch(
                 "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
                 mock.AsyncMock(return_value=["tool-read"]),
             ),
+            mock.patch.object(service, "_persist_workspace_tool_selections", mock.AsyncMock()) as persist_tool_selections,
+            mock.patch.object(service, "_persist_workspace_tool_group_selections", mock.AsyncMock()) as persist_tool_groups,
+            mock.patch.object(service, "_persist_workspace_tool_options", mock.AsyncMock()) as persist_tool_options,
+            mock.patch.object(service, "_workspace_files_dir", return_value=Path(".")),
+            mock.patch.object(service, "_ensure_object_storage_config"),
+            mock.patch.object(service, "_seed_runtime_bootstrap_config"),
+            mock.patch.object(service, "_seed_runtime_entrypoint_config"),
+            mock.patch.object(service, "_ensure_workspace_git_repo", mock.AsyncMock()),
+            mock.patch.object(service, "_workspace_from_record", return_value=created_workspace),
         ):
-            with self.assertRaises(HTTPException) as raised:
-                await service.create_workspace(
-                    CreateWorkspaceRequest(
-                        name="Workspace",
-                        selected_tool_ids=["tool-read"],
-                        tool_selection_mode="custom",
-                        tool_options={"tool-read": WorkspaceToolOptionState(write_access_enabled=True)},
-                    ),
-                    "owner-1",
-                )
+            result = await service.create_workspace(
+                CreateWorkspaceRequest(
+                    name="Workspace",
+                    selected_tool_ids=["tool-read"],
+                    tool_selection_mode="custom",
+                    tool_options={"tool-read": WorkspaceToolOptionState(write_access_enabled=True)},
+                ),
+                "owner-1",
+            )
 
-        self.assertEqual(raised.exception.status_code, 403)
-        self.assertEqual(fake_db.workspace.create_calls, [])
-        self.assertEqual(fake_db.workspacemember.created, [])
+        self.assertEqual(result, created_workspace)
+        self.assertEqual(len(fake_db.workspace.create_calls), 1)
+        self.assertEqual(len(fake_db.workspacemember.created), 1)
+        persist_tool_selections.assert_awaited_once()
+        persist_tool_groups.assert_awaited_once()
+        persist_tool_options.assert_awaited_once_with(
+            fake_db,
+            fake_db.workspace.workspace_record.id,
+            {"tool-read": {"write_access_enabled": True}},
+        )
 
     async def test_admin_can_create_workspace_with_restricted_grant(self) -> None:
         service = UserSpaceService()
@@ -518,6 +750,7 @@ class WorkspaceToolOptionCreateTests(unittest.IsolatedAsyncioTestCase):
         with (
             mock.patch("ragtime.userspace.service.get_db", new=_fake_get_db),
             mock.patch.object(service, "_is_admin_user", mock.AsyncMock(return_value=True)),
+            mock.patch.object(service, "_filter_workspace_selection_inputs_for_owner", mock.AsyncMock(return_value=(["tool-read"], None))),
             mock.patch(
                 "ragtime.userspace.service.repository.list_tool_configs",
                 mock.AsyncMock(return_value=[SimpleNamespace(id="tool-read", enabled=True, allow_write=False)]),
@@ -667,7 +900,7 @@ class WorkspaceToolOptionDuplicateAndArchiveTests(unittest.IsolatedAsyncioTestCa
             )
 
         self.assertEqual(len(create_requests), 1)
-        self.assertEqual(create_requests[0].tool_options, {})
+        self.assertEqual(create_requests[0].tool_options, {"tool-read": WorkspaceToolOptionState(write_access_enabled=True)})
 
     async def test_archive_export_manifest_serializes_tool_options(self) -> None:
         service = UserSpaceService()
@@ -802,7 +1035,7 @@ class WorkspaceToolOptionDuplicateAndArchiveTests(unittest.IsolatedAsyncioTestCa
             },
         )
 
-    async def test_archive_import_drops_restricted_grants_for_non_admin(self) -> None:
+    async def test_archive_import_restores_globally_read_only_tool_options_for_non_admin(self) -> None:
         service = UserSpaceService()
         manifest = {
             "workspace": {
@@ -845,7 +1078,10 @@ class WorkspaceToolOptionDuplicateAndArchiveTests(unittest.IsolatedAsyncioTestCa
         update_args = update_workspace.await_args
         assert update_args is not None
         request = update_args.args[1]
-        self.assertEqual(request.tool_options, {})
+        self.assertEqual(
+            request.tool_options,
+            {"tool-read": WorkspaceToolOptionState(write_access_enabled=True)},
+        )
 
     async def test_archive_import_without_tool_options_clears_to_read_only_defaults(self) -> None:
         service = UserSpaceService()

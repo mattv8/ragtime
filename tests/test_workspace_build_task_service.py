@@ -229,6 +229,34 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("missing.ts", str(ctx.exception.detail))
 
+    async def test_data_component_ids_respect_workspace_owner_acl(self) -> None:
+        from ragtime.userspace.service import userspace_service
+
+        workspace = SimpleNamespace(
+            id="ws-1",
+            tool_selection_mode="custom",
+            selected_tool_ids=["tool-1", "tool-2"],
+            selected_tool_group_ids=[],
+        )
+
+        with (
+            mock.patch.object(
+                self.module,
+                "resolve_effective_tool_ids",
+                mock.AsyncMock(return_value=["tool-1", "tool-2"]),
+            ),
+            mock.patch.object(
+                userspace_service,
+                "filter_tool_ids_for_workspace_owner",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                await self.service._validate_brief(workspace, _brief(data_component_ids=["tool-2"]), SimpleNamespace(id="user-1", role="user"))
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("tool-2", str(ctx.exception.detail))
+
     async def test_builder_start_failure_releases_idempotency_claim(self) -> None:
         from ragtime.indexer import routes as indexer_routes
 

@@ -236,4 +236,97 @@ describe('HTTP API OAuth client request shapes', () => {
       expect.objectContaining({ credentials: 'include' }),
     );
   });
+
+  it('adds the requested userspace tool surface query when listing available tools', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    await api.listUserSpaceAvailableTools('workspace');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/userspace/tools?surface=workspace',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('gets the encoded tool access policy endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        tool_id: 'tool/http api',
+        default_chat_access: 'deny',
+        default_workspace_access: 'deny',
+        users: [],
+        groups: [],
+      }),
+    );
+
+    await api.getToolAccessPolicy('tool/http api');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/tools/tool%2Fhttp%20api/access',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('puts only request-direction tool access fields when updating a policy', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        tool_id: 'tool-1',
+        default_chat_access: 'read',
+        default_workspace_access: 'deny',
+        users: [],
+        groups: [],
+      }),
+    );
+
+    await api.updateToolAccessPolicy('tool-1', {
+      tool_id: 'tool-1',
+      default_chat_access: 'read',
+      default_workspace_access: 'deny',
+      users: [
+        {
+          principal_id: 'user-1',
+          chat_access: 'read',
+          workspace_access: null,
+          display_name: 'Alice',
+          principal_detail: '@alice',
+          orphaned: false,
+        },
+      ],
+      groups: [
+        {
+          principal_id: 'group-1',
+          chat_access: null,
+          workspace_access: 'read_write',
+          display_name: 'Engineering',
+          principal_detail: 'LDAP',
+          orphaned: false,
+        },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/indexes/tools/tool-1/access',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          default_chat_access: 'read',
+          default_workspace_access: 'deny',
+          users: [
+            {
+              principal_id: 'user-1',
+              chat_access: 'read',
+              workspace_access: null,
+            },
+          ],
+          groups: [
+            {
+              principal_id: 'group-1',
+              chat_access: null,
+              workspace_access: 'read_write',
+            },
+          ],
+        }),
+      }),
+    );
+  });
 });

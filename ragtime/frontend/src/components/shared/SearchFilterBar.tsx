@@ -21,6 +21,7 @@ interface SearchFilterBarProps {
   className?: string;
   onClick?: () => void;
   completionCandidates?: string[];
+  disabled?: boolean;
 }
 
 export function normalizeSearchFilterText(value: string): string {
@@ -101,8 +102,7 @@ function writeSearchFilterStateToUrl(queryParam: string, input: string, tags: st
   window.history.replaceState(null, '', nextUrl);
 }
 
-export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterState {
-  const initialState = useMemo(() => readSearchFilterStateFromUrl(queryParam), [queryParam]);
+function useSearchFilterState(initialState: { input: string; tags: string[] }): SearchFilterState {
   const [tags, setTags] = useState<string[]>(initialState.tags);
   const [input, setInput] = useState(initialState.input);
   const [debouncedInput, setDebouncedInput] = useState('');
@@ -111,10 +111,6 @@ export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterStat
     const timer = setTimeout(() => setDebouncedInput(input), 200);
     return () => clearTimeout(timer);
   }, [input]);
-
-  useEffect(() => {
-    writeSearchFilterStateToUrl(queryParam, input, tags);
-  }, [queryParam, input, tags]);
 
   const queries = useMemo(() => {
     const liveInput = normalizeSearchFilterText(debouncedInput);
@@ -139,6 +135,21 @@ export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterStat
   };
 }
 
+export function useUrlSearchFilterState(queryParam = 'search'): SearchFilterState {
+  const initialState = useMemo(() => readSearchFilterStateFromUrl(queryParam), [queryParam]);
+  const state = useSearchFilterState(initialState);
+
+  useEffect(() => {
+    writeSearchFilterStateToUrl(queryParam, state.input, state.tags);
+  }, [queryParam, state.input, state.tags]);
+
+  return state;
+}
+
+export function useLocalSearchFilterState(): SearchFilterState {
+  return useSearchFilterState({ input: '', tags: [] });
+}
+
 export function SearchFilterBar({
   state,
   inputRef,
@@ -147,6 +158,7 @@ export function SearchFilterBar({
   className = '',
   onClick,
   completionCandidates,
+  disabled = false,
 }: SearchFilterBarProps) {
   const completionHintId = useId();
   const completionCandidate = useMemo(
@@ -167,6 +179,9 @@ export function SearchFilterBar({
       role="search"
       aria-label={ariaLabel}
       onClick={() => {
+        if (disabled) {
+          return;
+        }
         onClick?.();
         inputRef?.current?.focus();
       }}
@@ -178,6 +193,7 @@ export function SearchFilterBar({
           <button
             type="button"
             className="settings-filter-tag-remove"
+            disabled={disabled}
             onClick={(event) => {
               event.stopPropagation();
               state.setTags((prev) => prev.filter((_, tagIndex) => tagIndex !== index));
@@ -193,6 +209,7 @@ export function SearchFilterBar({
         type="text"
         placeholder={state.tags.length === 0 ? placeholder : ''}
         value={state.input}
+        disabled={disabled}
         onChange={(event) => {
           const value = event.target.value;
           if (value.endsWith(',')) {
@@ -203,6 +220,9 @@ export function SearchFilterBar({
           }
         }}
         onKeyDown={(event) => {
+          if (disabled) {
+            return;
+          }
           if (event.key === 'Tab' && state.input.trim()) {
             if (completionCandidates) {
               if (completionCandidate) {
@@ -223,6 +243,9 @@ export function SearchFilterBar({
           }
         }}
         onBlur={() => {
+          if (disabled) {
+            return;
+          }
           addTag(state.input);
           state.setInput('');
         }}
@@ -238,6 +261,7 @@ export function SearchFilterBar({
         <button
           type="button"
           className="settings-filter-clear"
+          disabled={disabled}
           onClick={(event) => {
             event.stopPropagation();
             state.clear();

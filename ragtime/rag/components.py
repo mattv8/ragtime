@@ -156,6 +156,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
 )
 from ragtime.core.tokenization import count_tokens, truncate_to_token_budget
+from ragtime.core.tool_access import ToolAccessLevel, resolve_tool_access
 from ragtime.core.tool_timeouts import resolve_effective_command_timeout, resolve_effective_tool_timeout
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_nonnegative_int_metadata
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
@@ -13878,6 +13879,9 @@ class RAGComponents:
         self,
         conversation_id: Optional[str],
         runtime_tools: list[Any],
+        *,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
     ) -> list[Any]:
         """Rebuild configured runtime tools whose per-conversation write policy differs from global config.
 
@@ -13914,16 +13918,40 @@ class RAGComponents:
         if not runtime_tool_names:
             return runtime_tools
 
+        access_by_tool_id: dict[str, ToolAccessLevel] = {}
+        if user_id:
+            scoped_tool_ids = [
+                scoped_config_id
+                for config in self._tool_configs
+                if (scoped_config_id := str(config.get("id") or "").strip()) and self._derive_config_tool_names(config).intersection(runtime_tool_names)
+            ]
+            if scoped_tool_ids:
+                try:
+                    access_by_tool_id = await resolve_tool_access(
+                        user_id=user_id,
+                        is_admin=is_admin,
+                        surface="chat",
+                        tool_config_ids=scoped_tool_ids,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to resolve chat tool access for %s: %s",
+                        conversation_id,
+                        _format_exception_message(exc),
+                    )
+
         # Determine which configs need an override and rebuild only those.
         override_configs: list[dict[str, Any]] = []
         for config in self._tool_configs:
-            config_id = config.get("id")
+            config_id = str(config.get("id") or "").strip()
             if not config_id or config_id not in options_by_id:
                 continue
             if not self._derive_config_tool_names(config).intersection(runtime_tool_names):
                 continue
             global_allow_write = bool(config.get("allow_write", False))
             effective = resolve_effective_allow_write(global_allow_write, options_by_id[config_id])
+            if access_by_tool_id.get(config_id) != "read_write":
+                effective = False
             if effective != global_allow_write:
                 overridden = dict(config)
                 overridden["allow_write"] = effective
@@ -14003,12 +14031,6 @@ class RAGComponents:
         if blocked_tool_names:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
 
-        # Apply per-conversation write-policy overrides for configured tools.
-        runtime_tools = await self._apply_conversation_tool_overrides(
-            conversation_id,
-            runtime_tools,
-        )
-
         mode = "chat"
         prompt_is_ui = is_ui
         allowed_tool_config_ids: list[str] | None = None
@@ -14084,6 +14106,12 @@ class RAGComponents:
         current_time_turn_line = self._build_current_time_turn_reminder_line(current_time_context)
         raw_accessible_modes = (workspace_context or {}).get("accessible_workspace_modes", {})
         request_is_admin = bool((current_user_context or {}).get("is_admin") or (workspace_context or {}).get("is_admin"))
+        runtime_tools = await self._apply_conversation_tool_overrides(
+            conversation_id,
+            runtime_tools,
+            user_id=request_user_id or None,
+            is_admin=request_is_admin,
+        )
         accessible_workspace_modes: dict[str, str] = {}
         if isinstance(raw_accessible_modes, dict):
             for key, value in raw_accessible_modes.items():
@@ -14113,6 +14141,22 @@ class RAGComponents:
                 list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
                 get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
             )
+            try:
+                allowed_tool_config_ids = await userspace_service.filter_tool_ids_for_workspace_owner(
+                    workspace,
+                    allowed_tool_config_ids,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve workspace-owner tool ACLs for prompt context %s: %s",
+                    workspace_id,
+                    _format_exception_message(exc),
+                )
+                allowed_tool_config_ids = []
+            request_allowed_tool_config_ids = self._map_blocked_tool_names_to_allowed_tool_config_ids(blocked_tool_names)
+            if request_allowed_tool_config_ids is not None:
+                request_allowed_ids = set(request_allowed_tool_config_ids)
+                allowed_tool_config_ids = [tool_id for tool_id in allowed_tool_config_ids if tool_id in request_allowed_ids]
             workspace_builtin_tool_ids = {
                 CHAT_WEB_SEARCH_TOOL_ID,
                 CHAT_WEB_BROWSE_TOOL_ID,

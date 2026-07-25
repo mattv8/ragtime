@@ -1979,6 +1979,25 @@ export interface ToolGroup {
   updated_at: string;
 }
 
+export type ToolAccessLevel = 'deny' | 'read' | 'read_write';
+
+export interface ToolAccessEntry {
+  principal_id: string;
+  chat_access: ToolAccessLevel | null;
+  workspace_access: ToolAccessLevel | null;
+  display_name?: string | null;
+  principal_detail?: string | null;
+  orphaned?: boolean;
+}
+
+export interface ToolAccessPolicy {
+  tool_id: string;
+  default_chat_access: ToolAccessLevel;
+  default_workspace_access: ToolAccessLevel;
+  users: ToolAccessEntry[];
+  groups: ToolAccessEntry[];
+}
+
 export interface CreateToolGroupRequest {
   name: string;
   description?: string;

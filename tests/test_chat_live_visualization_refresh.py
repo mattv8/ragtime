@@ -77,9 +77,16 @@ def _run_default_workspace_component_execution(
         updated_at=now,
     )
 
-    with patch(
-        "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
-        AsyncMock(return_value=["tool-1"]),
+    with (
+        patch(
+            "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
+            AsyncMock(return_value=["tool-1"]),
+        ),
+        patch.object(
+            service,
+            "filter_tool_ids_for_workspace_owner",
+            AsyncMock(side_effect=lambda _workspace, tool_ids: list(tool_ids)),
+        ),
     ):
         asyncio.run(
             service._execute_component_for_workspace(

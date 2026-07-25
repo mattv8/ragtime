@@ -104,6 +104,16 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
                 mock.AsyncMock(return_value=[_fake_tool_config()]),
             ),
             mock.patch.object(
+                userspace_service,
+                "filter_tool_ids_for_workspace_owner",
+                mock.AsyncMock(side_effect=lambda _workspace, tool_ids: list(tool_ids)),
+            ),
+            mock.patch.object(
+                userspace_service,
+                "_resolve_workspace_owner_tool_access",
+                mock.AsyncMock(side_effect=lambda _workspace, tool_ids: {tool_id: "read_write" for tool_id in tool_ids}),
+            ),
+            mock.patch.object(
                 self.module,
                 "get_db",
                 mock.AsyncMock(
@@ -157,6 +167,50 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
         for rule in _WORKSPACE_CONTINUITY_EXISTING_RULES:
             self.assertIn(rule.lstrip("- ").strip(), contract["rules"])
         self.assertEqual(continuity_rules(), [r.lstrip("- ").strip() for r in _WORKSPACE_CONTINUITY_EXISTING_RULES])
+
+    async def test_context_filters_selected_tools_by_workspace_owner_acl(self) -> None:
+        workspace = _fake_workspace()
+        workspace.selected_tool_ids = ["tool-1", "tool-2"]
+        workspace.tool_options = {
+            "tool-1": WorkspaceToolOptionState(write_access_enabled=True),
+            "tool-2": WorkspaceToolOptionState(write_access_enabled=True),
+        }
+        tool_one = _fake_tool_config()
+        tool_two = SimpleNamespace(
+            id="tool-2",
+            name="Readonly API",
+            tool_type=SimpleNamespace(value="http_api"),
+            description="API",
+            allow_write=True,
+            group_id=None,
+            group_name=None,
+            connection_config={"token": "SECRET"},
+        )
+
+        from ragtime.userspace.service import userspace_service
+
+        with (
+            mock.patch.object(userspace_service, "enforce_workspace_role", mock.AsyncMock(return_value=workspace)),
+            mock.patch.object(userspace_service, "list_workspace_files", mock.AsyncMock(return_value=_fake_files())),
+            mock.patch.object(userspace_service, "get_workspace_entrypoint_status", mock.Mock(return_value=_fake_entrypoint())),
+            mock.patch.object(userspace_service, "is_default_static_entrypoint", mock.Mock(return_value=False)),
+            mock.patch.object(userspace_service, "list_snapshots", mock.AsyncMock(return_value=[])),
+            mock.patch.object(self.module, "resolve_effective_tool_ids", mock.AsyncMock(return_value=["tool-1", "tool-2"])),
+            mock.patch.object(self.module.repository, "list_tool_configs", mock.AsyncMock(return_value=[tool_one, tool_two])),
+            mock.patch.object(userspace_service, "filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-2"])),
+            mock.patch.object(userspace_service, "_resolve_workspace_owner_tool_access", mock.AsyncMock(return_value={"tool-2": "read"})),
+            mock.patch.object(
+                self.module,
+                "get_db",
+                mock.AsyncMock(
+                    return_value=SimpleNamespace(user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user"))))
+                ),
+            ),
+        ):
+            context = await self.service.get_workspace_context("ws-1", "user-1")
+
+        self.assertEqual([tool["component_id"] for tool in context["selected_tools"]], ["tool-2"])
+        self.assertFalse(context["selected_tools"][0]["server_write_enabled"])
 
 
 class PlanningFileReadTests(unittest.IsolatedAsyncioTestCase):

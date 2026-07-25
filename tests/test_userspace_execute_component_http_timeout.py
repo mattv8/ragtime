@@ -55,6 +55,10 @@ class _ExecuteComponentRecordingService(UserSpaceService):
     async def _load_workspace_for_component_execution(self, workspace_id: str, user_id: str | None = None) -> UserSpaceWorkspace:  # type: ignore[override]
         return _make_workspace()
 
+    async def filter_tool_ids_for_workspace_owner(self, workspace: UserSpaceWorkspace, tool_config_ids):  # type: ignore[no-untyped-def,override]
+        _ = workspace
+        return list(tool_config_ids)
+
     def record_live_data_execution_warning(self, workspace_id: str, component_id: str, error: str) -> bool:  # type: ignore[override]
         self.warnings_recorded.append((workspace_id, component_id, error))
         return True

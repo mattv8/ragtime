@@ -478,6 +478,14 @@ enum VectorStoreType {
   faiss // FAISS - in-memory, loaded at startup
 }
 
+enum ToolAccessLevel {
+  deny
+  read
+  read_write
+
+  @@map("tool_access_level")
+}
+
 /// Configuration for a tool instance
 model ToolConfig {
   id       String   @id @default(uuid())
@@ -536,9 +544,59 @@ model ToolConfig {
 
   // Relation to userspace mount sources backed by this tool
   mountSources UserspaceMountSource[]
+  accessPolicy ToolAccessPolicy?
 
   @@index([groupId])
   @@map("tool_configs")
+}
+
+model ToolAccessPolicy {
+  id                     String          @id @default(uuid())
+  toolConfigId           String          @unique @map("tool_config_id")
+  defaultChatAccess      ToolAccessLevel @default(deny) @map("default_chat_access")
+  defaultWorkspaceAccess ToolAccessLevel @default(deny) @map("default_workspace_access")
+  createdAt              DateTime        @default(now()) @map("created_at")
+  updatedAt              DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  toolConfig  ToolConfig             @relation(fields: [toolConfigId], references: [id], onDelete: Cascade)
+  userAccess  ToolUserAccess[]
+  groupAccess ToolAuthGroupAccess[]
+
+  @@map("tool_access_policies")
+}
+
+model ToolUserAccess {
+  id              String           @id @default(uuid())
+  policyId        String           @map("policy_id")
+  userId          String           @map("user_id")
+  chatAccess      ToolAccessLevel? @map("chat_access")
+  workspaceAccess ToolAccessLevel? @map("workspace_access")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  policy ToolAccessPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([policyId, userId])
+  @@index([userId])
+  @@map("tool_user_access")
+}
+
+model ToolAuthGroupAccess {
+  id              String           @id @default(uuid())
+  policyId        String           @map("policy_id")
+  authGroupId     String           @map("auth_group_id")
+  chatAccess      ToolAccessLevel? @map("chat_access")
+  workspaceAccess ToolAccessLevel? @map("workspace_access")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  policy    ToolAccessPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  authGroup AuthGroup        @relation(fields: [authGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([policyId, authGroupId])
+  @@index([authGroupId])
+  @@map("tool_auth_group_access")
 }
 
 // -----------------------------------------------------------------------------
@@ -974,6 +1032,7 @@ model User {
   mfaRecoveryCodes                     UserMfaRecoveryCode[]
   mfaTrustedDevices                    UserMfaTrustedDevice[]
   webauthnCredentials                  UserWebauthnCredential[]
+  toolUserAccess                       ToolUserAccess[]
 
   @@index([authProvider])
   @@index([sourceProvider, sourceId])
@@ -1094,6 +1153,7 @@ model AuthGroup {
   updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
 
   memberships AuthGroupMembership[]
+  toolAuthGroupAccess ToolAuthGroupAccess[]
 
   @@index([provider])
   @@index([sourceDn])

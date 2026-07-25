@@ -19,6 +19,11 @@ const apiMock = vi.hoisted(() => ({
   reorderTools: vi.fn(),
   clearToolUndecryptableCredentials: vi.fn(),
   getPdmIndexStats: vi.fn(),
+  getToolAccessPolicy: vi.fn(),
+  updateToolAccessPolicy: vi.fn(),
+  listUsers: vi.fn(),
+  listUsersDirectory: vi.fn(),
+  listAuthGroups: vi.fn(),
 }));
 
 const toastMock = {
@@ -44,6 +49,36 @@ vi.mock('./ToolWizard', () => ({
   },
 }));
 vi.mock('./MountSourceWizard', () => ({ MountSourceWizard: () => null }));
+vi.mock('./ToolAccessModal', () => ({
+  ToolAccessModal: ({
+    open,
+    toolName,
+    onSave,
+  }: {
+    open: boolean;
+    toolName: string;
+    onSave: (policy: unknown) => void;
+  }) =>
+    open ? (
+      <div>
+        <h3>Tool Access {toolName}</h3>
+        <button
+          type="button"
+          onClick={() =>
+            onSave({
+              tool_id: 'tool-grouped',
+              default_chat_access: 'read',
+              default_workspace_access: 'deny',
+              users: [],
+              groups: [],
+            })
+          }
+        >
+          Save Access
+        </button>
+      </div>
+    ) : null,
+}));
 
 type MockPopoverProps = {
   children: ReactNode;
@@ -259,6 +294,22 @@ describe('ToolsPanel', () => {
       embedding_count: 0,
       last_indexed_at: null,
     });
+    apiMock.getToolAccessPolicy.mockResolvedValue({
+      tool_id: groupedTool.id,
+      default_chat_access: 'deny',
+      default_workspace_access: 'deny',
+      users: [],
+      groups: [],
+    });
+    apiMock.updateToolAccessPolicy.mockResolvedValue({
+      tool_id: groupedTool.id,
+      default_chat_access: 'read',
+      default_workspace_access: 'deny',
+      users: [],
+      groups: [],
+    });
+    apiMock.listUsers.mockResolvedValue([]);
+    apiMock.listAuthGroups.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -345,6 +396,35 @@ describe('ToolsPanel', () => {
     });
     expect(await screen.findByText('Ungrouped Tool Copy')).toBeTruthy();
     expect(toastMock.success).toHaveBeenCalledWith('Tool duplicated');
+  });
+
+  it('opens the access modal from the card menu and saves ACL changes', async () => {
+    const user = userEvent.setup();
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    await user.click(screen.getByText('Alpha Group'));
+    await screen.findByText('Grouped Tool');
+
+    fireEvent.contextMenu(screen.getByText('Grouped Tool'));
+    await user.click(await screen.findByRole('button', { name: 'Edit Users' }));
+
+    await waitFor(() => {
+      expect(apiMock.getToolAccessPolicy).toHaveBeenCalledWith('tool-grouped');
+    });
+    expect(apiMock.listUsers).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole('button', { name: 'Save Access' }));
+
+    await waitFor(() => {
+      expect(apiMock.updateToolAccessPolicy).toHaveBeenCalledWith(
+        'tool-grouped',
+        expect.objectContaining({
+          default_chat_access: 'read',
+          default_workspace_access: 'deny',
+        }),
+      );
+    });
   });
 
   it('hides card footer actions by default and exposes them in the right-click menu', async () => {

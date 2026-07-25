@@ -13,6 +13,8 @@ export interface UserSpaceToolCatalog {
   toolGroupsError: unknown | null;
 }
 
+export type UserSpaceToolCatalogSurface = 'chat' | 'workspace';
+
 export interface UserSpaceToolSelection {
   mode: ToolSelectionMode;
   toolIds: string[];
@@ -36,11 +38,11 @@ export function getUserSpaceToolWorkspaceWriteState(
 }
 
 export function canManageUserSpaceToolWriteForWorkspace(
-  tool: UserSpaceAvailableTool,
+  _tool: UserSpaceAvailableTool,
   canManageWorkspace: boolean,
-  isGlobalAdmin: boolean,
+  _isGlobalAdmin: boolean,
 ): boolean {
-  return canManageWorkspace && (tool.allow_write === true || isGlobalAdmin);
+  return canManageWorkspace;
 }
 
 export function getNextWorkspaceToolOptions(
@@ -67,9 +69,11 @@ export function getNextWorkspaceToolOptions(
   return nextOptions;
 }
 
-export async function fetchUserSpaceToolCatalog(): Promise<UserSpaceToolCatalog> {
+export async function fetchUserSpaceToolCatalog(
+  surface?: UserSpaceToolCatalogSurface,
+): Promise<UserSpaceToolCatalog> {
   const [toolsResult, groupsResult] = await Promise.allSettled([
-    api.listUserSpaceAvailableTools(),
+    api.listUserSpaceAvailableTools(surface),
     api.listUserSpaceToolGroups(),
   ]);
 

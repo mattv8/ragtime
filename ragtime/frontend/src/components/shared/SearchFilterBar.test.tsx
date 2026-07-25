@@ -7,6 +7,7 @@ import {
   SearchFilterBar,
   normalizeSearchFilterText,
   searchFilterTextMatchesQuery,
+  useLocalSearchFilterState,
   useUrlSearchFilterState,
 } from './SearchFilterBar';
 
@@ -37,6 +38,18 @@ function SearchFilterBarHarness(props: { completionCandidates?: string[] }): JSX
         completionCandidates={props.completionCandidates}
       />
       <button type="button">Next field</button>
+    </>
+  );
+}
+
+function LocalSearchFilterBarHarness(): JSX.Element {
+  const state = useLocalSearchFilterState();
+
+  return (
+    <>
+      <SearchFilterBar state={state} placeholder="Filter locally..." ariaLabel="Filter locally" />
+      <output data-testid="queries">{state.queries.join('|')}</output>
+      <output data-testid="tags">{state.tags.join('|')}</output>
     </>
   );
 }
@@ -126,5 +139,27 @@ describe('SearchFilterBar completion behavior', () => {
     expect(document.activeElement).not.toBe(input);
     expect(input).toHaveProperty('value', '');
     expect(screen.getByText(/^appearance$/)).toBeTruthy();
+  });
+});
+
+describe('useLocalSearchFilterState', () => {
+  it('mirrors tag and query behavior without touching the URL', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, '', '/tools?search=keep-me');
+
+    render(<LocalSearchFilterBarHarness />);
+
+    const input = screen.getByRole('textbox', { name: 'Filter locally' });
+    await user.type(input, 'alpha,');
+    await user.type(input, 'beta');
+
+    expect(screen.getByTestId('tags').textContent).toBe('alpha');
+    expect(window.location.search).toBe('?search=keep-me');
+
+    await user.tab();
+
+    expect(screen.getByTestId('queries').textContent).toContain('alpha');
+    expect(screen.getByTestId('queries').textContent).toContain('beta');
+    expect(window.location.search).toBe('?search=keep-me');
   });
 });

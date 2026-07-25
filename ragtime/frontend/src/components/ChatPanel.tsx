@@ -12829,7 +12829,7 @@ export function ChatPanel({
 
   const fetchAvailableTools = useCallback(async () => {
     try {
-      const catalog = await fetchUserSpaceToolCatalog();
+      const catalog = await fetchUserSpaceToolCatalog('chat');
       if (catalog.toolsError) {
         console.error('Failed to fetch available tools:', catalog.toolsError);
       }

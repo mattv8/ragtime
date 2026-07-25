@@ -22,7 +22,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Literal, Optional, TypedDict, cast
+from types import SimpleNamespace
+from typing import Any, Callable, Literal, Optional, Protocol, Sequence, TypedDict, cast
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
@@ -76,6 +77,7 @@ from ragtime.core.ssh import (
     ssh_tunnel_config_from_dict,
     sync_ssh_directory,
 )
+from ragtime.core.tool_access import ToolAccessLevel, filter_tool_ids_by_access, resolve_tool_access
 from ragtime.core.type_coercion import coerce_bool_metadata, coerce_int_metadata
 from ragtime.core.user_identity import add_workspace_user_fingerprint, build_user_fingerprint_subject, normalize_user_identity
 from ragtime.core.userspace_limits import (
@@ -263,6 +265,11 @@ from ragtime.userspace.workspace_tool_options import (
 )
 
 logger = get_logger(__name__)
+
+
+class _WorkspaceOwnerRef(Protocol):
+    owner_user_id: str
+
 
 _WORKSPACE_GIT_USER_NAME = "Ragtime User Space"
 _WORKSPACE_GIT_USER_EMAIL = "userspace@ragtime.local"
@@ -1469,6 +1476,70 @@ class UserSpaceService:
         # Rehydrate persistent archive export history from task sidecars.
         self._rehydrate_workspace_archive_export_task_statuses()
         self._rehydrate_workspace_sqlite_import_task_statuses()
+
+    @staticmethod
+    def _workspace_owner_user_id(workspace: Any) -> str:
+        return str(getattr(workspace, "owner_user_id", None) or getattr(workspace, "ownerUserId", "") or "").strip()
+
+    async def _resolve_workspace_owner_principal(self, workspace: Any) -> tuple[str, bool] | None:
+        owner_user_id = self._workspace_owner_user_id(workspace)
+        if not owner_user_id:
+            return None
+        db = await get_db()
+        owner = await db.user.find_unique(where={"id": owner_user_id})
+        if owner is None:
+            return None
+        return owner_user_id, getattr(owner, "role", "") == "admin"
+
+    async def filter_tool_ids_for_workspace_owner(self, workspace: _WorkspaceOwnerRef, tool_config_ids: Sequence[str]) -> list[str]:
+        owner_principal = await self._resolve_workspace_owner_principal(workspace)
+        if owner_principal is None:
+            return []
+        owner_user_id, owner_is_admin = owner_principal
+        return await filter_tool_ids_by_access(
+            user_id=owner_user_id,
+            is_admin=owner_is_admin,
+            surface="workspace",
+            tool_config_ids=tool_config_ids,
+        )
+
+    async def _resolve_workspace_owner_tool_access(
+        self,
+        workspace: Any,
+        tool_config_ids: Sequence[str],
+    ) -> dict[str, ToolAccessLevel]:
+        owner_principal = await self._resolve_workspace_owner_principal(workspace)
+        if owner_principal is None:
+            return {tool_id: "deny" for tool_id in tool_config_ids if tool_id}
+        owner_user_id, owner_is_admin = owner_principal
+        return await resolve_tool_access(
+            user_id=owner_user_id,
+            is_admin=owner_is_admin,
+            surface="workspace",
+            tool_config_ids=tool_config_ids,
+        )
+
+    async def _filter_workspace_selection_inputs_for_owner(
+        self,
+        owner_user_id: str,
+        selected_tool_ids: list[str] | None,
+        selected_tool_group_ids: list[str] | None,
+    ) -> tuple[list[str] | None, list[str] | None]:
+        owner_workspace = cast(_WorkspaceOwnerRef, SimpleNamespace(owner_user_id=owner_user_id))
+        filtered_tool_ids = await self.filter_tool_ids_for_workspace_owner(owner_workspace, selected_tool_ids) if selected_tool_ids is not None else None
+
+        filtered_group_ids: list[str] | None = None
+        if selected_tool_group_ids is not None:
+            filtered_group_ids = []
+            seen_group_ids: set[str] = set()
+            for group_id in selected_tool_group_ids:
+                if group_id in seen_group_ids:
+                    continue
+                group_tool_ids = await repository.get_tool_ids_for_groups([group_id])
+                if await self.filter_tool_ids_for_workspace_owner(owner_workspace, group_tool_ids):
+                    filtered_group_ids.append(group_id)
+                    seen_group_ids.add(group_id)
+        return filtered_tool_ids, filtered_group_ids
 
     async def _get_workspace_file_mutation_lock(self, workspace_id: str, normalized_path: str) -> asyncio.Lock:
         key = (workspace_id, normalized_path.strip("/"))
@@ -3229,17 +3300,13 @@ class UserSpaceService:
 
                 create_request_kwargs: dict[str, Any] = {"name": target_name}
                 if copy_metadata:
-                    filtered_tool_options = await self._filter_workspace_tool_options_for_actor(
-                        dict(source_workspace.tool_options),
-                        is_admin=acting_is_admin,
-                    )
                     create_request_kwargs.update(
                         {
                             "description": source_workspace.description,
                             "sqlite_persistence_mode": source_workspace.sqlite_persistence_mode,
                             "selected_tool_ids": list(source_workspace.selected_tool_ids),
                             "selected_tool_group_ids": list(source_workspace.selected_tool_group_ids),
-                            "tool_options": filtered_tool_options,
+                            "tool_options": dict(source_workspace.tool_options),
                         }
                     )
 
@@ -4084,10 +4151,6 @@ class UserSpaceService:
             )
             if raw_tool_options
             else {}
-        )
-        normalized_tool_options = await self._filter_workspace_tool_options_for_actor(
-            normalized_tool_options,
-            is_admin=is_admin,
         )
         request_tool_options = {
             tool_id: WorkspaceToolOptionState(
@@ -13004,65 +13067,6 @@ class UserSpaceService:
                 normalized[str(tool_id)] = options
         return normalized
 
-    async def _restricted_workspace_tool_option_ids(self, tool_ids: set[str]) -> set[str]:
-        if not tool_ids:
-            return set()
-        tool_configs = await repository.list_tool_configs(enabled_only=True)
-        return {
-            str(getattr(tool_config, "id", "") or "")
-            for tool_config in tool_configs
-            if str(getattr(tool_config, "id", "") or "") in tool_ids and not getattr(tool_config, "allow_write", False)
-        }
-
-    async def _filter_workspace_tool_options_for_actor(
-        self,
-        tool_options: dict[str, Any] | None,
-        *,
-        is_admin: bool,
-    ) -> dict[str, Any]:
-        if not tool_options:
-            return {}
-        if is_admin:
-            return dict(tool_options)
-        restricted_ids = await self._restricted_workspace_tool_option_ids(set(tool_options))
-        return {tool_id: options for tool_id, options in tool_options.items() if tool_id not in restricted_ids}
-
-    async def _enforce_workspace_tool_option_create_permissions(
-        self,
-        tool_options: dict[str, dict[str, bool]],
-        *,
-        is_admin: bool,
-    ) -> None:
-        if is_admin or not tool_options:
-            return
-        restricted_ids = await self._restricted_workspace_tool_option_ids(set(tool_options))
-        if restricted_ids:
-            raise HTTPException(
-                status_code=403,
-                detail="Only admins can grant workspace write access for globally read-only tools.",
-            )
-
-    async def _enforce_workspace_tool_option_update_permissions(
-        self,
-        current_workspace: UserSpaceWorkspace,
-        next_tool_options: dict[str, dict[str, bool]],
-        *,
-        is_admin: bool,
-    ) -> None:
-        if is_admin:
-            return
-        current_tool_options = self._normalize_workspace_tool_option_state_map(getattr(current_workspace, "tool_options", {}))
-        restricted_ids = await self._restricted_workspace_tool_option_ids(set(current_tool_options) | set(next_tool_options))
-        if not restricted_ids:
-            return
-        current_restricted = {tool_id: current_tool_options[tool_id] for tool_id in restricted_ids if tool_id in current_tool_options}
-        next_restricted = {tool_id: next_tool_options[tool_id] for tool_id in restricted_ids if tool_id in next_tool_options}
-        if current_restricted != next_restricted:
-            raise HTTPException(
-                status_code=403,
-                detail="Only admins can change workspace write access for globally read-only tools.",
-            )
-
     async def _persist_workspace_tool_options(
         self,
         db: Any,
@@ -13111,18 +13115,18 @@ class UserSpaceService:
         requested_tool_ids = request.selected_tool_ids
         if requested_tool_ids is None and tool_selection_mode == "custom":
             requested_tool_ids = await repository.list_healthy_enabled_tool_ids()
+        requested_tool_ids, requested_tool_group_ids = await self._filter_workspace_selection_inputs_for_owner(
+            user_id,
+            requested_tool_ids,
+            request.selected_tool_group_ids,
+        )
 
         normalized_tool_options = await self._normalize_workspace_tool_options_for_request(
             cast(dict[str, Any] | None, request.tool_options),
             tool_selection_mode=tool_selection_mode,
             selected_tool_ids=requested_tool_ids,
-            selected_tool_group_ids=request.selected_tool_group_ids,
+            selected_tool_group_ids=requested_tool_group_ids,
         )
-        await self._enforce_workspace_tool_option_create_permissions(
-            normalized_tool_options,
-            is_admin=is_admin,
-        )
-
         try:
             await db.workspace.create(
                 data=cast(
@@ -13174,7 +13178,7 @@ class UserSpaceService:
         await self._persist_workspace_tool_group_selections(
             db,
             workspace_id,
-            request.selected_tool_group_ids,
+            requested_tool_group_ids,
         )
 
         await self._persist_workspace_tool_options(
@@ -14454,9 +14458,25 @@ class UserSpaceService:
         if request.tool_selection_mode is not None:
             update_data["toolSelectionMode"] = request.tool_selection_mode
 
+        next_owner_user_id = request.owner_user_id or current_ws.owner_user_id
+        filtered_selected_tool_ids = request.selected_tool_ids
+        filtered_selected_tool_group_ids = request.selected_tool_group_ids
+        if request.selected_tool_ids is not None or request.selected_tool_group_ids is not None or request.owner_user_id is not None:
+            filtered_selected_tool_ids, filtered_selected_tool_group_ids = await self._filter_workspace_selection_inputs_for_owner(
+                next_owner_user_id,
+                request.selected_tool_ids if request.selected_tool_ids is not None else current_ws.selected_tool_ids,
+                request.selected_tool_group_ids if request.selected_tool_group_ids is not None else current_ws.selected_tool_group_ids,
+            )
+
         next_tool_selection_mode = request.tool_selection_mode or current_ws.tool_selection_mode
-        next_selected_tool_ids = request.selected_tool_ids if request.selected_tool_ids is not None else current_ws.selected_tool_ids
-        next_selected_tool_group_ids = request.selected_tool_group_ids if request.selected_tool_group_ids is not None else current_ws.selected_tool_group_ids
+        next_selected_tool_ids = (
+            filtered_selected_tool_ids if (request.selected_tool_ids is not None or request.owner_user_id is not None) else current_ws.selected_tool_ids
+        )
+        next_selected_tool_group_ids = (
+            filtered_selected_tool_group_ids
+            if (request.selected_tool_group_ids is not None or request.owner_user_id is not None)
+            else current_ws.selected_tool_group_ids
+        )
         normalized_tool_options = (
             await self._normalize_workspace_tool_options_for_request(
                 cast(dict[str, Any] | None, request.tool_options),
@@ -14467,13 +14487,24 @@ class UserSpaceService:
             if has_tool_options_update
             else None
         )
-        if normalized_tool_options is not None:
-            await self._enforce_workspace_tool_option_update_permissions(
-                current_ws,
-                normalized_tool_options,
-                is_admin=is_admin,
+        owner_transfer_tool_options = normalized_tool_options
+        if request.owner_user_id is not None and request.owner_user_id != current_ws.owner_user_id:
+            if owner_transfer_tool_options is None:
+                owner_transfer_tool_options = self._normalize_workspace_tool_option_state_map(getattr(current_ws, "tool_options", {}))
+            owner_access = await self._resolve_workspace_owner_tool_access(
+                SimpleNamespace(owner_user_id=request.owner_user_id),
+                list(owner_transfer_tool_options),
             )
-
+            removed_tool_ids = sorted(tool_id for tool_id in owner_transfer_tool_options if owner_access.get(tool_id, "deny") != "read_write")
+            if removed_tool_ids:
+                owner_transfer_tool_options = {
+                    tool_id: options for tool_id, options in owner_transfer_tool_options.items() if tool_id not in set(removed_tool_ids)
+                }
+                logger.info(
+                    "Workspace %s owner transfer removed write opt-ins for tools: %s",
+                    workspace_id,
+                    ", ".join(removed_tool_ids),
+                )
         try:
             await db.workspace.update(where={"id": workspace_id}, data=cast(Any, update_data))
         except Exception as exc:
@@ -14488,7 +14519,7 @@ class UserSpaceService:
             await self._persist_workspace_tool_selections(
                 db,
                 workspace_id,
-                request.selected_tool_ids,
+                filtered_selected_tool_ids,
                 replace_existing=True,
             )
 
@@ -14496,15 +14527,15 @@ class UserSpaceService:
             await self._persist_workspace_tool_group_selections(
                 db,
                 workspace_id,
-                request.selected_tool_group_ids,
+                filtered_selected_tool_group_ids,
                 replace_existing=True,
             )
 
-        if has_tool_options_update:
+        if has_tool_options_update or (request.owner_user_id is not None and request.owner_user_id != current_ws.owner_user_id):
             await self._persist_workspace_tool_options(
                 db,
                 workspace_id,
-                normalized_tool_options,
+                owner_transfer_tool_options,
                 replace_existing=True,
             )
 
@@ -21459,6 +21490,7 @@ class UserSpaceService:
     ) -> _ExecuteComponentExecutionResult:
         http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
         selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
+        owner_access_levels = await self._resolve_workspace_owner_tool_access(workspace, selected_tool_ids) if allow_workspace_write else None
         resolved_config: _ResolvedComponentExecutionConfig | None = None
         if allow_workspace_write:
             resolved_config = await self._resolve_component_execution_config_for_tool_ids(
@@ -21466,6 +21498,7 @@ class UserSpaceService:
                 request.component_id,
                 workspace_tool_options=getattr(workspace, "tool_options", {}),
                 allow_runtime_bridge_tools=True,
+                owner_access_levels=owner_access_levels,
             )
         started_at = _time.monotonic()
         try:
@@ -21703,20 +21736,23 @@ class UserSpaceService:
         component_id: str,
     ) -> _ResolvedComponentExecutionConfig:
         selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
+        owner_access_levels = await self._resolve_workspace_owner_tool_access(workspace, selected_tool_ids)
         return await self._resolve_component_execution_config_for_tool_ids(
             selected_tool_ids,
             component_id,
             workspace_tool_options=getattr(workspace, "tool_options", {}),
+            owner_access_levels=owner_access_levels,
         )
 
     async def _resolve_effective_workspace_tool_ids(self, workspace: UserSpaceWorkspace) -> list[str]:
-        return await resolve_effective_tool_ids(
+        selected_tool_ids = await resolve_effective_tool_ids(
             tool_selection_mode=getattr(workspace, "tool_selection_mode", ""),
             selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
             selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
             list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
             get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
         )
+        return await self.filter_tool_ids_for_workspace_owner(workspace, selected_tool_ids)
 
     async def _resolve_component_execution_config_for_tool_ids(
         self,
@@ -21725,6 +21761,7 @@ class UserSpaceService:
         *,
         workspace_tool_options: dict[str, Any] | None = None,
         allow_runtime_bridge_tools: bool = False,
+        owner_access_levels: dict[str, ToolAccessLevel] | None = None,
     ) -> _ResolvedComponentExecutionConfig:
         resolved_id = component_id
 
@@ -21760,7 +21797,12 @@ class UserSpaceService:
         conn_config = tool_config.connection_config or {}
         options = load_workspace_tool_options((workspace_tool_options or {}).get(resolved_id))
         effective_allow_write = (
-            resolve_workspace_tool_write_access(bool(getattr(tool_config, "allow_write", False)), options) if allow_runtime_bridge_tools else False
+            (
+                resolve_workspace_tool_write_access(bool(getattr(tool_config, "allow_write", False)), options)
+                and (owner_access_levels or {}).get(resolved_id, "deny") == "read_write"
+            )
+            if allow_runtime_bridge_tools
+            else False
         )
         return _ResolvedComponentExecutionConfig(
             resolved_id=resolved_id,

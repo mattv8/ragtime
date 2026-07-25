@@ -2377,6 +2377,44 @@ class UpdateToolConfigRequest(BaseModel):
     group_id: Optional[str] = Field(default=None, description="Tool group ID (use empty string to ungroup)")
 
 
+ToolAccessLevel = Literal["deny", "read", "read_write"]
+
+
+class ToolAccessEntryUpdate(BaseModel):
+    """Request-direction tool access row for one principal."""
+
+    principal_id: str = Field(description="User id or auth group id")
+    chat_access: ToolAccessLevel | None = Field(default=None, description="Chat access level; null inherits the default policy")
+    workspace_access: ToolAccessLevel | None = Field(default=None, description="Workspace access level; null inherits the default policy")
+
+
+class ToolAccessEntry(ToolAccessEntryUpdate):
+    """Response-direction tool access row with display metadata."""
+
+    display_name: str | None = Field(default=None, description="Display label for the user or auth group")
+    principal_detail: str | None = Field(default=None, description="Secondary principal detail such as username or provider")
+    orphaned: bool = Field(default=False, description="True when the principal is missing or has no active memberships")
+
+
+class ToolAccessPolicyResponse(BaseModel):
+    """Admin-facing tool ACL payload."""
+
+    tool_id: str
+    default_chat_access: ToolAccessLevel
+    default_workspace_access: ToolAccessLevel
+    users: list[ToolAccessEntry] = Field(default_factory=list)
+    groups: list[ToolAccessEntry] = Field(default_factory=list)
+
+
+class ToolAccessPolicyUpdateRequest(BaseModel):
+    """Replace-all admin tool ACL update payload."""
+
+    default_chat_access: ToolAccessLevel
+    default_workspace_access: ToolAccessLevel
+    users: list[ToolAccessEntryUpdate] = Field(default_factory=list)
+    groups: list[ToolAccessEntryUpdate] = Field(default_factory=list)
+
+
 class ReorderToolsRequest(BaseModel):
     """Request to bulk-reorder tool configs."""
 

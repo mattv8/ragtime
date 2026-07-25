@@ -933,7 +933,7 @@ export function getWorkspaceToolReadOnlyDescription(
   isGloballyWritable = true,
 ): ReactNode {
   if (!isGloballyWritable) {
-    return 'Only global admins may manage workspace write access for a globally read-only tool.';
+    return 'Only the workspace owner or an admin can change this.';
   }
 
   if (!isAdmin) {
@@ -3305,7 +3305,7 @@ export function UserSpacePanel({
   }, [activeWorkspaceId, files, previewEntryPath]);
 
   const loadTools = useCallback(async () => {
-    const catalog = await fetchUserSpaceToolCatalog();
+    const catalog = await fetchUserSpaceToolCatalog('workspace');
     if (catalog.toolsError) {
       console.warn('Failed to load User Space tools', catalog.toolsError);
     }

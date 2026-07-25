@@ -36,6 +36,8 @@ import {
 } from '@/utils/exportPasswordPolicy';
 import { PasswordRequirementsChecklist } from './shared/PasswordRequirementsChecklist';
 import { Popover } from './Popover';
+import { ToolAccessModal } from './ToolAccessModal';
+import type { ToolAccessPolicy } from '@/types';
 
 // Inline field being edited
 type EditingField = 'name' | 'description' | null;
@@ -699,6 +701,16 @@ export function ToolsPanel({
     y: number;
   } | null>(null);
   const toolContextMenuRef = useRef<HTMLDivElement>(null);
+  const [toolAccessModalTool, setToolAccessModalTool] = useState<ToolConfig | null>(null);
+  const [toolAccessPolicy, setToolAccessPolicy] = useState<ToolAccessPolicy | null>(null);
+  const [toolAccessUserOptions, setToolAccessUserOptions] = useState<
+    Array<{ id: string; username: string; display_name: string | null; is_admin: boolean }>
+  >([]);
+  const [toolAccessGroupOptions, setToolAccessGroupOptions] = useState<
+    Array<{ id: string; key: string; display_name: string; provider: string; member_count: number }>
+  >([]);
+  const [toolAccessLoading, setToolAccessLoading] = useState(false);
+  const [toolAccessSaving, setToolAccessSaving] = useState(false);
 
   const [toolPasswordModal, setToolPasswordModal] = useState<
     { mode: 'export'; toolId: string } | { mode: 'import' } | null
@@ -722,7 +734,8 @@ export function ToolsPanel({
     writeConfirmTool ||
     deleteConfirmTool ||
     clearConfirmTool ||
-    toolPasswordModal,
+    toolPasswordModal ||
+    toolAccessModalTool,
   );
 
   // Group the tools for display — include ALL groups (even empty) as drop targets
@@ -1098,6 +1111,76 @@ export function ToolsPanel({
     await loadTools();
     toast.success('Tool configuration saved successfully');
   };
+
+  const closeToolAccessModal = useCallback(() => {
+    if (toolAccessSaving) {
+      return;
+    }
+    setToolAccessModalTool(null);
+    setToolAccessPolicy(null);
+    setToolAccessLoading(false);
+  }, [toolAccessSaving]);
+
+  const handleOpenToolAccess = useCallback(
+    async (tool: ToolConfig) => {
+      setToolAccessModalTool(tool);
+      setToolAccessPolicy(null);
+      setToolAccessLoading(true);
+      try {
+        const [policy, users, groups] = await Promise.all([
+          api.getToolAccessPolicy(tool.id),
+          api.listUsers(),
+          api.listAuthGroups(),
+        ]);
+        setToolAccessPolicy(policy);
+        setToolAccessUserOptions(
+          users.map((user) => ({
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            is_admin: user.role === 'admin',
+          })),
+        );
+        setToolAccessGroupOptions(
+          groups.map((group) => ({
+            id: group.id,
+            key: group.key,
+            display_name: group.display_name,
+            provider: group.provider,
+            member_count: group.member_count,
+          })),
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to load tool access');
+        setToolAccessModalTool(null);
+      } finally {
+        setToolAccessLoading(false);
+      }
+    },
+    [toast],
+  );
+
+  const handleSaveToolAccess = useCallback(
+    async (policy: ToolAccessPolicy) => {
+      if (!toolAccessModalTool) {
+        return;
+      }
+      setToolAccessSaving(true);
+      try {
+        const savedPolicy = await api.updateToolAccessPolicy(toolAccessModalTool.id, policy);
+        setToolAccessPolicy(savedPolicy);
+        toast.success('Tool access saved');
+        setToolAccessModalTool(null);
+        setToolAccessPolicy(null);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to save tool access');
+        throw err;
+      } finally {
+        setToolAccessSaving(false);
+      }
+    },
+    [toast, toolAccessModalTool],
+  );
 
   const patchToolInState = useCallback((toolId: string, updates: Partial<ToolConfig>) => {
     setTools((current) =>
@@ -2258,6 +2341,19 @@ export function ToolsPanel({
         ) : (
           <>
             <ToastContainer toasts={toasts} onDismiss={toast.dismiss} />
+            <ToolAccessModal
+              open={toolAccessModalTool != null}
+              toolName={toolAccessModalTool?.name ?? ''}
+              policy={toolAccessPolicy}
+              userOptions={toolAccessUserOptions}
+              groupOptions={toolAccessGroupOptions}
+              loading={toolAccessLoading}
+              saving={toolAccessSaving}
+              globalWriteEnabled={toolAccessModalTool?.allow_write ?? true}
+              onChange={(policy) => setToolAccessPolicy(policy)}
+              onSave={handleSaveToolAccess}
+              onClose={closeToolAccessModal}
+            />
 
             {toolContextMenu &&
               (() => {
@@ -2298,6 +2394,11 @@ export function ToolsPanel({
                         label: 'Edit',
                         icon: 'pencil',
                         onSelect: () => closeAnd(() => handleEditTool(contextTool)),
+                      },
+                      {
+                        label: 'Edit Users',
+                        icon: 'shield-check',
+                        onSelect: () => closeAnd(() => void handleOpenToolAccess(contextTool)),
                       },
                       ...(contextTool.undecryptable_fields.length > 0
                         ? [

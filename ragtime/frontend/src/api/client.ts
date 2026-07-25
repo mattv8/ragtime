@@ -160,6 +160,7 @@ import type {
   UserSpaceWorkspaceArchiveImportTask,
   UserSpaceWorkspaceArchiveExportListResponse,
   DeleteUserSpaceWorkspaceArchiveExportResponse,
+  ToolAccessPolicy,
   UserSpaceRuntimeRestartBatchTask,
   WorkspaceAgentAccessStatus,
   UserSpaceWorkspaceShareLink,
@@ -1790,6 +1791,36 @@ export const api = {
       body: JSON.stringify(updates),
     });
     return handleResponse<ToolConfig>(response);
+  },
+
+  async getToolAccessPolicy(toolId: string): Promise<ToolAccessPolicy> {
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}/access`);
+    return handleResponse<ToolAccessPolicy>(response);
+  },
+
+  async updateToolAccessPolicy(
+    toolId: string,
+    policy: ToolAccessPolicy,
+  ): Promise<ToolAccessPolicy> {
+    const response = await apiFetch(`${API_BASE}/tools/${encodeURIComponent(toolId)}/access`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        default_chat_access: policy.default_chat_access,
+        default_workspace_access: policy.default_workspace_access,
+        users: policy.users.map(({ principal_id, chat_access, workspace_access }) => ({
+          principal_id,
+          chat_access,
+          workspace_access,
+        })),
+        groups: policy.groups.map(({ principal_id, chat_access, workspace_access }) => ({
+          principal_id,
+          chat_access,
+          workspace_access,
+        })),
+      }),
+    });
+    return handleResponse<ToolAccessPolicy>(response);
   },
 
   /**
@@ -3510,8 +3541,16 @@ export const api = {
     return handleResponse<PaginatedWorkspacesResponse>(response);
   },
 
-  async listUserSpaceAvailableTools(): Promise<UserSpaceAvailableTool[]> {
-    const response = await apiFetch(`${API_BASE}/userspace/tools`);
+  async listUserSpaceAvailableTools(
+    surface?: 'chat' | 'workspace',
+  ): Promise<UserSpaceAvailableTool[]> {
+    const params = new URLSearchParams();
+    if (surface) {
+      params.set('surface', surface);
+    }
+    const response = await apiFetch(
+      `${API_BASE}/userspace/tools${params.size > 0 ? `?${params.toString()}` : ''}`,
+    );
     return handleResponse<UserSpaceAvailableTool[]>(response);
   },
 

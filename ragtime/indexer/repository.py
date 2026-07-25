@@ -8,6 +8,7 @@ replacing the previous JSON file-based storage.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import uuid
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional, cast
 
+from fastapi import HTTPException
 from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexJobPhase as PrismaIndexJobPhase
@@ -104,6 +106,7 @@ from ragtime.core.logging import get_logger
 from ragtime.core.sql import sql_quote_literal as _sql_quote_literal
 from ragtime.core.sql_utils import strip_table_metadata
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.tool_access import normalize_default_access_level
 from ragtime.core.userspace_limits import (
     clamp_archive_max_file_count,
     clamp_archive_max_total_size_bytes,
@@ -149,6 +152,10 @@ from ragtime.indexer.models import (
     OcrMode,
     OcrProvider,
     ProviderPromptDebugRecord,
+    ToolAccessEntry,
+    ToolAccessEntryUpdate,
+    ToolAccessPolicyResponse,
+    ToolAccessPolicyUpdateRequest,
     ToolCallRecord,
     ToolConfig,
     ToolGroup,
@@ -163,6 +170,14 @@ from ragtime.indexer.utils import safe_tool_name
 from ragtime.indexer.vector_backends import FAISS_INDEX_BASE_PATH
 
 logger = get_logger(__name__)
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    try:
+        unique_violation_error = getattr(importlib.import_module("prisma.errors"), "UniqueViolationError", None)
+    except Exception:
+        return False
+    return isinstance(unique_violation_error, type) and isinstance(exc, unique_violation_error)
 
 
 def _normalize_ocr_mode_value(value: Any) -> str:
@@ -1857,6 +1872,241 @@ class IndexerRepository:
             return None
 
         return self._prisma_tool_config_to_model(prisma_config)
+
+    async def get_tool_access_policy(self, tool_id: str) -> ToolAccessPolicyResponse:
+        """Return the admin-facing ACL policy for one tool."""
+        db = await self._get_db()
+        db_any = cast(Any, db)
+        tool = await db.toolconfig.find_unique(where={"id": tool_id})
+        if tool is None:
+            raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+        policy = await db_any.toolaccesspolicy.find_unique(where={"toolConfigId": tool_id})
+        user_rows: list[dict[str, Any]] = await db.query_raw(
+            """
+            SELECT
+                access."user_id" AS principal_id,
+                access."chat_access"::text AS chat_access,
+                access."workspace_access"::text AS workspace_access,
+                users."display_name" AS display_name,
+                users."username" AS username
+            FROM "tool_user_access" access
+            JOIN "tool_access_policies" policy ON policy."id" = access."policy_id"
+            LEFT JOIN "users" users ON users."id" = access."user_id"
+            WHERE policy."tool_config_id" = $1::text
+            ORDER BY COALESCE(users."display_name", users."username", ''), access."user_id"
+            """,
+            tool_id,
+        )
+        group_rows: list[dict[str, Any]] = await db.query_raw(
+            """
+            SELECT
+                access."auth_group_id" AS principal_id,
+                access."chat_access"::text AS chat_access,
+                access."workspace_access"::text AS workspace_access,
+                groups."display_name" AS display_name,
+                groups."provider"::text AS provider,
+                COUNT(membership."id")::int AS active_member_count
+            FROM "tool_auth_group_access" access
+            JOIN "tool_access_policies" policy ON policy."id" = access."policy_id"
+            LEFT JOIN "auth_groups" groups ON groups."id" = access."auth_group_id"
+            LEFT JOIN "auth_group_memberships" membership
+                ON membership."group_id" = access."auth_group_id"
+               AND (membership."expires_at" IS NULL OR membership."expires_at" > CURRENT_TIMESTAMP)
+            WHERE policy."tool_config_id" = $1::text
+            GROUP BY access."auth_group_id", access."chat_access", access."workspace_access", groups."display_name", groups."provider"
+            ORDER BY COALESCE(groups."display_name", ''), access."auth_group_id"
+            """,
+            tool_id,
+        )
+
+        return ToolAccessPolicyResponse(
+            tool_id=tool_id,
+            default_chat_access=normalize_default_access_level(
+                cast(Optional[str], getattr(policy, "defaultChatAccess", None)),
+                allow_write=bool(getattr(tool, "allowWrite", False)),
+            ),
+            default_workspace_access=normalize_default_access_level(
+                cast(Optional[str], getattr(policy, "defaultWorkspaceAccess", None)),
+                allow_write=bool(getattr(tool, "allowWrite", False)),
+            ),
+            users=[
+                ToolAccessEntry(
+                    principal_id=str(row.get("principal_id") or ""),
+                    chat_access=cast(Any, row.get("chat_access")),
+                    workspace_access=cast(Any, row.get("workspace_access")),
+                    display_name=cast(Optional[str], row.get("display_name")),
+                    principal_detail=cast(Optional[str], row.get("username")),
+                    orphaned=not bool(row.get("username") or row.get("display_name")),
+                )
+                for row in user_rows
+            ],
+            groups=[
+                ToolAccessEntry(
+                    principal_id=str(row.get("principal_id") or ""),
+                    chat_access=cast(Any, row.get("chat_access")),
+                    workspace_access=cast(Any, row.get("workspace_access")),
+                    display_name=cast(Optional[str], row.get("display_name")),
+                    principal_detail=cast(Optional[str], row.get("provider")),
+                    orphaned=(int(row.get("active_member_count") or 0) <= 0) or not bool(row.get("display_name")),
+                )
+                for row in group_rows
+            ],
+        )
+
+    @staticmethod
+    def _validate_access_entries(entries: list[ToolAccessEntryUpdate], *, label: str) -> None:
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        null_entries: list[str] = []
+        for entry in entries:
+            if entry.principal_id in seen and entry.principal_id not in duplicates:
+                duplicates.append(entry.principal_id)
+            seen.add(entry.principal_id)
+            if entry.chat_access is None and entry.workspace_access is None:
+                null_entries.append(entry.principal_id)
+        if duplicates:
+            raise HTTPException(status_code=400, detail=f"Duplicate {label} principals: {', '.join(sorted(duplicates))}")
+        if null_entries:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label.capitalize()} entries must define at least one surface: {', '.join(sorted(null_entries))}",
+            )
+
+    async def replace_tool_access_policy(
+        self,
+        tool_id: str,
+        request: ToolAccessPolicyUpdateRequest,
+    ) -> ToolAccessPolicyResponse:
+        """Replace all explicit ACL rows and fallback defaults for one tool."""
+        db = await self._get_db()
+        tool = await db.toolconfig.find_unique(where={"id": tool_id})
+        if tool is None:
+            raise HTTPException(status_code=404, detail="Tool configuration not found")
+
+        self._validate_access_entries(request.users, label="user")
+        self._validate_access_entries(request.groups, label="group")
+        normalized_default_chat_access = normalize_default_access_level(
+            request.default_chat_access,
+            allow_write=bool(getattr(tool, "allowWrite", False)),
+        )
+        normalized_default_workspace_access = normalize_default_access_level(
+            request.default_workspace_access,
+            allow_write=bool(getattr(tool, "allowWrite", False)),
+        )
+
+        user_ids = list(dict.fromkeys(entry.principal_id for entry in request.users if entry.principal_id))
+        group_ids = list(dict.fromkeys(entry.principal_id for entry in request.groups if entry.principal_id))
+        existing_users = await db.user.find_many(where={"id": {"in": user_ids}}) if user_ids else []
+        existing_groups = await db.authgroup.find_many(where={"id": {"in": group_ids}}) if group_ids else []
+        existing_user_ids = {str(getattr(user, "id", "")) for user in existing_users}
+        existing_group_ids = {str(getattr(group, "id", "")) for group in existing_groups}
+        missing_users = sorted(user_id for user_id in user_ids if user_id not in existing_user_ids)
+        missing_groups = sorted(group_id for group_id in group_ids if group_id not in existing_group_ids)
+        if missing_users or missing_groups:
+            missing_parts: list[str] = []
+            if missing_users:
+                missing_parts.append(f"users: {', '.join(missing_users)}")
+            if missing_groups:
+                missing_parts.append(f"groups: {', '.join(missing_groups)}")
+            raise HTTPException(status_code=400, detail=f"Unknown tool access principals: {'; '.join(missing_parts)}")
+
+        try:
+            async with db.tx() as tx:
+                tx_any = cast(Any, tx)
+                policy = await tx_any.toolaccesspolicy.upsert(
+                    where={"toolConfigId": tool_id},
+                    data=cast(
+                        Any,
+                        {
+                            "create": {
+                                "toolConfig": {"connect": {"id": tool_id}},
+                                "defaultChatAccess": normalized_default_chat_access,
+                                "defaultWorkspaceAccess": normalized_default_workspace_access,
+                            },
+                            "update": {
+                                "defaultChatAccess": normalized_default_chat_access,
+                                "defaultWorkspaceAccess": normalized_default_workspace_access,
+                            },
+                        },
+                    ),
+                )
+                await tx_any.tooluseraccess.delete_many(where={"policyId": policy.id})
+                if request.users:
+                    await tx_any.tooluseraccess.create_many(
+                        data=cast(
+                            Any,
+                            [
+                                {
+                                    "policyId": policy.id,
+                                    "userId": entry.principal_id,
+                                    "chatAccess": entry.chat_access,
+                                    "workspaceAccess": entry.workspace_access,
+                                }
+                                for entry in request.users
+                            ],
+                        )
+                    )
+                await tx_any.toolauthgroupaccess.delete_many(where={"policyId": policy.id})
+                if request.groups:
+                    await tx_any.toolauthgroupaccess.create_many(
+                        data=cast(
+                            Any,
+                            [
+                                {
+                                    "policyId": policy.id,
+                                    "authGroupId": entry.principal_id,
+                                    "chatAccess": entry.chat_access,
+                                    "workspaceAccess": entry.workspace_access,
+                                }
+                                for entry in request.groups
+                            ],
+                        )
+                    )
+        except Exception as exc:
+            if _is_unique_violation(exc):
+                raise HTTPException(status_code=409, detail="Tool access policy changed concurrently; retry the update") from exc
+            raise
+
+        users_by_id = {str(getattr(user, "id", "")): user for user in existing_users}
+        groups_by_id = {str(getattr(group, "id", "")): group for group in existing_groups}
+        return ToolAccessPolicyResponse(
+            tool_id=tool_id,
+            default_chat_access=normalized_default_chat_access,
+            default_workspace_access=normalized_default_workspace_access,
+            users=[
+                ToolAccessEntry(
+                    principal_id=entry.principal_id,
+                    chat_access=entry.chat_access,
+                    workspace_access=entry.workspace_access,
+                    display_name=cast(Optional[str], getattr(users_by_id.get(entry.principal_id), "displayName", None)),
+                    principal_detail=cast(Optional[str], getattr(users_by_id.get(entry.principal_id), "username", None)),
+                    orphaned=False,
+                )
+                for entry in request.users
+            ],
+            groups=[
+                ToolAccessEntry(
+                    principal_id=entry.principal_id,
+                    chat_access=entry.chat_access,
+                    workspace_access=entry.workspace_access,
+                    display_name=cast(Optional[str], getattr(groups_by_id.get(entry.principal_id), "displayName", None)),
+                    principal_detail=(
+                        str(
+                            getattr(
+                                getattr(groups_by_id.get(entry.principal_id), "provider", None),
+                                "value",
+                                getattr(groups_by_id.get(entry.principal_id), "provider", None),
+                            )
+                        )
+                        if groups_by_id.get(entry.principal_id) is not None
+                        else None
+                    ),
+                    orphaned=False,
+                )
+                for entry in request.groups
+            ],
+        )
 
     async def list_tool_configs(self, enabled_only: bool = False) -> list[ToolConfig]:
         """List all tool configurations."""

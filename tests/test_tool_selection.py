@@ -97,6 +97,17 @@ class ResolveSelectedToolIdsForRequestTests(unittest.IsolatedAsyncioTestCase):
                 "ragtime.indexer.routes.repository.get_tool_ids_for_groups",
                 mock.AsyncMock(return_value=[]),
             ),
+            mock.patch(
+                "ragtime.indexer.routes.filter_tool_ids_by_access",
+                mock.AsyncMock(return_value=["tool-1", "tool-2"]),
+                create=True,
+            ),
+            mock.patch.object(
+                __import__("ragtime.indexer.routes", fromlist=["userspace_service"]).userspace_service,
+                "filter_tool_ids_for_workspace_owner",
+                create=True,
+                new=mock.AsyncMock(return_value=["tool-2", "tool-3"]),
+            ),
         ):
             _, selected_tool_ids, _ = await _resolve_selected_tool_ids_for_request(
                 conversation,

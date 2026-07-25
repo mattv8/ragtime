@@ -99,9 +99,11 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(routes.rag, "initialize", mock.AsyncMock()),
             mock.patch.object(routes, "notify_tools_changed"),
             mock.patch.object(routes, "invalidate_settings_cache"),
+            mock.patch.object(routes, "ensure_tool_access_policy", mock.AsyncMock()) as mock_ensure_policy,
         ):
             await routes.create_tool_config(request, cast(User, SimpleNamespace(id="admin-1")))
 
+        mock_ensure_policy.assert_awaited_once_with("tool-1")
         persisted = repo.create_tool_config.await_args.args[0].connection_config
         self.assertEqual(persisted["oauth_access_token"], "access-1")
         self.assertEqual(persisted["oauth_refresh_token"], "refresh-1")
@@ -322,10 +324,12 @@ class HttpApiRouteTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("ragtime.indexer.routes.rag.initialize", mock.AsyncMock()),
             mock.patch("ragtime.indexer.routes.notify_tools_changed"),
             mock.patch("ragtime.indexer.routes.invalidate_settings_cache"),
+            mock.patch("ragtime.indexer.routes.ensure_tool_access_policy", mock.AsyncMock()) as mock_ensure_policy,
         ):
             result = await routes.create_tool_config(request)
 
         mock_repo.create_tool_config.assert_awaited_once()
+        mock_ensure_policy.assert_awaited_once_with("tool-http-api")
         persisted = mock_repo.create_tool_config.await_args.args[0]
         self.assertEqual(persisted.connection_config["request_headers"][0]["value"], "tenant-secret")
         self.assertEqual(persisted.connection_config["token_request_headers"][0]["value"], "endpoint-secret")

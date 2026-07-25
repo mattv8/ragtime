@@ -176,6 +176,7 @@ from ragtime.core.ssh import (
     test_ssh_connection,
 )
 from ragtime.core.tokenization import count_tokens
+from ragtime.core.tool_access import ensure_tool_access_policy, filter_tool_ids_by_access
 from ragtime.core.type_coercion import coerce_int_metadata, coerce_positive_int_metadata
 from ragtime.core.usage_accounting import (
     _estimate_input_tokens,
@@ -308,6 +309,8 @@ from ragtime.indexer.models import (
     SwitchConversationBranchRequest,
     SwitchVisualizationBranchRequest,
     SwitchVisualizationBranchResponse,
+    ToolAccessPolicyResponse,
+    ToolAccessPolicyUpdateRequest,
     ToolConfig,
     ToolGroup,
     ToolTestRequest,
@@ -2621,6 +2624,8 @@ async def create_tool_config(request: CreateToolConfigRequest, _user: User = Dep
         group_id=request.group_id,
     )
     result = await repository.create_tool_config(config)
+    if result.id:
+        await ensure_tool_access_policy(result.id)
 
     if oauth_session_id:
         await http_api_oauth_manager.consume(str(_user.id), oauth_session_id)
@@ -3271,6 +3276,8 @@ async def import_tool_config(
         raise HTTPException(status_code=400, detail=f"Invalid imported tool config: {exc}") from exc
 
     result = await repository.create_tool_config(config)
+    if result.id:
+        await ensure_tool_access_policy(result.id)
 
     # create_tool_config may default enabled to True; force disabled for imports
     result = await _maybe_disable_imported_tool(result)
@@ -3280,6 +3287,22 @@ async def import_tool_config(
     await rag.initialize()
 
     return result
+
+
+@router.get("/tools/{tool_id}/access", response_model=ToolAccessPolicyResponse, tags=["Tools"])
+async def get_tool_access_policy(tool_id: str, _user: User = Depends(require_admin)) -> ToolAccessPolicyResponse:
+    """Return the admin-facing ACL policy for one tool."""
+    return await repository.get_tool_access_policy(tool_id)
+
+
+@router.put("/tools/{tool_id}/access", response_model=ToolAccessPolicyResponse, tags=["Tools"])
+async def update_tool_access_policy(
+    tool_id: str,
+    request: ToolAccessPolicyUpdateRequest,
+    _user: User = Depends(require_admin),
+) -> ToolAccessPolicyResponse:
+    """Replace all admin ACL rows and defaults for one tool."""
+    return await repository.replace_tool_access_policy(tool_id, request)
 
 
 @router.post("/tools/{tool_id}/export")
@@ -11945,7 +11968,7 @@ async def _to_shared_conversation_response(
     )
 
 
-def _shared_conversation_request_actor(
+async def _shared_conversation_request_actor(
     conv: Conversation,
     share_record: Any,
     current_user: User | None,
@@ -11960,7 +11983,104 @@ def _shared_conversation_request_actor(
             detail="Shared conversation owner not found",
         )
 
-    return types.SimpleNamespace(id=fallback_user_id, role="user")
+    db = await repository._get_db()
+    owner = await db.user.find_unique(where={"id": fallback_user_id})
+
+    role = str(getattr(owner, "role", "") or "user") if owner is not None else "user"
+    return types.SimpleNamespace(id=fallback_user_id, role=role)
+
+
+async def _filter_chat_visible_tool_ids(*, user: User, tool_ids: list[str]) -> list[str]:
+    if not tool_ids:
+        return []
+    return await filter_tool_ids_by_access(
+        user_id=user.id,
+        is_admin=user.role == "admin",
+        surface="chat",
+        tool_config_ids=tool_ids,
+    )
+
+
+async def _filter_workspace_owner_visible_tool_ids(workspace: Any, tool_ids: list[str]) -> list[str]:
+    if not tool_ids:
+        return []
+    return list(await userspace_service.filter_tool_ids_for_workspace_owner(workspace, tool_ids))
+
+
+def _dedupe_normalized_ids(values: list[str]) -> list[str]:
+    normalized_ids: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        if normalized and normalized not in seen:
+            normalized_ids.append(normalized)
+            seen.add(normalized)
+    return normalized_ids
+
+
+async def _resolve_acl_visible_tool_ids(
+    *,
+    tool_selection_mode: str,
+    selected_tool_ids: list[str],
+    selected_tool_group_ids: list[str],
+    user: User,
+    workspace: Any | None = None,
+) -> list[str]:
+    resolved_tool_ids = await resolve_effective_tool_ids(
+        tool_selection_mode=tool_selection_mode,
+        selected_tool_ids=selected_tool_ids,
+        selected_tool_group_ids=selected_tool_group_ids,
+        list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+        get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
+    )
+    visible_tool_ids = await _filter_chat_visible_tool_ids(user=user, tool_ids=resolved_tool_ids)
+    if workspace is not None:
+        workspace_visible_tool_ids = await _filter_workspace_owner_visible_tool_ids(workspace, resolved_tool_ids)
+        visible_tool_ids = intersect_tool_ids(visible_tool_ids, workspace_visible_tool_ids)
+    return visible_tool_ids
+
+
+async def _resolve_acl_visible_tool_selection(
+    *,
+    tool_selection_mode: str,
+    selected_tool_ids: list[str],
+    selected_tool_group_ids: list[str],
+    user: User,
+    workspace: Any | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    normalized_tool_ids = _dedupe_normalized_ids(selected_tool_ids)
+    normalized_group_ids = _dedupe_normalized_ids(selected_tool_group_ids)
+
+    effective_visible_tool_ids = await _resolve_acl_visible_tool_ids(
+        tool_selection_mode=tool_selection_mode,
+        selected_tool_ids=normalized_tool_ids,
+        selected_tool_group_ids=normalized_group_ids,
+        user=user,
+        workspace=workspace,
+    )
+    if tool_selection_mode == "default_all":
+        return [], [], effective_visible_tool_ids
+
+    visible_tool_ids = await _resolve_acl_visible_tool_ids(
+        tool_selection_mode="custom",
+        selected_tool_ids=normalized_tool_ids,
+        selected_tool_group_ids=[],
+        user=user,
+        workspace=workspace,
+    )
+    visible_group_ids: list[str] = []
+    for group_id in normalized_group_ids:
+        group_visible_tool_ids = await _resolve_acl_visible_tool_ids(
+            tool_selection_mode="custom",
+            selected_tool_ids=[],
+            selected_tool_group_ids=[group_id],
+            user=user,
+            workspace=workspace,
+        )
+        if group_visible_tool_ids:
+            visible_group_ids.append(group_id)
+
+    return visible_tool_ids, visible_group_ids, effective_visible_tool_ids
 
 
 async def _get_conversation_member_role(
@@ -12496,6 +12616,7 @@ async def _resolve_selected_tool_ids_for_request(
         list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
         get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
     )
+    selected_tool_ids = await _filter_chat_visible_tool_ids(user=user, tool_ids=selected_tool_ids)
 
     workspace_context = None
     if effective_workspace_id:
@@ -12513,6 +12634,7 @@ async def _resolve_selected_tool_ids_for_request(
             list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
             get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
         )
+        workspace_tool_ids = await _filter_workspace_owner_visible_tool_ids(workspace, workspace_tool_ids)
         selected_tool_ids = intersect_tool_ids(selected_tool_ids, workspace_tool_ids)
         # Resolve any cross-workspace agent grants originating from this workspace
         # so userspace tools can target other workspaces the user has explicitly
@@ -13436,7 +13558,7 @@ async def send_shared_conversation_message(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    actor = _shared_conversation_request_actor(conv, share_record, user)
+    actor = await _shared_conversation_request_actor(conv, share_record, user)
     has_direct_access = False
     if user is not None:
         has_direct_access = await repository.check_conversation_access(
@@ -13488,7 +13610,7 @@ async def send_shared_conversation_message_by_slug(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    actor = _shared_conversation_request_actor(conv, share_record, user)
+    actor = await _shared_conversation_request_actor(conv, share_record, user)
     has_direct_access = False
     if user is not None:
         has_direct_access = await repository.check_conversation_access(
@@ -15833,8 +15955,26 @@ async def get_conversation_tools(
         tool_config_ids = [s.toolConfigId for s in selections]
         tool_group_ids = [s.toolGroupId for s in group_selections]
         tool_selection_mode = require_valid_tool_selection_mode(getattr(conversation, "toolSelectionMode", "") or "")
+        workspace = None
+        if workspace_id:
+            workspace = await userspace_service.enforce_workspace_role(
+                workspace_id,
+                user.id,
+                "viewer",
+                is_admin=is_admin,
+            )
+        tool_config_ids, tool_group_ids, effective_visible_tool_ids = await _resolve_acl_visible_tool_selection(
+            tool_selection_mode=tool_selection_mode,
+            selected_tool_ids=tool_config_ids,
+            selected_tool_group_ids=tool_group_ids,
+            user=user,
+            workspace=workspace,
+        )
         if tool_selection_mode == "default_all":
-            tool_config_ids = await repository.list_healthy_enabled_tool_ids()
+            tool_config_ids = list(effective_visible_tool_ids)
+            tool_group_ids = []
+        visible_tool_id_set = set(effective_visible_tool_ids)
+        tool_options = {tool_id: options for tool_id, options in tool_options.items() if tool_id in visible_tool_id_set}
 
         return {
             "tool_config_ids": tool_config_ids,
@@ -15884,17 +16024,34 @@ async def update_conversation_tools(
         subagents_enabled = bool(request.get("subagents_enabled", True))
         has_tool_options_update = "tool_options" in request
         normalized_tool_options = normalize_conversation_tool_options(request.get("tool_options"))
+        workspace = None
+        if workspace_id:
+            workspace = await userspace_service.enforce_workspace_role(
+                workspace_id,
+                user.id,
+                _workspace_chat_required_role(workspace_id),
+                is_admin=user.role == "admin",
+            )
+        visible_tool_config_ids, visible_tool_group_ids, effective_visible_tool_ids = await _resolve_acl_visible_tool_selection(
+            tool_selection_mode=tool_selection_mode,
+            selected_tool_ids=[str(tool_id or "").strip() for tool_id in tool_config_ids],
+            selected_tool_group_ids=[str(group_id or "").strip() for group_id in tool_group_ids],
+            user=user,
+            workspace=workspace,
+        )
+        visible_tool_id_set = set(effective_visible_tool_ids)
+        normalized_tool_options = {tool_id: options for tool_id, options in normalized_tool_options.items() if tool_id in visible_tool_id_set}
 
         # Delete existing selections
         await db.conversationtoolselection.delete_many(where={"conversationId": conversation_id})
 
         # Add new selections
-        for tool_id in tool_config_ids:
+        for tool_id in visible_tool_config_ids:
             await db.conversationtoolselection.create(data={"conversationId": conversation_id, "toolConfigId": tool_id})
 
         # Update group selections
         await db.conversationtoolgroupselection.delete_many(where={"conversationId": conversation_id})
-        for group_id in tool_group_ids:
+        for group_id in visible_tool_group_ids:
             await db.conversationtoolgroupselection.create(data={"conversationId": conversation_id, "toolGroupId": group_id})
 
         if has_tool_options_update:

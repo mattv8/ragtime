@@ -30,9 +30,10 @@ class RuntimeBridgePromptTests(unittest.TestCase):
             text,
         )
         self.assertIn(
-            "Tools default read-only unless a workspace owner/admin explicitly enables write",
+            "Tools default read-only unless the workspace owner has Read+Write access and explicitly enables write",
             text,
         )
+        self.assertNotIn("global tool config permits writes", text)
         self.assertIn(
             "ALWAYS read-only, regardless of the workspace write toggle.",
             text,

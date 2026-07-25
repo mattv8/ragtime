@@ -34,6 +34,12 @@ import { ReindexIntervalSelect } from './ReindexIntervalSelect';
 import { defaultScheduleStartMinute, defaultScheduleTimezone } from './ScheduleStartTimeInput';
 import { DirectoryBrowser } from './DirectoryBrowser';
 import { HttpApiConnectionPanel } from './HttpApiConnectionPanel';
+import {
+  ToolAccessEditor,
+  type ToolAccessGroupOption,
+  type ToolAccessPolicy,
+  type ToolAccessUserOption,
+} from './ToolAccessEditor';
 
 // System mounts to filter out from the "Available Mounts" display
 // These are internal container mounts not useful for user filesystem indexing
@@ -2185,11 +2191,19 @@ type WizardStep =
   | 'execution_constraints'
   | 'description'
   | 'options'
+  | 'access'
   | 'review';
 type ToolTypeInfoEntry = [ToolType, (typeof TOOL_TYPE_INFO)[ToolType]];
 
 // Base steps - pdm_filtering is dynamically inserted for solidworks_pdm tools
-const BASE_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'description', 'options', 'review'];
+const BASE_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'description',
+  'options',
+  'access',
+  'review',
+];
 const HTTP_API_WIZARD_STEPS: WizardStep[] = [
   'type',
   'connection',
@@ -2197,6 +2211,7 @@ const HTTP_API_WIZARD_STEPS: WizardStep[] = [
   'api_details',
   'description',
   'options',
+  'access',
   'review',
 ];
 const PDM_WIZARD_STEPS: WizardStep[] = [
@@ -2205,6 +2220,7 @@ const PDM_WIZARD_STEPS: WizardStep[] = [
   'pdm_filtering',
   'description',
   'options',
+  'access',
   'review',
 ];
 // SSH tools surface userspace mount controls in the execution_constraints step
@@ -2213,16 +2229,25 @@ const SSH_WIZARD_STEPS: WizardStep[] = [
   'connection',
   'execution_constraints',
   'description',
+  'access',
   'review',
 ];
 // Odoo tools show options before description for logical flow
-const ODOO_WIZARD_STEPS: WizardStep[] = ['type', 'connection', 'options', 'description', 'review'];
+const ODOO_WIZARD_STEPS: WizardStep[] = [
+  'type',
+  'connection',
+  'options',
+  'description',
+  'access',
+  'review',
+];
 // Filesystem indexers use options for userspace mount controls.
 const FILESYSTEM_WIZARD_STEPS: WizardStep[] = [
   'type',
   'connection',
   'description',
   'options',
+  'access',
   'review',
 ];
 // Filesystem mount-only: skip options (no indexing config needed).
@@ -2230,8 +2255,19 @@ const FILESYSTEM_MOUNT_ONLY_WIZARD_STEPS: WizardStep[] = [
   'type',
   'connection',
   'description',
+  'access',
   'review',
 ];
+
+function createDefaultToolAccessPolicy(toolId: string = ''): ToolAccessPolicy {
+  return {
+    tool_id: toolId,
+    default_chat_access: 'deny',
+    default_workspace_access: 'deny',
+    users: [],
+    groups: [],
+  };
+}
 
 function getStepTitle(step: WizardStep): string {
   switch (step) {
@@ -2251,6 +2287,8 @@ function getStepTitle(step: WizardStep): string {
       return 'Add Description';
     case 'options':
       return 'Execution Options';
+    case 'access':
+      return 'User Access';
     case 'review':
       return 'Review & Save';
   }
@@ -2335,6 +2373,12 @@ export function ToolWizard({
     existingTool?.timeout_max_seconds ?? 300,
   );
   const [allowWrite, setAllowWrite] = useState(existingTool?.allow_write || false);
+  const [accessPolicy, setAccessPolicy] = useState<ToolAccessPolicy>(() =>
+    createDefaultToolAccessPolicy(existingTool?.id ?? ''),
+  );
+  const [accessUserOptions, setAccessUserOptions] = useState<ToolAccessUserOption[]>([]);
+  const [accessGroupOptions, setAccessGroupOptions] = useState<ToolAccessGroupOption[]>([]);
+  const [accessLoading, setAccessLoading] = useState(false);
 
   const parseNumberOrDefault = (value: string, defaultValue: number): number => {
     const parsed = Number.parseInt(value, 10);
@@ -3544,6 +3588,65 @@ export function ToolWizard({
   // Track the created tool ID for new tools that get auto-saved during analysis
   const [createdToolId, setCreatedToolId] = useState<string | null>(null);
 
+  useEffect(() => {
+    setAccessPolicy((current) => ({
+      ...current,
+      tool_id: existingTool?.id ?? createdToolId ?? current.tool_id,
+    }));
+  }, [createdToolId, existingTool?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAccessLoading(Boolean(existingTool));
+
+    const loadAccess = async () => {
+      try {
+        const [users, groups, policy] = await Promise.all([
+          api.listUsers(),
+          api.listAuthGroups(),
+          existingTool
+            ? api.getToolAccessPolicy(existingTool.id)
+            : Promise.resolve(createDefaultToolAccessPolicy()),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setAccessUserOptions(
+          users.map((user) => ({
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            is_admin: user.role === 'admin',
+          })),
+        );
+        setAccessGroupOptions(
+          groups.map((group) => ({
+            id: group.id,
+            key: group.key,
+            display_name: group.display_name,
+            provider: group.provider,
+            member_count: group.member_count,
+          })),
+        );
+        setAccessPolicy(policy);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load access policy');
+        }
+      } finally {
+        if (!cancelled) {
+          setAccessLoading(false);
+        }
+      }
+    };
+
+    void loadAccess();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [existingTool]);
+
   // Filesystem analysis handlers
   const handleStartFilesystemAnalysis = async () => {
     // Auto-generate name from path basename if not provided
@@ -3671,7 +3774,17 @@ export function ToolWizard({
         };
         const created = await api.createToolConfig(request);
         savedToolId = created.id;
+        setCreatedToolId(created.id);
       }
+
+      if (!savedToolId) {
+        throw new Error('Tool save did not return an id');
+      }
+
+      await api.updateToolAccessPolicy(savedToolId, {
+        ...accessPolicy,
+        tool_id: savedToolId,
+      });
 
       // Trigger schema indexing for SQL tools if enabled
       if (
@@ -3736,6 +3849,8 @@ export function ToolWizard({
         return name.trim().length > 0;
       case 'options':
         return true;
+      case 'access':
+        return !accessLoading;
       case 'review':
         return true;
     }
@@ -6921,6 +7036,75 @@ export function ToolWizard({
     );
   };
 
+  const renderAccess = () => {
+    const applyPreset = (mode: 'admins_only' | 'open_to_everyone') => {
+      setAccessPolicy((current) => ({
+        ...current,
+        default_chat_access: mode === 'open_to_everyone' ? 'read_write' : 'deny',
+        default_workspace_access: mode === 'open_to_everyone' ? 'read_write' : 'deny',
+        users: [],
+        groups: [],
+      }));
+    };
+
+    return (
+      <div className="wizard-content">
+        <p className="wizard-help">
+          Control who can use this tool in Chat and Workspace. MCP routes remain a separate trust
+          domain.
+        </p>
+        <div className="form-row" style={{ marginBottom: '1rem' }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => applyPreset('admins_only')}
+          >
+            Admins only
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => applyPreset('open_to_everyone')}
+          >
+            Open to everyone
+          </button>
+        </div>
+        {accessLoading ? (
+          <p className="field-help" style={{ margin: 0 }}>
+            Loading access policy...
+          </p>
+        ) : (
+          <ToolAccessEditor
+            policy={accessPolicy}
+            userOptions={accessUserOptions}
+            groupOptions={accessGroupOptions}
+            globalWriteEnabled={allowWrite}
+            onChange={setAccessPolicy}
+          />
+        )}
+      </div>
+    );
+  };
+
+  const formatAccessSummary = (
+    surface: 'chat' | 'workspace',
+    defaultAccess: 'deny' | 'read' | 'read_write',
+  ): string => {
+    const entries = [...accessPolicy.users, ...accessPolicy.groups];
+    const explicitCount = entries.filter((entry) =>
+      surface === 'chat' ? entry.chat_access != null : entry.workspace_access != null,
+    ).length;
+    const defaultLabel =
+      defaultAccess === 'read_write'
+        ? 'Open to everyone'
+        : defaultAccess === 'read'
+          ? 'Readable by default'
+          : 'Admins only';
+    return explicitCount > 0
+      ? `${defaultLabel} with ${explicitCount} explicit override${explicitCount === 1 ? '' : 's'}.`
+      : `${defaultLabel}.`;
+  };
+
   const renderReview = () => {
     const typeInfo = TOOL_TYPE_INFO[toolType];
     const connectionConfig = getConnectionConfig();
@@ -7029,6 +7213,16 @@ export function ToolWizard({
             <li>Write operations: {allowWrite ? 'Enabled' : 'Disabled'}</li>
           </ul>
         </div>
+
+        <div className="review-section">
+          <h4>Access</h4>
+          <ul>
+            <li>Chat: {formatAccessSummary('chat', accessPolicy.default_chat_access)}</li>
+            <li>
+              Workspace: {formatAccessSummary('workspace', accessPolicy.default_workspace_access)}
+            </li>
+          </ul>
+        </div>
       </div>
     );
   };
@@ -7051,6 +7245,8 @@ export function ToolWizard({
         return renderDescription();
       case 'options':
         return renderOptions();
+      case 'access':
+        return renderAccess();
       case 'review':
         return renderReview();
     }
