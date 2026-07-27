@@ -928,11 +928,11 @@ class AppSettings(BaseModel):
     )
     mcp_default_route_auth_method: str = Field(
         default=DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD,
-        description="Authentication method for default MCP route: 'password' for Bearer token, 'oauth2' for LDAP OAuth2 flow, 'client_credentials' for OAuth2 client_credentials grant.",
+        description="Authentication method for default MCP route: 'oauth2' for local or LDAP OAuth2 sign-in with optional MCP-Password fallback, 'password' for Bearer token, or 'client_credentials' for the OAuth2 client_credentials grant.",
     )
     mcp_default_route_password: Optional[str] = Field(
         default=None,
-        description="Password for the default /mcp route (decrypted for display). Use this as Bearer token for MCP clients. For 'client_credentials' mode, this is the client_secret.",
+        description="Password for the default /mcp route (decrypted for display). In 'oauth2' mode this is an optional MCP-Password fallback. In 'password' mode use it as the Bearer token for MCP clients. In 'client_credentials' mode this is the client_secret.",
     )
     mcp_default_route_client_id: Optional[str] = Field(
         default=None,
@@ -940,7 +940,7 @@ class AppSettings(BaseModel):
     )
     mcp_default_route_allowed_group: Optional[str] = Field(
         default=None,
-        description="LDAP group DN required for OAuth2 access. If empty, any authenticated LDAP user can access.",
+        description="Optional LDAP group DN required for OAuth2 access. If empty, any authenticated local or LDAP user can sign in.",
     )
     has_mcp_default_password: bool = Field(
         default=False,

@@ -11305,7 +11305,13 @@ export function ChatPanel({
         },
       ];
     },
-    [activeConversation, isConversationViewer, saveConversationToolOptions, savingTools],
+    [
+      activeConversation,
+      conversationToolOptions,
+      isConversationViewer,
+      saveConversationToolOptions,
+      savingTools,
+    ],
   );
 
   const hasWorkspaceChatCollaboration = Boolean(workspaceId);

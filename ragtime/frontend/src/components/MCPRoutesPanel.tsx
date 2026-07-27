@@ -67,6 +67,7 @@ interface RouteCardProps {
 
 function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps) {
   const selectedTools = tools.filter((t) => route.tool_config_ids.includes(t.id));
+  const oauthSummaryLabel = route.has_password ? 'OAuth2 + Password' : 'OAuth2';
 
   return (
     <div className={`tool-card ${!route.enabled ? 'disabled' : ''}`}>
@@ -94,7 +95,7 @@ function RouteCard({ route, tools, onEdit, onDelete, onToggle }: RouteCardProps)
 
       <div className="tool-card-meta">
         {route.require_auth && route.auth_method === 'oauth2' && (
-          <span className="write-enabled">OAuth2 (LDAP)</span>
+          <span className="write-enabled">{oauthSummaryLabel}</span>
         )}
         {route.require_auth && route.auth_method === 'client_credentials' && route.has_password && (
           <span className="write-enabled">Client credentials</span>
@@ -260,7 +261,7 @@ function RouteWizard({
   const [clearPassword, setClearPassword] = useState(false);
   // Auth method: password, oauth2 (LDAP), or client_credentials
   const [authMethod, setAuthMethod] = useState<RouteAuthMethod>(
-    editingRoute?.auth_method || 'password',
+    editingRoute?.auth_method || 'oauth2',
   );
   // Allowed LDAP group for OAuth2 auth
   const [allowedLdapGroup, setAllowedLdapGroup] = useState(editingRoute?.allowed_ldap_group || '');
@@ -296,6 +297,11 @@ function RouteWizard({
   const [error, setError] = useState<string | null>(null);
 
   const effectiveAllowedLdapGroup = authMethod === 'oauth2' ? allowedLdapGroup.trim() : '';
+  const hasConfiguredPassword = editingRoute?.has_password && !clearPassword;
+  const showOAuthPasswordBypassWarning =
+    authMethod === 'oauth2' &&
+    !!effectiveAllowedLdapGroup &&
+    (!!authPassword || !!hasConfiguredPassword);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,7 +355,9 @@ function RouteWizard({
     }
 
     if (
-      (authMethod === 'password' || authMethod === 'client_credentials') &&
+      (authMethod === 'password' ||
+        authMethod === 'oauth2' ||
+        authMethod === 'client_credentials') &&
       authPassword &&
       authPassword.length < 8
     ) {
@@ -373,7 +381,13 @@ function RouteWizard({
           selected_schema_indexes: Array.from(selectedSchemaTools),
           tool_config_ids: Array.from(selectedToolIds),
         };
-        if ((authMethod === 'password' || authMethod === 'client_credentials') && authPassword) {
+        if (
+          (authMethod === 'password' ||
+            authMethod === 'oauth2' ||
+            authMethod === 'client_credentials') &&
+          authPassword &&
+          !clearPassword
+        ) {
           updateData.auth_password = authPassword;
         }
         if (authMethod === 'client_credentials') {
@@ -400,7 +414,13 @@ function RouteWizard({
           selected_schema_indexes: Array.from(selectedSchemaTools),
           tool_config_ids: Array.from(selectedToolIds),
         };
-        if ((authMethod === 'password' || authMethod === 'client_credentials') && authPassword) {
+        if (
+          (authMethod === 'password' ||
+            authMethod === 'oauth2' ||
+            authMethod === 'client_credentials') &&
+          authPassword &&
+          !clearPassword
+        ) {
           createData.auth_password = authPassword;
         }
         if (authMethod === 'client_credentials') {
@@ -536,11 +556,21 @@ function RouteWizard({
             </p>
           </div>
 
-          {/* Auth method selection - always show when auth is enabled. LDAP-only OAuth2 is conditional. */}
+          {/* Auth method selection */}
           {requireAuth && (
             <div className="form-group">
               <label>Authentication Method</label>
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', marginTop: '0.5rem' }}>
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="route_auth_method"
+                    value="oauth2"
+                    checked={authMethod === 'oauth2'}
+                    onChange={() => setAuthMethod('oauth2')}
+                  />
+                  <span>OAuth2</span>
+                </label>
                 <label className="radio-label">
                   <input
                     type="radio"
@@ -561,22 +591,10 @@ function RouteWizard({
                   />
                   <span>Client Credentials</span>
                 </label>
-                {ldapConfigured && (
-                  <label className="radio-label">
-                    <input
-                      type="radio"
-                      name="route_auth_method"
-                      value="oauth2"
-                      checked={authMethod === 'oauth2'}
-                      onChange={() => setAuthMethod('oauth2')}
-                    />
-                    <span>OAuth2 (LDAP)</span>
-                  </label>
-                )}
               </div>
               <p className="field-help">
                 {authMethod === 'oauth2'
-                  ? 'MCP clients authenticate with LDAP credentials via POST /auth/oauth2/token to get a Bearer token.'
+                  ? 'MCP clients authenticate with local or LDAP user credentials via OAuth2 to get a Bearer token. You can also set an optional MCP-Password fallback.'
                   : authMethod === 'client_credentials'
                     ? 'MCP clients authenticate with client_id/client_secret over HTTP Basic, or exchange them at the route token endpoint for a short-lived Bearer token.'
                     : 'MCP clients use a static password as the Bearer token or MCP-Password header.'}
@@ -606,25 +624,30 @@ function RouteWizard({
             </div>
           )}
 
-          {/* Password field - only for password auth method */}
-          {requireAuth && authMethod === 'password' && (
+          {/* Password field - password auth and optional OAuth2 fallback */}
+          {requireAuth && (authMethod === 'password' || authMethod === 'oauth2') && (
             <div className="form-group">
-              <label>
-                Password
-                {editingRoute?.has_password && !clearPassword && (
+              <label htmlFor="mcp-route-auth-password">
+                {authMethod === 'oauth2' ? 'MCP Password Fallback (Optional)' : 'Password'}
+                {hasConfiguredPassword && (
                   <span className="muted" style={{ marginLeft: '0.5rem', fontWeight: 'normal' }}>
                     (currently set)
                   </span>
                 )}
               </label>
-              {editingRoute?.has_password && !clearPassword ? (
+              {hasConfiguredPassword ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
                     <input
+                      id="mcp-route-auth-password"
                       type={showPassword ? 'text' : 'password'}
                       value={authPassword}
                       onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="Enter new password to change"
+                      placeholder={
+                        authMethod === 'oauth2'
+                          ? 'Enter new fallback password to change'
+                          : 'Enter new password to change'
+                      }
                       style={{ width: '100%' }}
                     />
                     <InlineCopyButton
@@ -671,10 +694,15 @@ function RouteWizard({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <div className="settings-inline-copy-wrap" style={{ flex: 1 }}>
                     <input
+                      id="mcp-route-auth-password"
                       type={showPassword ? 'text' : 'password'}
                       value={authPassword}
                       onChange={(e) => setAuthPassword(e.target.value)}
-                      placeholder="Enter password (min 8 characters)"
+                      placeholder={
+                        authMethod === 'oauth2'
+                          ? 'Enter fallback password (min 8 characters)'
+                          : 'Enter password (min 8 characters)'
+                      }
                       required={
                         requireAuth && authMethod === 'password' && !editingRoute?.has_password
                       }
@@ -725,8 +753,13 @@ function RouteWizard({
                 </div>
               )}
               <p className="field-help">
-                MCP clients will use this password as the Bearer token. Minimum 8 characters.
+                {authMethod === 'oauth2'
+                  ? 'Optional shared password for the MCP-Password header. Minimum 8 characters.'
+                  : 'MCP clients will use this password as the Bearer token. Minimum 8 characters.'}
               </p>
+              {showOAuthPasswordBypassWarning && (
+                <div className="field-warning">MCP-Password bypasses this group restriction.</div>
+              )}
             </div>
           )}
 

@@ -11,6 +11,10 @@ const modalState = vi.hoisted(() => ({
   },
 }));
 const serverBackupSectionSpy = vi.hoisted(() => vi.fn());
+const mcpSectionState = vi.hoisted(() => ({
+  latestProps: null as null | Record<string, unknown>,
+  run: null as null | ((props: Record<string, unknown>) => void),
+}));
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -26,6 +30,7 @@ const apiMock = vi.hoisted(() => ({
   listMcpRoutes: vi.fn(),
   listCloudOAuthProviders: vi.fn(),
   getLdapConfig: vi.fn(),
+  updateSettings: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -117,7 +122,16 @@ vi.mock('./settings/SecuritySettingsSection', () => ({
     </fieldset>
   ),
 }));
-vi.mock('./settings/McpSettingsSection', () => ({ McpSettingsSection: () => null }));
+vi.mock('./settings/McpSettingsSection', () => ({
+  McpSettingsSection: (props: Record<string, unknown>) => {
+    mcpSectionState.latestProps = props;
+    useEffect(() => {
+      mcpSectionState.run?.(props);
+    }, [props]);
+
+    return null;
+  },
+}));
 vi.mock('./shared/SearchFilterBar', () => ({
   SearchFilterBar: (props: unknown) => {
     searchFilterBarSpy(props);
@@ -134,6 +148,8 @@ beforeEach(() => {
   searchFilterBarSpy.mockClear();
   serverBackupSectionSpy.mockClear();
   modalState.latestAllowedChatModelsProps = null;
+  mcpSectionState.latestProps = null;
+  mcpSectionState.run = null;
 
   apiMock.getSettings.mockResolvedValue({
     settings: {
@@ -144,6 +160,13 @@ beforeEach(() => {
       authenticated_webgl_background_enabled: true,
       openapi_model_prefix_enabled: true,
       show_tool_card_footer_actions: false,
+      mcp_enabled: true,
+      mcp_default_route_auth: true,
+      mcp_default_route_auth_method: 'oauth2',
+      mcp_default_route_allowed_group: null,
+      mcp_default_route_client_id: '',
+      has_mcp_default_password: true,
+      mcp_default_route_password: '',
       updated_at: null,
     },
   });
@@ -187,6 +210,26 @@ beforeEach(() => {
   apiMock.listMcpRoutes.mockResolvedValue({ routes: [] });
   apiMock.listCloudOAuthProviders.mockResolvedValue([]);
   apiMock.getLdapConfig.mockResolvedValue({ server_url: '', allow_self_signed: false });
+  apiMock.updateSettings.mockImplementation(async (payload: Record<string, unknown>) => ({
+    id: 'settings-1',
+    server_name: 'Ragtime',
+    default_theme_pack: 'default',
+    authenticated_webgl_background_enabled: true,
+    openapi_model_prefix_enabled: true,
+    show_tool_card_footer_actions: false,
+    llm_provider: 'openai',
+    mcp_enabled: true,
+    mcp_default_route_auth: true,
+    mcp_default_route_auth_method: 'oauth2',
+    mcp_default_route_allowed_group: null,
+    mcp_default_route_client_id: '',
+    has_mcp_default_password: payload.mcp_default_route_password !== '',
+    mcp_default_route_password:
+      typeof payload.mcp_default_route_password === 'string'
+        ? payload.mcp_default_route_password
+        : '',
+    updated_at: null,
+  }));
 });
 
 afterEach(() => {
@@ -390,6 +433,178 @@ describe('SettingsPanel', () => {
       expect(
         latestCall?.completionCandidates?.filter((value) => value === 'Search Configuration'),
       ).toHaveLength(1);
+    });
+  });
+
+  it('includes the OAuth2 fallback password in the MCP save payload when it is set', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    let stage: 'wait-settings' | 'set-password' | 'save' | 'done' = 'wait-settings';
+
+    mcpSectionState.run = (props) => {
+      if (!props.settings || stage === 'done') {
+        return;
+      }
+      const formData = (props.formData as Record<string, unknown>) || {};
+      if (stage === 'wait-settings') {
+        stage = 'set-password';
+        setTimeout(() => {
+          (props.setFormData as (value: unknown) => void)((prev: Record<string, unknown>) => ({
+            ...prev,
+            mcp_enabled: true,
+            mcp_default_route_auth: true,
+            mcp_default_route_auth_method: 'oauth2',
+            mcp_default_route_password: 'fallback-pass1',
+          }));
+        }, 0);
+        return;
+      }
+      if (stage === 'set-password' && formData.mcp_default_route_password === 'fallback-pass1') {
+        stage = 'save';
+        void (props.handleSaveMcp as () => Promise<void>)();
+        return;
+      }
+      if (stage === 'save') {
+        stage = 'done';
+      }
+    };
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+    });
+
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        mcp_default_route_auth_method: 'oauth2',
+        mcp_default_route_password: 'fallback-pass1',
+      }),
+    );
+  });
+
+  it('retains an existing OAuth2 fallback password when the admin saves without changing it', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    mcpSectionState.run = (props) => {
+      if (!props.settings || apiMock.updateSettings.mock.calls.length > 0) {
+        return;
+      }
+      void (props.handleSaveMcp as () => Promise<void>)();
+    };
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+    });
+
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).not.toHaveProperty(
+      'mcp_default_route_password',
+    );
+  });
+
+  it('clears an existing OAuth2 fallback password when the admin removes it and saves', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    let stage: 'wait-settings' | 'clear-password' | 'save' | 'done' = 'wait-settings';
+
+    mcpSectionState.run = (props) => {
+      if (!props.settings || stage === 'done') {
+        return;
+      }
+      const formData = (props.formData as Record<string, unknown>) || {};
+      if (stage === 'wait-settings') {
+        stage = 'clear-password';
+        setTimeout(() => {
+          (props.setFormData as (value: unknown) => void)((prev: Record<string, unknown>) => ({
+            ...prev,
+            mcp_enabled: true,
+            mcp_default_route_auth: true,
+            mcp_default_route_auth_method: 'oauth2',
+            mcp_default_route_password: '',
+          }));
+        }, 0);
+        return;
+      }
+      if (stage === 'clear-password' && formData.mcp_default_route_password === '') {
+        stage = 'save';
+        void (props.handleSaveMcp as () => Promise<void>)();
+        return;
+      }
+      if (stage === 'save') {
+        stage = 'done';
+      }
+    };
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+    });
+
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        mcp_default_route_auth_method: 'oauth2',
+        mcp_default_route_password: '',
+      }),
+    );
+  });
+
+  it('shows the updated default MCP route tooltip for OAuth2 routes with a password fallback', async () => {
+    apiMock.listMcpRoutes.mockResolvedValue({
+      routes: [
+        {
+          id: 'route-oauth',
+          name: 'OAuth only',
+          route_path: 'oauth_only',
+          description: '',
+          enabled: true,
+          require_auth: true,
+          has_password: false,
+          auth_password: undefined,
+          auth_client_id: undefined,
+          auth_method: 'oauth2',
+          allowed_ldap_group: null,
+          include_knowledge_search: false,
+          include_git_history: false,
+          selected_document_indexes: [],
+          selected_filesystem_indexes: [],
+          selected_schema_indexes: [],
+          tool_config_ids: [],
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          id: 'route-hybrid',
+          name: 'OAuth hybrid',
+          route_path: 'oauth_hybrid',
+          description: '',
+          enabled: true,
+          require_auth: true,
+          has_password: true,
+          auth_password: undefined,
+          auth_client_id: undefined,
+          auth_method: 'oauth2',
+          allowed_ldap_group: null,
+          include_knowledge_search: false,
+          include_git_history: false,
+          selected_document_indexes: [],
+          selected_filesystem_indexes: [],
+          selected_schema_indexes: [],
+          tool_config_ids: [],
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+    await screen.findByRole('button', { name: 'Open chat models' });
+
+    await waitFor(() => {
+      expect(screen.getByTitle('OAuth2 + Password protected')).toBeTruthy();
+      expect(screen.queryByTitle('OAuth2 (LDAP)')).toBeNull();
     });
   });
 });

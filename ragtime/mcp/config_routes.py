@@ -69,11 +69,11 @@ class CreateMcpRouteRequest(BaseModel):
         default=None,
         min_length=8,
         max_length=128,
-        description="Password/API key for authentication",
+        description="Password/API key for authentication. In 'oauth2' mode this is an optional MCP-Password fallback. In 'client_credentials' mode this is the client_secret.",
     )
     auth_method: str = Field(
-        default="password",
-        description="Authentication method: 'password', 'oauth2', or 'client_credentials'",
+        default="oauth2",
+        description="Authentication method: 'oauth2' for local or LDAP sign-in with optional MCP-Password fallback, 'password', or 'client_credentials'.",
     )
     auth_client_id: str | None = Field(
         default=None,
@@ -83,7 +83,7 @@ class CreateMcpRouteRequest(BaseModel):
     allowed_ldap_group: str | None = Field(
         default=None,
         max_length=500,
-        description="LDAP group DN for OAuth2 authorization (e.g., 'CN=MCP Users,OU=Groups,DC=example,DC=com')",
+        description="Optional LDAP group DN for OAuth2 authorization (e.g., 'CN=MCP Users,OU=Groups,DC=example,DC=com'). If empty, local or LDAP users can sign in.",
     )
     include_knowledge_search: bool = Field(default=True, description="Include search_knowledge tool")
     include_git_history: bool = Field(default=True, description="Include git history tools")
@@ -104,12 +104,12 @@ class UpdateMcpRouteRequest(BaseModel):
         default=None,
         min_length=8,
         max_length=128,
-        description="Password/API key (set to empty string to clear)",
+        description="Password/API key. In 'oauth2' mode this is an optional MCP-Password fallback. In 'client_credentials' mode this is the client_secret. Use clear_password to remove it.",
     )
     clear_password: bool = Field(default=False, description="Set to true to clear the password")
     auth_method: str | None = Field(
         default=None,
-        description="Authentication method: 'password', 'oauth2', or 'client_credentials'",
+        description="Authentication method: 'oauth2' for local or LDAP sign-in with optional MCP-Password fallback, 'password', or 'client_credentials'.",
     )
     auth_client_id: str | None = Field(
         default=None,
@@ -120,7 +120,7 @@ class UpdateMcpRouteRequest(BaseModel):
     allowed_ldap_group: str | None = Field(
         default=None,
         max_length=500,
-        description="LDAP group DN for OAuth2 authorization",
+        description="Optional LDAP group DN for OAuth2 authorization. If empty, local or LDAP users can sign in.",
     )
     clear_allowed_ldap_group: bool = Field(default=False, description="Set to true to clear the allowed LDAP group")
     include_knowledge_search: bool | None = None
@@ -177,7 +177,7 @@ def _mcp_auth_method_from_request(value: str) -> McpAuthMethod:
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail="Authentication method must be 'password', 'oauth2', or 'client_credentials'",
+            detail=("Authentication method must be 'oauth2' (local or LDAP sign-in with optional MCP-Password fallback), 'password', or 'client_credentials'"),
         ) from exc
 
 

@@ -21,6 +21,7 @@ from prisma import Json, Prisma
 from prisma.enums import ChatTaskStatus as PrismaChatTaskStatus
 from prisma.enums import IndexJobPhase as PrismaIndexJobPhase
 from prisma.enums import IndexStatus as PrismaIndexStatus
+from prisma.enums import McpAuthMethod
 from prisma.enums import ToolType as PrismaToolType
 from prisma.enums import VectorStoreType as PrismaVectorStoreType
 from prisma.models import IndexJob as PrismaIndexJob
@@ -1111,7 +1112,15 @@ class IndexerRepository:
 
         if prisma_settings is None:
             # Create default settings
-            prisma_settings = cast(Any, await db.appsettings.create(data={"id": "default"}))
+            prisma_settings = cast(
+                Any,
+                await db.appsettings.create(
+                    data={
+                        "id": "default",
+                        "mcpDefaultRouteAuthMethod": McpAuthMethod(DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD),
+                    }
+                ),
+            )
             logger.info("Created default application settings")
 
         settings: Any = prisma_settings

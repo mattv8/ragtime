@@ -31,6 +31,7 @@ from prisma.models import User
 from starlette.routing import Route
 from starlette.types import Message, Receive, Scope, Send
 
+from ragtime.core.app_setting_defaults import DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.auth import (
     user_matches_group_identifier,
@@ -324,6 +325,52 @@ async def _validate_oauth2_token(scope: Scope, allowed_group_dn: str | None = No
         return False
 
 
+def _has_bearer_authorization(scope: Scope) -> bool:
+    """Return True when the request includes an Authorization Bearer credential."""
+    auth_header = dict(scope.get("headers", [])).get(b"authorization", b"").decode()
+    return auth_header.startswith("Bearer ")
+
+
+def _has_explicit_mcp_password(scope: Scope) -> bool:
+    """Return True when the request includes an explicit MCP-Password header."""
+    return bool(dict(scope.get("headers", [])).get(b"mcp-password", b"").decode())
+
+
+async def _validate_oauth2_or_password_fallback(
+    scope: Scope,
+    *,
+    allowed_group_dn: str | None,
+    encrypted_password: str | None,
+) -> tuple[bool, str | None, str | None]:
+    """Validate OAuth2 first, then optional explicit MCP-Password fallback."""
+    has_bearer = _has_bearer_authorization(scope)
+    fallback_enabled = bool(encrypted_password)
+    has_password = fallback_enabled and _has_explicit_mcp_password(scope)
+
+    if has_bearer:
+        oauth_valid = await _validate_oauth2_token(scope, allowed_group_dn)
+        if oauth_valid:
+            return True, "oauth2", None
+
+    if has_password and encrypted_password is not None:
+        password_valid = await _validate_route_password(scope, encrypted_password, allow_bearer=False)
+        if password_valid:
+            return True, "password", None
+
+    if not fallback_enabled:
+        if has_bearer:
+            return False, None, "OAuth2 token is invalid, expired, or unauthorized."
+        return False, None, "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
+
+    if has_bearer and has_password:
+        return False, None, "OAuth2 token and MCP-Password were rejected."
+    if has_bearer:
+        return False, None, "OAuth2 token is invalid, expired, or unauthorized."
+    if has_password:
+        return False, None, "Invalid MCP-Password header."
+    return False, None, "Authentication required. Use OAuth2 sign-in or the MCP-Password header."
+
+
 async def _get_user_matching_filter(scope: Scope) -> str | None:
     """
     Get the ID of the highest-priority default route filter matching the user's LDAP groups.
@@ -389,7 +436,7 @@ async def _get_user_matching_filter(scope: Scope) -> str | None:
         return None
 
 
-async def _validate_route_password(scope: Scope, encrypted_password: str) -> bool:
+async def _validate_route_password(scope: Scope, encrypted_password: str, *, allow_bearer: bool = True) -> bool:
     """
     Validate password from Authorization header or MCP-Password header.
 
@@ -413,12 +460,14 @@ async def _validate_route_password(scope: Scope, encrypted_password: str) -> boo
     mcp_password = headers.get(b"mcp-password", b"").decode()
     if mcp_password:
         provided_password = mcp_password
-    else:
+    elif allow_bearer:
         # Fall back to Authorization: Bearer <password>
         auth_header = headers.get(b"authorization", b"").decode()
         if not auth_header.startswith("Bearer "):
             return False
         provided_password = auth_header[7:]  # Remove "Bearer " prefix
+    else:
+        return False
 
     # Decrypt the stored password and compare
     stored_password = decrypt_secret(encrypted_password)
@@ -440,7 +489,7 @@ async def _check_default_route_auth() -> tuple[bool, str, str | None, str | None
     """
     app_settings = await get_app_settings()
     require_auth = app_settings.get("mcp_default_route_auth", False)
-    auth_method = app_settings.get("mcp_default_route_auth_method", "password")
+    auth_method = app_settings.get("mcp_default_route_auth_method", DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD)
     encrypted_password = app_settings.get("mcp_default_route_password")
     allowed_group = app_settings.get("mcp_default_route_allowed_group")
     client_id = app_settings.get("mcp_default_route_client_id")
@@ -526,11 +575,15 @@ class MCPTransportEndpoint:
         resolved_auth_method = "none"
         if require_auth:
             is_valid = False
+            failure_detail = None
 
             if auth_method == "oauth2":
-                resolved_auth_method = "oauth2"
-                # OAuth2 with LDAP - validate token and check group membership
-                is_valid = await _validate_oauth2_token(scope, allowed_group)
+                is_valid, oauth2_auth_method, failure_detail = await _validate_oauth2_or_password_fallback(
+                    scope,
+                    allowed_group_dn=allowed_group,
+                    encrypted_password=encrypted_password,
+                )
+                resolved_auth_method = oauth2_auth_method or "none"
             elif auth_method == "client_credentials":
                 resolved_auth_method = "client_credentials"
                 # Accept either direct Basic auth or a Bearer token issued by
@@ -548,6 +601,7 @@ class MCPTransportEndpoint:
                 is_valid = await _validate_bearer_token(scope)
 
             if not is_valid:
+                dual_auth_enabled = auth_method == "oauth2" and bool(encrypted_password)
                 # Send 401 Unauthorized
                 await send(
                     {
@@ -555,12 +609,15 @@ class MCPTransportEndpoint:
                         "status": 401,
                         "headers": [
                             (b"content-type", b"application/json"),
-                            (b"www-authenticate", b'Bearer realm="mcp", MCP-Password'),
+                            (
+                                b"www-authenticate",
+                                b'Bearer realm="mcp", MCP-Password' if dual_auth_enabled else b'Bearer realm="mcp"',
+                            ),
                         ],
                     }
                 )
                 if auth_method == "oauth2":
-                    detail = "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
+                    detail = failure_detail or "OAuth2 token is invalid, expired, or unauthorized."
                 elif auth_method == "client_credentials":
                     detail = (
                         "OAuth2 client_credentials required - provide client_id/client_secret "
@@ -580,7 +637,7 @@ class MCPTransportEndpoint:
                 return
 
         # If using OAuth2 auth, check for LDAP group-based tool filtering
-        if require_auth and auth_method == "oauth2":
+        if require_auth and auth_method == "oauth2" and resolved_auth_method == "oauth2":
             # Try to find a matching default route filter for this user
             matching_filter_id = await _get_user_matching_filter(scope)
             if matching_filter_id:
@@ -728,11 +785,15 @@ class MCPCustomRouteEndpoint:
         resolved_auth_method = "none"
         if require_auth:
             is_valid = False
+            failure_detail = None
 
             if auth_method == "oauth2":
-                resolved_auth_method = "oauth2"
-                # OAuth2 with LDAP - validate token and check group membership
-                is_valid = await _validate_oauth2_token(scope, allowed_group)
+                is_valid, oauth2_auth_method, failure_detail = await _validate_oauth2_or_password_fallback(
+                    scope,
+                    allowed_group_dn=allowed_group,
+                    encrypted_password=auth_password,
+                )
+                resolved_auth_method = oauth2_auth_method or "none"
             elif auth_method == "client_credentials":
                 resolved_auth_method = "client_credentials"
                 # Accept either direct Basic auth or a Bearer token issued by
@@ -766,18 +827,22 @@ class MCPCustomRouteEndpoint:
                 return
 
             if not is_valid:
+                dual_auth_enabled = auth_method == "oauth2" and bool(auth_password)
                 await send(
                     {
                         "type": "http.response.start",
                         "status": 401,
                         "headers": [
                             (b"content-type", b"application/json"),
-                            (b"www-authenticate", b'Bearer realm="mcp"'),
+                            (
+                                b"www-authenticate",
+                                b'Bearer realm="mcp", MCP-Password' if dual_auth_enabled else b'Bearer realm="mcp"',
+                            ),
                         ],
                     }
                 )
                 if auth_method == "oauth2":
-                    detail = "OAuth2 Bearer token required - token invalid, expired, or user not authorized"
+                    detail = failure_detail or "OAuth2 token is invalid, expired, or unauthorized."
                 elif auth_method == "client_credentials":
                     detail = (
                         "OAuth2 client_credentials required - provide client_id/client_secret "

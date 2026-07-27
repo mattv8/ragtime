@@ -1,6 +1,12 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import userEvent from '@testing-library/user-event';
+// @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
+import { readFileSync } from 'node:fs';
+// @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
+import { join } from 'node:path';
+// @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
+import { cwd } from 'node:process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Conversation, ConversationSummary, User, WorkspaceChatStateResponse } from '@/types';
@@ -970,5 +976,15 @@ describe('ChatPanel ACL-aware conversation write helpers', () => {
     expect(applyConversationToolGroupWriteToggle(tools, {}, false)).toEqual({
       'tool-rw-acl': { write_access_enabled: true },
     });
+  });
+});
+
+describe('ChatPanel tool group menu refresh', () => {
+  it('tracks conversationToolOptions in the group menu callback dependencies', () => {
+    const source = readFileSync(join(cwd(), 'src/components/ChatPanel.tsx'), 'utf8');
+
+    expect(source).toMatch(
+      /const getToolGroupMenuItems = useCallback\([\s\S]*?\[\s*activeConversation,\s*conversationToolOptions,\s*isConversationViewer,\s*saveConversationToolOptions,\s*savingTools,\s*\]/,
+    );
   });
 });

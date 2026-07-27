@@ -8,6 +8,8 @@ replacing environment-based configuration for tool settings.
 import os
 from typing import List, Optional
 
+from prisma.enums import McpAuthMethod
+
 from ragtime.core.app_setting_defaults import (
     DEFAULT_AGGREGATE_SEARCH,
     DEFAULT_AUTHENTICATED_WEBGL_BACKGROUND_ENABLED,
@@ -259,7 +261,12 @@ class SettingsCache:
 
             if prisma_settings is None:
                 # Create default settings
-                prisma_settings = await db.appsettings.create(data={"id": "default"})
+                prisma_settings = await db.appsettings.create(
+                    data={
+                        "id": "default",
+                        "mcpDefaultRouteAuthMethod": McpAuthMethod(DEFAULT_MCP_DEFAULT_ROUTE_AUTH_METHOD),
+                    }
+                )
                 logger.info("Created default application settings")
 
             # Decrypt secrets that may be encrypted

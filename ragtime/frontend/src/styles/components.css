@@ -5805,6 +5805,26 @@ textarea {
   font-size: var(--text-sm);
 }
 
+.radio-label {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.radio-label input[type='radio'] {
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--color-primary);
+}
+
+.radio-label span {
+  overflow-wrap: anywhere;
+}
+
 .checkbox-label input[type='checkbox'] {
   width: 18px;
   height: 18px;

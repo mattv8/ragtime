@@ -2162,7 +2162,7 @@ export function SettingsPanel({
         mcp_default_route_auth_method: data.mcp_default_route_auth_method,
         mcp_default_route_allowed_group: data.mcp_default_route_allowed_group,
         mcp_default_route_client_id: data.mcp_default_route_client_id ?? '',
-        mcp_default_route_password: data.mcp_default_route_password ?? '',
+        mcp_default_route_password: undefined,
         // OCR settings
         default_ocr_mode: data.default_ocr_mode,
         default_ocr_provider: data.default_ocr_provider || 'ollama',
@@ -2968,21 +2968,14 @@ export function SettingsPanel({
     // Validate password if provided (not empty string which clears, and not undefined which skips)
     const pwd = formData.mcp_default_route_password;
     const authMethod =
-      formData.mcp_default_route_auth_method ??
-      settings?.mcp_default_route_auth_method ??
-      'password';
+      formData.mcp_default_route_auth_method ?? settings?.mcp_default_route_auth_method ?? 'oauth2';
     const authEnabled = formData.mcp_default_route_auth ?? settings?.mcp_default_route_auth;
     const clientId = (
       formData.mcp_default_route_client_id ??
       settings?.mcp_default_route_client_id ??
       ''
     ).trim();
-    if (
-      (authMethod === 'password' || authMethod === 'client_credentials') &&
-      pwd !== undefined &&
-      pwd !== '' &&
-      pwd.length < 8
-    ) {
+    if (pwd !== undefined && pwd !== '' && pwd.length < 8) {
       setMcpError('MCP password must be at least 8 characters');
       setMcpSaving(false);
       return;
@@ -3035,7 +3028,7 @@ export function SettingsPanel({
         mcp_default_route_auth_method: updated.mcp_default_route_auth_method,
         mcp_default_route_allowed_group: updated.mcp_default_route_allowed_group,
         mcp_default_route_client_id: updated.mcp_default_route_client_id ?? '',
-        mcp_default_route_password: updated.mcp_default_route_password ?? '',
+        mcp_default_route_password: undefined,
       }));
       await onSettingsSaved?.();
       toast.success('MCP configuration saved.', 5000);
@@ -4264,7 +4257,9 @@ export function SettingsPanel({
               <span
                 title={
                   settings?.mcp_default_route_auth_method === 'oauth2'
-                    ? 'OAuth2 protected'
+                    ? settings?.has_mcp_default_password
+                      ? 'OAuth2 + Password protected'
+                      : 'OAuth2'
                     : settings?.mcp_default_route_auth_method === 'client_credentials'
                       ? 'Client credentials protected'
                       : 'Password protected'
@@ -4291,6 +4286,14 @@ export function SettingsPanel({
             .map((route) => {
               const isProtected =
                 route.require_auth && (route.has_password || route.auth_method === 'oauth2');
+              const routeProtectionLabel =
+                route.auth_method === 'oauth2'
+                  ? route.has_password
+                    ? 'OAuth2 + Password'
+                    : 'OAuth2'
+                  : route.auth_method === 'client_credentials'
+                    ? 'Client credentials'
+                    : 'Password protected';
               return (
                 <div
                   key={route.id}
@@ -4301,15 +4304,7 @@ export function SettingsPanel({
                     ({route.name})
                   </span>
                   {isProtected ? (
-                    <span
-                      title={
-                        route.auth_method === 'oauth2'
-                          ? 'OAuth2 (LDAP)'
-                          : route.auth_method === 'client_credentials'
-                            ? 'Client credentials'
-                            : 'Password protected'
-                      }
-                    >
+                    <span title={routeProtectionLabel}>
                       <Lock size={14} style={{ color: 'var(--color-success)' }} />
                     </span>
                   ) : (
