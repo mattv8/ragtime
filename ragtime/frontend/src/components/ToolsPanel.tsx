@@ -2421,7 +2421,7 @@ export function ToolsPanel({
                         },
                       },
                       {
-                        label: contextTool.allow_write ? 'Write Access' : 'Read Only',
+                        label: 'Write Access',
                         type: 'toggle',
                         checked: contextTool.allow_write,
                         onSelect: () => {

@@ -350,10 +350,10 @@ describe('ToolsPanel', () => {
     });
 
     fireEvent.contextMenu(screen.getByText('Grouped Tool'));
-    await user.click(await screen.findByRole('button', { name: /Read Only/ }));
+    await user.click(await screen.findByRole('button', { name: 'Write Access' }));
 
     await screen.findByRole('heading', { name: 'Enable Write Access' });
-    expect(screen.queryByRole('button', { name: /Read Only/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Write Access' })).toBeNull();
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
