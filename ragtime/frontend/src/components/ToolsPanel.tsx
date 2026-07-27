@@ -1550,6 +1550,17 @@ export function ToolsPanel({
     [selectedGroupId],
   );
 
+  const handleGroupTabClick = useCallback(
+    (groupId: string) => {
+      const isActive = selectedGroupId === groupId;
+      if (!isActive) {
+        toolFilter.clear();
+      }
+      setSelectedGroupId(isActive ? null : groupId);
+    },
+    [selectedGroupId, toolFilter],
+  );
+
   const handleGroupTabsListClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (!selectedGroupId) {
@@ -2537,7 +2548,7 @@ export function ToolsPanel({
                             <div
                               key={group.id}
                               className={`tool-group-tab${isActive ? ' active' : ''}${isDragTarget ? ' drag-over' : ''}${editingGroupId === group.id ? ' editing' : ''}`}
-                              onClick={() => setSelectedGroupId(isActive ? null : group.id)}
+                              onClick={() => handleGroupTabClick(group.id)}
                               onDragOver={(e) => handleGroupDragOver(e, group.id)}
                               onDragLeave={(e) => handleGroupDragLeave(e, group.id)}
                               onDrop={(e) => handleGroupDrop(e, group.id)}

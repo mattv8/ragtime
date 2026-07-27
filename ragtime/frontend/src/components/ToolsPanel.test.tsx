@@ -33,10 +33,22 @@ const toastMock = {
 };
 
 const toolFilterState = {
-  queries: [],
-  tags: [],
+  queries: [] as string[],
+  tags: [] as string[],
   input: '',
+  debouncedInput: '',
   hasActiveFilters: false,
+  setInput: vi.fn(),
+  setTags: vi.fn(),
+  clear: vi.fn(),
+};
+
+const resetToolFilterState = (): void => {
+  toolFilterState.queries = [];
+  toolFilterState.tags = [];
+  toolFilterState.input = '';
+  toolFilterState.debouncedInput = '';
+  toolFilterState.hasActiveFilters = false;
 };
 
 vi.mock('@/api', () => ({ api: apiMock }));
@@ -268,6 +280,11 @@ class ResizeObserverMock {
 describe('ToolsPanel', () => {
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+    resetToolFilterState();
+    toolFilterState.clear.mockReset();
+    toolFilterState.clear.mockImplementation(() => {
+      resetToolFilterState();
+    });
     apiMock.listToolConfigs.mockResolvedValue([groupedTool, ungroupedTool]);
     apiMock.listToolGroups.mockResolvedValue([toolGroup]);
     apiMock.listUserspaceMountSources.mockResolvedValue([]);
@@ -366,6 +383,30 @@ describe('ToolsPanel', () => {
       expect(screen.getByText('Ungrouped Tool')).toBeTruthy();
       expect(screen.queryByText('Grouped Tool')).toBeNull();
     });
+  });
+
+  it('clears typed search filters when selecting an inactive group tab but not when closing it', async () => {
+    const user = userEvent.setup();
+    toolFilterState.queries = ['ssh', 'database', 'staging'];
+    toolFilterState.tags = ['database'];
+    toolFilterState.input = 'staging';
+    toolFilterState.debouncedInput = 'staging';
+    toolFilterState.hasActiveFilters = true;
+
+    render(<ToolsPanel />);
+
+    await screen.findByText('Ungrouped Tool');
+    await user.click(screen.getByText('Alpha Group'));
+
+    expect(toolFilterState.clear).toHaveBeenCalledTimes(1);
+    expect(toolFilterState.queries).toEqual([]);
+    expect(toolFilterState.tags).toEqual([]);
+    expect(toolFilterState.input).toBe('');
+    expect(toolFilterState.hasActiveFilters).toBe(false);
+
+    await user.click(screen.getByText('Alpha Group'));
+
+    expect(toolFilterState.clear).toHaveBeenCalledTimes(1);
   });
 
   it('adds soft wrap opportunities only to heartbeat error tokens longer than 30 characters', async () => {
