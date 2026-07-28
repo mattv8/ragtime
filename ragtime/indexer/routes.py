@@ -8938,6 +8938,7 @@ async def _create_background_chat_task_after_user_message(
 ) -> Any:
     """Create a background chat task, persisting failed-generation state on errors."""
     try:
+        current_user_context = _build_current_user_prompt_context(user)
         input_est = _estimate_input_tokens(user_message)
         attempt_id = await create_usage_attempt(
             user_id=user.id,
@@ -8956,6 +8957,7 @@ async def _create_background_chat_task_after_user_message(
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 current_time_context=current_time_context,
+                current_user_context=current_user_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
             )
@@ -8966,6 +8968,7 @@ async def _create_background_chat_task_after_user_message(
                 blocked_tool_names=blocked_tool_names,
                 workspace_context=workspace_context,
                 current_time_context=current_time_context,
+                current_user_context=current_user_context,
                 disabled_builtin_tool_ids=disabled_builtin_tool_ids,
                 usage_attempt_id=attempt_id,
             )
@@ -11983,11 +11986,12 @@ async def _shared_conversation_request_actor(
             detail="Shared conversation owner not found",
         )
 
-    db = await repository._get_db()
-    owner = await db.user.find_unique(where={"id": fallback_user_id})
-
-    role = str(getattr(owner, "role", "") or "user") if owner is not None else "user"
-    return types.SimpleNamespace(id=fallback_user_id, role=role)
+    return types.SimpleNamespace(
+        id=fallback_user_id,
+        username="",
+        displayName="",
+        role="user",
+    )
 
 
 async def _filter_chat_visible_tool_ids(*, user: User, tool_ids: list[str]) -> list[str]:

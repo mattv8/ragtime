@@ -10,6 +10,7 @@ from prisma.models import User
 
 from ragtime.indexer.models import Conversation
 from ragtime.indexer.routes import (
+    _create_background_chat_task_after_user_message,
     _resolve_selected_tool_ids_for_request,
     _shared_conversation_request_actor,
     get_conversation_tools,
@@ -244,7 +245,7 @@ class ResolveSelectedToolIdsAclTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SharedConversationActorTests(unittest.IsolatedAsyncioTestCase):
-    async def test_shared_actor_uses_shared_repository_db_without_fresh_prisma_connect(self) -> None:
+    async def test_anonymous_shared_actor_is_safe_non_admin_prompt_identity(self) -> None:
         fake_db = _FakeConversationToolDb(conversation=SimpleNamespace())
         fake_db.user.find_unique = mock.AsyncMock(return_value=SimpleNamespace(id="owner-1", role="admin"))
 
@@ -267,12 +268,14 @@ class SharedConversationActorTests(unittest.IsolatedAsyncioTestCase):
                 None,
             )
 
-        get_db.assert_awaited_once_with()
+        get_db.assert_not_awaited()
         prisma_cls.assert_not_called()
         fake_db.connect.assert_not_awaited()
         fake_db.disconnect.assert_not_awaited()
         self.assertEqual(actor.id, "owner-1")
-        self.assertEqual(actor.role, "admin")
+        self.assertEqual(actor.username, "")
+        self.assertEqual(actor.displayName, "")
+        self.assertEqual(actor.role, "user")
 
 
 class ConversationToolEndpointAclTests(unittest.IsolatedAsyncioTestCase):
@@ -517,6 +520,54 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([tool.name for tool in runtime_tools], ["ssh_demo_ssh"])
         build_tools.assert_not_awaited()
+
+    async def test_background_chat_task_receives_authenticated_actor_context(self) -> None:
+        user = cast(
+            User,
+            SimpleNamespace(
+                id="admin-1",
+                username="local:admin",
+                displayName="Admin",
+                role="admin",
+            ),
+        )
+        conversation = Conversation(
+            id="conversation-1",
+            title="Test",
+            model="gpt-4.1",
+            user_id="user-1",
+            workspace_id=None,
+            messages=[],
+            total_tokens=0,
+            tool_selection_mode="all",
+        )
+        persisted_task = SimpleNamespace(id="task-1")
+
+        with (
+            mock.patch("ragtime.indexer.routes.create_usage_attempt", mock.AsyncMock(return_value="attempt-1")),
+            mock.patch("ragtime.indexer.routes.background_task_service.start_task", return_value="task-1") as start_task,
+            mock.patch("ragtime.indexer.routes.repository.get_chat_task", mock.AsyncMock(return_value=persisted_task)),
+        ):
+            result = await _create_background_chat_task_after_user_message(
+                conversation_id="conversation-1",
+                user_message="run the write operation",
+                user=user,
+                conv=conversation,
+                blocked_tool_names=set(),
+                workspace_context=None,
+                existing_task_id="task-1",
+            )
+
+        self.assertIs(result, persisted_task)
+        self.assertEqual(
+            start_task.call_args.kwargs["current_user_context"],
+            {
+                "user_id": "admin-1",
+                "username": "admin",
+                "display_name": "Admin",
+                "is_admin": True,
+            },
+        )
 
     async def test_conversation_write_override_is_capped_by_chat_acl_read(self) -> None:
         rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)

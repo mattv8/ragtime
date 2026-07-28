@@ -168,6 +168,83 @@ class BackgroundTaskCancellationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(stream.aclose_called)
 
+    async def test_start_task_forwards_authenticated_actor_context_to_process_query_stream(self) -> None:
+        service = background_tasks.BackgroundTaskService()
+        stream = _HangingAsyncStream()
+        actor_context = {
+            "user_id": "admin-1",
+            "username": "admin",
+            "display_name": "Admin",
+            "is_admin": True,
+        }
+
+        fake_conversation = SimpleNamespace(
+            messages=[
+                SimpleNamespace(
+                    role="user",
+                    content="hello",
+                    events=None,
+                )
+            ],
+            user_id="conversation-owner-1",
+            model="lmstudio::openai/gpt-oss-20b",
+            workspace_id=None,
+        )
+
+        fake_repository = SimpleNamespace(
+            create_chat_task=mock.AsyncMock(),
+            get_chat_task=mock.AsyncMock(return_value=SimpleNamespace(id="task-actor-1")),
+            update_chat_task_status=mock.AsyncMock(),
+            get_conversation=mock.AsyncMock(return_value=fake_conversation),
+            update_chat_task_streaming_state=mock.AsyncMock(),
+            cancel_chat_task=mock.AsyncMock(),
+            complete_chat_task=mock.AsyncMock(),
+            add_message=mock.AsyncMock(),
+            link_assistant_snapshot_tool_calls=mock.AsyncMock(),
+            update_chat_task=mock.AsyncMock(),
+        )
+
+        fake_event_bus = SimpleNamespace(publish=mock.AsyncMock())
+        fake_rag = SimpleNamespace(
+            is_ready=True,
+            process_query_stream=mock.Mock(return_value=stream),
+        )
+        fake_settings_cache = SimpleNamespace(get_settings=mock.AsyncMock(return_value={"max_tool_output_chars": 5000}))
+
+        with (
+            mock.patch.object(background_tasks, "repository", fake_repository),
+            mock.patch.object(background_tasks, "task_event_bus", fake_event_bus),
+            mock.patch.object(background_tasks, "rag", fake_rag),
+            mock.patch.object(
+                background_tasks.SettingsCache,
+                "get_instance",
+                return_value=fake_settings_cache,
+            ),
+        ):
+            task_id = service.start_task(
+                conversation_id="conv-actor-1",
+                user_message="hello",
+                existing_task_id="task-actor-1",
+                current_user_context=actor_context,
+            )
+            self.assertEqual(task_id, "task-actor-1")
+
+            running_task = service._running_tasks["task-actor-1"]
+
+            try:
+                await asyncio.wait_for(stream.started.wait(), timeout=1.0)
+
+                process_query_kwargs = fake_rag.process_query_stream.call_args.kwargs
+                self.assertEqual(process_query_kwargs["current_user_context"], actor_context)
+                self.assertEqual(process_query_kwargs["user_id"], actor_context["user_id"])
+                self.assertNotEqual(process_query_kwargs["user_id"], fake_conversation.user_id)
+            finally:
+                self.assertTrue(service.cancel_task("task-actor-1"))
+                with self.assertRaises(asyncio.CancelledError):
+                    await running_task
+
+        self.assertTrue(stream.aclose_called)
+
 
 class BackgroundTaskStreamActivityTests(unittest.TestCase):
     def test_recoverable_stream_activity_includes_structured_events(self) -> None:

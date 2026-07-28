@@ -854,6 +854,7 @@ class BackgroundTaskService:
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, Any]] = None,
         current_time_context: Optional[dict[str, Any]] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
     ) -> str:
@@ -1030,6 +1031,8 @@ class BackgroundTaskService:
                 # and tool_end.
                 _STREAM_INACTIVITY_TIMEOUT = 600  # 10 minutes
 
+                request_user_id = str(current_user_context.get("user_id") or "").strip() if current_user_context else ""
+
                 _stream = rag.process_query_stream(
                     parsed_user_message,
                     chat_history,
@@ -1037,9 +1040,10 @@ class BackgroundTaskService:
                     blocked_tool_names=blocked_tool_names,
                     workspace_context=workspace_context,
                     current_time_context=current_time_context,
+                    current_user_context=current_user_context,
                     conversation_model=conv.model,
                     conversation_id=conversation_id,
-                    user_id=conv.user_id,
+                    user_id=request_user_id or conv.user_id,
                     chat_task_id=task_id,
                     message_index=len(conv.messages),
                     disabled_builtin_tool_ids=disabled_builtin_tool_ids,
@@ -1708,6 +1712,7 @@ class BackgroundTaskService:
         blocked_tool_names: Optional[set[str]] = None,
         workspace_context: Optional[dict[str, Any]] = None,
         current_time_context: Optional[dict[str, Any]] = None,
+        current_user_context: Optional[dict[str, Any]] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
         usage_attempt_id: Optional[str] = None,
     ) -> str:
@@ -1735,6 +1740,7 @@ class BackgroundTaskService:
             blocked_tool_names=blocked_tool_names,
             workspace_context=workspace_context,
             current_time_context=current_time_context,
+            current_user_context=current_user_context,
             disabled_builtin_tool_ids=disabled_builtin_tool_ids,
             usage_attempt_id=usage_attempt_id,
         )

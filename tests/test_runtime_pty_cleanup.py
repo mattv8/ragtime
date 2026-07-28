@@ -34,7 +34,7 @@ class RuntimePtyCleanupTests(unittest.IsolatedAsyncioTestCase):
         class _DisconnectingWebSocket:
             def __init__(self) -> None:
                 self.headers = {"x-pty-token": "token"}
-                self.query_params = {}
+                self.query_params: dict[str, str] = {}
                 self.sent_texts: list[str] = []
 
             async def accept(self) -> None:
@@ -74,13 +74,15 @@ class RuntimePtyCleanupTests(unittest.IsolatedAsyncioTestCase):
             await worker_api.pty("worker-session-1", websocket)
 
         spawn.assert_awaited_once()
-        self.assertTrue(spawn.await_args.kwargs["pty"])
-        self.assertEqual(spawn.await_args.kwargs["stdin"], slave_fd)
-        self.assertEqual(spawn.await_args.kwargs["stdout"], slave_fd)
-        self.assertEqual(spawn.await_args.kwargs["stderr"], slave_fd)
-        self.assertEqual(spawn.await_args.kwargs["env"]["TERM"], "xterm-256color")
-        self.assertEqual(spawn.await_args.kwargs["env"]["PROMPT_COMMAND"], "")
-        self.assertNotIn("preexec_fn", spawn.await_args.kwargs)
+        await_args = spawn.await_args
+        assert await_args is not None
+        self.assertTrue(await_args.kwargs["pty"])
+        self.assertEqual(await_args.kwargs["stdin"], slave_fd)
+        self.assertEqual(await_args.kwargs["stdout"], slave_fd)
+        self.assertEqual(await_args.kwargs["stderr"], slave_fd)
+        self.assertEqual(await_args.kwargs["env"]["TERM"], "xterm-256color")
+        self.assertEqual(await_args.kwargs["env"]["PROMPT_COMMAND"], "")
+        self.assertNotIn("preexec_fn", await_args.kwargs)
         self.assertEqual(
             json.loads(websocket.sent_texts[0]),
             {
