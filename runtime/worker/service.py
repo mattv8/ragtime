@@ -10,7 +10,6 @@ import logging
 import os
 import re
 import shutil
-import signal
 import socket
 import sys
 import time
@@ -60,6 +59,7 @@ from runtime.worker.sandbox import (
     recommended_startup_concurrency,
     sandbox_diagnostics,
     spawn_sandboxed,
+    terminate_process_group,
     workspace_mirror_required,
 )
 
@@ -1347,8 +1347,8 @@ class WorkerService:
                 sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
                 if cwd_value and cwd_value not in {".", "./"}:
                     sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{cwd_value}"
-                # Embed an explicit ``cd`` so cwd is reliable even when
-                # preexec_fn's chdir is lost after exec.
+                # Embed an explicit ``cd`` so cwd is reliable even when the
+                # sandbox launcher re-execs the workload under a fresh rootfs.
                 process = await spawn_sandboxed(
                     session.sandbox_spec,
                     ["sh", "-lc", f"cd {sandbox_cwd} && {run}"],
@@ -1912,9 +1912,9 @@ class WorkerService:
                         cwd=config_cwd,
                         port=effective_port,
                     )
-            # Resolve the sandbox-internal cwd for the command.  We embed
-            # an explicit ``cd`` because ``os.chdir`` in preexec_fn can be
-            # lost after exec under certain uvicorn/event-loop contexts.
+            # Resolve the sandbox-internal cwd for the command. We embed an
+            # explicit ``cd`` because the sandbox launcher re-execs the
+            # workload under a fresh rootfs before the final command starts.
             _sandbox_cwd = SANDBOX_WORKSPACE_MOUNT
             if config_cwd and config_cwd not in {".", "./"}:
                 _sandbox_cwd = f"{SANDBOX_WORKSPACE_MOUNT}/{config_cwd}"
@@ -1977,24 +1977,7 @@ class WorkerService:
         *,
         timeout: float = 3,
     ) -> None:
-        if process.returncode is not None:
-            return
-        # Kill the entire process group so that grandchild processes
-        # (e.g. Node/esbuild spawned via sh -lc) are also terminated.
-        try:
-            pgid = os.getpgid(process.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-        except Exception:
-            try:
-                pgid = os.getpgid(process.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                process.kill()
-            await process.wait()
+        await terminate_process_group(process, timeout=timeout)
 
     async def _sync_devserver_state_locked(self, session: WorkerSession) -> None:
         process = self._devserver_processes.get(session.id)
@@ -2211,7 +2194,6 @@ class WorkerService:
                             env=_workspace_env,
                             stdout=log_handle,
                             stderr=asyncio.subprocess.STDOUT,
-                            start_new_session=True,
                             ensure_ready=False,
                         )
                     except FileNotFoundError:
@@ -2650,8 +2632,7 @@ class WorkerService:
         except asyncio.TimeoutError:
             timed_out = True
             try:
-                process.kill()  # type: ignore[union-attr]
-                await process.wait()  # type: ignore[union-attr]
+                await terminate_process_group(process)  # type: ignore[arg-type]
             except Exception:
                 pass
             stdout_bytes = b""

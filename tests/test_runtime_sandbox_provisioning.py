@@ -1,7 +1,13 @@
 import asyncio
+import errno
+import importlib
+import inspect
 import json
 import os
+import select
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -15,6 +21,9 @@ from runtime.worker.service import WorkerService
 
 
 class SandboxProvisioningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        sandbox._capabilities_cache.clear()
+
     def tearDown(self) -> None:
         sandbox._capabilities_cache.clear()
 
@@ -557,7 +566,30 @@ class SandboxProvisioningTests(unittest.TestCase):
 
         self.assertTrue(flags & sandbox.CLONE_NEWUSER)
 
-    def test_detect_capabilities_degrades_to_chroot_when_pid_namespace_rejected(self) -> None:
+    def test_detect_capabilities_degrades_to_chroot_when_mount_namespace_rejected(self) -> None:
+        def can_unshare(flags: int) -> bool:
+            if flags == sandbox.CLONE_NEWUSER:
+                return False
+            if flags & sandbox.CLONE_NEWNS:
+                return False
+            return True
+
+        with (
+            mock.patch.object(sandbox, "has_cap_sys_admin", return_value=True),
+            mock.patch.object(sandbox.os, "geteuid", return_value=0),
+            mock.patch.object(sandbox, "_can_unshare_flags", side_effect=can_unshare),
+            mock.patch.object(sandbox, "_detect_cgroup_pids_limit", return_value=(False, None, None)),
+        ):
+            caps = sandbox.detect_capabilities()
+
+        self.assertEqual(caps.mode, "chroot")
+        self.assertFalse(caps.can_mount)
+        self.assertFalse(caps.can_pivot_root)
+        self.assertFalse(caps.mount_namespace)
+        self.assertTrue(caps.pid_namespace)
+        self.assertTrue(caps.dropped_unshare_flags & sandbox.CLONE_NEWNS)
+
+    def test_detect_capabilities_keeps_pivot_root_without_pid_namespace_when_mounts_still_work(self) -> None:
         def can_unshare(flags: int) -> bool:
             if flags == sandbox.CLONE_NEWUSER:
                 return False
@@ -573,12 +605,43 @@ class SandboxProvisioningTests(unittest.TestCase):
         ):
             caps = sandbox.detect_capabilities()
 
-        self.assertEqual(caps.mode, "chroot")
+        self.assertEqual(caps.mode, "pivot_root")
         self.assertTrue(caps.can_mount)
-        self.assertFalse(caps.can_pivot_root)
+        self.assertTrue(caps.can_pivot_root)
         self.assertFalse(caps.pid_namespace)
         self.assertTrue(caps.mount_namespace)
         self.assertTrue(caps.dropped_unshare_flags & sandbox.CLONE_NEWPID)
+
+    def test_sandbox_diagnostics_reports_launcher_backed_pid_namespace_truthfully(self) -> None:
+        caps = sandbox.SandboxCapabilities(
+            has_cap_sys_admin=True,
+            can_pivot_root=True,
+            can_mount=True,
+            mount_namespace=True,
+            pid_namespace=False,
+            unshare_flags=sandbox.CLONE_NEWNS,
+            dropped_unshare_flags=sandbox.CLONE_NEWPID,
+            mode="pivot_root",
+        )
+
+        with mock.patch.object(sandbox, "detect_capabilities", return_value=caps):
+            diagnostics = sandbox.sandbox_diagnostics()
+
+        self.assertEqual(diagnostics["sandbox_mode"], "pivot_root")
+        self.assertTrue(diagnostics["can_pivot_root"])
+        self.assertFalse(diagnostics["pid_namespace"])
+        self.assertEqual(diagnostics["unshare_flag_names"], ["CLONE_NEWNS"])
+        self.assertEqual(diagnostics["dropped_unshare_flag_names"], ["CLONE_NEWPID"])
+
+    def test_sandbox_module_removes_legacy_preexec_api(self) -> None:
+        source = Path(sandbox.__file__).read_text(encoding="utf-8")
+
+        self.assertFalse(hasattr(sandbox, "_sandbox_preexec"))
+        self.assertFalse(hasattr(sandbox, "make_sandbox_preexec"))
+        self.assertFalse(hasattr(sandbox, "prepare_sandbox_pty_preexec"))
+        self.assertNotIn("def _sandbox_preexec", source)
+        self.assertNotIn("def make_sandbox_preexec", source)
+        self.assertNotIn("def prepare_sandbox_pty_preexec", source)
 
     def test_calculate_sandbox_pids_max_scales_up_on_resource_rich_host(self) -> None:
         pids_max = sandbox._calculate_sandbox_pids_max(
@@ -648,6 +711,431 @@ class SandboxProvisioningTests(unittest.TestCase):
             concurrency = sandbox.recommended_startup_concurrency()
 
         self.assertEqual(concurrency, 2)
+
+    def test_sandbox_launch_spec_round_trip_excludes_environment(self) -> None:
+        spec = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="pivot_root",
+            cwd="/workspace",
+            argv=("sh", "-lc", "printenv"),
+            unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+            pty=False,
+        )
+
+        payload = sandbox._encode_launch_record(spec.to_record())
+        decoded = sandbox.SandboxLaunchSpec.from_record(sandbox._decode_launch_record(payload))
+
+        self.assertEqual(decoded, spec)
+        self.assertNotIn(b"RAGTIME_BRIDGE_TOKEN", payload)
+
+    def test_sandbox_launch_record_rejects_unknown_version(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported sandbox launch protocol"):
+            sandbox.SandboxLaunchSpec.from_record({"version": 999})
+
+    def test_sandbox_launch_record_rejects_oversized_payload(self) -> None:
+        with self.assertRaisesRegex(ValueError, "launch record exceeds"):
+            sandbox._encode_launch_record({"value": "x" * (sandbox._MAX_LAUNCH_RECORD_BYTES + 1)})
+
+    def test_launch_capabilities_are_reconstructed_from_spec_without_runtime_probe(self) -> None:
+        spec = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="pivot_root",
+            cwd="/workspace",
+            argv=("sh",),
+            unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+            has_cap_sys_admin=True,
+            can_mount=True,
+            can_pivot_root=True,
+            cgroup_pids_available=True,
+            cgroup_pids_parent="/sys/fs/cgroup/ragtime-sandboxes",
+            cgroup_pids_max=512,
+            drop_capabilities=False,
+            no_new_privs=False,
+        )
+
+        with mock.patch.object(sandbox, "detect_capabilities", side_effect=AssertionError("should not probe")):
+            caps = sandbox._capabilities_from_launch_spec(spec)
+
+        self.assertTrue(caps.can_mount)
+        self.assertTrue(caps.can_pivot_root)
+        self.assertFalse(caps.drop_capabilities)
+        self.assertFalse(caps.no_new_privs)
+
+    def test_user_namespace_mapping_writes_in_required_order(self) -> None:
+        writes: list[tuple[str, str]] = []
+
+        def write_text(path: Path, value: str, *, encoding: str) -> int:
+            writes.append((str(path), value))
+            return len(value)
+
+        with mock.patch.object(Path, "write_text", autospec=True, side_effect=write_text):
+            sandbox._setup_user_namespace_mappings()
+
+        self.assertEqual(
+            [path for path, _ in writes],
+            [
+                "/proc/self/setgroups",
+                "/proc/self/uid_map",
+                "/proc/self/gid_map",
+            ],
+        )
+
+    def test_user_namespace_mapping_failure_is_fatal(self) -> None:
+        with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                sandbox._setup_user_namespace_mappings()
+
+    def test_parent_death_signal_closes_parent_change_race(self) -> None:
+        with (
+            mock.patch.object(sandbox.os, "getppid", return_value=1),
+            mock.patch.object(sandbox._libc, "prctl", return_value=0, create=True),
+            mock.patch.object(sandbox.os, "kill") as kill,
+        ):
+            sandbox._set_parent_death_signal(100)
+
+        kill.assert_called_once_with(sandbox.os.getpid(), sandbox.signal.SIGKILL)
+
+    def test_assign_current_process_to_sandbox_cgroup_raises_when_available_but_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            cgroup_parent = tmp / "cgroups"
+            spec = sandbox.SandboxSpec(
+                workspace_id="workspace-1",
+                workspace_files_path=tmp / "files",
+                rootfs_path=tmp / "rootfs",
+                mode="pivot_root",
+            )
+            caps = sandbox.SandboxCapabilities(
+                cgroup_pids_available=True,
+                cgroup_pids_parent=str(cgroup_parent),
+                cgroup_pids_max=1024,
+                mode="pivot_root",
+            )
+
+            with mock.patch.object(Path, "write_text", side_effect=PermissionError("denied")):
+                with self.assertRaises(PermissionError):
+                    sandbox._assign_current_process_to_sandbox_cgroup(spec, caps)
+
+    def test_assign_current_process_to_sandbox_cgroup_is_noop_without_support(self) -> None:
+        spec = sandbox.SandboxSpec(
+            workspace_id="workspace-1",
+            workspace_files_path=Path("/tmp/files"),
+            rootfs_path=Path("/tmp/rootfs"),
+            mode="pivot_root",
+        )
+        caps = sandbox.SandboxCapabilities(cgroup_pids_available=False, mode="pivot_root")
+
+        with mock.patch.object(Path, "write_text") as write_text:
+            sandbox._assign_current_process_to_sandbox_cgroup(spec, caps)
+
+        write_text.assert_not_called()
+
+    def test_pid_namespace_child_mounts_proc_and_execs_tini(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        calls: list[str] = []
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="pivot_root",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+        )
+
+        with (
+            mock.patch.object(sandbox_launcher, "_set_parent_death_signal", side_effect=lambda _pid: calls.append("pdeath")),
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(can_mount=True, no_new_privs=True, mode="pivot_root"),
+            ),
+            mock.patch.object(sandbox_launcher, "_setup_sandbox_mounts", side_effect=lambda *_args, **_kwargs: calls.append("mounts")),
+            mock.patch.object(sandbox_launcher, "_do_pivot_root", side_effect=lambda *_args, **_kwargs: calls.append("pivot")),
+            mock.patch.object(sandbox_launcher, "_drop_process_capabilities", side_effect=lambda **_kwargs: calls.append("caps")),
+            mock.patch.object(sandbox_launcher.os.path, "isfile", return_value=True),
+            mock.patch.object(sandbox_launcher.os, "access", return_value=True),
+            mock.patch.object(sandbox_launcher.os, "chdir"),
+            mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
+            mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)) as execvpe,
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._run_pid_init(launch, status_fd=9, launcher_pid=100)
+
+        self.assertEqual(calls, ["pdeath", "mounts", "pivot", "caps"])
+        execvpe.assert_called_once_with(
+            "/usr/bin/tini",
+            ["/usr/bin/tini", "-g", "--", "sh", "-lc", "true"],
+            mock.ANY,
+        )
+
+    def test_exec_path_rearms_status_fd_cloexec_so_parent_sees_eof_after_exec(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        read_fd, write_fd = os.pipe()
+
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(read_fd)
+                sandbox_launcher._arm_status_fd_cloexec(write_fd)
+                os.execv(
+                    sys.executable,
+                    [sys.executable, "-c", "import time; time.sleep(0.5)"],
+                )
+            finally:
+                os._exit(127)
+
+        os.close(write_fd)
+        try:
+            readable, _, _ = select.select([read_fd], [], [], 1.0)
+            self.assertEqual(readable, [read_fd])
+            self.assertEqual(os.read(read_fd, 1), b"")
+            self.assertEqual(os.waitpid(pid, os.WNOHANG), (0, 0))
+            time.sleep(0.55)
+            waited_pid, status = os.waitpid(pid, 0)
+        finally:
+            os.close(read_fd)
+
+        self.assertEqual(waited_pid, pid)
+        self.assertTrue(os.WIFEXITED(status))
+
+    def test_chroot_launcher_falls_back_to_synced_system_dirs_when_mount_setup_fails(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        calls: list[str] = []
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="chroot",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS,
+        )
+
+        with (
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(can_mount=True, no_new_privs=True, mode="chroot"),
+            ),
+            mock.patch.object(sandbox_launcher, "_setup_sandbox_mounts", side_effect=OSError("boom")),
+            mock.patch.object(sandbox_launcher, "_sync_system_dirs_for_chroot", side_effect=lambda *_args: calls.append("sync")),
+            mock.patch.object(sandbox_launcher, "_do_chroot", side_effect=lambda *_args: calls.append("chroot")),
+            mock.patch.object(sandbox_launcher.os, "chdir"),
+            mock.patch.object(sandbox_launcher, "_drop_process_capabilities"),
+            mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
+            mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)),
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._enter_rootfs_and_exec(launch, status_fd=9, mount_proc=False, use_tini=False)
+
+        self.assertEqual(calls, ["sync", "chroot"])
+
+    def test_launcher_restores_hostname_only_for_private_uts_namespace(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="chroot",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWUTS,
+        )
+
+        with (
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(can_mount=False, uts_namespace=True, no_new_privs=True, mode="chroot"),
+            ),
+            mock.patch.object(sandbox_launcher, "_do_chroot"),
+            mock.patch.object(sandbox_launcher.os, "chdir"),
+            mock.patch.object(sandbox_launcher, "_drop_process_capabilities"),
+            mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
+            mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch("socket.sethostname") as sethostname,
+            mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)),
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._enter_rootfs_and_exec(launch, status_fd=9, mount_proc=False, use_tini=False)
+
+        sethostname.assert_called_once_with("sandbox")
+
+    def test_pivot_root_launcher_fails_closed_instead_of_falling_back_to_chroot(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="pivot_root",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+        )
+
+        with (
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(
+                    can_mount=True,
+                    can_pivot_root=True,
+                    no_new_privs=True,
+                    mode="pivot_root",
+                ),
+            ),
+            mock.patch.object(sandbox_launcher, "_setup_sandbox_mounts"),
+            mock.patch.object(sandbox_launcher, "_do_pivot_root", side_effect=OSError(errno.ESRCH, "No such process")),
+            mock.patch.object(sandbox_launcher, "_do_chroot") as do_chroot,
+            mock.patch.object(sandbox_launcher, "_exit_with_startup_failure", side_effect=SystemExit(126)) as fail_exit,
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._enter_rootfs_and_exec(launch, status_fd=9, mount_proc=True, use_tini=True)
+
+        do_chroot.assert_not_called()
+        fail_exit.assert_called_once()
+
+    def test_syscall_pivot_root_uses_libc_wrapper_instead_of_arch_specific_syscall_number(self) -> None:
+        fake_libc = SimpleNamespace(
+            pivot_root=mock.Mock(return_value=0),
+            syscall=mock.Mock(side_effect=AssertionError("pivot_root should not use libc.syscall")),
+        )
+
+        with mock.patch.object(sandbox, "_libc", fake_libc):
+            result = sandbox._syscall_pivot_root("/new-root", "/new-root/.pivot_old")
+
+        self.assertEqual(result, 0)
+        fake_libc.pivot_root.assert_called_once_with(b"/new-root", b"/new-root/.pivot_old")
+        fake_libc.syscall.assert_not_called()
+
+    def test_drop_process_capabilities_uses_libc_capset_wrapper_instead_of_arch_specific_syscall_number(self) -> None:
+        fake_libc = SimpleNamespace(
+            prctl=mock.Mock(return_value=0),
+            capset=mock.Mock(return_value=0),
+            syscall=mock.Mock(side_effect=AssertionError("capset should not use libc.syscall")),
+        )
+
+        with mock.patch.object(sandbox, "_libc", fake_libc):
+            sandbox._drop_process_capabilities(no_new_privs=False)
+
+        self.assertEqual(fake_libc.prctl.call_count, sandbox._MAX_CAPABILITY_INDEX + 1)
+        fake_libc.capset.assert_called_once()
+        fake_libc.syscall.assert_not_called()
+
+    def test_launcher_sets_no_new_privs_without_dropping_capabilities_when_disabled(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="chroot",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS,
+        )
+
+        with (
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(
+                    can_mount=False,
+                    drop_capabilities=False,
+                    no_new_privs=True,
+                    mode="chroot",
+                ),
+            ),
+            mock.patch.object(sandbox_launcher, "_do_chroot"),
+            mock.patch.object(sandbox_launcher.os, "chdir"),
+            mock.patch.object(sandbox_launcher, "_drop_process_capabilities") as drop_caps,
+            mock.patch.object(sandbox_launcher, "_set_no_new_privs") as set_no_new_privs,
+            mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
+            mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)),
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._enter_rootfs_and_exec(launch, status_fd=9, mount_proc=False, use_tini=False)
+
+        drop_caps.assert_not_called()
+        set_no_new_privs.assert_called_once_with()
+
+    def test_degraded_launcher_execs_workload_without_tini_or_proc(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="chroot",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS,
+        )
+
+        with (
+            mock.patch.object(sandbox_launcher, "_set_parent_death_signal"),
+            mock.patch.object(sandbox_launcher, "_assign_current_process_to_sandbox_cgroup"),
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(can_mount=True, no_new_privs=True, mode="chroot"),
+            ),
+            mock.patch.object(sandbox_launcher, "_block_termination_signals", return_value=None),
+            mock.patch.object(sandbox_launcher, "_unshare_or_raise"),
+            mock.patch.object(sandbox_launcher, "_setup_sandbox_mounts") as mounts,
+            mock.patch.object(sandbox_launcher, "_do_chroot"),
+            mock.patch.object(sandbox_launcher.os, "chdir"),
+            mock.patch.object(sandbox_launcher, "_drop_process_capabilities"),
+            mock.patch.object(sandbox_launcher, "_restore_parent_signal_mask"),
+            mock.patch.object(sandbox_launcher, "_resolve_workload_executable", return_value="/bin/sh"),
+            mock.patch.object(sandbox_launcher.os, "fork") as fork,
+            mock.patch.object(sandbox_launcher.os, "execvpe", side_effect=SystemExit(0)) as execvpe,
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._run_launcher(launch, status_fd=9)
+
+        fork.assert_not_called()
+        mounts.assert_called_once_with(mock.ANY, mount_proc=False)
+        execvpe.assert_called_once_with("/bin/sh", ["sh", "-lc", "true"], mock.ANY)
+
+    def test_launcher_sets_up_pty_before_user_namespace_mappings(self) -> None:
+        sandbox_launcher = importlib.import_module("runtime.worker.sandbox_launcher")
+        calls: list[str] = []
+        launch = sandbox.SandboxLaunchSpec(
+            workspace_id="workspace-1",
+            workspace_files_path="/data/workspace/files",
+            rootfs_path="/data/workspace/rootfs",
+            mode="chroot",
+            cwd="/workspace",
+            argv=("sh", "-lc", "true"),
+            unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWUSER,
+            pty=True,
+        )
+
+        with (
+            mock.patch.object(sandbox_launcher, "_set_parent_death_signal"),
+            mock.patch.object(sandbox_launcher, "_assign_current_process_to_sandbox_cgroup"),
+            mock.patch.object(
+                sandbox_launcher,
+                "_capabilities_from_launch_spec",
+                return_value=sandbox.SandboxCapabilities(can_mount=True, no_new_privs=True, mode="chroot"),
+            ),
+            mock.patch.object(sandbox_launcher, "_setup_controlling_terminal", side_effect=lambda: calls.append("pty")),
+            mock.patch.object(sandbox_launcher, "_block_termination_signals", return_value=None),
+            mock.patch.object(sandbox_launcher, "_unshare_or_raise", side_effect=lambda _flags: calls.append("unshare")),
+            mock.patch.object(sandbox_launcher, "_setup_user_namespace_mappings", side_effect=lambda: calls.append("maps")),
+            mock.patch.object(sandbox_launcher, "_enter_rootfs_and_exec", side_effect=SystemExit(0)),
+        ):
+            with self.assertRaises(SystemExit):
+                sandbox_launcher._run_launcher(launch, status_fd=9)
+
+        self.assertEqual(calls, ["pty", "unshare", "maps"])
 
     def test_setup_sandbox_mounts_skips_proc_without_pid_namespace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -912,6 +1400,119 @@ class SandboxProvisioningTests(unittest.TestCase):
             runtime_operation_updated_at=None,
             updated_at=datetime.now(timezone.utc),
         )
+
+
+class SandboxLauncherSpawnTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        sandbox._capabilities_cache.clear()
+
+    def tearDown(self) -> None:
+        sandbox._capabilities_cache.clear()
+
+    @staticmethod
+    def _spec() -> sandbox.SandboxSpec:
+        return sandbox.SandboxSpec(
+            workspace_id="workspace-1",
+            workspace_files_path=Path("/tmp/files"),
+            rootfs_path=Path("/tmp/rootfs"),
+            mode="pivot_root",
+        )
+
+    def test_spawn_sandboxed_signature_does_not_expose_start_new_session(self) -> None:
+        self.assertNotIn("start_new_session", inspect.signature(sandbox.spawn_sandboxed).parameters)
+
+    @staticmethod
+    def _fake_process(*, pid: int = 4321, returncode: int | None = None) -> SimpleNamespace:
+        return SimpleNamespace(
+            pid=pid,
+            returncode=returncode,
+            wait=mock.AsyncMock(return_value=returncode if returncode is not None else 0),
+            kill=mock.Mock(),
+            terminate=mock.Mock(),
+        )
+
+    async def test_spawn_sandboxed_passes_spec_by_fd_not_argv(self) -> None:
+        create = mock.AsyncMock(return_value=self._fake_process())
+
+        with (
+            mock.patch.object(asyncio, "create_subprocess_exec", new=create),
+            mock.patch.object(sandbox, "_write_all_fd"),
+            mock.patch.object(
+                sandbox,
+                "detect_capabilities",
+                return_value=sandbox.SandboxCapabilities(
+                    can_mount=True,
+                    can_pivot_root=True,
+                    pid_namespace=True,
+                    unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+                    mode="pivot_root",
+                ),
+            ),
+        ):
+            await sandbox.spawn_sandboxed(self._spec(), ["sh", "-lc", "true"], ensure_ready=False)
+
+        await_args = create.await_args
+        assert await_args is not None
+        argv = await_args.args
+        self.assertEqual(argv[:3], (sys.executable, "-m", "runtime.worker.sandbox_launcher"))
+        self.assertNotIn("true", argv)
+        self.assertIn("pass_fds", await_args.kwargs)
+
+    async def test_spawn_sandboxed_starts_launcher_before_writing_spec_pipe(self) -> None:
+        order: list[str] = []
+
+        async def fake_create(*_args, **_kwargs):
+            order.append("spawn")
+            return self._fake_process()
+
+        def fake_write(_fd: int, _payload: bytes) -> None:
+            order.append("write_spec")
+
+        with (
+            mock.patch.object(asyncio, "create_subprocess_exec", new=mock.AsyncMock(side_effect=fake_create)),
+            mock.patch.object(sandbox, "_write_all_fd", side_effect=fake_write),
+            mock.patch.object(
+                sandbox,
+                "detect_capabilities",
+                return_value=sandbox.SandboxCapabilities(
+                    can_mount=True,
+                    can_pivot_root=True,
+                    pid_namespace=True,
+                    unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+                    mode="pivot_root",
+                ),
+            ),
+        ):
+            await sandbox.spawn_sandboxed(self._spec(), ["sh", "-lc", "true"], ensure_ready=False)
+
+        self.assertEqual(order[:2], ["spawn", "write_spec"])
+
+    async def test_spawn_sandboxed_maps_enoent_status_to_file_not_found(self) -> None:
+        status = sandbox.SandboxLaunchStatus(stage="resolve_executable", errno=errno.ENOENT, message="missing")
+
+        async def fake_create(*_args, **kwargs):
+            status_fd = kwargs["pass_fds"][1]
+            os.write(status_fd, sandbox._encode_launch_record(status.to_record()))
+            os.close(status_fd)
+            return self._fake_process(returncode=126)
+
+        with (
+            mock.patch.object(asyncio, "create_subprocess_exec", new=mock.AsyncMock(side_effect=fake_create)),
+            mock.patch.object(sandbox, "_write_all_fd"),
+            mock.patch.object(
+                sandbox,
+                "detect_capabilities",
+                return_value=sandbox.SandboxCapabilities(
+                    can_mount=True,
+                    can_pivot_root=True,
+                    pid_namespace=True,
+                    unshare_flags=sandbox.CLONE_NEWNS | sandbox.CLONE_NEWPID,
+                    mode="pivot_root",
+                ),
+            ),
+        ):
+            with self.assertRaises(FileNotFoundError):
+                await sandbox.spawn_sandboxed(self._spec(), ["missing"], ensure_ready=False)
 
 
 if __name__ == "__main__":

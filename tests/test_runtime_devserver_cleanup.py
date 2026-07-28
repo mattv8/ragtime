@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import signal
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +78,51 @@ class RuntimeDevserverCleanupTests(unittest.IsolatedAsyncioTestCase):
             expected_patch_base="runtime.worker.service",
             timeout=0.01,
         )
+
+    async def test_exec_timeout_terminates_entire_process_group(self) -> None:
+        assert worker_service is not None
+        service = worker_service.WorkerService()
+
+        async def hang() -> tuple[bytes, bytes]:
+            await asyncio.sleep(10)
+            return (b"", b"")
+
+        wait_calls = 0
+
+        async def wait() -> None:
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                await asyncio.sleep(10)
+
+        process = SimpleNamespace(
+            pid=1234,
+            returncode=None,
+            communicate=mock.AsyncMock(side_effect=hang),
+            wait=mock.AsyncMock(side_effect=wait),
+            terminate=mock.Mock(),
+            kill=mock.Mock(),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session = self._build_session(Path(tmpdir))
+            service._sessions[session.id] = session
+
+            with (
+                mock.patch.object(worker_service, "spawn_sandboxed", new=mock.AsyncMock(return_value=process)),
+                mock.patch("runtime.worker.sandbox.os.getpgid", return_value=process.pid),
+                mock.patch("runtime.worker.sandbox.os.killpg") as killpg,
+            ):
+                response = await service.exec_command(
+                    session.id,
+                    "sleep 30",
+                    timeout_seconds=1,
+                )
+
+        self.assertTrue(response.timed_out)
+        killpg.assert_any_call(process.pid, signal.SIGTERM)
+        killpg.assert_any_call(process.pid, signal.SIGKILL)
+        self.assertNotIn(mock.call(), process.kill.mock_calls)
 
     async def test_scheduling_startup_clears_stale_devserver_port(self) -> None:
         assert worker_service is not None

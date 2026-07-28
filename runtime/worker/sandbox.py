@@ -25,6 +25,7 @@ Firecracker, Docker-in-Docker, LXC, or k8s primitives are used.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import ctypes.util
 import errno
@@ -36,6 +37,8 @@ import posixpath
 import shutil
 import signal
 import stat
+import struct
+import sys
 import threading
 import time
 import warnings
@@ -73,18 +76,20 @@ MS_NOEXEC = 8
 MNT_DETACH = 2
 
 # Syscall numbers (x86_64)
-SYS_CAPSET = 126
-SYS_PIVOT_ROOT = 155
 SYS_MOUNT = 165
 SYS_UMOUNT2 = 166
 SYS_UNSHARE = 272
 
 # prctl(2) constants
 PR_CAPBSET_DROP = 24
+PR_SET_PDEATHSIG = 1
 PR_SET_NO_NEW_PRIVS = 38
 LINUX_CAPABILITY_VERSION_3 = 0x20080522
 _CAPABILITY_WORDS = 2
 _MAX_CAPABILITY_INDEX = 63
+_SANDBOX_LAUNCH_PROTOCOL_VERSION = 1
+_MAX_LAUNCH_RECORD_BYTES = 64 * 1024
+_SANDBOX_LAUNCH_STARTUP_TIMEOUT_SECONDS = 10.0
 _SANDBOX_CGROUP_PIDS_FLOOR = 64
 _SANDBOX_CGROUP_PIDS_MIN = 128
 _SANDBOX_CGROUP_PIDS_DEFAULT = 512
@@ -218,6 +223,339 @@ class SandboxCapabilities:
     @property
     def available(self) -> bool:
         return self.mode in ("pivot_root", "chroot")
+
+
+def _validate_launch_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"sandbox launch field {field_name} must be a string")
+    if "\x00" in value:
+        raise ValueError(f"sandbox launch field {field_name} must not contain NUL bytes")
+    return value
+
+
+@dataclass(frozen=True)
+class SandboxLaunchSpec:
+    workspace_id: str
+    workspace_files_path: str
+    rootfs_path: str
+    mode: str
+    cwd: str
+    argv: tuple[str, ...]
+    unshare_flags: int
+    pty: bool = False
+    has_cap_sys_admin: bool = False
+    can_mount: bool = False
+    can_pivot_root: bool = False
+    cgroup_pids_available: bool = False
+    cgroup_pids_parent: str | None = None
+    cgroup_pids_max: int | None = None
+    drop_capabilities: bool = True
+    no_new_privs: bool = True
+
+    def __post_init__(self) -> None:
+        for field_name in ("workspace_id", "workspace_files_path", "rootfs_path", "cwd"):
+            _validate_launch_string(getattr(self, field_name), field_name)
+        if self.cgroup_pids_parent is not None:
+            _validate_launch_string(self.cgroup_pids_parent, "cgroup_pids_parent")
+        if self.mode not in {"pivot_root", "chroot"}:
+            raise ValueError(f"unsupported sandbox launch mode: {self.mode}")
+        if not self.argv:
+            raise ValueError("sandbox launch argv must not be empty")
+        for index, value in enumerate(self.argv):
+            _validate_launch_string(value, f"argv[{index}]")
+        if not isinstance(self.unshare_flags, int):
+            raise ValueError("sandbox launch field unshare_flags must be an integer")
+        for field_name in (
+            "pty",
+            "has_cap_sys_admin",
+            "can_mount",
+            "can_pivot_root",
+            "cgroup_pids_available",
+            "drop_capabilities",
+            "no_new_privs",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise ValueError(f"sandbox launch field {field_name} must be a boolean")
+        if self.cgroup_pids_max is not None and not isinstance(self.cgroup_pids_max, int):
+            raise ValueError("sandbox launch field cgroup_pids_max must be an integer or None")
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "version": _SANDBOX_LAUNCH_PROTOCOL_VERSION,
+            "workspace_id": self.workspace_id,
+            "workspace_files_path": self.workspace_files_path,
+            "rootfs_path": self.rootfs_path,
+            "mode": self.mode,
+            "cwd": self.cwd,
+            "argv": list(self.argv),
+            "unshare_flags": self.unshare_flags,
+            "pty": self.pty,
+            "has_cap_sys_admin": self.has_cap_sys_admin,
+            "can_mount": self.can_mount,
+            "can_pivot_root": self.can_pivot_root,
+            "cgroup_pids_available": self.cgroup_pids_available,
+            "cgroup_pids_parent": self.cgroup_pids_parent,
+            "cgroup_pids_max": self.cgroup_pids_max,
+            "drop_capabilities": self.drop_capabilities,
+            "no_new_privs": self.no_new_privs,
+        }
+
+    def to_sandbox_spec(self) -> SandboxSpec:
+        return SandboxSpec(
+            workspace_id=self.workspace_id,
+            workspace_files_path=Path(self.workspace_files_path),
+            rootfs_path=Path(self.rootfs_path),
+            mode=self.mode,
+        )
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> SandboxLaunchSpec:
+        if not isinstance(record, dict):
+            raise ValueError("sandbox launch record must be a dictionary")
+        version = record.get("version")
+        if version != _SANDBOX_LAUNCH_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported sandbox launch protocol version: {version}")
+        argv = record.get("argv")
+        if not isinstance(argv, list):
+            raise ValueError("sandbox launch field argv must be a list of strings")
+        unshare_flags = record.get("unshare_flags")
+        if not isinstance(unshare_flags, int):
+            raise ValueError("sandbox launch field unshare_flags must be an integer")
+        return cls(
+            workspace_id=_validate_launch_string(record.get("workspace_id"), "workspace_id"),
+            workspace_files_path=_validate_launch_string(record.get("workspace_files_path"), "workspace_files_path"),
+            rootfs_path=_validate_launch_string(record.get("rootfs_path"), "rootfs_path"),
+            mode=_validate_launch_string(record.get("mode"), "mode"),
+            cwd=_validate_launch_string(record.get("cwd"), "cwd"),
+            argv=tuple(_validate_launch_string(value, f"argv[{index}]") for index, value in enumerate(argv)),
+            unshare_flags=unshare_flags,
+            pty=record.get("pty", False),
+            has_cap_sys_admin=record.get("has_cap_sys_admin", False),
+            can_mount=record.get("can_mount", False),
+            can_pivot_root=record.get("can_pivot_root", False),
+            cgroup_pids_available=record.get("cgroup_pids_available", False),
+            cgroup_pids_parent=record.get("cgroup_pids_parent"),
+            cgroup_pids_max=record.get("cgroup_pids_max"),
+            drop_capabilities=record.get("drop_capabilities", True),
+            no_new_privs=record.get("no_new_privs", True),
+        )
+
+
+@dataclass(frozen=True)
+class SandboxLaunchStatus:
+    stage: str
+    errno: int | None
+    message: str
+
+    def __post_init__(self) -> None:
+        _validate_launch_string(self.stage, "stage")
+        _validate_launch_string(self.message, "message")
+        if self.errno is not None and not isinstance(self.errno, int):
+            raise ValueError("sandbox launch field errno must be an integer or None")
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "version": _SANDBOX_LAUNCH_PROTOCOL_VERSION,
+            "stage": self.stage,
+            "errno": self.errno,
+            "message": self.message,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> SandboxLaunchStatus:
+        if not isinstance(record, dict):
+            raise ValueError("sandbox launch status record must be a dictionary")
+        version = record.get("version")
+        if version != _SANDBOX_LAUNCH_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported sandbox launch protocol version: {version}")
+        return cls(
+            stage=_validate_launch_string(record.get("stage"), "stage"),
+            errno=record.get("errno"),
+            message=_validate_launch_string(record.get("message"), "message"),
+        )
+
+
+class SandboxLaunchError(RuntimeError):
+    def __init__(self, status: SandboxLaunchStatus):
+        self.status = status
+        super().__init__(f"sandbox launch failed during {status.stage}: {status.message}")
+
+
+def _encode_launch_record(record: dict[str, Any]) -> bytes:
+    payload = json.dumps(record, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(payload) > _MAX_LAUNCH_RECORD_BYTES:
+        raise ValueError(f"launch record exceeds {_MAX_LAUNCH_RECORD_BYTES} bytes")
+    return struct.pack(">I", len(payload)) + payload
+
+
+def _decode_launch_record(payload: bytes) -> dict[str, Any]:
+    if len(payload) < 4:
+        raise ValueError("sandbox launch record is truncated")
+    encoded_size = struct.unpack(">I", payload[:4])[0]
+    body = payload[4:]
+    if encoded_size != len(body):
+        raise ValueError("sandbox launch record length prefix does not match payload size")
+    if encoded_size > _MAX_LAUNCH_RECORD_BYTES:
+        raise ValueError(f"launch record exceeds {_MAX_LAUNCH_RECORD_BYTES} bytes")
+    record = json.loads(body.decode("utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("sandbox launch record must decode to a dictionary")
+    return record
+
+
+def _launch_spec_from_spawn_request(
+    spec: SandboxSpec,
+    command: Sequence[str],
+    *,
+    cwd: str | None,
+    pty: bool,
+    caps: SandboxCapabilities,
+) -> SandboxLaunchSpec:
+    return SandboxLaunchSpec(
+        workspace_id=spec.workspace_id,
+        workspace_files_path=str(spec.workspace_files_path),
+        rootfs_path=str(spec.rootfs_path),
+        mode=spec.mode,
+        cwd=cwd or spec.sandbox_workspace,
+        argv=tuple(command),
+        unshare_flags=caps.unshare_flags,
+        pty=pty,
+        has_cap_sys_admin=caps.has_cap_sys_admin,
+        can_mount=caps.can_mount,
+        can_pivot_root=caps.can_pivot_root and spec.mode == "pivot_root",
+        cgroup_pids_available=caps.cgroup_pids_available,
+        cgroup_pids_parent=caps.cgroup_pids_parent,
+        cgroup_pids_max=caps.cgroup_pids_max,
+        drop_capabilities=caps.drop_capabilities,
+        no_new_privs=caps.no_new_privs,
+    )
+
+
+def _capabilities_from_launch_spec(spec: SandboxLaunchSpec) -> SandboxCapabilities:
+    launch_flags = spec.unshare_flags
+    return SandboxCapabilities(
+        has_cap_sys_admin=spec.has_cap_sys_admin,
+        can_pivot_root=spec.can_pivot_root and spec.mode == "pivot_root",
+        can_user_ns=bool(launch_flags & CLONE_NEWUSER),
+        can_mount=spec.can_mount,
+        unshare_flags=launch_flags,
+        dropped_unshare_flags=0,
+        mount_namespace=bool(launch_flags & CLONE_NEWNS),
+        pid_namespace=bool(launch_flags & CLONE_NEWPID),
+        uts_namespace=bool(launch_flags & CLONE_NEWUTS),
+        ipc_namespace=bool(launch_flags & CLONE_NEWIPC),
+        cgroup_pids_available=spec.cgroup_pids_available,
+        cgroup_pids_parent=spec.cgroup_pids_parent,
+        cgroup_pids_max=spec.cgroup_pids_max,
+        drop_capabilities=spec.drop_capabilities,
+        no_new_privs=spec.no_new_privs,
+        mode=spec.mode,
+    )
+
+
+def _pipe_cloexec() -> tuple[int, int]:
+    if hasattr(os, "pipe2"):
+        return os.pipe2(os.O_CLOEXEC)
+    return os.pipe()
+
+
+def _write_all_fd(fd: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(fd, payload[offset:])
+        if written <= 0:
+            raise OSError(errno.EIO, "short write to sandbox launch pipe")
+        offset += written
+
+
+def _read_exact_fd(fd: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining > 0:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            raise ValueError("sandbox launch record is truncated")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_launch_record_from_fd(fd: int) -> dict[str, Any] | None:
+    header = os.read(fd, 4)
+    if not header:
+        return None
+    if len(header) != 4:
+        raise ValueError("sandbox launch record is truncated")
+    payload_size = struct.unpack(">I", header)[0]
+    if payload_size > _MAX_LAUNCH_RECORD_BYTES:
+        raise ValueError(f"launch record exceeds {_MAX_LAUNCH_RECORD_BYTES} bytes")
+    payload = _read_exact_fd(fd, payload_size)
+    return _decode_launch_record(header + payload)
+
+
+def _read_launch_spec_from_fd(fd: int) -> SandboxLaunchSpec:
+    record = _read_launch_record_from_fd(fd)
+    if record is None:
+        raise ValueError("sandbox launch spec pipe closed before sending data")
+    return SandboxLaunchSpec.from_record(record)
+
+
+def _read_launch_status_from_fd(fd: int) -> SandboxLaunchStatus | None:
+    record = _read_launch_record_from_fd(fd)
+    if record is None:
+        return None
+    return SandboxLaunchStatus.from_record(record)
+
+
+def _write_launch_status_to_fd(fd: int, status: SandboxLaunchStatus) -> None:
+    _write_all_fd(fd, _encode_launch_record(status.to_record()))
+
+
+async def terminate_process_group(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    if process.returncode is not None:
+        return
+
+    def _signal_process_group(signum: signal.Signals) -> bool:
+        try:
+            os.killpg(os.getpgid(process.pid), signum)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            signal_process = process.terminate if signum == signal.SIGTERM else process.kill
+            try:
+                signal_process()
+                return True
+            except ProcessLookupError:
+                return False
+
+    if not _signal_process_group(signal.SIGTERM):
+        with contextlib.suppress(Exception):
+            await process.wait()
+        return
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    if not _signal_process_group(signal.SIGKILL):
+        with contextlib.suppress(Exception):
+            await process.wait()
+        return
+
+    with contextlib.suppress(Exception):
+        await process.wait()
+
+
+async def _cleanup_failed_launcher_process(process: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(Exception):
+        await terminate_process_group(process, timeout=1.0)
 
 
 _capabilities_cache: dict[str, SandboxCapabilities] = {}
@@ -382,11 +720,13 @@ def detect_capabilities() -> SandboxCapabilities:
     caps.unshare_flags = candidate_flags
     caps.dropped_unshare_flags = requested_flags & ~candidate_flags
     caps.mount_namespace = bool(candidate_flags & CLONE_NEWNS)
+    # CLONE_NEWPID support means the launcher can fork a namespace-local PID 1
+    # before exec. The sandbox itself can still pivot_root without it.
     caps.pid_namespace = bool(candidate_flags & CLONE_NEWPID)
     caps.uts_namespace = bool(candidate_flags & CLONE_NEWUTS)
     caps.ipc_namespace = bool(candidate_flags & CLONE_NEWIPC)
     caps.can_mount = caps.mount_namespace and (caps.has_cap_sys_admin or bool(candidate_flags & CLONE_NEWUSER))
-    caps.can_pivot_root = caps.has_cap_sys_admin and caps.can_mount and caps.pid_namespace
+    caps.can_pivot_root = caps.has_cap_sys_admin and caps.can_mount
 
     cgroup_available, cgroup_parent, cgroup_pids_max = _detect_cgroup_pids_limit()
     caps.cgroup_pids_available = cgroup_available
@@ -420,7 +760,7 @@ def detect_capabilities() -> SandboxCapabilities:
     )
     if caps.dropped_unshare_flags:
         logger.warning(
-            "Sandbox namespace support degraded; unsupported flags dropped: %s",
+            "Sandbox namespace support degraded; launcher will run without: %s",
             _unshare_flag_names(caps.dropped_unshare_flags),
         )
     return caps
@@ -1134,8 +1474,8 @@ def _syscall_umount2(target: str, flags: int = 0) -> int:
 
 
 def _syscall_pivot_root(new_root: str, put_old: str) -> int:
-    """pivot_root(2) via syscall."""
-    ret = _libc.syscall(SYS_PIVOT_ROOT, new_root.encode(), put_old.encode())
+    """Thin wrapper around pivot_root(2) via ctypes."""
+    ret = _libc.pivot_root(new_root.encode(), put_old.encode())
     if ret != 0:
         err = ctypes.get_errno()
         raise OSError(err, f"pivot_root({new_root}, {put_old}): {os.strerror(err)}")
@@ -1231,7 +1571,14 @@ def _do_pivot_root(spec: SandboxSpec) -> None:
     old_root = os.path.join(rootfs, ".pivot_old")
     os.makedirs(old_root, exist_ok=True)
 
-    _syscall_pivot_root(rootfs, old_root)
+    # After the self-bind in ``_setup_sandbox_mounts`` the safest kernel-facing
+    # form is to chdir into the new root and pivot using paths relative to that
+    # mount point. Real privileged launches from disposable tmpfs-backed test
+    # workspaces can fail with ESRCH when using the original absolute paths even
+    # though the self-bind succeeded and the same topology is otherwise valid.
+    # Relative paths keep both arguments anchored to the freshly bound mount.
+    os.chdir(rootfs)
+    _syscall_pivot_root(".", ".pivot_old")
     os.chdir("/")
 
     # Unmount old root and remove mount point
@@ -1261,18 +1608,25 @@ def _setup_user_namespace_mappings() -> None:
     """
     uid = os.getuid()
     gid = os.getgid()
-    try:
-        Path("/proc/self/setgroups").write_text("deny", encoding="utf-8")
-    except (PermissionError, OSError):
-        pass
-    try:
-        Path("/proc/self/uid_map").write_text(f"0 {uid} 1\n", encoding="utf-8")
-    except (PermissionError, OSError):
-        pass
-    try:
-        Path("/proc/self/gid_map").write_text(f"0 {gid} 1\n", encoding="utf-8")
-    except (PermissionError, OSError):
-        pass
+    Path("/proc/self/setgroups").write_text("deny", encoding="utf-8")
+    Path("/proc/self/uid_map").write_text(f"0 {uid} 1\n", encoding="utf-8")
+    Path("/proc/self/gid_map").write_text(f"0 {gid} 1\n", encoding="utf-8")
+
+
+def _set_parent_death_signal(expected_parent_pid: int) -> None:
+    ret = _libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    if ret != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    if os.getppid() != expected_parent_pid:
+        os.kill(os.getpid(), signal.SIGKILL)
+
+
+def _set_no_new_privs() -> None:
+    ret = _libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    if ret != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
 
 
 def _sanitize_cgroup_component(value: str) -> str:
@@ -1301,10 +1655,7 @@ def _assign_current_process_to_sandbox_cgroup(spec: SandboxSpec, caps: SandboxCa
     cgroup_path = _sandbox_cgroup_path(spec, caps)
     if cgroup_path is None:
         return
-    try:
-        (cgroup_path / "cgroup.procs").write_text(str(os.getpid()), encoding="utf-8")
-    except OSError as exc:
-        logger.warning("Failed to assign sandbox process to pids cgroup for %s: %s", spec.workspace_id, exc)
+    (cgroup_path / "cgroup.procs").write_text(str(os.getpid()), encoding="utf-8")
 
 
 def _read_cgroup_process_ids(cgroup_path: Path) -> list[int]:
@@ -1393,7 +1744,7 @@ def _drop_process_capabilities(*, no_new_privs: bool) -> None:
 
     header = _CapHeader(version=LINUX_CAPABILITY_VERSION_3, pid=0)
     data = (_CapData * _CAPABILITY_WORDS)()
-    ret = _libc.syscall(SYS_CAPSET, ctypes.byref(header), ctypes.byref(data))
+    ret = _libc.capset(ctypes.byref(header), ctypes.byref(data))
     if ret != 0:
         err = ctypes.get_errno()
         logger.warning("Failed to clear sandbox process capabilities: %s", os.strerror(err))
@@ -1406,7 +1757,7 @@ def _drop_process_capabilities(*, no_new_privs: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pre-exec sandbox entry (called from forked child before exec)
+# Namespace capability helpers
 # ---------------------------------------------------------------------------
 
 
@@ -1417,186 +1768,6 @@ _UNSHARE_FLAG_NAMES: tuple[tuple[int, str], ...] = (
     (CLONE_NEWPID, "CLONE_NEWPID"),
     (CLONE_NEWUSER, "CLONE_NEWUSER"),
 )
-
-
-def _probe_unshare(flags: int, label: str) -> str:
-    """Fork, attempt unshare(flags) in the child, return a result string."""
-    try:
-        r, w = os.pipe()
-        pid = os.fork()
-    except OSError as exc:
-        return f"{label} fork_failed={exc}"
-    if pid == 0:
-        os.close(r)
-        ctypes.set_errno(0)
-        ret = _libc.unshare(flags)
-        err = ctypes.get_errno()
-        if ret == 0:
-            payload = f"{label} 0x{flags:x} OK"
-        else:
-            pn = errno.errorcode.get(err, str(err))
-            payload = f"{label} 0x{flags:x} FAIL errno={pn} ({err}) {os.strerror(err)}"
-        try:
-            os.write(w, payload.encode())
-        except OSError:
-            pass
-        os._exit(0)
-    os.close(w)
-    try:
-        data = os.read(r, 4096).decode(errors="replace")
-    except OSError:
-        data = f"{label} read_failed"
-    os.close(r)
-    try:
-        os.waitpid(pid, 0)
-    except OSError:
-        pass
-    return data
-
-
-def _persist_diagnostic(lines: list[str]) -> None:
-    try:
-        debug_path = os.environ.get("RUNTIME_SANDBOX_DEBUG_LOG", "/tmp/sandbox-unshare-debug.log")
-        with open(debug_path, "a", encoding="utf-8") as fh:
-            fh.write(f"--- {time.time():.3f} pid={os.getpid()} ---\n")
-            for line in lines:
-                fh.write(line + "\n")
-            fh.write("\n")
-    except OSError:
-        pass
-
-
-def _probe_unshare_combinations(unshare_flags: int, caps: SandboxCapabilities) -> None:
-    """Startup-time probe: log result of unshare with and without
-    CLONE_NEWUSER (and each flag individually) so we can identify which
-    flag the kernel/security profile is rejecting. Runs in forked
-    children so it does not perturb the real preexec process.
-    """
-    lines: list[str] = []
-
-    def _emit(msg: str) -> None:
-        lines.append(msg)
-        logger.error("%s", msg)
-
-    _emit(
-        "unshare probe header: requested=0x%x pid=%d ppid=%d euid=%d egid=%d "
-        "has_cap_sys_admin=%s can_user_ns=%s can_mount=%s"
-        % (
-            unshare_flags,
-            os.getpid(),
-            os.getppid(),
-            os.geteuid(),
-            os.getegid(),
-            caps.has_cap_sys_admin,
-            caps.can_user_ns,
-            caps.can_mount,
-        )
-    )
-
-    # Original combo (the suspected-buggy set: includes CLONE_NEWUSER)
-    original_combo = unshare_flags | CLONE_NEWUSER
-    _emit("probe: " + _probe_unshare(original_combo, "WITH_NEWUSER"))
-
-    # Fixed combo (current production candidate, no CLONE_NEWUSER)
-    fixed_combo = unshare_flags & ~CLONE_NEWUSER
-    if fixed_combo != original_combo:
-        _emit("probe: " + _probe_unshare(fixed_combo, "WITHOUT_NEWUSER"))
-
-    # Individual flag isolation
-    for bit, name in _UNSHARE_FLAG_NAMES:
-        _emit("probe: " + _probe_unshare(bit, f"SOLO_{name}"))
-
-    _persist_diagnostic(lines)
-
-
-def _diagnose_unshare_failure(
-    unshare_flags: int,
-    err: int,
-    caps: SandboxCapabilities,
-) -> None:
-    """Called only when the real unshare in the preexec child fails."""
-    requested = [name for bit, name in _UNSHARE_FLAG_NAMES if unshare_flags & bit]
-    errno_name = errno.errorcode.get(err, str(err))
-    msg = "unshare diagnostic: real_call_failed flags=0x%x [%s] errno=%s (%d) %s" % (unshare_flags, ",".join(requested), errno_name, err, os.strerror(err))
-    logger.error("%s", msg)
-    _persist_diagnostic([msg])
-
-
-def _sandbox_preexec(spec: SandboxSpec, caps: SandboxCapabilities, target_cwd: str | None = None) -> None:
-    """Configure the sandbox inside the forked child, before exec.
-
-    This function is called as the ``preexec_fn`` (or equivalent) in the
-    forked child process.  It MUST NOT return on failure — it must
-    ``os._exit(126)`` so the parent sees a clean failure.
-    """
-    try:
-        if caps.mode in {"pivot_root", "chroot"}:
-            _assign_current_process_to_sandbox_cgroup(spec, caps)
-
-            unshare_flags = caps.unshare_flags
-            if unshare_flags:
-                ret = _libc.unshare(unshare_flags)
-                if ret != 0:
-                    err = ctypes.get_errno()
-                    logger.error("unshare() failed: %s", os.strerror(err))
-                    _diagnose_unshare_failure(unshare_flags, err, caps)
-                    os._exit(126)
-
-            if caps.can_user_ns and (unshare_flags & CLONE_NEWUSER):
-                _setup_user_namespace_mappings()
-
-        if caps.mode == "pivot_root":
-            _setup_sandbox_mounts(spec, mount_proc=caps.pid_namespace)
-            _do_pivot_root(spec)
-
-        elif caps.mode == "chroot":
-            if caps.can_mount:
-                try:
-                    _setup_sandbox_mounts(spec, mount_proc=caps.pid_namespace)
-                except OSError as exc:
-                    logger.warning(
-                        "Sandbox mount setup failed in chroot mode, continuing with basic chroot: %s",
-                        exc,
-                    )
-                    _sync_system_dirs_for_chroot(spec)
-            else:
-                _sync_system_dirs_for_chroot(spec)
-
-            _do_chroot(spec)
-
-        else:
-            logger.error("Sandbox mode '%s' is not supported", caps.mode)
-            os._exit(126)
-
-        # Set hostname only after entering a private UTS namespace.
-        if caps.uts_namespace:
-            try:
-                import socket
-
-                socket.sethostname("sandbox")
-            except Exception:
-                pass
-
-        # chdir to the correct directory inside sandbox
-        if target_cwd:
-            try:
-                os.chdir(target_cwd)
-            except OSError:
-                os.chdir(spec.sandbox_workspace)
-        else:
-            os.chdir(spec.sandbox_workspace)
-
-        if caps.drop_capabilities:
-            _drop_process_capabilities(no_new_privs=caps.no_new_privs)
-        elif caps.no_new_privs:
-            ret = _libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-            if ret != 0:
-                err = ctypes.get_errno()
-                logger.warning("Failed to set no_new_privs for sandbox process: %s", os.strerror(err))
-
-    except Exception as exc:
-        logger.error("Sandbox setup failed: %s", exc, exc_info=True)
-        os._exit(126)
 
 
 def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
@@ -1666,10 +1837,10 @@ def _sync_system_dirs_for_chroot(spec: SandboxSpec) -> None:
         except Exception:
             pass
 
-    # Workspace files are mirrored by provision_rootfs() before the child
-    # process enters the sandbox.  Repeating that copy from preexec after
-    # user-namespace setup can lose write access to the root-owned rootfs
-    # tree on restored/bind-mounted data directories.
+    # Workspace files are mirrored by provision_rootfs() before the launcher
+    # process enters the sandbox. Repeating that copy later in the launcher
+    # path after user-namespace setup can lose write access to the root-owned
+    # rootfs tree on restored/bind-mounted data directories.
 
 
 def _sync_usr_for_chroot(src_usr: Path, dst_usr: Path, *, force: bool = False) -> None:
@@ -1806,25 +1977,6 @@ def ensure_sandbox_ready(spec: SandboxSpec) -> None:
         )
 
 
-def make_sandbox_preexec(spec: SandboxSpec, target_cwd: str | None = None) -> Any:
-    """Return a preexec_fn callable that enters the sandbox.
-
-    Use this with ``asyncio.create_subprocess_exec(..., preexec_fn=fn)``.
-    """
-    caps = detect_capabilities()
-    if not caps.available:
-        raise RuntimeError(
-            f"Sandbox is not available in this container (mode={caps.mode}). "
-            "The runtime container must run as root and ideally with "
-            "CAP_SYS_ADMIN for full namespace isolation."
-        )
-
-    def _preexec() -> None:
-        _sandbox_preexec(spec, caps, target_cwd=target_cwd)
-
-    return _preexec
-
-
 def sandbox_env(
     spec: SandboxSpec,
     extra_env: dict[str, str] | None = None,
@@ -1859,7 +2011,7 @@ async def spawn_sandboxed(
     stdout: int | IO[Any] | None = None,
     stderr: int | IO[Any] | None = None,
     stdin: int | IO[Any] | None = None,
-    start_new_session: bool = False,
+    pty: bool = False,
     ensure_ready: bool = True,
 ) -> asyncio.subprocess.Process:
     """Spawn a command inside the workspace sandbox.
@@ -1868,34 +2020,97 @@ async def spawn_sandboxed(
     """
     if ensure_ready:
         await asyncio.to_thread(ensure_sandbox_ready, spec)
-    preexec_fn = make_sandbox_preexec(spec, target_cwd=cwd)
+    caps = detect_capabilities()
+    if not caps.available:
+        raise RuntimeError(
+            f"Sandbox is not available in this container (mode={caps.mode}). "
+            "The runtime container must run as root and ideally with "
+            "CAP_SYS_ADMIN for full namespace isolation."
+        )
+
+    launch_spec = _launch_spec_from_spawn_request(spec, command, cwd=cwd, pty=pty, caps=caps)
     effective_env = sandbox_env(spec, env)
 
     # Set PWD to the requested cwd inside the sandbox
     if cwd:
         effective_env["PWD"] = cwd
 
-    return await asyncio.create_subprocess_exec(
-        *command,
-        cwd=None,  # preexec_fn will chdir to the correct directory
-        env=effective_env,
-        stdout=stdout,
-        stderr=stderr,
-        stdin=stdin,
-        preexec_fn=preexec_fn,
-        start_new_session=start_new_session,
-    )
+    spec_read_fd, spec_write_fd = _pipe_cloexec()
+    status_read_fd, status_write_fd = _pipe_cloexec()
+    process: asyncio.subprocess.Process | None = None
 
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "runtime.worker.sandbox_launcher",
+            "--spec-fd",
+            str(spec_read_fd),
+            "--status-fd",
+            str(status_write_fd),
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            env=effective_env,
+            pass_fds=(spec_read_fd, status_write_fd),
+            start_new_session=not pty,
+        )
+        try:
+            os.close(spec_read_fd)
+        except OSError:
+            pass
+        spec_read_fd = -1
+        try:
+            os.close(status_write_fd)
+        except OSError:
+            pass
+        status_write_fd = -1
 
-def prepare_sandbox_pty_preexec(spec: SandboxSpec, target_cwd: str | None = None) -> Any:
-    """Return a preexec_fn for PTY processes (same sandbox, but needs
-    to set up the PTY slave fd before entering the sandbox).
+        try:
+            _write_all_fd(spec_write_fd, _encode_launch_record(launch_spec.to_record()))
+            os.close(spec_write_fd)
+            spec_write_fd = -1
+        except OSError as exc:
+            await _cleanup_failed_launcher_process(process)
+            raise SandboxLaunchError(SandboxLaunchStatus(stage="write_spec", errno=exc.errno, message=str(exc))) from exc
 
-    The returned callable enters the sandbox.  The caller is responsible
-    for setting up the PTY master/slave pair and passing the slave fd to
-    the subprocess.
-    """
-    return make_sandbox_preexec(spec, target_cwd=target_cwd)
+        try:
+            status = await asyncio.wait_for(
+                asyncio.to_thread(_read_launch_status_from_fd, status_read_fd),
+                timeout=_SANDBOX_LAUNCH_STARTUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            await _cleanup_failed_launcher_process(process)
+            raise SandboxLaunchError(
+                SandboxLaunchStatus(stage="startup_timeout", errno=None, message=str(exc) or "sandbox launcher startup timed out")
+            ) from exc
+        except ValueError as exc:
+            await _cleanup_failed_launcher_process(process)
+            raise SandboxLaunchError(SandboxLaunchStatus(stage="read_status", errno=None, message=str(exc))) from exc
+
+        if status is None:
+            if process.returncode is not None:
+                await process.wait()
+                raise SandboxLaunchError(
+                    SandboxLaunchStatus(
+                        stage="launcher_exit",
+                        errno=None,
+                        message=f"launcher exited unexpectedly with code {process.returncode}",
+                    )
+                )
+            return process
+
+        await process.wait()
+        if status.errno == errno.ENOENT:
+            raise FileNotFoundError(status.errno, status.message, command[0] if command else None)
+        raise SandboxLaunchError(status)
+    finally:
+        for fd in (spec_read_fd, spec_write_fd, status_read_fd, status_write_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 def cleanup_sandbox(spec: SandboxSpec) -> None:

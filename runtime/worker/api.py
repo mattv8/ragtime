@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import pty as pty_module
-import signal
 import struct
 import termios
 from collections.abc import AsyncIterator
@@ -50,8 +49,9 @@ from runtime.manager.models import (
 from runtime.worker.sandbox import (
     SandboxSpec,
     ensure_sandbox_ready,
-    make_sandbox_preexec,
     sandbox_env,
+    spawn_sandboxed,
+    terminate_process_group,
 )
 from runtime.worker.service import get_worker_service
 
@@ -615,23 +615,7 @@ async def _terminate_pty_process(
     *,
     timeout: float = 2,
 ) -> None:
-    if process.returncode is not None:
-        return
-    try:
-        pgid = os.getpgid(process.pid)
-        os.killpg(pgid, signal.SIGTERM)
-    except (ProcessLookupError, OSError):
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=timeout)
-    except Exception:
-        try:
-            pgid = os.getpgid(process.pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            process.kill()
-        with contextlib.suppress(Exception):
-            await process.wait()
+    await terminate_process_group(process, timeout=timeout)
 
 
 async def _evict_pty(session_id: str) -> None:
@@ -685,38 +669,16 @@ async def pty(worker_session_id: str, websocket: WebSocket):
     # any inherited prompt logic from overriding it.
     environment["PROMPT_COMMAND"] = ""
 
-    sandbox_preexec = make_sandbox_preexec(sandbox_spec, target_cwd=None)
-
-    def _pty_preexec() -> None:
-        # Create a new session and acquire the controlling terminal
-        # BEFORE entering the sandbox.  The PTY slave fd was opened in
-        # the original namespace, so TIOCSCTTY must run here — after
-        # unshare(CLONE_NEWUSER) the new user namespace no longer owns
-        # the device and the ioctl would silently fail.
-        os.setsid()
-        try:
-            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        except OSError:
-            pass
-        try:
-            os.tcsetpgrp(0, os.getpid())
-        except OSError:
-            pass
-        # Now enter the sandbox (unshare/chroot/pivot_root/chdir).
-        # The controlling-terminal association is stored in the kernel's
-        # session struct and survives chroot/pivot_root.
-        sandbox_preexec()
-
     try:
-        process = await asyncio.create_subprocess_exec(
-            *shell_command,
+        process = await spawn_sandboxed(
+            sandbox_spec,
+            shell_command,
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,
-            cwd=None,  # preexec_fn will chdir to /workspace
             env=environment,
-            preexec_fn=_pty_preexec,
-            start_new_session=False,
+            pty=True,
+            ensure_ready=False,
         )
         logger.debug(
             "PTY spawned: worker_session_id=%s workspace_id=%s pid=%s mode=%s",
