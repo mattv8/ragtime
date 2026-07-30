@@ -18,7 +18,7 @@ def _canonicalize_ids(values: Sequence[str]) -> list[str]:
     return sorted(values, key=lambda value: value.casefold())
 
 
-def normalize_tool_skill_ids(values: Sequence[Any] | Any | None) -> list[str]:
+def _normalize_string_list_preserving_order(values: Sequence[Any] | Any | None) -> list[str]:
     if values is None:
         raw_values: Sequence[Any] = []
     elif isinstance(values, str):
@@ -41,7 +41,11 @@ def normalize_tool_skill_ids(values: Sequence[Any] | Any | None) -> list[str]:
             continue
         seen.add(candidate)
         normalized.append(candidate)
-    return _canonicalize_ids(normalized)
+    return normalized
+
+
+def normalize_tool_skill_ids(values: Sequence[Any] | Any | None) -> list[str]:
+    return _canonicalize_ids(_normalize_string_list_preserving_order(values))
 
 
 def _clamp_description(text: str) -> str:
@@ -64,6 +68,26 @@ def _sanitize_catalog(catalog: Sequence["ToolSkillDefinition"]) -> list["ToolSki
 def _effective_ids(requested_ids: Sequence[str], catalog: Sequence["ToolSkillDefinition"]) -> list[str]:
     requested = set(normalize_tool_skill_ids(requested_ids))
     return [definition.id for definition in catalog if definition.id in requested]
+
+
+def _flatten_loaded_tool_names_for_ids(
+    effective_ids: Sequence[str],
+    catalog: Sequence["ToolSkillDefinition"],
+    *,
+    excluded_tool_names: Sequence[str] = (),
+) -> list[str]:
+    effective_id_set = set(effective_ids)
+    loaded_tool_names: list[str] = []
+    seen_tool_names: set[str] = set(excluded_tool_names)
+    for definition in catalog:
+        if definition.id not in effective_id_set:
+            continue
+        for tool_name in definition.tool_names:
+            if tool_name in seen_tool_names:
+                continue
+            seen_tool_names.add(tool_name)
+            loaded_tool_names.append(tool_name)
+    return loaded_tool_names
 
 
 def _compact_catalog_item(definition: "ToolSkillDefinition") -> dict[str, Any]:
@@ -91,7 +115,7 @@ class ToolSkillDefinition:
             id=str(self.id).strip(),
             label=str(self.label).strip(),
             description=_clamp_description(self.description),
-            tool_names=normalize_tool_skill_ids(self.tool_names),
+            tool_names=_normalize_string_list_preserving_order(self.tool_names),
             tool_config_ids=normalize_tool_skill_ids(self.tool_config_ids),
             kind=kind,
         )
@@ -263,17 +287,23 @@ def build_tool_skill_control_tools(
             )
 
         previous_requested_ids = normalize_tool_skill_ids(binding_state.requested_ids)
+        previous_effective_ids = _effective_ids(previous_requested_ids, catalog)
         next_requested_ids = normalize_tool_skill_ids([*previous_requested_ids, *requested_ids])
         if next_requested_ids != previous_requested_ids:
             await persist_requested_ids(next_requested_ids)
-        return json.dumps(
-            _sync_state(
-                next_requested_ids,
-                transition_kind="load",
-                previous_requested_ids=previous_requested_ids,
-            ),
-            ensure_ascii=False,
+        payload = _sync_state(
+            next_requested_ids,
+            transition_kind="load",
+            previous_requested_ids=previous_requested_ids,
         )
+        previous_active_tool_names = _flatten_loaded_tool_names_for_ids(previous_effective_ids, catalog)
+        newly_loaded_effective_ids = [skill_id for skill_id in payload["effective_ids"] if skill_id not in set(previous_effective_ids)]
+        payload["loaded_tool_names"] = _flatten_loaded_tool_names_for_ids(
+            newly_loaded_effective_ids,
+            catalog,
+            excluded_tool_names=previous_active_tool_names,
+        )
+        return json.dumps(payload, ensure_ascii=False)
 
     async def _unload_tool_skills(ids: list[str]) -> str:
         remove_ids = set(normalize_tool_skill_ids(ids))

@@ -305,6 +305,116 @@ describe('ToolCallDisplay screenshot rendering', () => {
   });
 });
 
+describe('ToolCallDisplay load_tool_skills rendering', () => {
+  it('renders a flat singular loaded-tool row with a wrench icon and no expandable controls', () => {
+    const { container } = render(
+      <ToolCallDisplay
+        toolCall={{
+          tool: 'load_tool_skills',
+          status: 'complete',
+          output: JSON.stringify({
+            status: 'ok',
+            transition_kind: 'load',
+            bindings_changed: true,
+            loaded_tool_names: ['search_git_history'],
+          }),
+        }}
+        defaultExpanded
+      />,
+    );
+
+    expect(screen.getByText('Loaded tool Search Git History')).toBeDefined();
+    expect(container.querySelector('.tool-call-load-tools-flat')).not.toBeNull();
+    expect(container.querySelector('.tool-call-load-tools-flat .lucide-wrench')).not.toBeNull();
+    expect(
+      container.querySelector('.tool-call-load-tools-flat-icon')?.getAttribute('aria-hidden'),
+    ).toBe('true');
+    expect(container.querySelector('.tool-call-header')).toBeNull();
+    expect(container.querySelector('.tool-call-toggle')).toBeNull();
+    expect(container.querySelector('.tool-call-details')).toBeNull();
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('renders plural loaded-tool names in a single flat row', () => {
+    render(
+      <ToolCallDisplay
+        toolCall={{
+          tool: 'load_tool_skills',
+          status: 'complete',
+          output: JSON.stringify({
+            status: 'ok',
+            transition_kind: 'load',
+            bindings_changed: true,
+            loaded_tool_names: ['query_demo_sql', 'search_demo_sql_schema'],
+          }),
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Loaded tools Query Demo SQL, Search Demo SQL Schema')).toBeDefined();
+  });
+
+  it.each([
+    {
+      name: 'malformed empty-name payload',
+      toolCall: {
+        tool: 'load_tool_skills',
+        status: 'complete' as const,
+        output: JSON.stringify({
+          status: 'ok',
+          transition_kind: 'load',
+          bindings_changed: true,
+          loaded_tool_names: [''],
+        }),
+      },
+    },
+    {
+      name: 'no-op bindings_changed false payload',
+      toolCall: {
+        tool: 'load_tool_skills',
+        status: 'complete' as const,
+        output: JSON.stringify({
+          status: 'ok',
+          transition_kind: 'load',
+          bindings_changed: false,
+          loaded_tool_names: ['search_git_history'],
+        }),
+      },
+    },
+    {
+      name: 'json status error payload',
+      toolCall: {
+        tool: 'load_tool_skills',
+        status: 'complete' as const,
+        output: JSON.stringify({
+          status: 'error',
+          transition_kind: 'load',
+          bindings_changed: true,
+          loaded_tool_names: ['search_git_history'],
+        }),
+      },
+    },
+    {
+      name: 'unload_tool_skills payload',
+      toolCall: {
+        tool: 'unload_tool_skills',
+        status: 'complete' as const,
+        output: JSON.stringify({
+          status: 'ok',
+          transition_kind: 'load',
+          bindings_changed: true,
+          loaded_tool_names: ['search_git_history'],
+        }),
+      },
+    },
+  ])('keeps $name on the generic expandable card', ({ toolCall }) => {
+    const { container } = render(<ToolCallDisplay toolCall={toolCall} />);
+
+    expect(container.querySelector('.tool-call-header')).not.toBeNull();
+    expect(container.querySelector('.tool-call-load-tools-flat')).toBeNull();
+  });
+});
+
 describe('ToolCallDisplay userspace validation rendering', () => {
   it('renders validate_userspace_code failure output from production-shaped validation payloads', () => {
     const payload = {

@@ -4032,6 +4032,65 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function formatToolRuntimeDisplayName(toolId: string): string {
+  const uppercaseSegments = new Set([
+    'api',
+    'csv',
+    'html',
+    'http',
+    'https',
+    'json',
+    'mcp',
+    'odoo',
+    'pdf',
+    'sql',
+    'ssh',
+    'ui',
+    'url',
+  ]);
+  return getToolVisualName(toolId)
+    .split('_')
+    .filter(Boolean)
+    .map((segment) =>
+      uppercaseSegments.has(segment.toLowerCase())
+        ? segment.toUpperCase()
+        : segment.charAt(0).toUpperCase() + segment.slice(1),
+    )
+    .join(' ');
+}
+
+function parseLoadedToolNamesOutput(
+  toolCall: Pick<ActiveToolCall, 'tool' | 'status' | 'output'>,
+): string[] | null {
+  if (toolCall.tool !== 'load_tool_skills' || toolCall.status !== 'complete' || !toolCall.output) {
+    return null;
+  }
+
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = asRecord(JSON.parse(toolCall.output));
+  } catch {
+    return null;
+  }
+  if (!parsed) return null;
+  if (parsed.status !== 'ok') return null;
+  if (parsed.transition_kind !== 'load') return null;
+  if (parsed.bindings_changed !== true) return null;
+  if (!Array.isArray(parsed.loaded_tool_names) || parsed.loaded_tool_names.length === 0) {
+    return null;
+  }
+
+  const loadedToolNames: string[] = [];
+  for (const value of parsed.loaded_tool_names) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    loadedToolNames.push(trimmed);
+  }
+
+  return loadedToolNames;
+}
+
 interface ParsedTerminalOutput {
   status: string;
   command?: string;
@@ -5891,6 +5950,7 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   const userspaceWriteSummary = userspaceWriteResult
     ? formatUserspaceWriteSummary(userspaceWriteResult)
     : '';
+  const loadedToolNames = useMemo(() => parseLoadedToolNamesOutput(toolCall), [toolCall]);
 
   // Helper to look up an entry's diff/loading/error from the per-entry maps.
   const getEntryDiffState = (entry: ParsedUserSpaceWriteResult) => {
@@ -5944,6 +6004,21 @@ export const ToolCallDisplay = memo(function ToolCallDisplay({
   // transitions cannot change the hook count between renders.
   if (isHiddenToolCall(toolCall)) {
     return null;
+  }
+
+  if (loadedToolNames) {
+    const label =
+      loadedToolNames.length === 1
+        ? `Loaded tool ${formatToolRuntimeDisplayName(loadedToolNames[0])}`
+        : `Loaded tools ${loadedToolNames.map(formatToolRuntimeDisplayName).join(', ')}`;
+    return (
+      <div className="tool-call-load-tools-flat">
+        <span className="tool-call-load-tools-flat-icon" aria-hidden="true">
+          <Wrench size={14} />
+        </span>
+        <span className="tool-call-load-tools-flat-label">{label}</span>
+      </div>
+    );
   }
 
   if (chartData) {

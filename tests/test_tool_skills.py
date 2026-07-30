@@ -240,6 +240,7 @@ class ToolSkillControlToolsTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["requested_ids"], ["erp-read", "sql-read"])
         self.assertEqual(result["effective_ids"], ["erp-read", "sql-read"])
+        self.assertEqual(result["loaded_tool_names"], ["odoo_search"])
         self.assertTrue(result["bindings_changed"])
         self.assertEqual(result["transition_kind"], "load")
         self.assertEqual(state.requested_ids, ["erp-read", "sql-read"])
@@ -247,6 +248,68 @@ class ToolSkillControlToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state.bindings_changed)
         self.assertEqual(state.transition_kind, "load")
         persist.assert_awaited_once_with(["erp-read", "sql-read"])
+
+    async def test_load_tool_skills_returns_deduplicated_loaded_tool_names_in_catalog_order(self) -> None:
+        state = ToolSkillBindingState(requested_ids=[], effective_ids=[])
+        persist = mock.AsyncMock()
+        tools = build_tool_skill_control_tools(
+            eligible_catalog=[
+                ToolSkillDefinition(
+                    id="bundle-alpha",
+                    label="Bundle Alpha",
+                    description="Loads overlapping tools first.",
+                    tool_names=["tool_b", "tool_a"],
+                    kind="custom",
+                ),
+                ToolSkillDefinition(
+                    id="bundle-beta",
+                    label="Bundle Beta",
+                    description="Loads overlapping tools second.",
+                    tool_names=["tool_a", "tool_c"],
+                    kind="custom",
+                ),
+            ],
+            binding_state=state,
+            persist_requested_ids=persist,
+        )
+
+        result = json.loads(await tools["load_tool_skills"].ainvoke({"ids": ["bundle-alpha", "bundle-beta"]}))
+
+        self.assertEqual(result["requested_ids"], ["bundle-alpha", "bundle-beta"])
+        self.assertEqual(result["effective_ids"], ["bundle-alpha", "bundle-beta"])
+        self.assertEqual(result["loaded_tool_names"], ["tool_b", "tool_a", "tool_c"])
+        persist.assert_awaited_once_with(["bundle-alpha", "bundle-beta"])
+
+    async def test_load_tool_skills_excludes_tool_names_that_were_already_active(self) -> None:
+        state = ToolSkillBindingState(requested_ids=["existing-skill"], effective_ids=["existing-skill"])
+        persist = mock.AsyncMock()
+        tools = build_tool_skill_control_tools(
+            eligible_catalog=[
+                ToolSkillDefinition(
+                    id="existing-skill",
+                    label="Existing Skill",
+                    description="Already active shared query.",
+                    tool_names=["shared_query"],
+                    kind="custom",
+                ),
+                ToolSkillDefinition(
+                    id="new-skill",
+                    label="New Skill",
+                    description="Adds one new query plus overlap.",
+                    tool_names=["shared_query", "new_query"],
+                    kind="custom",
+                ),
+            ],
+            binding_state=state,
+            persist_requested_ids=persist,
+        )
+
+        result = json.loads(await tools["load_tool_skills"].ainvoke({"ids": ["new-skill"]}))
+
+        self.assertEqual(result["requested_ids"], ["existing-skill", "new-skill"])
+        self.assertEqual(result["effective_ids"], ["existing-skill", "new-skill"])
+        self.assertEqual(result["loaded_tool_names"], ["new_query"])
+        persist.assert_awaited_once_with(["existing-skill", "new-skill"])
 
     async def test_load_tool_skills_rejects_unknown_or_ineligible_ids_without_persisting(self) -> None:
         state = ToolSkillBindingState(requested_ids=["sql-read"], effective_ids=["sql-read"])
@@ -306,6 +369,7 @@ class ToolSkillControlToolsTests(unittest.IsolatedAsyncioTestCase):
 
         result = json.loads(await tools["load_tool_skills"].ainvoke({"ids": ["sql-read"]}))
 
+        self.assertEqual(result["loaded_tool_names"], [])
         self.assertFalse(result["bindings_changed"])
         self.assertIsNone(result["transition_kind"])
         persist.assert_not_awaited()

@@ -2799,6 +2799,28 @@ textarea.chat-header-title-input {
 .chat-tool-calls:has(.tool-call-userspace-diff-card) {
   width: 100%;
 }
+.tool-call-load-tools-flat {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-2xs) var(--space-xs);
+  color: var(--color-text-secondary);
+  font-size: var(--tool-call-font-xs);
+  line-height: 1.4;
+}
+.tool-call-load-tools-flat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--color-success);
+}
+.tool-call-load-tools-flat-label {
+  min-width: 0;
+}
 .chat-message-assistant:has(.tool-call-chart),
 .chat-message-assistant:has(.tool-call-datatable) {
   width: 100%;
