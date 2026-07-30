@@ -1,6 +1,13 @@
 # Ragtime
 
-Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge into existing LLM clients.
+<div align="center">
+  <p>
+    All your tools.<br />
+    All your context.
+  </p>
+  <h1>In one place.</h1>
+  <p><em>Self-hosted, OpenAI-compatible RAG API + MCP server that plugs local knowledge into existing LLM clients.</em></p>
+</div>
 
 <p align="center">
   <a href="https://github.com/mattv8/ragtime/actions/workflows/build-container.yml?query=branch%3Amain">
