@@ -8704,11 +8704,7 @@ class RAGComponents:
                 continue
             if allowed_id_set is not None and tool_config_id not in allowed_id_set:
                 continue
-            derived_tool_names = sorted(
-                tool_name
-                for tool_name in self._derive_config_tool_names(config)
-                if tool_name in runtime_tools_by_name
-            )
+            derived_tool_names = sorted(tool_name for tool_name in self._derive_config_tool_names(config) if tool_name in runtime_tools_by_name)
             if not derived_tool_names:
                 continue
             catalog.append(
@@ -8912,7 +8908,9 @@ class RAGComponents:
             if bindings_changed and transition_count >= _MAX_TOOL_SKILL_STAGE_TRANSITIONS:
                 stop_message = "Tool-skill binding changed too many times in one request. Stop changing bindings and continue with the currently loaded tools."
             elif next_remaining_iterations <= 0:
-                stop_message = "This request exhausted its remaining agent iteration budget while using tool-skill controls. Continue without more control calls."
+                stop_message = (
+                    "This request exhausted its remaining agent iteration budget while using tool-skill controls. Continue without more control calls."
+                )
         return {
             "iteration_cost": iteration_cost,
             "next_remaining_iterations": next_remaining_iterations,
@@ -14782,11 +14780,7 @@ class RAGComponents:
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
         t0 = time.monotonic()
-        runtime_tools = list(
-            runtime_tool_source_override
-            if runtime_tool_source_override is not None
-            else getattr(executor, "tools", []) if executor else []
-        )
+        runtime_tools = list(runtime_tool_source_override if runtime_tool_source_override is not None else getattr(executor, "tools", []) if executor else [])
         if blocked_tool_names:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
         runtime_tool_source = list(runtime_tools)
@@ -14799,15 +14793,19 @@ class RAGComponents:
         userspace_env_var_turn_hint = ""
         userspace_runtime_status_turn_hint = ""
         userspace_diagnostics_turn_hint = ""
-        request_tool_state: dict[str, Any] = request_tool_state_override if request_tool_state_override is not None else {
-            "tool_calls": [],
-            "signature_counts": {},
-            "blocked_repeat_calls": 0,
-            "max_iterations_reached": False,
-            "internal_continue_attempts": 0,
-            "internal_continue_stop_reason": "",
-            "tool_free_synthesis_used": False,
-        }
+        request_tool_state: dict[str, Any] = (
+            request_tool_state_override
+            if request_tool_state_override is not None
+            else {
+                "tool_calls": [],
+                "signature_counts": {},
+                "blocked_repeat_calls": 0,
+                "max_iterations_reached": False,
+                "internal_continue_attempts": 0,
+                "internal_continue_stop_reason": "",
+                "tool_free_synthesis_used": False,
+            }
+        )
         export_context: dict[str, Any] = {}
         subagent_model_ids: list[str] = []
 
@@ -15132,30 +15130,27 @@ class RAGComponents:
             "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
         )
         if mode == "userspace":
-            prompt_additions = build_userspace_mode_prompt_addition(
-                include_sqlite_persistence=include_sqlite_persistence,
-                has_live_data_tools=bool(allowed_tool_config_ids),
-                workspace_continuity=continuity_ctx,
-                available_tool_names=available_userspace_tool_names,
-            ) + prompt_additions
+            prompt_additions = (
+                build_userspace_mode_prompt_addition(
+                    include_sqlite_persistence=include_sqlite_persistence,
+                    has_live_data_tools=bool(allowed_tool_config_ids),
+                    workspace_continuity=continuity_ctx,
+                    available_tool_names=available_userspace_tool_names,
+                )
+                + prompt_additions
+            )
             userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(
                 diagnostic_summary,
                 available_tool_names=available_userspace_tool_names,
             )
         if str(tool_skill_resolution["tool_skill_mode"]) == "enabled" and bool(tool_skill_resolution.get("tool_skill_has_loadable", False)):
-            prompt_additions += (
-                "\n\nOptional tool-skill workflow: search eligible skills with `search_tool_skills`, call `load_tool_skills` standalone, use the loaded tool, then optionally `unload_tool_skills` standalone when you are done."
-            )
+            prompt_additions += "\n\nOptional tool-skill workflow: search eligible skills with `search_tool_skills`, call `load_tool_skills` standalone, use the loaded tool, then optionally `unload_tool_skills` standalone when you are done."
             if mode == "userspace" and tool_skill_resolution["tool_skill_hidden_ids"]:
-                prompt_additions += (
-                    " If User Space validation, execution-proof, or live-data feedback points to a missing eligible connection, search/load the needed tool skill before retrying instead of treating that connection as unavailable."
-                )
+                prompt_additions += " If User Space validation, execution-proof, or live-data feedback points to a missing eligible connection, search/load the needed tool skill before retrying instead of treating that connection as unavailable."
         if mode == "userspace":
             if "spawn_subagents" in runtime_tool_names:
                 prompt_additions += "\n\n" + USERSPACE_SUBAGENT_GUIDANCE_PROMPT.strip()
-                prompt_additions += build_subagent_model_guidance_prompt(
-                    subagent_model_ids
-                )
+                prompt_additions += build_subagent_model_guidance_prompt(subagent_model_ids)
             if {"userspace_diagnostics", "web_search", "web_browse", "web_read_pdf"}.intersection(runtime_tool_names):
                 prompt_additions += build_chat_diagnostics_prompt_addition(
                     include_terminal=False,
@@ -15250,9 +15245,7 @@ class RAGComponents:
             runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(runtime_tools)
             filtered_tool_configs = [config for config in candidate_tool_configs if (config.get("id") or "") in runnable_ids]
             unavailable_tool_configs = [
-                config
-                for config in candidate_tool_configs
-                if (config.get("id") or "") not in runnable_ids and (config.get("id") or "") not in hidden_id_set
+                config for config in candidate_tool_configs if (config.get("id") or "") not in runnable_ids and (config.get("id") or "") not in hidden_id_set
             ]
 
         cache_key = (
@@ -15284,10 +15277,7 @@ class RAGComponents:
         base_prompt = BASE_USERSPACE_SYSTEM_PROMPT if mode == "userspace" else BASE_CHAT_SYSTEM_PROMPT
         prompt = base_prompt + index_prompt_section + tool_prompt_section
         if is_ui:
-            has_loaded_visualization_tools = any(
-                getattr(tool, "name", "") in {"create_chart", "create_datatable"}
-                for tool in (runtime_tools or [])
-            )
+            has_loaded_visualization_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in (runtime_tools or []))
             if tool_skill_mode != "enabled" or has_loaded_visualization_tools:
                 prompt += UI_VISUALIZATION_COMMON_PROMPT
             if self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto":

@@ -6308,7 +6308,6 @@ export function SettingsPanel({
                       );
                     })()}
                   </div>
-
                 </div>
 
                 <div className="form-row">

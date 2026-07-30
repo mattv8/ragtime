@@ -63,11 +63,15 @@ describe('AgentBehaviorSettingsSection', () => {
     const user = userEvent.setup();
     renderSection();
 
-    expect(screen.getByText(/Only essential tools and the tool-skill controls are sent initially/i)).toBeTruthy();
+    expect(
+      screen.getByText(/Only essential tools and the tool-skill controls are sent initially/i),
+    ).toBeTruthy();
 
     await user.click(screen.getByLabelText('Load tools on demand'));
 
-    expect(screen.getByText(/All eligible tools and schemas are sent with every request/i)).toBeTruthy();
+    expect(
+      screen.getByText(/All eligible tools and schemas are sent with every request/i),
+    ).toBeTruthy();
   });
 
   it('updates the toggle and numeric controls', async () => {

@@ -332,7 +332,15 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         original_history = [HumanMessage(content="earlier")]
         load_step = (
             _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
-            json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]}),
+            json.dumps(
+                {
+                    "status": "ok",
+                    "bindings_changed": True,
+                    "transition_kind": "load",
+                    "requested_ids": ["tool_config:tool-1"],
+                    "effective_ids": ["tool_config:tool-1"],
+                }
+            ),
         )
         unload_step = (
             _FakeAction("unload_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-unload"),
@@ -437,7 +445,15 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         binding_state = ToolSkillBindingState(requested_ids=[], effective_ids=[])
         transition_step = (
             _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
-            json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]}),
+            json.dumps(
+                {
+                    "status": "ok",
+                    "bindings_changed": True,
+                    "transition_kind": "load",
+                    "requested_ids": ["tool_config:tool-1"],
+                    "effective_ids": ["tool_config:tool-1"],
+                }
+            ),
         )
         executors = [_FakeExecutor([_make_tool("search_tool_skills")], [{"output": "ignored", "intermediate_steps": [transition_step]}]) for _ in range(6)]
 
@@ -468,7 +484,9 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_rebuild_stage)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(return_value=(SimpleNamespace(llm=None, provider="openai", model="gpt-test"), [], ""))),
+            mock.patch.object(
+                rag, "_prepare_chat_context_window", new=mock.AsyncMock(return_value=(SimpleNamespace(llm=None, provider="openai", model="gpt-test"), [], ""))
+            ),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=lambda *_args, **_kwargs: executors.pop(0)),
         ):
             output, _executor, _chat_history = await rag._run_nonstream_tool_skill_stage_loop(
@@ -515,16 +533,28 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nonstream_search_control_replays_and_continues_without_transition(self) -> None:
         rag = self._make_rag()
-        request_state = {"tool_calls": [], "signature_counts": {"same": 2}, "blocked_repeat_calls": 1, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False}
+        request_state = {
+            "tool_calls": [],
+            "signature_counts": {"same": 2},
+            "blocked_repeat_calls": 1,
+            "max_iterations_reached": False,
+            "internal_continue_attempts": 0,
+            "internal_continue_stop_reason": "",
+            "tool_free_synthesis_used": False,
+        }
         first_executor = _FakeExecutor(
             [_make_tool("search_tool_skills")],
-            [{
-                "output": json.dumps({"status": "ok", "results": [{"id": "tool_config:tool-1"}]}),
-                "intermediate_steps": [(
-                    _FakeAction("search_tool_skills", {"query": "demo"}, "call-search"),
-                    json.dumps({"status": "ok", "results": [{"id": "tool_config:tool-1"}]}),
-                )],
-            }],
+            [
+                {
+                    "output": json.dumps({"status": "ok", "results": [{"id": "tool_config:tool-1"}]}),
+                    "intermediate_steps": [
+                        (
+                            _FakeAction("search_tool_skills", {"query": "demo"}, "call-search"),
+                            json.dumps({"status": "ok", "results": [{"id": "tool_config:tool-1"}]}),
+                        )
+                    ],
+                }
+            ],
         )
         second_executor = _FakeExecutor(
             [_make_tool("search_tool_skills")],
@@ -617,41 +647,70 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         rag = self._make_rag()
         first_executor = _FakeExecutor(
             [_make_tool("search_tool_skills"), _make_tool("query_demo_sql")],
-            [{
-                "output": "ignored",
-                "intermediate_steps": [
-                    (_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), json.dumps({"status": "ok", "results": [{"id": "tool_config:tool-1"}]})),
-                    (_FakeAction("query_demo_sql", {"query": "select 1 limit 1"}, "call-query"), "rows"),
-                ],
-            }],
+            [
+                {
+                    "output": "ignored",
+                    "intermediate_steps": [
+                        (
+                            _FakeAction("search_tool_skills", {"query": "demo"}, "call-search"),
+                            json.dumps({"status": "ok", "results": [{"id": "tool_config:tool-1"}]}),
+                        ),
+                        (_FakeAction("query_demo_sql", {"query": "select 1 limit 1"}, "call-query"), "rows"),
+                    ],
+                }
+            ],
         )
         second_executor = _FakeExecutor([_make_tool("query_demo_sql")], [{"output": "recovered guidance", "intermediate_steps": []}])
         with (
-            mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value={
-                "runtime_tools": [_make_tool("search_tool_skills"), _make_tool("query_demo_sql")],
-                "tool_skill_binding_state": ToolSkillBindingState(requested_ids=[], effective_ids=[]),
-                "tool_skill_hidden_ids": ["tool-1"],
-                "tool_skill_has_loadable": True,
-                "tool_skill_mode": "enabled",
-                "tool_skill_loaded_ids": [],
-                "allowed_tool_config_ids": ["tool-1"],
-                "mode": "chat",
-                "prompt_is_ui": False,
-                "prompt_additions": "",
-                "include_sqlite_persistence": False,
-                "userspace_env_var_turn_hint": "",
-                "userspace_runtime_status_turn_hint": "",
-                "userspace_diagnostics_turn_hint": "",
-                "user_identity_turn_line": "",
-                "current_time_turn_line": "",
-                "request_tool_state": {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False},
-                "export_context": {},
-                "workspace_id": None,
-            })),
+            mock.patch.object(
+                rag,
+                "_build_request_runtime_context",
+                new=mock.AsyncMock(
+                    return_value={
+                        "runtime_tools": [_make_tool("search_tool_skills"), _make_tool("query_demo_sql")],
+                        "tool_skill_binding_state": ToolSkillBindingState(requested_ids=[], effective_ids=[]),
+                        "tool_skill_hidden_ids": ["tool-1"],
+                        "tool_skill_has_loadable": True,
+                        "tool_skill_mode": "enabled",
+                        "tool_skill_loaded_ids": [],
+                        "allowed_tool_config_ids": ["tool-1"],
+                        "mode": "chat",
+                        "prompt_is_ui": False,
+                        "prompt_additions": "",
+                        "include_sqlite_persistence": False,
+                        "userspace_env_var_turn_hint": "",
+                        "userspace_runtime_status_turn_hint": "",
+                        "userspace_diagnostics_turn_hint": "",
+                        "user_identity_turn_line": "",
+                        "current_time_turn_line": "",
+                        "request_tool_state": {
+                            "tool_calls": [],
+                            "signature_counts": {},
+                            "blocked_repeat_calls": 0,
+                            "max_iterations_reached": False,
+                            "internal_continue_attempts": 0,
+                            "internal_continue_stop_reason": "",
+                            "tool_free_synthesis_used": False,
+                        },
+                        "export_context": {},
+                        "workspace_id": None,
+                    }
+                ),
+            ),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=[second_executor]),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=None, provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=None, provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
         ):
             output, _executor, rebuilt_history = await rag._run_nonstream_tool_skill_stage_loop(
                 executor=first_executor,
@@ -664,7 +723,15 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                     "allowed_tool_config_ids": ["tool-1"],
                     "runtime_tools": [_make_tool("search_tool_skills"), _make_tool("query_demo_sql")],
                     "prompt_additions": "",
-                    "request_tool_state": {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False},
+                    "request_tool_state": {
+                        "tool_calls": [],
+                        "signature_counts": {},
+                        "blocked_repeat_calls": 0,
+                        "max_iterations_reached": False,
+                        "internal_continue_attempts": 0,
+                        "internal_continue_stop_reason": "",
+                        "tool_free_synthesis_used": False,
+                    },
                     "tool_skill_binding_state": ToolSkillBindingState(requested_ids=[], effective_ids=[]),
                     "tool_skill_hidden_ids": ["tool-1"],
                     "tool_skill_has_loadable": True,
@@ -702,20 +769,68 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         rag = self._make_rag()
         rag.agent_executor = _FakeStreamExecutor(
             [_make_tool("search_tool_skills")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
-                {"event": "on_tool_end", "run_id": "call-load", "name": "load_tool_skills", "data": {"output": json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]})}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]}))], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
+                    {
+                        "event": "on_tool_end",
+                        "run_id": "call-load",
+                        "name": "load_tool_skills",
+                        "data": {
+                            "output": json.dumps(
+                                {
+                                    "status": "ok",
+                                    "bindings_changed": True,
+                                    "transition_kind": "load",
+                                    "requested_ids": ["tool_config:tool-1"],
+                                    "effective_ids": ["tool_config:tool-1"],
+                                }
+                            )
+                        },
+                    },
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [
+                                    (
+                                        _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
+                                        json.dumps(
+                                            {
+                                                "status": "ok",
+                                                "bindings_changed": True,
+                                                "transition_kind": "load",
+                                                "requested_ids": ["tool_config:tool-1"],
+                                                "effective_ids": ["tool_config:tool-1"],
+                                            }
+                                        ),
+                                    )
+                                ],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         second_executor = _FakeStreamExecutor(
             [_make_tool("query_demo_sql")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-query", "name": "query_demo_sql", "data": {"input": {"query": "select 1 limit 1"}}},
-                {"event": "on_tool_end", "run_id": "call-query", "name": "query_demo_sql", "data": {"output": "rows"}},
-                {"event": "on_chat_model_stream", "run_id": "chat-2", "data": {"chunk": SimpleNamespace(content="final stream")}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1 limit 1"}, "call-query"), "rows")], "output": "final stream"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-query", "name": "query_demo_sql", "data": {"input": {"query": "select 1 limit 1"}}},
+                    {"event": "on_tool_end", "run_id": "call-query", "name": "query_demo_sql", "data": {"output": "rows"}},
+                    {"event": "on_chat_model_stream", "run_id": "chat-2", "data": {"chunk": SimpleNamespace(content="final stream")}},
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1 limit 1"}, "call-query"), "rows")],
+                                "output": "final stream",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
 
         async def _build_runtime_context(*, tool_skill_binding_state_override: ToolSkillBindingState | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -733,7 +848,15 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 "userspace_diagnostics_turn_hint": "",
                 "user_identity_turn_line": "",
                 "current_time_turn_line": "",
-                "request_tool_state": {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False},
+                "request_tool_state": {
+                    "tool_calls": [],
+                    "signature_counts": {},
+                    "blocked_repeat_calls": 0,
+                    "max_iterations_reached": False,
+                    "internal_continue_attempts": 0,
+                    "internal_continue_stop_reason": "",
+                    "tool_free_synthesis_used": False,
+                },
                 "export_context": {},
                 "workspace_id": None,
                 "tool_skill_binding_state": tool_skill_binding_state_override or ToolSkillBindingState([], []),
@@ -744,13 +867,25 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="load then stream")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_build_runtime_context)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=[rag.agent_executor, second_executor]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
@@ -767,30 +902,98 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         rag = self._make_rag()
         rag.agent_executor = _FakeStreamExecutor(
             [_make_tool("search_tool_skills")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
-                {"event": "on_tool_end", "run_id": "call-load", "name": "load_tool_skills", "data": {"output": json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]})}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]}))], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
+                    {
+                        "event": "on_tool_end",
+                        "run_id": "call-load",
+                        "name": "load_tool_skills",
+                        "data": {
+                            "output": json.dumps(
+                                {
+                                    "status": "ok",
+                                    "bindings_changed": True,
+                                    "transition_kind": "load",
+                                    "requested_ids": ["tool_config:tool-1"],
+                                    "effective_ids": ["tool_config:tool-1"],
+                                }
+                            )
+                        },
+                    },
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [
+                                    (
+                                        _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
+                                        json.dumps(
+                                            {
+                                                "status": "ok",
+                                                "bindings_changed": True,
+                                                "transition_kind": "load",
+                                                "requested_ids": ["tool_config:tool-1"],
+                                                "effective_ids": ["tool_config:tool-1"],
+                                            }
+                                        ),
+                                    )
+                                ],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         second_executor = _FakeStreamExecutor(
             [_make_tool("query_demo_sql")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-unload", "name": "unload_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
-                {"event": "on_tool_end", "run_id": "call-unload", "name": "unload_tool_skills", "data": {"output": json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []})}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("unload_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-unload"), json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []}))], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-unload", "name": "unload_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
+                    {
+                        "event": "on_tool_end",
+                        "run_id": "call-unload",
+                        "name": "unload_tool_skills",
+                        "data": {
+                            "output": json.dumps(
+                                {"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []}
+                            )
+                        },
+                    },
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [
+                                    (
+                                        _FakeAction("unload_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-unload"),
+                                        json.dumps(
+                                            {"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []}
+                                        ),
+                                    )
+                                ],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         third_executor = _FakeStreamExecutor(
             [_make_tool("search_tool_skills")],
-            [[
-                {"event": "on_chat_model_stream", "run_id": "chat-3", "data": {"chunk": SimpleNamespace(content="done")}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [], "output": "done"}}},
-            ]],
+            [
+                [
+                    {"event": "on_chat_model_stream", "run_id": "chat-3", "data": {"chunk": SimpleNamespace(content="done")}},
+                    {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [], "output": "done"}}},
+                ]
+            ],
         )
         prepared_histories: list[list[Any]] = []
 
-        async def _build_runtime_context(*, tool_skill_binding_state_override: ToolSkillBindingState | None = None, request_tool_state_override: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        async def _build_runtime_context(
+            *, tool_skill_binding_state_override: ToolSkillBindingState | None = None, request_tool_state_override: dict[str, Any] | None = None, **_kwargs: Any
+        ) -> dict[str, Any]:
             loaded = list((tool_skill_binding_state_override or ToolSkillBindingState([], [])).effective_ids)
             runtime_tools = [_make_tool("query_demo_sql")] if loaded else [_make_tool("search_tool_skills")]
             return {
@@ -805,7 +1008,16 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 "userspace_diagnostics_turn_hint": "",
                 "user_identity_turn_line": "",
                 "current_time_turn_line": "",
-                "request_tool_state": request_tool_state_override or {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False},
+                "request_tool_state": request_tool_state_override
+                or {
+                    "tool_calls": [],
+                    "signature_counts": {},
+                    "blocked_repeat_calls": 0,
+                    "max_iterations_reached": False,
+                    "internal_continue_attempts": 0,
+                    "internal_continue_stop_reason": "",
+                    "tool_free_synthesis_used": False,
+                },
                 "export_context": {},
                 "workspace_id": None,
                 "tool_skill_binding_state": tool_skill_binding_state_override or ToolSkillBindingState([], []),
@@ -817,13 +1029,25 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="multi")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_build_runtime_context)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (prepared_histories.append(list(kwargs["chat_history"])) or SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        prepared_histories.append(list(kwargs["chat_history"])) or SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=[rag.agent_executor, second_executor, third_executor]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
@@ -840,20 +1064,70 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_feature_off_streaming_debug_persists_once_with_original_user_input(self) -> None:
         rag = self._make_rag()
         rag._app_settings["tool_skills_enabled"] = False
-        rag.agent_executor = _FakeStreamExecutor([_make_tool("query_demo_sql")], [[
-            {"event": "on_chat_model_stream", "run_id": "chat-1", "data": {"chunk": SimpleNamespace(content="plain")}},
-            {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [], "output": "plain"}}},
-        ]])
+        rag.agent_executor = _FakeStreamExecutor(
+            [_make_tool("query_demo_sql")],
+            [
+                [
+                    {"event": "on_chat_model_stream", "run_id": "chat-1", "data": {"chunk": SimpleNamespace(content="plain")}},
+                    {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [], "output": "plain"}}},
+                ]
+            ],
+        )
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="hello raw")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
-            mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value={
-                "mode": "chat", "prompt_is_ui": False, "allowed_tool_config_ids": ["tool-1"], "runtime_tools": [_make_tool("query_demo_sql")], "prompt_additions": "", "include_sqlite_persistence": False, "userspace_env_var_turn_hint": "", "userspace_runtime_status_turn_hint": "", "userspace_diagnostics_turn_hint": "", "user_identity_turn_line": "", "current_time_turn_line": "", "request_tool_state": {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False}, "export_context": {}, "workspace_id": None, "tool_skill_binding_state": None, "tool_skill_catalog": [], "tool_skill_hidden_ids": [], "tool_skill_has_loadable": False, "tool_skill_mode": "disabled", "tool_skill_loaded_ids": []
-            })),
+            mock.patch.object(
+                rag,
+                "_build_request_runtime_context",
+                new=mock.AsyncMock(
+                    return_value={
+                        "mode": "chat",
+                        "prompt_is_ui": False,
+                        "allowed_tool_config_ids": ["tool-1"],
+                        "runtime_tools": [_make_tool("query_demo_sql")],
+                        "prompt_additions": "",
+                        "include_sqlite_persistence": False,
+                        "userspace_env_var_turn_hint": "",
+                        "userspace_runtime_status_turn_hint": "",
+                        "userspace_diagnostics_turn_hint": "",
+                        "user_identity_turn_line": "",
+                        "current_time_turn_line": "",
+                        "request_tool_state": {
+                            "tool_calls": [],
+                            "signature_counts": {},
+                            "blocked_repeat_calls": 0,
+                            "max_iterations_reached": False,
+                            "internal_continue_attempts": 0,
+                            "internal_continue_stop_reason": "",
+                            "tool_free_synthesis_used": False,
+                        },
+                        "export_context": {},
+                        "workspace_id": None,
+                        "tool_skill_binding_state": None,
+                        "tool_skill_catalog": [],
+                        "tool_skill_hidden_ids": [],
+                        "tool_skill_has_loadable": False,
+                        "tool_skill_mode": "disabled",
+                        "tool_skill_loaded_ids": [],
+                    }
+                ),
+            ),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=[rag.agent_executor]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
@@ -881,7 +1155,15 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             "userspace_diagnostics_turn_hint": "",
             "user_identity_turn_line": "",
             "current_time_turn_line": "",
-            "request_tool_state": {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False},
+            "request_tool_state": {
+                "tool_calls": [],
+                "signature_counts": {},
+                "blocked_repeat_calls": 0,
+                "max_iterations_reached": False,
+                "internal_continue_attempts": 0,
+                "internal_continue_stop_reason": "",
+                "tool_free_synthesis_used": False,
+            },
             "export_context": {},
             "workspace_id": None,
             "tool_skill_binding_state": ToolSkillBindingState(requested_ids=[], effective_ids=[]),
@@ -893,13 +1175,25 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="hello raw")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value=request_context)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
             mock.patch.object(rag, "_build_runtime_executor", return_value=SimpleNamespace()),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
@@ -925,15 +1219,60 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         executor.ainvoke = mock.AsyncMock(side_effect=[RuntimeError("image input not supported"), {"output": "plain", "intermediate_steps": []}])
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="hello raw")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
-            mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(return_value={
-                "mode": "chat", "prompt_is_ui": False, "allowed_tool_config_ids": ["tool-1"], "runtime_tools": [_make_tool("query_demo_sql")], "prompt_additions": "", "include_sqlite_persistence": False, "userspace_env_var_turn_hint": "", "userspace_runtime_status_turn_hint": "", "userspace_diagnostics_turn_hint": "", "user_identity_turn_line": "", "current_time_turn_line": "", "request_tool_state": {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False}, "export_context": {}, "workspace_id": None, "tool_skill_binding_state": None, "tool_skill_catalog": [], "tool_skill_hidden_ids": [], "tool_skill_has_loadable": False, "tool_skill_mode": "disabled", "tool_skill_loaded_ids": []
-            })),
+            mock.patch.object(
+                rag,
+                "_build_request_runtime_context",
+                new=mock.AsyncMock(
+                    return_value={
+                        "mode": "chat",
+                        "prompt_is_ui": False,
+                        "allowed_tool_config_ids": ["tool-1"],
+                        "runtime_tools": [_make_tool("query_demo_sql")],
+                        "prompt_additions": "",
+                        "include_sqlite_persistence": False,
+                        "userspace_env_var_turn_hint": "",
+                        "userspace_runtime_status_turn_hint": "",
+                        "userspace_diagnostics_turn_hint": "",
+                        "user_identity_turn_line": "",
+                        "current_time_turn_line": "",
+                        "request_tool_state": {
+                            "tool_calls": [],
+                            "signature_counts": {},
+                            "blocked_repeat_calls": 0,
+                            "max_iterations_reached": False,
+                            "internal_continue_attempts": 0,
+                            "internal_continue_stop_reason": "",
+                            "tool_free_synthesis_used": False,
+                        },
+                        "export_context": {},
+                        "workspace_id": None,
+                        "tool_skill_binding_state": None,
+                        "tool_skill_catalog": [],
+                        "tool_skill_hidden_ids": [],
+                        "tool_skill_has_loadable": False,
+                        "tool_skill_mode": "disabled",
+                        "tool_skill_loaded_ids": [],
+                    }
+                ),
+            ),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
             mock.patch.object(rag, "_build_runtime_executor", return_value=executor),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
@@ -1122,13 +1461,27 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             return _FakeExecutor(tools, [{"output": "done", "intermediate_steps": []}])
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="hello")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
-            mock.patch.object(rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: list(rag.agent_executor.tools))),
+            mock.patch.object(
+                rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: list(rag.agent_executor.tools))
+            ),
             mock.patch.object(rag, "_build_conversation_export_tool", return_value=None),
             mock.patch.object(rag, "_build_chat_diagnostic_tools", return_value=[]),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
@@ -1142,21 +1495,35 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_builtin_only_loadable_state_adds_generic_workflow_guidance_without_connection_sentence(self) -> None:
         rag = self._make_rag()
-        request_state = {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False}
+        request_state = {
+            "tool_calls": [],
+            "signature_counts": {},
+            "blocked_repeat_calls": 0,
+            "max_iterations_reached": False,
+            "internal_continue_attempts": 0,
+            "internal_continue_stop_reason": "",
+            "tool_free_synthesis_used": False,
+        }
 
         with (
-            mock.patch.object(rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(return_value=[_make_tool("search_tool_skills_builtin")])) ,
+            mock.patch.object(rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(return_value=[_make_tool("search_tool_skills_builtin")])),
             mock.patch.object(rag, "_build_conversation_export_tool", return_value=None),
             mock.patch.object(rag, "_build_chat_diagnostic_tools", return_value=[]),
-            mock.patch.object(rag, "_resolve_request_tool_skill_bindings", new=mock.AsyncMock(return_value={
-                "runtime_tools": [_make_tool("search_tool_skills"), _make_tool("load_tool_skills"), _make_tool("unload_tool_skills")],
-                "tool_skill_binding_state": ToolSkillBindingState(requested_ids=[], effective_ids=[]),
-                "tool_skill_catalog": [],
-                "tool_skill_hidden_ids": [],
-                "tool_skill_has_loadable": True,
-                "tool_skill_mode": "enabled",
-                "tool_skill_loaded_ids": [],
-            })),
+            mock.patch.object(
+                rag,
+                "_resolve_request_tool_skill_bindings",
+                new=mock.AsyncMock(
+                    return_value={
+                        "runtime_tools": [_make_tool("search_tool_skills"), _make_tool("load_tool_skills"), _make_tool("unload_tool_skills")],
+                        "tool_skill_binding_state": ToolSkillBindingState(requested_ids=[], effective_ids=[]),
+                        "tool_skill_catalog": [],
+                        "tool_skill_hidden_ids": [],
+                        "tool_skill_has_loadable": True,
+                        "tool_skill_mode": "enabled",
+                        "tool_skill_loaded_ids": [],
+                    }
+                ),
+            ),
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=False,
@@ -1173,10 +1540,18 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_builtin_only_loadable_state_adds_generic_workflow_guidance_without_connection_sentence(self) -> None:
         rag = self._make_rag()
-        request_state = {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False}
+        request_state = {
+            "tool_calls": [],
+            "signature_counts": {},
+            "blocked_repeat_calls": 0,
+            "max_iterations_reached": False,
+            "internal_continue_attempts": 0,
+            "internal_continue_stop_reason": "",
+            "tool_free_synthesis_used": False,
+        }
 
         with (
-            mock.patch.object(rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(return_value=[_make_tool("builtin_optional_tool")])) ,
+            mock.patch.object(rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(return_value=[_make_tool("builtin_optional_tool")])),
             mock.patch.object(rag, "_build_conversation_export_tool", return_value=None),
             mock.patch.object(rag, "_build_chat_diagnostic_tools", return_value=[]),
         ):
@@ -1273,8 +1648,27 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_build_chat_diagnostic_tools", return_value=[]),
             mock.patch.object(rag, "_apply_mode_specific_tool_description_overrides", side_effect=lambda tools, **_kwargs: tools),
             mock.patch.object(rag, "_wrap_userspace_runtime_tools_for_execution_proofs", side_effect=lambda tools, *_args, **_kwargs: tools),
-            mock.patch.object(rag, "_wrap_runtime_tools_with_request_state", side_effect=lambda tools, **_kwargs: (tools, {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False})),
-            mock.patch.object(rag_components.userspace_service, "get_workspace_entrypoint_status", return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
+            mock.patch.object(
+                rag,
+                "_wrap_runtime_tools_with_request_state",
+                side_effect=lambda tools, **_kwargs: (
+                    tools,
+                    {
+                        "tool_calls": [],
+                        "signature_counts": {},
+                        "blocked_repeat_calls": 0,
+                        "max_iterations_reached": False,
+                        "internal_continue_attempts": 0,
+                        "internal_continue_stop_reason": "",
+                        "tool_free_synthesis_used": False,
+                    },
+                ),
+            ),
+            mock.patch.object(
+                rag_components.userspace_service,
+                "get_workspace_entrypoint_status",
+                return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+            ),
             mock.patch.object(rag_components.userspace_service, "is_default_static_entrypoint", return_value=False),
             mock.patch.object(rag, "_build_userspace_continuity_prompt", new=mock.AsyncMock(return_value="")),
         ):
@@ -1287,7 +1681,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 user_id="user-1",
                 current_user_context={"user_id": "user-1", "username": "alice", "display_name": "Alice", "is_admin": False},
                 conversation_id=None,
-        )
+            )
 
         self.assertNotIn("userspace_diagnostics", context["userspace_diagnostics_turn_hint"])
         self.assertIn("Use available diagnostics tooling", context["userspace_diagnostics_turn_hint"])
@@ -1296,7 +1690,20 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         rag = self._make_rag()
 
         with (
-            mock.patch.object(rag_components.userspace_runtime_service, "get_global_mcp_tools", new=mock.AsyncMock(return_value=[{"server_name": "Workspace Server", "name": "search_tool_skills", "description": "Collision", "input_schema": {"type": "object", "properties": {}}}])),
+            mock.patch.object(
+                rag_components.userspace_runtime_service,
+                "get_global_mcp_tools",
+                new=mock.AsyncMock(
+                    return_value=[
+                        {
+                            "server_name": "Workspace Server",
+                            "name": "search_tool_skills",
+                            "description": "Collision",
+                            "input_schema": {"type": "object", "properties": {}},
+                        }
+                    ]
+                ),
+            ),
             mock.patch.object(rag_components.userspace_runtime_service, "list_workspace_mcp_tools", new=mock.AsyncMock(return_value=[])),
         ):
             tools = await rag._create_userspace_file_tools("ws-1", "user-1")
@@ -1309,13 +1716,25 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         rag = self._make_rag()
         rag.agent_executor = first_executor = _FakeExecutor(
             [_make_tool("search_tool_skills")],
-            [{
-                "output": "ignored",
-                "intermediate_steps": [(
-                    _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
-                    json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]}),
-                )],
-            }],
+            [
+                {
+                    "output": "ignored",
+                    "intermediate_steps": [
+                        (
+                            _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
+                            json.dumps(
+                                {
+                                    "status": "ok",
+                                    "bindings_changed": True,
+                                    "transition_kind": "load",
+                                    "requested_ids": ["tool_config:tool-1"],
+                                    "effective_ids": ["tool_config:tool-1"],
+                                }
+                            ),
+                        )
+                    ],
+                }
+            ],
         )
         binding_state = ToolSkillBindingState(requested_ids=[], effective_ids=[])
         second_executor = _FakeExecutor(
@@ -1323,10 +1742,20 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             [{"output": "final", "intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1 limit 1"}, "call-query"), "rows")]}],
         )
 
-        async def _build_runtime_context(*, tool_skill_binding_state_override: ToolSkillBindingState | None = None, request_tool_state_override: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+        async def _build_runtime_context(
+            *, tool_skill_binding_state_override: ToolSkillBindingState | None = None, request_tool_state_override: dict[str, Any] | None = None, **_kwargs: Any
+        ) -> dict[str, Any]:
             loaded = list((tool_skill_binding_state_override or binding_state).effective_ids)
             runtime_tools = [_make_tool("query_demo_sql")] if loaded else [_make_tool("search_tool_skills")]
-            request_state = request_tool_state_override or {"tool_calls": [], "signature_counts": {}, "blocked_repeat_calls": 0, "max_iterations_reached": False, "internal_continue_attempts": 0, "internal_continue_stop_reason": "", "tool_free_synthesis_used": False}
+            request_state = request_tool_state_override or {
+                "tool_calls": [],
+                "signature_counts": {},
+                "blocked_repeat_calls": 0,
+                "max_iterations_reached": False,
+                "internal_continue_attempts": 0,
+                "internal_continue_stop_reason": "",
+                "tool_free_synthesis_used": False,
+            }
             request_state.update(
                 {
                     "tool_skill_mode": "enabled",
@@ -1363,13 +1792,25 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="load then query")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_build_runtime_context)),
             mock.patch.object(rag, "_build_request_system_prompt", return_value="system"),
             mock.patch.object(rag, "_build_request_tool_scope_prompt", return_value=""),
-            mock.patch.object(rag, "_prepare_chat_context_window", new=mock.AsyncMock(side_effect=lambda **kwargs: (SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]))),
+            mock.patch.object(
+                rag,
+                "_prepare_chat_context_window",
+                new=mock.AsyncMock(
+                    side_effect=lambda **kwargs: (
+                        SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
+                        kwargs["chat_history"],
+                        kwargs["turn_system_content"],
+                    )
+                ),
+            ),
             mock.patch.object(rag, "_build_runtime_executor", side_effect=[first_executor, second_executor]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),

@@ -103,7 +103,10 @@ vi.mock('./ModelFilterModal', () => ({
 vi.mock('./shared/Toast', () => ({
   ToastContainer: () => null,
   useToast: () =>
-    [[], { success: toastSuccessSpy, error: toastErrorSpy, clear: vi.fn(), dismiss: vi.fn() }] as const,
+    [
+      [],
+      { success: toastSuccessSpy, error: toastErrorSpy, clear: vi.fn(), dismiss: vi.fn() },
+    ] as const,
 }));
 
 vi.mock('./settings/AgentBehaviorSettingsSection', () => ({
@@ -353,8 +356,7 @@ beforeEach(() => {
     authenticated_webgl_background_enabled: true,
     tool_skills_enabled:
       typeof payload.tool_skills_enabled === 'boolean' ? payload.tool_skills_enabled : true,
-    max_iterations:
-      typeof payload.max_iterations === 'number' ? payload.max_iterations : 30,
+    max_iterations: typeof payload.max_iterations === 'number' ? payload.max_iterations : 30,
     max_tool_output_chars:
       typeof payload.max_tool_output_chars === 'number' ? payload.max_tool_output_chars : 5000,
     scratchpad_window_size:
@@ -753,7 +755,9 @@ describe('SettingsPanel', () => {
   });
 
   it('defaults the load-tools-on-demand toggle to checked when the API omits the value', async () => {
-    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({}, { omitToolSkillsEnabled: true }));
+    apiMock.getSettings.mockResolvedValue(
+      buildSettingsResponse({}, { omitToolSkillsEnabled: true }),
+    );
 
     const { SettingsPanel } = await import('./SettingsPanel');
 
@@ -803,7 +807,9 @@ describe('SettingsPanel', () => {
     expect(section?.textContent).not.toContain('Image Max Bytes');
     expect(section?.textContent).not.toContain('Max Tool Output (chars)');
     expect(checkbox.id).toBe('agent-behavior-tool-skills-enabled');
-    expect(formGroup?.querySelector('label[for="agent-behavior-tool-skills-enabled"]')).toBeTruthy();
+    expect(
+      formGroup?.querySelector('label[for="agent-behavior-tool-skills-enabled"]'),
+    ).toBeTruthy();
   });
 
   it('renders Agent Behavior after Chat Models and before MCP, closed by default, with the expected wiring', async () => {
@@ -897,13 +903,16 @@ describe('SettingsPanel', () => {
     render(<SettingsPanel />);
 
     await screen.findByRole('button', { name: 'Open chat models' });
-    await (chatModelsSectionState.latestProps?.handleSaveLlm as (() => Promise<void>) | undefined)?.();
+    await (
+      chatModelsSectionState.latestProps?.handleSaveLlm as (() => Promise<void>) | undefined
+    )?.();
 
     await waitFor(() => {
       expect(apiMock.updateSettings.mock.calls.length).toBeGreaterThan(0);
     });
 
-    const latestPayload = apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0];
+    const latestPayload =
+      apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0];
     expect(latestPayload).not.toHaveProperty('tool_skills_enabled');
     expect(latestPayload).not.toHaveProperty('max_iterations');
     expect(latestPayload).not.toHaveProperty('max_tool_output_chars');

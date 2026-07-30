@@ -77,8 +77,8 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
-    DEFAULT_TOOL_SKILLS_ENABLED,
     DEFAULT_TOOL_OUTPUT_MODE,
+    DEFAULT_TOOL_SKILLS_ENABLED,
     DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
     DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
     DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
@@ -2722,9 +2722,7 @@ class IndexerRepository:
         normalized_add_ids = [skill_id for skill_id in _normalize_loaded_tool_skill_ids(add_ids) if skill_id not in normalized_remove_ids]
 
         async with db.tx() as tx:
-            rows = await tx.query_raw(
-                f"SELECT loaded_tool_skill_ids FROM conversations WHERE id = {_sql_quote_literal(conversation_id)} FOR UPDATE"
-            )
+            rows = await tx.query_raw(f"SELECT loaded_tool_skill_ids FROM conversations WHERE id = {_sql_quote_literal(conversation_id)} FOR UPDATE")
             if not rows:
                 return []
 

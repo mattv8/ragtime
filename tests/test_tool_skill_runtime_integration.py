@@ -111,6 +111,7 @@ class _FakeStreamExecutor:
 
     def astream_events(self, payload: dict[str, Any], version: str = "v2"):
         self.inputs.append(payload)
+
         async def _gen():
             if not self._streams:
                 raise AssertionError("No more fake stream stages")
@@ -366,7 +367,15 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(search_payload["results"][0]["id"], "builtin:builtin_lookup")
 
-            rebuilt_executor, rebuilt_context, _rebuilt_history, _system_prompt, _tool_scope_prompt, _turn_system_content, _llm_resolution = await rag._rebuild_tool_skill_stage_after_control_activity(
+            (
+                rebuilt_executor,
+                rebuilt_context,
+                _rebuilt_history,
+                _system_prompt,
+                _tool_scope_prompt,
+                _turn_system_content,
+                _llm_resolution,
+            ) = await rag._rebuild_tool_skill_stage_after_control_activity(
                 current_request_context=initial,
                 current_executor=SimpleNamespace(tools=initial["runtime_tools"]),
                 llm_resolution=SimpleNamespace(llm=None, provider="openai", model="gpt-test"),
@@ -677,24 +686,30 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         first_executor = _FakeExecutor(
             [_make_noop_tool("search_tool_skills")],
-            [{
-                "output": search_output,
-                "intermediate_steps": [(_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), search_output)],
-            }],
+            [
+                {
+                    "output": search_output,
+                    "intermediate_steps": [(_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), search_output)],
+                }
+            ],
         )
         second_executor = _FakeExecutor(
             [_make_noop_tool("load_tool_skills")],
-            [{
-                "output": load_output,
-                "intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), load_output)],
-            }],
+            [
+                {
+                    "output": load_output,
+                    "intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), load_output)],
+                }
+            ],
         )
         third_executor = _FakeExecutor(
             [_make_noop_tool("query_demo_sql")],
-            [{
-                "output": "final answer",
-                "intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1"}, "call-query"), "rows for select 1")],
-            }],
+            [
+                {
+                    "output": "final answer",
+                    "intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1"}, "call-query"), "rows for select 1")],
+                }
+            ],
         )
         stage_records: list[dict[str, Any]] = []
 
@@ -818,10 +833,12 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         search_output = json.dumps({"status": "ok", "results": []})
         first_executor = _FakeExecutor(
             [_make_noop_tool("search_tool_skills")],
-            [{
-                "output": search_output,
-                "intermediate_steps": [(_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), search_output)],
-            }],
+            [
+                {
+                    "output": search_output,
+                    "intermediate_steps": [(_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), search_output)],
+                }
+            ],
         )
         second_executor = _FakeExecutor([_make_noop_tool("search_tool_skills")], [{"output": "no matching skill", "intermediate_steps": []}])
         stage_records: list[dict[str, Any]] = []
@@ -936,29 +953,59 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         first_executor = _FakeStreamExecutor(
             [_make_noop_tool("search_tool_skills")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-search", "name": "search_tool_skills", "data": {"input": {"query": "demo"}}},
-                {"event": "on_tool_end", "run_id": "call-search", "name": "search_tool_skills", "data": {"output": search_output}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), search_output)], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-search", "name": "search_tool_skills", "data": {"input": {"query": "demo"}}},
+                    {"event": "on_tool_end", "run_id": "call-search", "name": "search_tool_skills", "data": {"output": search_output}},
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [(_FakeAction("search_tool_skills", {"query": "demo"}, "call-search"), search_output)],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         rag.agent_executor = first_executor
         second_executor = _FakeStreamExecutor(
             [_make_noop_tool("load_tool_skills")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
-                {"event": "on_tool_end", "run_id": "call-load", "name": "load_tool_skills", "data": {"output": load_output}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), load_output)], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
+                    {"event": "on_tool_end", "run_id": "call-load", "name": "load_tool_skills", "data": {"output": load_output}},
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), load_output)],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         third_executor = _FakeStreamExecutor(
             [_make_noop_tool("query_demo_sql")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-query", "name": "query_demo_sql", "data": {"input": {"query": "select 1"}}},
-                {"event": "on_tool_end", "run_id": "call-query", "name": "query_demo_sql", "data": {"output": "rows for select 1"}},
-                {"event": "on_chat_model_stream", "run_id": "chat-3", "data": {"chunk": SimpleNamespace(content="done")}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1"}, "call-query"), "rows for select 1")], "output": "done"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-query", "name": "query_demo_sql", "data": {"input": {"query": "select 1"}}},
+                    {"event": "on_tool_end", "run_id": "call-query", "name": "query_demo_sql", "data": {"output": "rows for select 1"}},
+                    {"event": "on_chat_model_stream", "run_id": "chat-3", "data": {"chunk": SimpleNamespace(content="done")}},
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [(_FakeAction("query_demo_sql", {"query": "select 1"}, "call-query"), "rows for select 1")],
+                                "output": "done",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
 
         async def _build_runtime_context(
@@ -1002,7 +1049,9 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="multi")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_build_runtime_context)),
@@ -1042,27 +1091,93 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         rag = self._make_rag()
         first_executor = _FakeStreamExecutor(
             [_make_builtin_tool()],
-            [[
-                {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
-                {"event": "on_tool_end", "run_id": "call-load", "name": "load_tool_skills", "data": {"output": json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]})}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"), json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "load", "requested_ids": ["tool_config:tool-1"], "effective_ids": ["tool_config:tool-1"]}))], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-load", "name": "load_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
+                    {
+                        "event": "on_tool_end",
+                        "run_id": "call-load",
+                        "name": "load_tool_skills",
+                        "data": {
+                            "output": json.dumps(
+                                {
+                                    "status": "ok",
+                                    "bindings_changed": True,
+                                    "transition_kind": "load",
+                                    "requested_ids": ["tool_config:tool-1"],
+                                    "effective_ids": ["tool_config:tool-1"],
+                                }
+                            )
+                        },
+                    },
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [
+                                    (
+                                        _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
+                                        json.dumps(
+                                            {
+                                                "status": "ok",
+                                                "bindings_changed": True,
+                                                "transition_kind": "load",
+                                                "requested_ids": ["tool_config:tool-1"],
+                                                "effective_ids": ["tool_config:tool-1"],
+                                            }
+                                        ),
+                                    )
+                                ],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         rag.agent_executor = first_executor
         second_executor = _FakeStreamExecutor(
             [_make_noop_tool("query_demo_sql")],
-            [[
-                {"event": "on_tool_start", "run_id": "call-unload", "name": "unload_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
-                {"event": "on_tool_end", "run_id": "call-unload", "name": "unload_tool_skills", "data": {"output": json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []})}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [(_FakeAction("unload_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-unload"), json.dumps({"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []}))], "output": "ignored"}}},
-            ]],
+            [
+                [
+                    {"event": "on_tool_start", "run_id": "call-unload", "name": "unload_tool_skills", "data": {"input": {"ids": ["tool_config:tool-1"]}}},
+                    {
+                        "event": "on_tool_end",
+                        "run_id": "call-unload",
+                        "name": "unload_tool_skills",
+                        "data": {
+                            "output": json.dumps(
+                                {"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []}
+                            )
+                        },
+                    },
+                    {
+                        "event": "on_chain_end",
+                        "data": {
+                            "output": {
+                                "intermediate_steps": [
+                                    (
+                                        _FakeAction("unload_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-unload"),
+                                        json.dumps(
+                                            {"status": "ok", "bindings_changed": True, "transition_kind": "unload", "requested_ids": [], "effective_ids": []}
+                                        ),
+                                    )
+                                ],
+                                "output": "ignored",
+                            }
+                        },
+                    },
+                ]
+            ],
         )
         third_executor = _FakeStreamExecutor(
             [_make_builtin_tool()],
-            [[
-                {"event": "on_chat_model_stream", "run_id": "chat-3", "data": {"chunk": SimpleNamespace(content="done")}},
-                {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [], "output": "done"}}},
-            ]],
+            [
+                [
+                    {"event": "on_chat_model_stream", "run_id": "chat-3", "data": {"chunk": SimpleNamespace(content="done")}},
+                    {"event": "on_chain_end", "data": {"output": {"intermediate_steps": [], "output": "done"}}},
+                ]
+            ],
         )
 
         async def _build_runtime_context(
@@ -1106,7 +1221,9 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            mock.patch.object(rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))),
+            mock.patch.object(
+                rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
+            ),
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="multi")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(rag, "_build_request_runtime_context", new=mock.AsyncMock(side_effect=_build_runtime_context)),
@@ -1214,7 +1331,9 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag_components.userspace_service, "list_workspace_mounts", new=mock.AsyncMock(return_value=[])),
             mock.patch.object(rag_components.userspace_service, "list_mountable_sources", new=mock.AsyncMock(return_value=[])),
             mock.patch.object(rag_components.userspace_service, "get_workspace_object_storage_summary", new=mock.AsyncMock(return_value=None)),
-            mock.patch.object(rag_components.userspace_service, "list_workspace_preview_diagnostic_summary", new=mock.AsyncMock(side_effect=RuntimeError("skip"))),
+            mock.patch.object(
+                rag_components.userspace_service, "list_workspace_preview_diagnostic_summary", new=mock.AsyncMock(side_effect=RuntimeError("skip"))
+            ),
             mock.patch.object(rag_components.userspace_runtime_service, "get_devserver_status", new=mock.AsyncMock(side_effect=RuntimeError("skip"))),
             mock.patch.object(
                 rag,
@@ -1233,7 +1352,11 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_apply_mode_specific_tool_description_overrides", side_effect=lambda tools, **_kwargs: tools),
             mock.patch.object(rag, "_wrap_userspace_runtime_tools_for_execution_proofs", side_effect=lambda tools, *_args, **_kwargs: tools),
             mock.patch.object(rag, "_wrap_runtime_tools_with_request_state", side_effect=lambda tools, **_kwargs: (tools, request_state)),
-            mock.patch.object(rag_components.userspace_service, "get_workspace_entrypoint_status", return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd=".")),
+            mock.patch.object(
+                rag_components.userspace_service,
+                "get_workspace_entrypoint_status",
+                return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
+            ),
             mock.patch.object(rag_components.userspace_service, "is_default_static_entrypoint", return_value=False),
             mock.patch.object(rag, "_build_userspace_continuity_prompt", new=mock.AsyncMock(return_value="")),
         ):

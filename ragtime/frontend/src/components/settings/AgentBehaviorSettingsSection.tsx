@@ -17,14 +17,8 @@ export interface AgentBehaviorSettingsSectionProps {
 export function AgentBehaviorSettingsSection(
   props: AgentBehaviorSettingsSectionProps,
 ): JSX.Element {
-  const {
-    open,
-    onToggle,
-    formData,
-    setFormData,
-    handleSaveAgentBehavior,
-    agentBehaviorSaving,
-  } = props;
+  const { open, onToggle, formData, setFormData, handleSaveAgentBehavior, agentBehaviorSaving } =
+    props;
 
   const toolSkillsEnabled = formData.tool_skills_enabled !== false;
   const maxIterations = formData.max_iterations ?? 30;

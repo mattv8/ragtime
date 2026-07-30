@@ -307,10 +307,16 @@ _USERSPACE_PRIMITIVES_NAMED_GUIDANCE = "Use `discover_userspace_primitives` for 
 _USERSPACE_PRIMITIVES_GENERIC_GUIDANCE = "Use the available primitives-discovery guidance for compact primitive discovery."
 _USERSPACE_TERMINAL_HEADER = "#### Terminal tool (`run_terminal_command`)"
 _USERSPACE_TERMINAL_HEADER_GENERIC = "#### Terminal tool"
-_USERSPACE_TERMINAL_NAMED_GUIDANCE = "- Use `run_terminal_command` for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging."
-_USERSPACE_TERMINAL_GENERIC_GUIDANCE = "- Use terminal access for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging."
+_USERSPACE_TERMINAL_NAMED_GUIDANCE = (
+    "- Use `run_terminal_command` for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging."
+)
+_USERSPACE_TERMINAL_GENERIC_GUIDANCE = (
+    "- Use terminal access for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging."
+)
 _USERSPACE_ENV_VAR_NAMED_GUIDANCE = "- If required keys are missing, call `upsert_userspace_env_var` with `value` omitted to create placeholders, then direct the user to fill them in via the Environment Variables dialog."
-_USERSPACE_ENV_VAR_GENERIC_GUIDANCE = "- If required keys are missing, create placeholder env vars, then direct the user to fill them in via the Environment Variables dialog."
+_USERSPACE_ENV_VAR_GENERIC_GUIDANCE = (
+    "- If required keys are missing, create placeholder env vars, then direct the user to fill them in via the Environment Variables dialog."
+)
 _USERSPACE_DIAGNOSTICS_NAMED_GUIDANCE = "Use the userspace_diagnostics tool for full execution times and errors."
 _USERSPACE_DIAGNOSTICS_GENERIC_GUIDANCE = "Use available diagnostics tooling for full execution times and errors."
 
@@ -332,9 +338,7 @@ def _build_userspace_mode_prompt_template(available_tool_names: set[str] | None)
     )
     prompt_template = prompt_template.replace(
         _USERSPACE_TERMINAL_HEADER,
-        _USERSPACE_TERMINAL_HEADER
-        if _userspace_tool_name_visible(available_tool_names, "run_terminal_command")
-        else _USERSPACE_TERMINAL_HEADER_GENERIC,
+        _USERSPACE_TERMINAL_HEADER if _userspace_tool_name_visible(available_tool_names, "run_terminal_command") else _USERSPACE_TERMINAL_HEADER_GENERIC,
     )
     prompt_template = prompt_template.replace(
         _USERSPACE_TERMINAL_NAMED_GUIDANCE,
