@@ -136,7 +136,8 @@ class RuntimeBridgeContractIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(userspace_service, "_mark_workspace_code_index_dirty", new=mock.AsyncMock()),
                 mock.patch.object(userspace_service, "enforce_workspace_role", new=mock.AsyncMock()),
                 mock.patch.object(userspace_service, "get_workspace", new=mock.AsyncMock(return_value=self._workspace())),
-                mock.patch("ragtime.rag.components.repository.list_healthy_enabled_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
+                mock.patch("ragtime.rag.components.repository.list_healthy_enabled_tool_ids", new=mock.AsyncMock(return_value=[])),
+                mock.patch("ragtime.rag.components.repository.list_enabled_tool_ids", new=mock.AsyncMock(return_value=["comp-1"])),
                 mock.patch("ragtime.rag.components.repository.get_tool_ids_for_groups", new=mock.AsyncMock(return_value=[])),
             )
             for patcher in base_patchers:

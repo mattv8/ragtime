@@ -9,6 +9,7 @@ from unittest import mock
 
 from fastapi import HTTPException
 
+from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.userspace.agent_briefs import (
     BuildBriefInput,
     compute_brief_payload_hash,
@@ -256,6 +257,29 @@ class StartBuildTaskTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("tool-2", str(ctx.exception.detail))
+
+    async def test_data_component_ids_accept_enabled_unhealthy_custom_tools(self) -> None:
+        from ragtime.userspace.service import userspace_service
+
+        workspace = SimpleNamespace(
+            id="ws-1",
+            tool_selection_mode="custom",
+            selected_tool_ids=["tool-3"],
+            selected_tool_group_ids=[],
+        )
+
+        with (
+            mock.patch.object(
+                self.module,
+                "resolve_effective_tool_ids",
+                mock.AsyncMock(side_effect=resolve_effective_tool_ids),
+            ),
+            mock.patch.object(self.module.repository, "list_healthy_enabled_tool_ids", mock.AsyncMock(return_value=["tool-1"])),
+            mock.patch.object(self.module.repository, "list_enabled_tool_ids", mock.AsyncMock(return_value=["tool-1", "tool-3"])),
+            mock.patch.object(self.module.repository, "get_tool_ids_for_groups", mock.AsyncMock(return_value=[])),
+            mock.patch.object(userspace_service, "filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-3"])),
+        ):
+            await self.service._validate_brief(workspace, _brief(data_component_ids=["tool-3"]), SimpleNamespace(id="user-1", role="user"))
 
     async def test_builder_start_failure_releases_idempotency_claim(self) -> None:
         from ragtime.indexer import routes as indexer_routes

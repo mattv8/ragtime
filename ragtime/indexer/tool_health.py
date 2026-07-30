@@ -138,6 +138,18 @@ class ToolHealthMonitor:
             return status.error or "Heartbeat failed"
         return None
 
+    def get_known_unavailable_reason(self, tool_id: str | None) -> str | None:
+        if not tool_id:
+            return None
+        status = self.get_status(tool_id)
+        if status is None:
+            return None
+        if not self.is_status_fresh(status):
+            return "Heartbeat stale"
+        if not status.alive:
+            return status.error or "Heartbeat failed"
+        return None
+
     def filter_healthy_tool_config_dicts(self, tool_configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [config for config in tool_configs if self.is_tool_healthy(str(config.get("id") or ""))]
 

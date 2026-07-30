@@ -114,6 +114,7 @@ from ragtime.indexer.models import (
     UpdateConversationShareAccessRequest,
 )
 from ragtime.indexer.repository import _normalize_loaded_tool_skill_ids, _resolve_default_conversation_model, repository
+from ragtime.indexer.tool_health import tool_health_monitor
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
@@ -405,6 +406,33 @@ def _classify_generic_tool_output_error(output: Any) -> str | None:
     if error_message:
         return error_message
     return f"Tool execution {status.replace('_', ' ')}."
+
+
+def _format_component_execution_target(
+    component_id: str,
+    resolved_config: _ResolvedComponentExecutionConfig | None,
+) -> str:
+    resolved_id = resolved_config.resolved_id if resolved_config is not None else component_id
+    tool_name = str(getattr(getattr(resolved_config, "tool_config", None), "name", "") or "").strip()
+    if tool_name and tool_name != resolved_id:
+        return f"{tool_name} ({resolved_id})"
+    return resolved_id
+
+
+def _annotate_component_execution_error(
+    *,
+    component_id: str,
+    resolved_config: _ResolvedComponentExecutionConfig | None,
+    unavailable_reason: str | None,
+    actual_error: str,
+) -> str:
+    target = _format_component_execution_target(component_id, resolved_config)
+    message = str(actual_error or "").strip() or "Unknown execution error."
+    if not unavailable_reason:
+        return message
+    if message.startswith(f"Tool {target} "):
+        return message
+    return f"Tool {target} failed while marked unavailable ({unavailable_reason}). Execution error: {message}"
 
 
 class _LiveDataExecutionWarningRecord:
@@ -21493,15 +21521,14 @@ class UserSpaceService:
         http_timeout_seconds = await get_http_proxy_safe_timeout_seconds()
         selected_tool_ids = await self._resolve_effective_workspace_tool_ids(workspace)
         owner_access_levels = await self._resolve_workspace_owner_tool_access(workspace, selected_tool_ids) if allow_workspace_write else None
-        resolved_config: _ResolvedComponentExecutionConfig | None = None
-        if allow_workspace_write:
-            resolved_config = await self._resolve_component_execution_config_for_tool_ids(
-                selected_tool_ids,
-                request.component_id,
-                workspace_tool_options=getattr(workspace, "tool_options", {}),
-                allow_runtime_bridge_tools=True,
-                owner_access_levels=owner_access_levels,
-            )
+        resolved_config = await self._resolve_component_execution_config_for_tool_ids(
+            selected_tool_ids,
+            request.component_id,
+            workspace_tool_options=getattr(workspace, "tool_options", {}),
+            allow_runtime_bridge_tools=allow_workspace_write,
+            owner_access_levels=owner_access_levels,
+        )
+        unavailable_reason = tool_health_monitor.get_known_unavailable_reason(resolved_config.resolved_id)
         started_at = _time.monotonic()
         try:
             raw_result = await asyncio.wait_for(
@@ -21530,7 +21557,12 @@ class UserSpaceService:
             # render the live-data timeout banner instead of a 524.
             timeout_seconds = max(1, int(http_timeout_seconds))
             admin_action = self._component_timeout_admin_action()
-            error_message = f"Live data query exceeded the request timeout of {timeout_seconds}s before a response could be returned. {admin_action}"
+            error_message = _annotate_component_execution_error(
+                component_id=request.component_id,
+                resolved_config=resolved_config,
+                unavailable_reason=unavailable_reason,
+                actual_error=(f"Live data query exceeded the request timeout of {timeout_seconds}s before a response could be returned. {admin_action}"),
+            )
             logger.warning(
                 "%s for %s: HTTP execute-component timed out after %ss",
                 error_log_prefix,
@@ -21568,12 +21600,55 @@ class UserSpaceService:
             return _ExecuteComponentExecutionResult(
                 response=response,
                 proof_input=self._extract_query_text(request.request),
-                access_mode=resolved_config.access_mode if resolved_config else "read_only",
-                tool_type=resolved_config.tool_type if resolved_config else "unknown",
+                access_mode=resolved_config.access_mode,
+                tool_type=resolved_config.tool_type,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error(
+                "%s for %s: %s",
+                error_log_prefix,
+                request.component_id,
+                exc,
+            )
+            result = _ExecuteComponentExecutionResult(
+                response=ExecuteComponentResponse(
+                    component_id=request.component_id,
+                    rows=[],
+                    columns=[],
+                    row_count=0,
+                    error=_annotate_component_execution_error(
+                        component_id=request.component_id,
+                        resolved_config=resolved_config,
+                        unavailable_reason=unavailable_reason,
+                        actual_error=str(exc),
+                    ),
+                ),
+                proof_input=self._extract_query_text(request.request),
+                access_mode=resolved_config.access_mode,
+                tool_type=resolved_config.tool_type,
             )
 
         # Mint server-side execution proof for live-data contract verification.
         response = result.response
+        if response.error:
+            response = response.model_copy(
+                update={
+                    "error": _annotate_component_execution_error(
+                        component_id=request.component_id,
+                        resolved_config=resolved_config,
+                        unavailable_reason=unavailable_reason,
+                        actual_error=response.error,
+                    )
+                }
+            )
+            result = _ExecuteComponentExecutionResult(
+                response=response,
+                proof_input=result.proof_input,
+                access_mode=result.access_mode,
+                tool_type=result.tool_type,
+            )
         if not response.error:
             self.record_execution_proof(
                 workspace.id,
@@ -21752,6 +21827,7 @@ class UserSpaceService:
             selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
             selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
             list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+            list_enabled_tool_ids=repository.list_enabled_tool_ids,
             get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
         )
         return await self.filter_tool_ids_for_workspace_owner(workspace, selected_tool_ids)

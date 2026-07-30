@@ -55,3 +55,39 @@ class HttpApiAppSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connection_config["token_request_fields"][1]["value"], original_client_secret)
         self.assertFalse(connection_config["token_request_fields"][0]["value"].startswith(ENCRYPTED_PREFIX))
         self.assertFalse(connection_config["token_request_fields"][1]["value"].startswith(ENCRYPTED_PREFIX))
+
+    async def test_get_enabled_tool_configs_does_not_apply_health_filter(self) -> None:
+        from ragtime.core.app_settings import SettingsCache
+
+        prisma_config = SimpleNamespace(
+            id="tool-1",
+            name="Dockerhost 1",
+            toolType="ssh_shell",
+            description="Production Docker host",
+            connectionConfig={},
+            maxResults=5,
+            timeoutMaxSeconds=300,
+            allowWrite=False,
+        )
+        fake_db = SimpleNamespace(toolconfig=SimpleNamespace(find_many=mock.AsyncMock(return_value=[prisma_config])))
+        cache = SettingsCache()
+
+        with (
+            mock.patch("ragtime.core.app_settings.get_db", mock.AsyncMock(return_value=fake_db)),
+            mock.patch(
+                "ragtime.indexer.tool_health.tool_health_monitor.filter_healthy_tool_config_dicts",
+                return_value=[],
+            ),
+        ):
+            configs = await cache.get_enabled_tool_configs()
+            cached_configs = await cache.get_enabled_tool_configs()
+
+        self.assertEqual([config["id"] for config in configs], ["tool-1"])
+        self.assertIs(configs, cached_configs)
+        fake_db.toolconfig.find_many.assert_awaited_once()
+
+        cache._tool_configs = []  # pyright: ignore[reportPrivateUsage]
+        cache.invalidate()
+
+        self.assertIsNone(cache._enabled_tool_configs)  # pyright: ignore[reportPrivateUsage]
+        self.assertIsNone(cache._tool_configs)  # pyright: ignore[reportPrivateUsage]

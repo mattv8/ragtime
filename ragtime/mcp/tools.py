@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from ragtime.config.settings import settings
-from ragtime.core.app_settings import get_app_settings, get_tool_configs
+from ragtime.core.app_settings import get_app_settings, get_enabled_tool_configs, get_tool_configs
 from ragtime.core.logging import get_logger
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
 from ragtime.http_api.models import HttpApiConnectionConfig
 from ragtime.indexer.schema_service import search_schema_index
-from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds
+from ragtime.indexer.tool_health import get_heartbeat_timeout_seconds, tool_health_monitor
 from ragtime.rag import rag
 from ragtime.rag.components import (
     KNOWLEDGE_SEARCH_TOOL_ID,
@@ -552,7 +552,7 @@ class MCPToolAdapter:
             return await self._execute_with_timeout(tool_name, self._tool_executors[tool_name], arguments)
 
         # Otherwise, we need to find and build the tool
-        tool_configs = await get_tool_configs()
+        tool_configs = await self._get_configs_for_name_resolution()
 
         # Parse tool name to find matching config
         # Tool names follow patterns like: query_<name>, odoo_<name>, ssh_<name>, search_<name>
@@ -619,13 +619,36 @@ class MCPToolAdapter:
         return f"Error: Unknown tool '{tool_name}'"
 
     async def _execute_tool_definition(self, tool_def: MCPToolDefinition, arguments: dict[str, Any]) -> str:
-        return await self._execute_with_timeout(
-            tool_def.name,
-            tool_def.execute_fn,
-            arguments,
-            timeout_max_seconds=tool_def.tool_config.get("timeout_max_seconds"),
-            input_schema=tool_def.input_schema,
-        )
+        unavailable_reason = self._get_tool_unavailable_reason(tool_def.tool_config)
+        try:
+            result = await self._execute_with_timeout(
+                tool_def.name,
+                tool_def.execute_fn,
+                arguments,
+                timeout_max_seconds=tool_def.tool_config.get("timeout_max_seconds"),
+                input_schema=tool_def.input_schema,
+            )
+        except Exception as exc:
+            logger.exception("MCP tool '%s' execution failed", tool_def.name)
+            return self._annotate_tool_failure(tool_def, f"Error: {exc}", unavailable_reason)
+
+        if isinstance(result, str) and result.startswith("Error:"):
+            return self._annotate_tool_failure(tool_def, result, unavailable_reason)
+        return result
+
+    @staticmethod
+    def _get_tool_unavailable_reason(tool_config: dict[str, Any]) -> str | None:
+        tool_id = str(tool_config.get("id") or "")
+        if not tool_id:
+            return None
+        return tool_health_monitor.get_known_unavailable_reason(tool_id)
+
+    @staticmethod
+    def _annotate_tool_failure(tool_def: MCPToolDefinition, failure: str, unavailable_reason: str | None) -> str:
+        if not unavailable_reason:
+            return failure
+        display_name = str(tool_def.tool_config.get("name") or tool_def.name)
+        return f"Error: Tool '{display_name}' ({tool_def.name}) failed; latest heartbeat is unavailable: {unavailable_reason}. Actual failure: {failure}"
 
     async def _execute_with_timeout(
         self,
@@ -672,7 +695,7 @@ class MCPToolAdapter:
         This intentionally avoids get_available_tools(): call-time authorization
         should not rebuild tools or run heartbeat checks before every tool call.
         """
-        tool_configs = await get_tool_configs()
+        tool_configs = await self._get_configs_for_name_resolution()
 
         for config in tool_configs:
             tool_id = str(config.get("id") or "")
@@ -710,6 +733,10 @@ class MCPToolAdapter:
             return True
 
         return False
+
+    @staticmethod
+    async def _get_configs_for_name_resolution() -> list[dict]:
+        return await get_enabled_tool_configs()
 
     async def _check_heartbeats(self, tool_configs: list[dict]) -> dict[str, ToolHealthStatus]:
         """

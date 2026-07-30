@@ -47,7 +47,7 @@ class _ExecuteComponentRecordingService(UserSpaceService):
             resolved_id="tool-1",
             tool_type="postgres",
             conn_config={},
-            tool_config=SimpleNamespace(max_results=100, timeout_max_seconds=300),
+            tool_config=SimpleNamespace(name="Sales DB", max_results=100, timeout_max_seconds=300),
             effective_allow_write=False,
             access_mode="read_only",
         )
@@ -104,6 +104,24 @@ class _CaptureSelectedToolsService(_ImmediateExecuteService):
         return await super()._execute_component_for_selected_tool_ids(**kwargs)
 
 
+class _ErrorResponseExecuteService(_ExecuteComponentRecordingService):
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self._error = error
+
+    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
+        return (
+            ExecuteComponentResponse(
+                component_id=str(kwargs.get("component_id") or "tool-1"),
+                rows=[],
+                columns=[],
+                row_count=0,
+                error=self._error,
+            ),
+            "select 1",
+        )
+
+
 class _HangingSubprocess:
     def __init__(self) -> None:
         self.returncode: int | None = None
@@ -137,6 +155,11 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
                 "list_healthy_enabled_tool_ids",
                 mock.AsyncMock(return_value=["tool-1"]),
             ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
         ):
             response = await service._execute_component_for_workspace(
                 _make_workspace(),
@@ -165,7 +188,7 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         self.assertEqual(timeout_event.row_count, 0)
         self.assertIn("request timeout", timeout_event.error or "")
 
-    async def test_execute_component_passes_successful_response_through(self) -> None:
+    async def test_execute_component_passes_successful_selected_unhealthy_response_through(self) -> None:
         ok_response = ExecuteComponentResponse(
             component_id="tool-1",
             rows=[{"id": 1}],
@@ -175,10 +198,22 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         service = _ImmediateExecuteService(ok_response)
         request = ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"})
 
-        with mock.patch.object(
-            userspace_service_module.repository,
-            "list_healthy_enabled_tool_ids",
-            mock.AsyncMock(return_value=["tool-1"]),
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=[]),
+            ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
+            mock.patch.object(
+                userspace_service_module,
+                "tool_health_monitor",
+                SimpleNamespace(get_known_unavailable_reason=mock.Mock(return_value="Heartbeat stale")),
+            ),
         ):
             response = await service._execute_component_for_workspace(
                 _make_workspace(),
@@ -228,7 +263,7 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         self.assertIsNone(response.error)
         self.assertEqual(service.selected_tool_ids, ["tool-1", "tool-2"])
 
-    async def test_execute_component_filters_custom_workspace_tools_to_healthy_enabled(self) -> None:
+    async def test_execute_component_custom_selection_keeps_enabled_unhealthy_tools(self) -> None:
         ok_response = ExecuteComponentResponse(
             component_id="tool-3",
             rows=[{"id": 1}],
@@ -252,6 +287,11 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
                 "list_healthy_enabled_tool_ids",
                 mock.AsyncMock(return_value=["tool-2", "tool-3"]),
             ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1", "tool-2", "tool-3"]),
+            ),
         ):
             response = await service._execute_component_for_workspace(
                 workspace,
@@ -260,7 +300,41 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
             )
 
         self.assertIsNone(response.error)
-        self.assertEqual(service.selected_tool_ids, ["tool-2", "tool-3"])
+        self.assertEqual(service.selected_tool_ids, ["tool-1", "tool-2", "tool-3"])
+
+    async def test_execute_component_failed_selected_unhealthy_execution_includes_heartbeat_context(self) -> None:
+        service = _ErrorResponseExecuteService("socket timeout")
+        workspace = _make_workspace()
+        workspace.tool_selection_mode = "custom"
+        workspace.selected_tool_ids = ["tool-1"]
+
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=[]),
+            ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
+            mock.patch.object(
+                userspace_service_module,
+                "tool_health_monitor",
+                SimpleNamespace(get_known_unavailable_reason=mock.Mock(return_value="Heartbeat stale")),
+            ),
+        ):
+            response = await service._execute_component_for_workspace(
+                workspace,
+                ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"}),
+                error_log_prefix="Component execution failed",
+            )
+
+        self.assertEqual(response.row_count, 0)
+        self.assertIn("Sales DB (tool-1)", response.error or "")
+        self.assertIn("Heartbeat stale", response.error or "")
+        self.assertIn("socket timeout", response.error or "")
 
     async def test_postgres_subprocess_is_killed_when_outer_request_is_cancelled(self) -> None:
         service = UserSpaceService()
@@ -302,10 +376,17 @@ class UserSpaceExecuteComponentHttpTimeoutTests(unittest.IsolatedAsyncioTestCase
         )
         service = _ImmediateExecuteService(ok_response)
 
-        with mock.patch.object(
-            userspace_service_module.repository,
-            "list_healthy_enabled_tool_ids",
-            mock.AsyncMock(return_value=["tool-1"]),
+        with (
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_healthy_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
+            mock.patch.object(
+                userspace_service_module.repository,
+                "list_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-1"]),
+            ),
         ):
             response = await service.execute_component_from_authorized_shared_preview(
                 "workspace-1",

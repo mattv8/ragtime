@@ -16,6 +16,7 @@ from ragtime.indexer.routes import (
     get_conversation_tools,
     update_conversation_tools,
 )
+from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.rag import components as rag_components
 
 
@@ -632,8 +633,8 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
     async def test_userspace_runtime_context_filters_owner_denied_tool_names_before_prompt_materialization(self) -> None:
         rag = rag_components.RAGComponents.__new__(rag_components.RAGComponents)
         rag._tool_configs = [
-            {"id": "tool-1", "name": "Allowed Tool", "tool_type": "postgres"},
-            {"id": "tool-2", "name": "Denied Tool", "tool_type": "postgres"},
+            {"id": "tool-1", "name": "Healthy Tool", "tool_type": "postgres"},
+            {"id": "tool-3", "name": "Flapping Tool", "tool_type": "postgres"},
         ]
         rag._app_settings = {}
         rag._index_metadata = []
@@ -643,30 +644,74 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
             id="workspace-1",
             owner_user_id="owner-1",
             tool_selection_mode="custom",
-            selected_tool_ids=["tool-1", "tool-2"],
+            selected_tool_ids=["tool-3"],
             selected_tool_group_ids=[],
             sqlite_persistence_mode="exclude",
         )
-        runtime_tools = [SimpleNamespace(name="query_allowed_tool"), SimpleNamespace(name="query_denied_tool")]
+        runtime_tools = [SimpleNamespace(name="query_flapping_tool")]
 
         with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(rag, "_apply_conversation_tool_overrides", mock.AsyncMock(return_value=list(runtime_tools))))
-            stack.enter_context(mock.patch("ragtime.rag.components.userspace_service.get_workspace", mock.AsyncMock(return_value=workspace)))
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_apply_conversation_tool_overrides",
+                    mock.AsyncMock(return_value=list(runtime_tools)),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.get_workspace",
+                    mock.AsyncMock(return_value=workspace),
+                )
+            )
             stack.enter_context(
                 mock.patch(
                     "ragtime.rag.components.resolve_effective_tool_ids",
-                    mock.AsyncMock(return_value=["tool-1", "tool-2"]),
+                    mock.AsyncMock(side_effect=resolve_effective_tool_ids),
                 )
             )
             filter_owner = stack.enter_context(
                 mock.patch(
                     "ragtime.rag.components.userspace_service.filter_tool_ids_for_workspace_owner",
+                    mock.AsyncMock(return_value=["tool-3"]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.repository.list_healthy_enabled_tool_ids",
                     mock.AsyncMock(return_value=["tool-1"]),
                 )
             )
-            stack.enter_context(mock.patch("ragtime.rag.components.userspace_service.list_workspace_env_var_summaries", mock.AsyncMock(return_value=[])))
-            stack.enter_context(mock.patch("ragtime.rag.components.userspace_service.list_workspace_mounts", mock.AsyncMock(return_value=[])))
-            stack.enter_context(mock.patch("ragtime.rag.components.userspace_service.list_mountable_sources", mock.AsyncMock(return_value=[])))
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.repository.list_enabled_tool_ids",
+                    mock.AsyncMock(return_value=["tool-1", "tool-3"]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.repository.get_tool_ids_for_groups",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_workspace_env_var_summaries",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_workspace_mounts",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.userspace_service.list_mountable_sources",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
             stack.enter_context(
                 mock.patch(
                     "ragtime.rag.components.userspace_service.get_workspace_object_storage_summary",
@@ -685,20 +730,59 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
                     mock.AsyncMock(return_value=None),
                 )
             )
-            stack.enter_context(mock.patch.object(rag, "_create_userspace_file_tools", mock.AsyncMock(return_value=[])))
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_create_userspace_file_tools",
+                    mock.AsyncMock(return_value=[]),
+                )
+            )
             stack.enter_context(mock.patch.object(rag, "_create_spawn_subagents_tool", mock.AsyncMock(return_value=None)))
-            stack.enter_context(mock.patch.object(rag, "_apply_mode_specific_tool_description_overrides", side_effect=lambda tools, **_: tools))
-            stack.enter_context(mock.patch.object(rag, "_wrap_userspace_runtime_tools_for_execution_proofs", side_effect=lambda tools, *_: tools))
-            stack.enter_context(mock.patch.object(rag, "_wrap_runtime_tools_with_request_state", side_effect=lambda tools, **_: (tools, {})))
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_apply_mode_specific_tool_description_overrides",
+                    side_effect=lambda tools, **_: tools,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_wrap_userspace_runtime_tools_for_execution_proofs",
+                    side_effect=lambda tools, *_: tools,
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    rag,
+                    "_wrap_runtime_tools_with_request_state",
+                    side_effect=lambda tools, **_: (tools, {}),
+                )
+            )
             stack.enter_context(mock.patch.object(rag, "_build_userspace_continuity_prompt", mock.AsyncMock(return_value="")))
             stack.enter_context(mock.patch.object(rag, "_build_userspace_env_var_turn_hint", return_value=""))
             stack.enter_context(mock.patch.object(rag, "_build_userspace_runtime_status_turn_hint", return_value=""))
             stack.enter_context(mock.patch.object(rag, "_build_userspace_env_var_prompt_fragment", return_value=""))
             stack.enter_context(mock.patch.object(rag, "_build_userspace_mount_prompt_fragment", return_value=""))
             stack.enter_context(mock.patch.object(rag, "_build_userspace_object_storage_prompt_fragment", return_value=""))
-            stack.enter_context(mock.patch("ragtime.rag.components.build_userspace_mode_prompt_addition", return_value=""))
-            stack.enter_context(mock.patch("ragtime.rag.components.build_userspace_entrypoint_nudge", return_value=""))
-            stack.enter_context(mock.patch("ragtime.rag.components.build_userspace_diagnostics_turn_reminder_line", return_value=""))
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.build_userspace_mode_prompt_addition",
+                    return_value="",
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.build_userspace_entrypoint_nudge",
+                    return_value="",
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "ragtime.rag.components.build_userspace_diagnostics_turn_reminder_line",
+                    return_value="",
+                )
+            )
             stack.enter_context(
                 mock.patch.object(
                     rag_components.userspace_service,
@@ -706,7 +790,13 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
                     return_value=SimpleNamespace(state="valid", framework="react", command="npm run dev", cwd="."),
                 )
             )
-            stack.enter_context(mock.patch.object(rag_components.userspace_service, "is_default_static_entrypoint", return_value=False))
+            stack.enter_context(
+                mock.patch.object(
+                    rag_components.userspace_service,
+                    "is_default_static_entrypoint",
+                    return_value=False,
+                )
+            )
             request_context = await rag._build_request_runtime_context(
                 is_ui=False,
                 executor=cast(Any, SimpleNamespace(tools=list(runtime_tools))),
@@ -722,16 +812,16 @@ class ConversationToolPromptAclTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        filter_owner.assert_awaited_once_with(workspace, ["tool-1", "tool-2"])
-        self.assertEqual(request_context["allowed_tool_config_ids"], ["tool-1"])
+        filter_owner.assert_awaited_once_with(workspace, ["tool-3"])
+        self.assertEqual(request_context["allowed_tool_config_ids"], ["tool-3"])
         prompt = rag._build_request_system_prompt(
             is_ui=False,
             mode="userspace",
             allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
             runtime_tools=[],
         )
-        self.assertIn("Allowed Tool", prompt)
-        self.assertNotIn("Denied Tool", prompt)
+        self.assertIn("Flapping Tool", prompt)
+        self.assertNotIn("Healthy Tool", prompt)
 
 
 if __name__ == "__main__":

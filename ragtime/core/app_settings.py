@@ -239,6 +239,7 @@ class SettingsCache:
     _instance: Optional["SettingsCache"] = None
     _settings: Optional[dict] = None
     _tool_configs: Optional[List[dict]] = None
+    _enabled_tool_configs: Optional[List[dict]] = None
 
     @classmethod
     def get_instance(cls) -> "SettingsCache":
@@ -250,6 +251,30 @@ class SettingsCache:
         """Clear the cache to force a refresh."""
         self._settings = None
         self._tool_configs = None
+        self._enabled_tool_configs = None
+
+    async def get_enabled_tool_configs(self) -> List[dict]:
+        """Get enabled tool configurations from database without health filtering."""
+        if self._enabled_tool_configs is not None:
+            return self._enabled_tool_configs
+
+        db = await get_db()
+        prisma_configs = await db.toolconfig.find_many(where={"enabled": True}, order={"createdAt": "desc"})
+
+        self._enabled_tool_configs = [
+            {
+                "id": cfg.id,
+                "name": cfg.name,
+                "tool_type": cfg.toolType,
+                "description": cfg.description,
+                "connection_config": _decrypt_tool_connection_config(cfg.toolType, dict(cfg.connectionConfig)),
+                "max_results": cfg.maxResults,
+                "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
+                "allow_write": cfg.allowWrite,
+            }
+            for cfg in prisma_configs
+        ]
+        return self._enabled_tool_configs
 
     async def get_settings(self) -> dict:
         """Get settings from cache or database."""
@@ -707,22 +732,7 @@ class SettingsCache:
             return self._tool_configs
 
         try:
-            db = await get_db()
-            prisma_configs = await db.toolconfig.find_many(where={"enabled": True}, order={"createdAt": "desc"})
-
-            enabled_tool_configs = [
-                {
-                    "id": cfg.id,
-                    "name": cfg.name,
-                    "tool_type": cfg.toolType,
-                    "description": cfg.description,
-                    "connection_config": _decrypt_tool_connection_config(cfg.toolType, dict(cfg.connectionConfig)),
-                    "max_results": cfg.maxResults,
-                    "timeout_max_seconds": getattr(cfg, "timeoutMaxSeconds", 300),
-                    "allow_write": cfg.allowWrite,
-                }
-                for cfg in prisma_configs
-            ]
+            enabled_tool_configs = await self.get_enabled_tool_configs()
             from ragtime.indexer.tool_health import tool_health_monitor
 
             self._tool_configs = tool_health_monitor.filter_healthy_tool_config_dicts(enabled_tool_configs)
@@ -766,6 +776,12 @@ async def get_tool_configs() -> List[dict]:
     """Get enabled tool configurations from database."""
     cache = SettingsCache.get_instance()
     return await cache.get_tool_configs()
+
+
+async def get_enabled_tool_configs() -> List[dict]:
+    """Get enabled tool configurations from database without health filtering."""
+    cache = SettingsCache.get_instance()
+    return await cache.get_enabled_tool_configs()
 
 
 def invalidate_settings_cache() -> None:

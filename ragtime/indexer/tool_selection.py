@@ -24,12 +24,12 @@ async def resolve_effective_tool_ids(
     selected_tool_ids: Sequence[str] | None,
     selected_tool_group_ids: Sequence[str] | None,
     list_healthy_enabled_tool_ids: Callable[[], Awaitable[list[str]]],
+    list_enabled_tool_ids: Callable[[], Awaitable[list[str]]] | None = None,
     get_tool_ids_for_groups: Callable[[list[str]], Awaitable[list[str]]],
 ) -> list[str]:
     mode = require_valid_tool_selection_mode(tool_selection_mode)
-    healthy_tool_ids = list(await list_healthy_enabled_tool_ids())
     if mode == "default_all":
-        return healthy_tool_ids
+        return list(await list_healthy_enabled_tool_ids())
 
     resolved_tool_ids: list[str] = []
     seen: set[str] = set()
@@ -48,5 +48,8 @@ async def resolve_effective_tool_ids(
         for tool_id in await get_tool_ids_for_groups(group_ids):
             add_tool_id(tool_id)
 
-    healthy_set = set(healthy_tool_ids)
-    return [tool_id for tool_id in resolved_tool_ids if tool_id in healthy_set]
+    if list_enabled_tool_ids is None:
+        allowed_tool_ids = set(await list_healthy_enabled_tool_ids())
+    else:
+        allowed_tool_ids = set(await list_enabled_tool_ids())
+    return [tool_id for tool_id in resolved_tool_ids if tool_id in allowed_tool_ids]

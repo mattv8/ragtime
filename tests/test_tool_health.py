@@ -61,6 +61,24 @@ class ToolHealthMonitorTests(unittest.TestCase):
         self.assertFalse(monitor.is_tool_healthy("tool-a"))
         self.assertEqual(monitor.get_unavailable_reason("tool-a"), "Connection refused")
 
+    def test_known_unavailable_reason_returns_none_without_status(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30)
+
+        self.assertIsNone(monitor.get_known_unavailable_reason("tool-a"))
+
+    def test_known_unavailable_reason_returns_reason_for_stale_or_dead_status(self) -> None:
+        monitor = ToolHealthMonitor(stale_after_seconds=30)
+        now = datetime.now(timezone.utc)
+        monitor._statuses = {
+            "offline": ToolHeartbeatStatus(tool_id="offline", alive=False, error="Connection refused", checked_at=now),
+            "stale": ToolHeartbeatStatus(tool_id="stale", alive=True, checked_at=now - timedelta(seconds=60)),
+            "healthy": ToolHeartbeatStatus(tool_id="healthy", alive=True, checked_at=now),
+        }
+
+        self.assertEqual(monitor.get_known_unavailable_reason("offline"), "Connection refused")
+        self.assertEqual(monitor.get_known_unavailable_reason("stale"), "Heartbeat stale")
+        self.assertIsNone(monitor.get_known_unavailable_reason("healthy"))
+
     def test_cold_start_seed_is_idempotent(self) -> None:
         monitor = ToolHealthMonitor(stale_after_seconds=30, cold_start_grace_seconds=600)
         now = datetime.now(timezone.utc)

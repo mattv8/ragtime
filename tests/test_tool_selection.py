@@ -29,7 +29,7 @@ class ResolveEffectiveToolIdsTests(unittest.IsolatedAsyncioTestCase):
         healthy_loader.assert_awaited_once_with()
         group_loader.assert_not_awaited()
 
-    async def test_custom_expands_groups_dedupes_in_stable_order_and_filters_unhealthy(self) -> None:
+    async def test_custom_without_enabled_callback_preserves_legacy_healthy_filtering(self) -> None:
         resolved = await resolve_effective_tool_ids(
             tool_selection_mode="custom",
             selected_tool_ids=["tool-3", "tool-1", "tool-3", ""],
@@ -39,6 +39,25 @@ class ResolveEffectiveToolIdsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(resolved, ["tool-1", "tool-2", "tool-4"])
+
+    async def test_custom_with_enabled_callback_preserves_unhealthy_enabled_tools_and_filters_disabled(self) -> None:
+        healthy_loader = mock.AsyncMock(return_value=["tool-1", "tool-2"])
+        enabled_loader = mock.AsyncMock(return_value=["tool-1", "tool-2", "tool-3", "tool-4"])
+        group_loader = mock.AsyncMock(return_value=["tool-4", "tool-2", "tool-disabled", "tool-4"])
+
+        resolved = await resolve_effective_tool_ids(
+            tool_selection_mode="custom",
+            selected_tool_ids=["tool-3", "tool-1", "tool-disabled", "tool-3", ""],
+            selected_tool_group_ids=["group-1"],
+            list_healthy_enabled_tool_ids=healthy_loader,
+            list_enabled_tool_ids=enabled_loader,
+            get_tool_ids_for_groups=group_loader,
+        )
+
+        self.assertEqual(resolved, ["tool-3", "tool-1", "tool-4", "tool-2"])
+        healthy_loader.assert_not_awaited()
+        enabled_loader.assert_awaited_once_with()
+        group_loader.assert_awaited_once_with(["group-1"])
 
     async def test_invalid_mode_raises_value_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "tool_selection_mode"):

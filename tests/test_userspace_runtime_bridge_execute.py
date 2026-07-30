@@ -246,6 +246,16 @@ class _RuntimeBridgeWorkspaceService(_RuntimeBridgeRecordingMixin, UserSpaceServ
         return {tool_id: "read_write" for tool_id in tool_config_ids}
 
 
+class _HttpExceptionExecuteService(_RuntimeBridgeWorkspaceService):
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__()
+        self._status_code = status_code
+        self._detail = detail
+
+    async def _execute_component_for_selected_tool_ids(self, **kwargs):  # type: ignore[no-untyped-def]
+        raise HTTPException(status_code=self._status_code, detail=self._detail)
+
+
 class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
     async def test_bridge_execute_delegates_to_workspace_path_and_records_proof(self) -> None:
         service = _RuntimeBridgeSuccessService()
@@ -783,6 +793,21 @@ class RuntimeBridgeExecuteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.error, "upstream failure")
         self.assertEqual(service.proofs_recorded, [])
         self.assertEqual(service.bridge_audit_calls[-1]["error"], "upstream failure")
+
+    async def test_runtime_bridge_execution_phase_http_exception_preserves_status_and_detail(self) -> None:
+        service = _HttpExceptionExecuteService(429, "Rate limit")
+        request = ExecuteComponentRequest(component_id="tool-1", request={"query": "select 1"})
+
+        with mock.patch.object(
+            userspace_service_module.repository,
+            "get_tool_config",
+            mock.AsyncMock(return_value=_make_tool_config()),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                await service.execute_component_from_runtime_bridge("workspace-1", request, session_id="sess-1")
+
+        self.assertEqual(ctx.exception.status_code, 429)
+        self.assertEqual(ctx.exception.detail, "Rate limit")
 
 
 if __name__ == "__main__":

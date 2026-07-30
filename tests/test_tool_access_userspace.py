@@ -189,18 +189,29 @@ class WorkspaceOwnerAclHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, [])
         filter_mock.assert_not_awaited()
 
-    async def test_resolve_effective_workspace_tool_ids_post_filters_owner_acl(self) -> None:
+    async def test_resolve_effective_workspace_tool_ids_supplies_enabled_and_healthy_callbacks_then_post_filters_owner_acl(self) -> None:
         service = UserSpaceService()
         workspace = _workspace()
+        resolver = mock.AsyncMock(return_value=["tool-1", "tool-2"])
+        enabled_loader = mock.AsyncMock(return_value=["tool-1", "tool-2", "tool-3"])
 
         with (
-            mock.patch("ragtime.userspace.service.resolve_effective_tool_ids", mock.AsyncMock(return_value=["tool-1", "tool-2"])),
+            mock.patch("ragtime.userspace.service.resolve_effective_tool_ids", resolver),
             mock.patch.object(service, "filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-2"])) as filter_mock,
+            mock.patch.object(userspace_routes.repository, "list_enabled_tool_ids", enabled_loader),
         ):
             result = await service._resolve_effective_workspace_tool_ids(workspace)
 
         self.assertEqual(result, ["tool-2"])
         filter_mock.assert_awaited_once_with(workspace, ["tool-1", "tool-2"])
+        resolver.assert_awaited_once()
+        resolver_kwargs = resolver.await_args.kwargs
+        self.assertIs(resolver_kwargs["list_healthy_enabled_tool_ids"].__self__, userspace_routes.repository)
+        self.assertIs(
+            resolver_kwargs["list_healthy_enabled_tool_ids"].__func__,
+            userspace_routes.repository.list_healthy_enabled_tool_ids.__func__,
+        )
+        self.assertIs(resolver_kwargs["list_enabled_tool_ids"], enabled_loader)
 
 
 class WorkspaceExecutionAclParityTests(unittest.IsolatedAsyncioTestCase):

@@ -103,6 +103,7 @@ class WorkspaceBuildTaskService:
                 selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
                 selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
                 list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                list_enabled_tool_ids=repository.list_enabled_tool_ids,
                 get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
             )
             selected = await userspace_service.filter_tool_ids_for_workspace_owner(workspace, selected)

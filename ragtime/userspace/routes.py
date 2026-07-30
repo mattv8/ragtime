@@ -329,7 +329,7 @@ async def _normalize_selected_tool_ids(
     if selected_tool_ids is None:
         return None
 
-    enabled_tool_ids = set(await repository.list_healthy_enabled_tool_ids())
+    enabled_tool_ids = set(await repository.list_enabled_tool_ids())
 
     normalized: list[str] = []
     seen: set[str] = set()

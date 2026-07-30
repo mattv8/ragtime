@@ -792,11 +792,12 @@ class WorkspaceToolOptionCreateTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkspaceToolOptionRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_route_normalizes_selected_tool_ids_and_passes_admin(self) -> None:
+    async def test_route_normalizes_selected_tool_ids_against_enabled_tools_and_passes_admin(self) -> None:
         request = UpdateWorkspaceRequest(
-            selected_tool_ids=["tool-write", "tool-disabled"],
+            selected_tool_ids=["tool-write", "tool-unhealthy", "tool-disabled", "tool-write"],
             tool_options={
                 "tool-write": WorkspaceToolOptionState(write_access_enabled=True),
+                "tool-unhealthy": WorkspaceToolOptionState(write_access_enabled=True),
                 "tool-disabled": WorkspaceToolOptionState(write_access_enabled=True),
             },
         )
@@ -814,8 +815,8 @@ class WorkspaceToolOptionRouteTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch(
-                "ragtime.userspace.routes.repository.list_healthy_enabled_tool_ids",
-                mock.AsyncMock(return_value=["tool-write"]),
+                "ragtime.userspace.routes.repository.list_enabled_tool_ids",
+                mock.AsyncMock(return_value=["tool-write", "tool-unhealthy"]),
             ),
             mock.patch(
                 "ragtime.userspace.routes.userspace_service.update_workspace",
@@ -825,7 +826,7 @@ class WorkspaceToolOptionRouteTests(unittest.IsolatedAsyncioTestCase):
             result = await update_workspace_route("ws-1", request, fake_user)
 
         self.assertEqual(result.tool_options, {"tool-write": WorkspaceToolOptionState(write_access_enabled=True)})
-        self.assertEqual(request.selected_tool_ids, ["tool-write"])
+        self.assertEqual(request.selected_tool_ids, ["tool-write", "tool-unhealthy"])
         await_args = update_workspace.await_args
         self.assertIsNotNone(await_args)
         assert await_args is not None

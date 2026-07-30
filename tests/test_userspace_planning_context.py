@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest import mock
 
+from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.rag.prompts import _WORKSPACE_CONTINUITY_EXISTING_RULES
 from ragtime.userspace.models import WorkspaceToolOptionState
 
@@ -211,6 +212,47 @@ class PlanningContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([tool["component_id"] for tool in context["selected_tools"]], ["tool-2"])
         self.assertFalse(context["selected_tools"][0]["server_write_enabled"])
+
+    async def test_context_keeps_enabled_unhealthy_custom_tools(self) -> None:
+        workspace = _fake_workspace()
+        workspace.selected_tool_ids = ["tool-3"]
+        tool_three = SimpleNamespace(
+            id="tool-3",
+            name="Flapping API",
+            tool_type=SimpleNamespace(value="http_api"),
+            description="API",
+            allow_write=False,
+            group_id=None,
+            group_name=None,
+            connection_config={"token": "SECRET"},
+        )
+
+        from ragtime.userspace.service import userspace_service
+
+        with (
+            mock.patch.object(userspace_service, "enforce_workspace_role", mock.AsyncMock(return_value=workspace)),
+            mock.patch.object(userspace_service, "list_workspace_files", mock.AsyncMock(return_value=_fake_files())),
+            mock.patch.object(userspace_service, "get_workspace_entrypoint_status", mock.Mock(return_value=_fake_entrypoint())),
+            mock.patch.object(userspace_service, "is_default_static_entrypoint", mock.Mock(return_value=False)),
+            mock.patch.object(userspace_service, "list_snapshots", mock.AsyncMock(return_value=[])),
+            mock.patch.object(self.module, "resolve_effective_tool_ids", mock.AsyncMock(side_effect=resolve_effective_tool_ids)),
+            mock.patch.object(self.module.repository, "list_healthy_enabled_tool_ids", mock.AsyncMock(return_value=["tool-1"])),
+            mock.patch.object(self.module.repository, "list_enabled_tool_ids", mock.AsyncMock(return_value=["tool-1", "tool-3"])),
+            mock.patch.object(self.module.repository, "get_tool_ids_for_groups", mock.AsyncMock(return_value=[])),
+            mock.patch.object(self.module.repository, "list_tool_configs", mock.AsyncMock(return_value=[tool_three])),
+            mock.patch.object(userspace_service, "filter_tool_ids_for_workspace_owner", mock.AsyncMock(return_value=["tool-3"])),
+            mock.patch.object(userspace_service, "_resolve_workspace_owner_tool_access", mock.AsyncMock(return_value={"tool-3": "read"})),
+            mock.patch.object(
+                self.module,
+                "get_db",
+                mock.AsyncMock(
+                    return_value=SimpleNamespace(user=SimpleNamespace(find_unique=mock.AsyncMock(return_value=SimpleNamespace(id="user-1", role="user"))))
+                ),
+            ),
+        ):
+            context = await self.service.get_workspace_context("ws-1", "user-1")
+
+        self.assertEqual([tool["component_id"] for tool in context["selected_tools"]], ["tool-3"])
 
 
 class PlanningFileReadTests(unittest.IsolatedAsyncioTestCase):

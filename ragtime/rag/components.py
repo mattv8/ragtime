@@ -10951,6 +10951,7 @@ class RAGComponents:
                 selected_tool_ids=getattr(ws, "selected_tool_ids", []),
                 selected_tool_group_ids=getattr(ws, "selected_tool_group_ids", []),
                 list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                list_enabled_tool_ids=repository.list_enabled_tool_ids,
                 get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
             )
             requires_contract = bool(selected_tool_ids) and is_dashboard_entry
@@ -11725,6 +11726,7 @@ class RAGComponents:
                         selected_tool_ids=getattr(patch_ws, "selected_tool_ids", []),
                         selected_tool_group_ids=getattr(patch_ws, "selected_tool_group_ids", []),
                         list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                        list_enabled_tool_ids=repository.list_enabled_tool_ids,
                         get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
                     )
                     if bool(patch_workspace_tool_ids):
@@ -12829,6 +12831,7 @@ class RAGComponents:
                         selected_tool_ids=getattr(ws, "selected_tool_ids", []),
                         selected_tool_group_ids=getattr(ws, "selected_tool_group_ids", []),
                         list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                        list_enabled_tool_ids=repository.list_enabled_tool_ids,
                         get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
                     )
                 )
@@ -14897,6 +14900,7 @@ class RAGComponents:
                 selected_tool_ids=getattr(workspace, "selected_tool_ids", []),
                 selected_tool_group_ids=getattr(workspace, "selected_tool_group_ids", []),
                 list_healthy_enabled_tool_ids=repository.list_healthy_enabled_tool_ids,
+                list_enabled_tool_ids=repository.list_enabled_tool_ids,
                 get_tool_ids_for_groups=repository.get_tool_ids_for_groups,
             )
             try:

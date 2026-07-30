@@ -95,6 +95,7 @@ class HttpApiMcpToolTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[config])) as get_tool_configs,
+            mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=[config])) as get_enabled_tool_configs,
             mock.patch.object(adapter, "_check_heartbeats", mock.AsyncMock(return_value={"tool-http-1": mock.Mock(alive=True)})),
             mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=request_def)),
             mock.patch.object(adapter, "_create_http_api_catalog_search_tool_definition", mock.AsyncMock(return_value=catalog_def)) as create_catalog_def,
@@ -108,8 +109,74 @@ class HttpApiMcpToolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("search_customer_api_api", [tool.name for tool in listed])
         self.assertEqual(result, "catalog-ok")
-        get_tool_configs.assert_awaited()
+        get_tool_configs.assert_awaited_once_with()
+        get_enabled_tool_configs.assert_awaited_once_with()
         create_catalog_def.assert_awaited_with(config)
+
+    async def test_execute_tool_cold_path_annotates_unhealthy_error_result(self) -> None:
+        adapter = MCPToolAdapter()
+        config = self._config()
+        request_def = MCPToolDefinition(
+            name="request_customer_api",
+            description="Request API",
+            input_schema={"properties": {}},
+            tool_config=config,
+            execute_fn=mock.AsyncMock(return_value="Error: upstream 503"),
+        )
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=[config])),
+            mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=request_def)),
+            mock.patch(
+                "ragtime.indexer.tool_health.tool_health_monitor.get_known_unavailable_reason",
+                return_value="Connection refused",
+            ) as get_unavailable_reason,
+        ):
+            result = await adapter.execute_tool("request_customer_api", {"method": "GET", "path": "/customers"})
+
+        self.assertIn("Customer API", result)
+        self.assertIn("request_customer_api", result)
+        self.assertIn("latest heartbeat is unavailable: Connection refused", result)
+        self.assertIn("Error: upstream 503", result)
+        get_unavailable_reason.assert_called_once_with("tool-http-1")
+
+    async def test_execute_tool_cold_path_keeps_successful_unhealthy_result_unchanged(self) -> None:
+        adapter = MCPToolAdapter()
+        config = self._config()
+        request_def = MCPToolDefinition(
+            name="request_customer_api",
+            description="Request API",
+            input_schema={"properties": {}},
+            tool_config=config,
+            execute_fn=mock.AsyncMock(return_value="request-ok"),
+        )
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=[config])),
+            mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=request_def)),
+            mock.patch(
+                "ragtime.indexer.tool_health.tool_health_monitor.get_known_unavailable_reason",
+                return_value="Connection refused",
+            ) as get_unavailable_reason,
+        ):
+            result = await adapter.execute_tool("request_customer_api", {"method": "GET", "path": "/customers"})
+
+        self.assertEqual(result, "request-ok")
+        get_unavailable_reason.assert_called_once_with("tool-http-1")
+
+    async def test_execute_tool_keeps_unknown_for_absent_enabled_config(self) -> None:
+        adapter = MCPToolAdapter()
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=[])),
+            mock.patch(
+                "ragtime.indexer.tool_health.tool_health_monitor.get_known_unavailable_reason",
+                side_effect=AssertionError("should not resolve heartbeat reason for unknown tools"),
+            ),
+        ):
+            result = await adapter.execute_tool("request_customer_api", {"method": "GET", "path": "/customers"})
+
+        self.assertEqual(result, "Error: Unknown tool 'request_customer_api'")
 
     def test_http_api_description_guidance_describes_automatic_auth_and_omitted_headers(self) -> None:
         adapter = MCPToolAdapter()

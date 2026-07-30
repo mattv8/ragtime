@@ -123,7 +123,7 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=tool_configs)):
+        with mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=tool_configs)):
             allowed = await adapter.is_tool_allowed_by_route_filter(
                 "query_production_infoscan_database",
                 route_filter,
@@ -147,7 +147,7 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=tool_configs)):
+        with mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=tool_configs)):
             allowed = await adapter.is_tool_allowed_by_route_filter(
                 "query_production_infoscan_database",
                 route_filter,
@@ -188,7 +188,7 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=tool_configs)):
+        with mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=tool_configs)):
             request_allowed = await adapter.is_tool_allowed_by_route_filter("request_customer_api", route_filter)
             search_allowed = await adapter.is_tool_allowed_by_route_filter("search_customer_api_api", route_filter)
 
@@ -215,7 +215,7 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=tool_configs)):
+        with mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=tool_configs)):
             search_allowed = await adapter.is_tool_allowed_by_route_filter("search_customer_api_api", route_filter)
 
         self.assertFalse(search_allowed)
@@ -229,7 +229,7 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[])),
+            mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=[])),
             mock.patch("ragtime.mcp.tools.get_app_settings", mock.AsyncMock(return_value={"aggregate_search": False})),
         ):
             allowed = await adapter.is_tool_allowed_by_route_filter("search_customer_api_api", route_filter)
@@ -346,15 +346,85 @@ class McpRouteFilterAuthorizationTests(unittest.IsolatedAsyncioTestCase):
         adapter.invalidate_cache()
 
         with (
-            mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[fresh_config])) as get_tool_configs,
+            mock.patch("ragtime.mcp.tools.get_enabled_tool_configs", mock.AsyncMock(return_value=[fresh_config])) as get_enabled_tool_configs,
             mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=fresh_definition)) as create_tool_definition,
         ):
             result = await adapter.execute_tool("ssh_docker_1", {"command": "touch /tmp/file"})
 
         self.assertEqual(result, "fresh")
         self.assertEqual(calls, ["fresh"])
-        get_tool_configs.assert_awaited_once_with()
+        get_enabled_tool_configs.assert_awaited_once_with()
         create_tool_definition.assert_awaited_once_with(fresh_config)
+
+    async def test_execute_tool_resolves_enabled_config_after_health_filter_drops_it(self) -> None:
+        adapter = MCPToolAdapter()
+        calls: list[str] = []
+
+        async def executor(**_kwargs: object) -> str:
+            calls.append("executed")
+            return "production containers"
+
+        config = {
+            "id": "tool-1",
+            "name": "Dockerhost 1",
+            "tool_type": "ssh_shell",
+            "enabled": True,
+        }
+        definition = MCPToolDefinition(
+            name="ssh_dockerhost_1",
+            description="Execute shell commands via SSH.",
+            input_schema={},
+            tool_config=config,
+            execute_fn=executor,
+        )
+
+        with (
+            mock.patch("ragtime.mcp.tools.get_tool_configs", mock.AsyncMock(return_value=[])) as get_tool_configs,
+            mock.patch(
+                "ragtime.mcp.tools.get_enabled_tool_configs",
+                mock.AsyncMock(return_value=[config]),
+            ) as get_enabled_tool_configs,
+            mock.patch.object(adapter, "_create_tool_definition", mock.AsyncMock(return_value=definition)),
+        ):
+            result = await adapter.execute_tool(
+                "ssh_dockerhost_1",
+                {"command": "docker ps"},
+            )
+
+        self.assertEqual(result, "production containers")
+        self.assertEqual(calls, ["executed"])
+        get_tool_configs.assert_not_awaited()
+        get_enabled_tool_configs.assert_awaited_once_with()
+
+    async def test_execute_tool_annotates_cached_unhealthy_exception_with_tool_context(self) -> None:
+        adapter = MCPToolAdapter()
+
+        async def failing_executor(**_kwargs: object) -> str:
+            raise RuntimeError("permission denied")
+
+        adapter._tool_definitions["ssh_dockerhost_1"] = MCPToolDefinition(  # pyright: ignore[reportPrivateUsage]
+            name="ssh_dockerhost_1",
+            description="Execute shell commands via SSH.",
+            input_schema={},
+            tool_config={
+                "id": "tool-1",
+                "name": "Dockerhost 1",
+                "tool_type": "ssh_shell",
+            },
+            execute_fn=failing_executor,
+        )
+
+        with mock.patch(
+            "ragtime.indexer.tool_health.tool_health_monitor.get_known_unavailable_reason",
+            return_value="Heartbeat stale",
+        ) as get_unavailable_reason:
+            result = await adapter.execute_tool("ssh_dockerhost_1", {"command": "docker ps"})
+
+        self.assertIn("Dockerhost 1", result)
+        self.assertIn("ssh_dockerhost_1", result)
+        self.assertIn("latest heartbeat is unavailable: Heartbeat stale", result)
+        self.assertIn("permission denied", result)
+        get_unavailable_reason.assert_called_once_with("tool-1")
 
 
 if __name__ == "__main__":

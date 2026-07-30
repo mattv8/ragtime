@@ -2644,6 +2644,12 @@ class IndexerRepository:
         )
         return [t.id for t in tools]
 
+    async def list_enabled_tool_ids(self) -> list[str]:
+        """Return enabled tool config IDs without heartbeat filtering."""
+        db = await self._get_db()
+        tools = await db.toolconfig.find_many(where={"enabled": True})
+        return [tool.id for tool in tools]
+
     async def list_healthy_enabled_tool_ids(self) -> list[str]:
         """Return enabled tool config IDs with a recent successful heartbeat."""
         tool_configs = await self.list_tool_configs(enabled_only=True)
