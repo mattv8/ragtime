@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import userEvent from '@testing-library/user-event';
 // @ts-expect-error Vitest runs in Node, but the frontend tsconfig omits Node types.
@@ -19,6 +19,7 @@ import {
   isToolEffectivelyWritableForConversation,
   type ActiveToolCall,
 } from './ChatPanel';
+import type { ChatMessageNavigationEntry } from './ChatMessageNavigator';
 
 const apiMock = vi.hoisted(() => ({
   getConversation: vi.fn().mockResolvedValue(null),
@@ -50,7 +51,43 @@ const apiMock = vi.hoisted(() => ({
   ),
 }));
 
+const chatMessageNavigatorMock = vi.hoisted(() => ({
+  renderSpy: vi.fn(),
+}));
+
 vi.mock('@/api', () => ({ api: apiMock }));
+
+vi.mock('./ChatMessageNavigator', () => ({
+  ChatMessageNavigator: ({
+    entries,
+    activeKey,
+    onNavigate,
+  }: {
+    entries: ChatMessageNavigationEntry[];
+    activeKey: string | null;
+    onNavigate: (entry: ChatMessageNavigationEntry) => void;
+  }) => {
+    chatMessageNavigatorMock.renderSpy({ entries, activeKey, onNavigate });
+    if (entries.length < 2) return null;
+    return (
+      <nav aria-label="User message navigation" data-active-key={activeKey ?? ''}>
+        {entries.map((entry) => (
+          <button
+            key={entry.key}
+            type="button"
+            data-entry-key={entry.key}
+            data-message-index={entry.messageIndex}
+            data-active={entry.key === activeKey ? 'true' : 'false'}
+            onClick={() => onNavigate(entry)}
+            aria-label={`Jump to user message: ${entry.preview}`}
+          >
+            {entry.preview}
+          </button>
+        ))}
+      </nav>
+    );
+  },
+}));
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -112,7 +149,10 @@ vi.stubGlobal(
   }),
 );
 
-window.HTMLElement.prototype.scrollIntoView = vi.fn();
+const defaultPrototypeScrollIntoView = vi.fn();
+const defaultPrototypeScrollTo = vi.fn();
+window.HTMLElement.prototype.scrollIntoView = defaultPrototypeScrollIntoView;
+window.HTMLElement.prototype.scrollTo = defaultPrototypeScrollTo;
 window.matchMedia = vi.fn().mockImplementation(() => ({
   matches: false,
   media: '',
@@ -123,6 +163,9 @@ window.matchMedia = vi.fn().mockImplementation(() => ({
   removeEventListener: vi.fn(),
   dispatchEvent: vi.fn(),
 }));
+
+const originalRequestAnimationFrame = window.requestAnimationFrame;
+const originalCancelAnimationFrame = window.cancelAnimationFrame;
 
 const currentUser: User = {
   id: 'user-1',
@@ -194,6 +237,10 @@ function renderChatPanel(ui: ReactElement) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.HTMLElement.prototype.scrollIntoView = defaultPrototypeScrollIntoView;
+  window.HTMLElement.prototype.scrollTo = defaultPrototypeScrollTo;
+  window.requestAnimationFrame = originalRequestAnimationFrame;
+  window.cancelAnimationFrame = originalCancelAnimationFrame;
   MockEventSource.reset();
 });
 
@@ -986,5 +1033,615 @@ describe('ChatPanel tool group menu refresh', () => {
     expect(source).toMatch(
       /const getToolGroupMenuItems = useCallback\([\s\S]*?\[\s*activeConversation,\s*conversationToolOptions,\s*isConversationViewer,\s*saveConversationToolOptions,\s*savingTools,\s*\]/,
     );
+  });
+});
+
+describe('ChatPanel user message navigator integration', () => {
+  it('derives chronological user-only entries with normalized previews and attachment fallback', async () => {
+    const conversation = makeConversation('navigator-1', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+      messages: [
+        {
+          role: 'user',
+          content: '  First\n\n   message  ',
+          timestamp: '2026-07-29T12:00:00.000Z',
+          message_id: 'msg-user-1',
+        },
+        {
+          role: 'assistant',
+          content: 'First response',
+          timestamp: '2026-07-29T12:00:01.000Z',
+          message_id: 'msg-assistant-1',
+        },
+        {
+          role: 'user',
+          content: JSON.stringify([
+            { type: 'text', text: 'Second\nline   with   spaces' },
+            { type: 'image_url', image_url: { url: 'https://example.com/two.png' } },
+          ]),
+          timestamp: '2026-07-29T12:00:02.000Z',
+          message_id: 'msg-user-2',
+        },
+        {
+          role: 'assistant',
+          content: 'Second response',
+          timestamp: '2026-07-29T12:00:03.000Z',
+          message_id: 'msg-assistant-2',
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: 'https://example.com/only-attachment.png' },
+            },
+          ],
+          timestamp: '2026-07-29T12:00:04.000Z',
+        },
+      ],
+    });
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => {
+      expect(chatMessageNavigatorMock.renderSpy).toHaveBeenCalled();
+    });
+
+    const latestCalls = chatMessageNavigatorMock.renderSpy.mock.calls;
+    const latestCall = latestCalls[latestCalls.length - 1]?.[0];
+    expect(latestCall?.entries).toEqual([
+      {
+        key: 'msg-user-1',
+        messageIndex: 0,
+        preview: 'First message',
+      },
+      {
+        key: 'msg-user-2',
+        messageIndex: 2,
+        preview: 'Second line with spaces',
+      },
+      {
+        key: expect.any(String),
+        messageIndex: 4,
+        preview: '1 attachment',
+      },
+    ]);
+  });
+
+  it('keeps the latest navigator destination selected through intermediate smooth-scroll frames, then resumes geometry tracking after completion and cancellation', async () => {
+    const user = userEvent.setup();
+    const conversation = makeConversation('navigator-2', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+      messages: [
+        {
+          role: 'user',
+          content: 'First question',
+          timestamp: '2026-07-29T12:10:00.000Z',
+          message_id: 'msg-user-a',
+        },
+        {
+          role: 'assistant',
+          content: 'First answer',
+          timestamp: '2026-07-29T12:10:01.000Z',
+          message_id: 'msg-assistant-a',
+        },
+        {
+          role: 'user',
+          content: 'Second question',
+          timestamp: '2026-07-29T12:10:02.000Z',
+          message_id: 'msg-user-b',
+        },
+        {
+          role: 'assistant',
+          content: 'Second answer',
+          timestamp: '2026-07-29T12:10:03.000Z',
+          message_id: 'msg-assistant-b',
+        },
+        {
+          role: 'user',
+          content: 'Third question',
+          timestamp: '2026-07-29T12:10:04.000Z',
+          message_id: 'msg-user-c',
+        },
+      ],
+    });
+
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const flushAnimationFrames = () => {
+      const pending = frameCallbacks.splice(0, frameCallbacks.length);
+      pending.forEach((callback) => callback(0));
+    };
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      });
+
+    try {
+      renderChatPanel(
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-1"
+          workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />,
+      );
+
+      const messagesRoot = await waitFor(() => {
+        const element = document.querySelector('.chat-messages') as HTMLElement | null;
+        expect(element).toBeTruthy();
+        return element as HTMLElement;
+      });
+      let scrollTop = 120;
+      Object.defineProperty(messagesRoot, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      });
+      Object.defineProperty(messagesRoot, 'clientHeight', {
+        configurable: true,
+        value: 400,
+      });
+      Object.defineProperty(messagesRoot, 'scrollHeight', {
+        configurable: true,
+        get: () => 1500,
+      });
+      messagesRoot.getBoundingClientRect = () =>
+        ({
+          top: 100,
+          bottom: 500,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 400,
+          x: 0,
+          y: 100,
+          toJSON: () => ({}),
+        }) as DOMRect;
+
+      const scrollToMock = vi.fn();
+      messagesRoot.scrollTo = scrollToMock;
+
+      const wrappers = await waitFor(() => {
+        const elements = document.querySelectorAll('.chat-branch-wrapper-user');
+        expect(elements).toHaveLength(3);
+        return elements;
+      });
+      const wrapperTops = [120, 220, 430];
+      wrappers.forEach((wrapper, index) => {
+        wrapper.getBoundingClientRect = () =>
+          ({
+            top: wrapperTops[index],
+            bottom: wrapperTops[index] + 60,
+            left: 0,
+            right: 300,
+            width: 300,
+            height: 60,
+            x: 0,
+            y: wrapperTops[index],
+            toJSON: () => ({}),
+          }) as DOMRect;
+      });
+      flushAnimationFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: 'Jump to user message: Second question' }),
+        ).toBeDefined();
+      });
+
+      await user.click(
+        screen.getByRole('button', { name: 'Jump to user message: First question' }),
+      );
+      await user.click(
+        screen.getByRole('button', { name: 'Jump to user message: Second question' }),
+      );
+
+      expect(screen.getByLabelText('User message navigation').getAttribute('data-active-key')).toBe(
+        'msg-user-b',
+      );
+      expect(scrollToMock).toHaveBeenLastCalledWith({
+        top: scrollTop + wrapperTops[1] - 100 - 400 * 0.25,
+        behavior: 'smooth',
+      });
+
+      const renderCountBeforeFirstIntermediateScroll =
+        chatMessageNavigatorMock.renderSpy.mock.calls.length;
+      wrapperTops[0] = 120;
+      wrapperTops[1] = 260;
+      wrapperTops[2] = 420;
+      fireEvent.scroll(messagesRoot);
+      flushAnimationFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.getByLabelText('User message navigation').getAttribute('data-active-key'),
+        ).toBe('msg-user-b');
+      });
+      const firstIntermediateKeys = chatMessageNavigatorMock.renderSpy.mock.calls
+        .slice(renderCountBeforeFirstIntermediateScroll)
+        .map((call) => call[0].activeKey);
+      expect(firstIntermediateKeys).not.toContain('msg-user-a');
+
+      await user.click(
+        screen.getByRole('button', { name: 'Jump to user message: Third question' }),
+      );
+
+      expect(screen.getByLabelText('User message navigation').getAttribute('data-active-key')).toBe(
+        'msg-user-c',
+      );
+      expect(scrollToMock).toHaveBeenLastCalledWith({
+        top: scrollTop + wrapperTops[2] - 100 - 400 * 0.25,
+        behavior: 'smooth',
+      });
+
+      const renderCountBeforeSecondIntermediateScroll =
+        chatMessageNavigatorMock.renderSpy.mock.calls.length;
+      wrapperTops[0] = -40;
+      wrapperTops[1] = 120;
+      wrapperTops[2] = 260;
+      fireEvent.scroll(messagesRoot);
+      flushAnimationFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.getByLabelText('User message navigation').getAttribute('data-active-key'),
+        ).toBe('msg-user-c');
+      });
+      const secondIntermediateKeys = chatMessageNavigatorMock.renderSpy.mock.calls
+        .slice(renderCountBeforeSecondIntermediateScroll)
+        .map((call) => call[0].activeKey);
+      expect(secondIntermediateKeys).not.toContain('msg-user-b');
+
+      scrollTop = 340;
+      wrapperTops[0] = -260;
+      wrapperTops[1] = -20;
+      wrapperTops[2] = 150;
+      fireEvent.scroll(messagesRoot);
+      flushAnimationFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.getByLabelText('User message navigation').getAttribute('data-active-key'),
+        ).toBe('msg-user-c');
+      });
+
+      await user.click(
+        screen.getByRole('button', { name: 'Jump to user message: Third question' }),
+      );
+      fireEvent.wheel(messagesRoot);
+      wrapperTops[0] = -160;
+      wrapperTops[1] = 150;
+      wrapperTops[2] = 340;
+      fireEvent.scroll(messagesRoot);
+      flushAnimationFrames();
+
+      await waitFor(() => {
+        expect(
+          screen.getByLabelText('User message navigation').getAttribute('data-active-key'),
+        ).toBe('msg-user-b');
+      });
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+    }
+  });
+
+  it('disables auto-follow after a navigator jump until normal scrolling re-enables it', async () => {
+    const user = userEvent.setup();
+    const baseConversation = makeConversation('navigator-2b', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+      messages: [
+        {
+          role: 'user',
+          content: 'First question',
+          timestamp: '2026-07-29T12:10:00.000Z',
+          message_id: 'msg-user-a',
+        },
+        {
+          role: 'assistant',
+          content: 'First answer',
+          timestamp: '2026-07-29T12:10:01.000Z',
+          message_id: 'msg-assistant-a',
+        },
+        {
+          role: 'user',
+          content: 'Second question',
+          timestamp: '2026-07-29T12:10:02.000Z',
+          message_id: 'msg-user-b',
+        },
+      ],
+    });
+
+    const { rerender } = renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(baseConversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    const messagesRoot = await waitFor(() => {
+      const element = document.querySelector('.chat-messages') as HTMLElement | null;
+      expect(element).toBeTruthy();
+      return element as HTMLElement;
+    });
+
+    let scrollTop = 300;
+    Object.defineProperty(messagesRoot, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    Object.defineProperty(messagesRoot, 'clientHeight', {
+      configurable: true,
+      value: 400,
+    });
+    Object.defineProperty(messagesRoot, 'scrollHeight', {
+      configurable: true,
+      get: () => 1200,
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Jump to user message: Second question' }));
+    defaultPrototypeScrollTo.mockClear();
+
+    const updatedConversation = {
+      ...baseConversation,
+      messages: [
+        ...baseConversation.messages,
+        {
+          role: 'assistant' as const,
+          content: 'Follow-up answer',
+          timestamp: '2026-07-29T12:10:03.000Z',
+          message_id: 'msg-assistant-b',
+        },
+      ],
+    };
+
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-1"
+          workspaceChatState={{ ...makeWorkspaceChatState(updatedConversation), active_task: null }}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Follow-up answer')).toBeDefined();
+    });
+    expect(defaultPrototypeScrollTo).not.toHaveBeenCalled();
+
+    scrollTop = 760;
+    fireEvent.scroll(messagesRoot);
+
+    const afterBottomConversation = {
+      ...updatedConversation,
+      messages: [
+        ...updatedConversation.messages,
+        {
+          role: 'assistant' as const,
+          content: 'Newest answer',
+          timestamp: '2026-07-29T12:10:04.000Z',
+          message_id: 'msg-assistant-c',
+        },
+      ],
+    };
+
+    defaultPrototypeScrollTo.mockClear();
+    rerender(
+      <AvailableModelsProvider>
+        <ChatPanel
+          currentUser={currentUser}
+          workspaceId="ws-1"
+          workspaceChatState={{
+            ...makeWorkspaceChatState(afterBottomConversation),
+            active_task: null,
+          }}
+          workspaceAvailableTools={[]}
+          workspaceSelectedToolIds={[]}
+          embedded
+        />
+      </AvailableModelsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Newest answer')).toBeDefined();
+    });
+    await waitFor(() => {
+      expect(defaultPrototypeScrollTo).toHaveBeenCalledWith({
+        top: 1200,
+        behavior: 'smooth',
+      });
+    });
+  });
+
+  it('tracks the latest user message at or above the focus line on chat scroll', async () => {
+    const conversation = makeConversation('navigator-3', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+      messages: [
+        {
+          role: 'user',
+          content: 'First question',
+          timestamp: '2026-07-29T12:20:00.000Z',
+          message_id: 'msg-user-1',
+        },
+        {
+          role: 'assistant',
+          content: 'First answer',
+          timestamp: '2026-07-29T12:20:01.000Z',
+          message_id: 'msg-assistant-1',
+        },
+        {
+          role: 'user',
+          content: 'Second question',
+          timestamp: '2026-07-29T12:20:02.000Z',
+          message_id: 'msg-user-2',
+        },
+        {
+          role: 'assistant',
+          content: 'Second answer',
+          timestamp: '2026-07-29T12:20:03.000Z',
+          message_id: 'msg-assistant-2',
+        },
+        {
+          role: 'user',
+          content: 'Third question',
+          timestamp: '2026-07-29T12:20:04.000Z',
+          message_id: 'msg-user-3',
+        },
+      ],
+    });
+
+    const requestAnimationFrameSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        callback(0);
+        return 1;
+      });
+    const cancelAnimationFrameSpy = vi
+      .spyOn(window, 'cancelAnimationFrame')
+      .mockImplementation(() => undefined);
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    const messagesRoot = await waitFor(() => {
+      const element = document.querySelector('.chat-messages') as HTMLElement | null;
+      expect(element).toBeTruthy();
+      return element as HTMLElement;
+    });
+
+    let scrollTop = 0;
+    Object.defineProperty(messagesRoot, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    });
+    Object.defineProperty(messagesRoot, 'clientHeight', {
+      configurable: true,
+      value: 400,
+    });
+    Object.defineProperty(messagesRoot, 'scrollHeight', {
+      configurable: true,
+      value: 1200,
+    });
+    messagesRoot.getBoundingClientRect = () =>
+      ({
+        top: 0,
+        bottom: 400,
+        left: 0,
+        right: 300,
+        width: 300,
+        height: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    const userWrappers = Array.from(
+      document.querySelectorAll('.chat-branch-wrapper-user'),
+    ) as HTMLElement[];
+    const wrapperTops = [20, 180, 340];
+    userWrappers.forEach((wrapper, index) => {
+      wrapper.getBoundingClientRect = () =>
+        ({
+          top: wrapperTops[index],
+          bottom: wrapperTops[index] + 60,
+          left: 0,
+          right: 300,
+          width: 300,
+          height: 60,
+          x: 0,
+          y: wrapperTops[index],
+          toJSON: () => ({}),
+        }) as DOMRect;
+    });
+
+    fireEvent.scroll(messagesRoot);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('User message navigation').getAttribute('data-active-key')).toBe(
+        'msg-user-1',
+      );
+    });
+
+    expect(requestAnimationFrameSpy).toHaveBeenCalled();
+    expect(cancelAnimationFrameSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not render the navigator before there are two persisted user entries', async () => {
+    const conversation = makeConversation('navigator-4', 'Assistant reply', {
+      workspace_id: 'ws-1',
+      active_task_id: null,
+      messages: [
+        {
+          role: 'user',
+          content: 'Only user question',
+          timestamp: '2026-07-29T12:30:00.000Z',
+          message_id: 'msg-user-only',
+        },
+        {
+          role: 'assistant',
+          content: 'Assistant answer',
+          timestamp: '2026-07-29T12:30:01.000Z',
+          message_id: 'msg-assistant-only',
+        },
+      ],
+    });
+
+    renderChatPanel(
+      <ChatPanel
+        currentUser={currentUser}
+        workspaceId="ws-1"
+        workspaceChatState={{ ...makeWorkspaceChatState(conversation), active_task: null }}
+        workspaceAvailableTools={[]}
+        workspaceSelectedToolIds={[]}
+        embedded
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Only user question')).toBeDefined();
+    });
+
+    expect(screen.queryByLabelText('User message navigation')).toBeNull();
+    expect(chatMessageNavigatorMock.renderSpy).not.toHaveBeenCalled();
   });
 });

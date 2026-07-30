@@ -102,6 +102,7 @@ import {
 } from './FileAttachment';
 import { ModelSelector } from './ModelSelector';
 import { ResizeHandle } from './ResizeHandle';
+import { ChatMessageNavigator, type ChatMessageNavigationEntry } from './ChatMessageNavigator';
 import { calculateConversationContextUsage } from '@/utils/contextUsage';
 import {
   applyUserSpaceToolAvailabilityCap,
@@ -9522,6 +9523,28 @@ export function parseMessageContent(content: string | ContentPart[]): {
   return { text, attachments };
 }
 
+function normalizeChatMessageNavigatorPreviewText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function getChatMessageNavigatorEntryKey(message: ChatMessage, messageIndex: number): string {
+  if (message.message_id) return message.message_id;
+  return `legacy-user-message-${messageIndex}:${message.timestamp || 'no-timestamp'}`;
+}
+
+function getChatMessageNavigatorAttachmentFallback(attachments: ContentPart[]): string {
+  const count = attachments.length;
+  return `${count} attachment${count === 1 ? '' : 's'}`;
+}
+
+function getChatMessageNavigatorPreview(message: ChatMessage): string {
+  const { text, attachments } = parseMessageContent(message.content);
+  const normalizedText = normalizeChatMessageNavigatorPreviewText(text);
+  if (normalizedText) return normalizedText;
+  if (attachments.length > 0) return getChatMessageNavigatorAttachmentFallback(attachments);
+  return 'Message';
+}
+
 function extractCompactionSummary(content: ChatMessage['content']): string {
   const parsed = parseMessageContent(content);
   let summary = parsed.text.trim();
@@ -10133,6 +10156,33 @@ export function ChatPanel({
   const [pendingDeleteIdx, setPendingDeleteIdx] = useState<number | null>(null);
   const autoCompactionTriggerKeyRef = useRef<string | null>(null);
   const activeConversationId = activeConversation?.id ?? null;
+  const persistedUserMessageEntries = useMemo<ChatMessageNavigationEntry[]>(() => {
+    if (!activeConversation) return [];
+    const hasPendingTailUserMessage =
+      (Boolean(activeConversation.active_task_id) ||
+        (isStreaming && streamingConversationId === activeConversation.id)) &&
+      activeConversation.messages.length > 0;
+
+    return activeConversation.messages.flatMap((message, messageIndex) => {
+      if (message.role !== 'user') return [];
+      const isPendingTailUserMessage =
+        hasPendingTailUserMessage &&
+        messageIndex === activeConversation.messages.length - 1 &&
+        !message.message_id;
+      if (isPendingTailUserMessage) return [];
+      return [
+        {
+          key: getChatMessageNavigatorEntryKey(message, messageIndex),
+          messageIndex,
+          preview: getChatMessageNavigatorPreview(message),
+        },
+      ];
+    });
+  }, [activeConversation, isStreaming, streamingConversationId]);
+  const persistedUserMessageEntriesRef = useRef<ChatMessageNavigationEntry[]>([]);
+  const [activeUserMessageNavigationKey, setActiveUserMessageNavigationKey] = useState<
+    string | null
+  >(null);
   const branchGroupsByIndex = useMemo(() => {
     const messageCount = activeConversation?.messages.length ?? 0;
     const grouped = new Map<number, BranchRenderGroup[]>();
@@ -10268,6 +10318,115 @@ export function ChatPanel({
       window.clearTimeout(timeoutId);
     };
   }, [activeConversationId, branchGroupsByIndex, branchSearchAnchorHint]);
+
+  useEffect(() => {
+    persistedUserMessageEntriesRef.current = persistedUserMessageEntries;
+  }, [persistedUserMessageEntries]);
+
+  const scheduleUserMessageNavigationActiveKeyUpdate = useCallback(() => {
+    if (navigatorScrollFrameRef.current !== null) {
+      return;
+    }
+
+    navigatorScrollFrameRef.current = window.requestAnimationFrame(() => {
+      navigatorScrollFrameRef.current = null;
+      const messagesRoot = chatMessagesRef.current;
+      if (!messagesRoot || persistedUserMessageEntriesRef.current.length === 0) {
+        pendingUserMessageNavigationTargetRef.current = null;
+        setActiveUserMessageNavigationKey(null);
+        return;
+      }
+
+      const pendingTarget = pendingUserMessageNavigationTargetRef.current;
+      if (pendingTarget) {
+        if (Math.abs(messagesRoot.scrollTop - pendingTarget.scrollTop) <= 1) {
+          pendingUserMessageNavigationTargetRef.current = null;
+        }
+        setActiveUserMessageNavigationKey(pendingTarget.key);
+        return;
+      }
+
+      const rootRect = messagesRoot.getBoundingClientRect();
+      const focusLine = rootRect.top + rootRect.height * 0.25;
+      const isAtBottom =
+        messagesRoot.scrollHeight - messagesRoot.scrollTop - messagesRoot.clientHeight < 50;
+      if (isAtBottom) {
+        setActiveUserMessageNavigationKey(
+          persistedUserMessageEntriesRef.current[persistedUserMessageEntriesRef.current.length - 1]
+            ?.key ?? null,
+        );
+        return;
+      }
+      let nextActiveKey: string | null = null;
+
+      for (const entry of persistedUserMessageEntriesRef.current) {
+        const wrapper = userMessageWrapperElementsRef.current.get(entry.key);
+        if (!wrapper) continue;
+        const wrapperRect = wrapper.getBoundingClientRect();
+        if (wrapperRect.top <= focusLine) {
+          nextActiveKey = entry.key;
+          continue;
+        }
+        if (nextActiveKey === null) {
+          nextActiveKey = entry.key;
+        }
+        break;
+      }
+
+      setActiveUserMessageNavigationKey(
+        nextActiveKey ?? persistedUserMessageEntriesRef.current[0]?.key ?? null,
+      );
+    });
+  }, []);
+
+  const getUserMessageWrapperRef = useCallback((entryKey: string) => {
+    const existing = userMessageWrapperRefCallbacksRef.current.get(entryKey);
+    if (existing) return existing;
+
+    const callback = (element: HTMLDivElement | null) => {
+      if (element) {
+        userMessageWrapperElementsRef.current.set(entryKey, element);
+      } else {
+        userMessageWrapperElementsRef.current.delete(entryKey);
+      }
+    };
+    userMessageWrapperRefCallbacksRef.current.set(entryKey, callback);
+    return callback;
+  }, []);
+
+  const handleNavigateToUserMessage = useCallback((entry: ChatMessageNavigationEntry) => {
+    const currentEntry = persistedUserMessageEntriesRef.current.find(
+      (item) => item.key === entry.key,
+    );
+    if (!currentEntry) return;
+
+    const wrapper = userMessageWrapperElementsRef.current.get(currentEntry.key);
+    const messagesRoot = chatMessagesRef.current;
+    if (!wrapper || !messagesRoot) return;
+
+    shouldAutoScrollRef.current = false;
+    setActiveUserMessageNavigationKey(currentEntry.key);
+    const rootRect = messagesRoot.getBoundingClientRect();
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const maxScrollTop = Math.max(0, messagesRoot.scrollHeight - messagesRoot.clientHeight);
+    const targetScrollTop = clampNumber(
+      messagesRoot.scrollTop + wrapperRect.top - rootRect.top - rootRect.height * 0.25,
+      0,
+      maxScrollTop,
+    );
+    pendingUserMessageNavigationTargetRef.current = {
+      key: currentEntry.key,
+      scrollTop: targetScrollTop,
+    };
+    messagesRoot.scrollTo({
+      top: targetScrollTop,
+      behavior: 'smooth',
+    });
+  }, []);
+
+  const clearPendingUserMessageNavigationTarget = useCallback(() => {
+    pendingUserMessageNavigationTargetRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (!chatKeywordFocusHint || activeConversationId !== chatKeywordFocusHint.conversationId)
@@ -11497,9 +11656,18 @@ export function ChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const userMessageWrapperElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const userMessageWrapperRefCallbacksRef = useRef<
+    Map<string, (element: HTMLDivElement | null) => void>
+  >(new Map());
   const userspaceConversationIdsRef = useRef<Set<string>>(new Set());
   const shouldAutoScrollRef = useRef(true);
   const autoScrollFrameRef = useRef<number | null>(null);
+  const navigatorScrollFrameRef = useRef<number | null>(null);
+  const pendingUserMessageNavigationTargetRef = useRef<{
+    key: string;
+    scrollTop: number;
+  } | null>(null);
   const programmaticScrollRef = useRef(false);
   const inputRef = useRef<HTMLDivElement>(null);
   const richInputRef = useRef<RichChatInputHandle>(null);
@@ -12333,31 +12501,35 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
-  const scheduleScrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    if (autoScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(autoScrollFrameRef.current);
-    }
-
-    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
-      autoScrollFrameRef.current = null;
-      const messagesRoot = chatMessagesRef.current;
-      if (!messagesRoot || !shouldAutoScrollRef.current) return;
-
-      programmaticScrollRef.current = true;
-      if (behavior === 'auto') {
-        messagesRoot.scrollTop = messagesRoot.scrollHeight;
-      } else {
-        messagesRoot.scrollTo({
-          top: messagesRoot.scrollHeight,
-          behavior,
-        });
+  const scheduleScrollToBottom = useCallback(
+    (behavior: ScrollBehavior) => {
+      if (autoScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(autoScrollFrameRef.current);
       }
 
-      window.requestAnimationFrame(() => {
-        programmaticScrollRef.current = false;
+      autoScrollFrameRef.current = window.requestAnimationFrame(() => {
+        autoScrollFrameRef.current = null;
+        const messagesRoot = chatMessagesRef.current;
+        if (!messagesRoot || !shouldAutoScrollRef.current) return;
+
+        programmaticScrollRef.current = true;
+        if (behavior === 'auto') {
+          messagesRoot.scrollTop = messagesRoot.scrollHeight;
+        } else {
+          messagesRoot.scrollTo({
+            top: messagesRoot.scrollHeight,
+            behavior,
+          });
+        }
+
+        window.requestAnimationFrame(() => {
+          programmaticScrollRef.current = false;
+          scheduleUserMessageNavigationActiveKeyUpdate();
+        });
       });
-    });
-  }, []);
+    },
+    [scheduleUserMessageNavigationActiveKeyUpdate],
+  );
 
   useEffect(() => {
     return () => {
@@ -12365,8 +12537,62 @@ export function ChatPanel({
         window.cancelAnimationFrame(autoScrollFrameRef.current);
         autoScrollFrameRef.current = null;
       }
+      if (navigatorScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(navigatorScrollFrameRef.current);
+        navigatorScrollFrameRef.current = null;
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const validKeys = new Set(persistedUserMessageEntries.map((entry) => entry.key));
+    for (const key of userMessageWrapperElementsRef.current.keys()) {
+      if (!validKeys.has(key)) {
+        userMessageWrapperElementsRef.current.delete(key);
+      }
+    }
+    for (const key of userMessageWrapperRefCallbacksRef.current.keys()) {
+      if (!validKeys.has(key)) {
+        userMessageWrapperRefCallbacksRef.current.delete(key);
+      }
+    }
+
+    if (persistedUserMessageEntries.length === 0) {
+      pendingUserMessageNavigationTargetRef.current = null;
+      setActiveUserMessageNavigationKey(null);
+      return;
+    }
+
+    if (
+      pendingUserMessageNavigationTargetRef.current &&
+      !validKeys.has(pendingUserMessageNavigationTargetRef.current.key)
+    ) {
+      pendingUserMessageNavigationTargetRef.current = null;
+    }
+
+    setActiveUserMessageNavigationKey((current) =>
+      current && validKeys.has(current) ? current : persistedUserMessageEntries[0].key,
+    );
+  }, [persistedUserMessageEntries]);
+
+  useLayoutEffect(() => {
+    if (
+      isMessagesCollapsed ||
+      isConversationSwitchLoading ||
+      isCreatingFreshConversation ||
+      persistedUserMessageEntries.length === 0
+    ) {
+      return;
+    }
+    scheduleUserMessageNavigationActiveKeyUpdate();
+  }, [
+    activeConversationId,
+    isConversationSwitchLoading,
+    isCreatingFreshConversation,
+    isMessagesCollapsed,
+    persistedUserMessageEntries,
+    scheduleUserMessageNavigationActiveKeyUpdate,
+  ]);
 
   // Auto-scroll to bottom when messages change. Streaming uses an immediate
   // scroll so rapid token updates cannot queue competing smooth animations.
@@ -12385,13 +12611,15 @@ export function ChatPanel({
     if (!chatMessagesRef.current) return;
     if (programmaticScrollRef.current) {
       shouldAutoScrollRef.current = true;
+      scheduleUserMessageNavigationActiveKeyUpdate();
       return;
     }
     const { scrollTop, scrollHeight, clientHeight } = chatMessagesRef.current;
     // Use a small threshold to account for fractional pixels
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
     shouldAutoScrollRef.current = isAtBottom;
-  }, []);
+    scheduleUserMessageNavigationActiveKeyUpdate();
+  }, [scheduleUserMessageNavigationActiveKeyUpdate]);
 
   // Focus input when conversation changes
   useEffect(() => {
@@ -17380,589 +17608,723 @@ export function ChatPanel({
 
             {/* Messages */}
             {!isMessagesCollapsed && (
-              <div className="chat-messages" ref={chatMessagesRef} onScroll={handleScroll}>
-                {embedded && activeConversation?.parent_conversation_id && (
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-secondary chat-parent-nav-btn"
-                    onClick={async () => {
-                      const parentId = activeConversation.parent_conversation_id;
-                      if (!parentId) return;
-                      const parentConv = conversations.find((c) => c.id === parentId);
-                      if (parentConv) {
-                        await selectConversation(parentConv);
-                      } else {
-                        try {
-                          const fetched = await api.getConversation(parentId, workspaceId);
-                          await selectConversation(fetched);
-                        } catch (err) {
-                          setError(
-                            err instanceof Error
-                              ? err.message
-                              : 'Failed to load parent conversation',
-                          );
+              <div className="chat-message-region">
+                <div
+                  className="chat-messages"
+                  ref={chatMessagesRef}
+                  onScroll={handleScroll}
+                  onWheel={clearPendingUserMessageNavigationTarget}
+                  onPointerDown={clearPendingUserMessageNavigationTarget}
+                  onTouchStart={clearPendingUserMessageNavigationTarget}
+                >
+                  {embedded && activeConversation?.parent_conversation_id && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary chat-parent-nav-btn"
+                      onClick={async () => {
+                        const parentId = activeConversation.parent_conversation_id;
+                        if (!parentId) return;
+                        const parentConv = conversations.find((c) => c.id === parentId);
+                        if (parentConv) {
+                          await selectConversation(parentConv);
+                        } else {
+                          try {
+                            const fetched = await api.getConversation(parentId, workspaceId);
+                            await selectConversation(fetched);
+                          } catch (err) {
+                            setError(
+                              err instanceof Error
+                                ? err.message
+                                : 'Failed to load parent conversation',
+                            );
+                          }
                         }
-                      }
-                    }}
-                    title="Return to parent conversation"
-                  >
-                    <ArrowLeft size={14} aria-hidden="true" />
-                    <span>Parent</span>
-                  </button>
-                )}
-                {isConversationSwitchLoading || isCreatingFreshConversation ? (
-                  renderMessageBubbleSkeletons()
-                ) : activeConversation.messages.length === 0 && !isStreaming ? (
-                  <div className="chat-welcome">
-                    <h3>Start a conversation</h3>
-                    <p>
-                      Ask questions about your indexed code, query databases, or get help with your
-                      systems.
-                    </p>
-                  </div>
-                ) : (
-                  <>
-                    {activeConversation.messages.map((msg, idx) => {
-                      if (msg.role === 'compaction') {
-                        const summary = extractCompactionSummary(msg.content);
-                        const marker: CompactionReviewMarker = {
-                          messageIndex: idx,
-                          messageId: msg.message_id,
-                          summary,
-                          timestamp: msg.timestamp,
-                        };
-                        const isRetryingThisCompaction = Boolean(
-                          retryingCompactionMarker &&
-                          retryingCompactionMarker.conversationId === activeConversation.id &&
-                          retryingCompactionMarker.messageIndex === idx &&
-                          (!retryingCompactionMarker.messageId ||
-                            retryingCompactionMarker.messageId === msg.message_id) &&
-                          isActiveConversationCompacting,
-                        );
-                        return (
-                          <div
-                            key={`msg-${idx}`}
-                            className="chat-compaction-divider"
-                            title={summary || undefined}
-                          >
-                            {isRetryingThisCompaction ? (
-                              <span className="chat-compaction-divider-label">Chat compacting</span>
-                            ) : (
-                              <button
-                                type="button"
-                                className="chat-compaction-divider-label chat-compaction-divider-button"
-                                onClick={() => openCompactionReview(marker)}
-                                aria-label="Review chat compaction"
-                              >
-                                Chat compacted
-                              </button>
-                            )}
-                          </div>
-                        );
-                      }
-                      const branchGroups = branchGroupsByIndex.get(idx) ?? [];
-                      const hasBranches = branchGroups.length > 0;
-                      const msgKey = `msg-${idx}`;
-                      return (
-                        <div
-                          key={msgKey}
-                          className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}
-                        >
-                          <div className={`chat-message chat-message-${msg.role}`}>
+                      }}
+                      title="Return to parent conversation"
+                    >
+                      <ArrowLeft size={14} aria-hidden="true" />
+                      <span>Parent</span>
+                    </button>
+                  )}
+                  {isConversationSwitchLoading || isCreatingFreshConversation ? (
+                    renderMessageBubbleSkeletons()
+                  ) : activeConversation.messages.length === 0 && !isStreaming ? (
+                    <div className="chat-welcome">
+                      <h3>Start a conversation</h3>
+                      <p>
+                        Ask questions about your indexed code, query databases, or get help with
+                        your systems.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      {activeConversation.messages.map((msg, idx) => {
+                        if (msg.role === 'compaction') {
+                          const summary = extractCompactionSummary(msg.content);
+                          const marker: CompactionReviewMarker = {
+                            messageIndex: idx,
+                            messageId: msg.message_id,
+                            summary,
+                            timestamp: msg.timestamp,
+                          };
+                          const isRetryingThisCompaction = Boolean(
+                            retryingCompactionMarker &&
+                            retryingCompactionMarker.conversationId === activeConversation.id &&
+                            retryingCompactionMarker.messageIndex === idx &&
+                            (!retryingCompactionMarker.messageId ||
+                              retryingCompactionMarker.messageId === msg.message_id) &&
+                            isActiveConversationCompacting,
+                          );
+                          return (
                             <div
-                              className="chat-message-content"
-                              key={editingMessageIdx === idx ? 'editing' : 'viewing'}
+                              key={`msg-${idx}`}
+                              className="chat-compaction-divider"
+                              title={summary || undefined}
                             >
-                              {editingMessageIdx === idx ? (
-                                <>
-                                  <RichChatInput
-                                    ref={editRichInputRef}
-                                    segments={editMessageSegments}
-                                    onChange={handleEditSegmentsChange}
-                                    onSubmit={submitEditMessage}
-                                    onCancel={cancelEditMessage}
-                                    onFocus={() => {
-                                      activeComposerRef.current = 'edit';
-                                    }}
-                                    onRemoveReference={handleRemoveEditReference}
-                                    onOpenReference={onOpenContextReference}
-                                    className="chat-message-text chat-message-user-text chat-edit-input"
-                                    ariaLabel="Edit message"
-                                  />
-                                  <div className="chat-message-footer">
-                                    <span className="chat-message-time">
-                                      {formatChatTimestamp(msg.timestamp)}
-                                    </span>
-                                  </div>
-                                </>
+                              {isRetryingThisCompaction ? (
+                                <span className="chat-compaction-divider-label">
+                                  Chat compacting
+                                </span>
                               ) : (
-                                <>
-                                  {/* Render chronological events if available */}
-                                  {msg.role === 'assistant' &&
-                                  msg.events &&
-                                  msg.events.length > 0 ? (
-                                    <>
-                                      {(() => {
-                                        // Render events chronologically, merging only ADJACENT reasoning events
-                                        const result: React.ReactNode[] = [];
-                                        let pendingReasoning = '';
-                                        let pendingReasoningParts: ReasoningPart[] = [];
-                                        let pendingReasoningDurationSeconds: number | undefined;
-                                        let reasoningBlockCount = 0;
-
-                                        const flushReasoning = () => {
-                                          if (!pendingReasoning) return;
-                                          reasoningBlockCount++;
-                                          result.push(
-                                            <ReasoningDisplay
-                                              key={`reasoning-${reasoningBlockCount}`}
-                                              content={pendingReasoning}
-                                              isComplete={true}
-                                              parts={
-                                                pendingReasoningParts.length > 0
-                                                  ? pendingReasoningParts
-                                                  : undefined
-                                              }
-                                              durationSeconds={pendingReasoningDurationSeconds}
-                                              showToolCalls={showToolCalls}
-                                              workspaceId={workspaceId}
-                                              conversationId={activeConversation.id}
-                                              onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                              inChatSearchQuery={
-                                                inChatSearchOpen ? inChatSearchTrimmedQuery : ''
-                                              }
-                                              inChatSearchOptions={activeInChatSearchOptions}
-                                            />,
-                                          );
-                                          pendingReasoning = '';
-                                          pendingReasoningParts = [];
-                                          pendingReasoningDurationSeconds = undefined;
-                                        };
-
-                                        for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
-                                          const ev = msg.events[evIdx];
-                                          const channel = getChatEventChannel(ev);
-                                          const reasoningContent = getReasoningEventContent(ev);
-                                          if (channel === 'analysis' && reasoningContent) {
-                                            // Accumulate adjacent reasoning
-                                            pendingReasoning +=
-                                              (pendingReasoning ? '\n\n' : '') + reasoningContent;
-                                            const durationSeconds =
-                                              getReasoningEventDurationSeconds(ev);
-                                            if (typeof durationSeconds === 'number') {
-                                              pendingReasoningDurationSeconds = durationSeconds;
-                                            }
-                                            const lastPart =
-                                              pendingReasoningParts[
-                                                pendingReasoningParts.length - 1
-                                              ];
-                                            if (lastPart && lastPart.type === 'text') {
-                                              lastPart.text =
-                                                (lastPart.text || '') +
-                                                (lastPart.text ? '\n\n' : '') +
-                                                reasoningContent;
-                                            } else {
-                                              pendingReasoningParts.push({
-                                                type: 'text',
-                                                text: reasoningContent,
-                                              });
-                                            }
-                                          } else if (
-                                            channel === 'commentary' &&
-                                            ev.type === 'tool' &&
-                                            pendingReasoning &&
-                                            ev.tool !== SUBAGENT_HANDOFF_TOOL_ID &&
-                                            ev.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
-                                            !isVisualizationToolName(ev.tool)
-                                          ) {
-                                            pendingReasoningParts.push({
-                                              type: 'tool',
-                                              toolCall: {
-                                                tool: ev.tool,
-                                                input: ev.input,
-                                                output: ev.output,
-                                                presentation: ev.presentation,
-                                                connection: ev.connection,
-                                                mcp: ev.mcp,
-                                                status: 'complete' as const,
-                                              },
-                                            });
-                                          } else {
-                                            // Final content and visualization artifacts break reasoning adjacency.
-                                            flushReasoning();
-                                            // The subagent handoff is rendered inside the
-                                            // spawn_subagents subagent card (subagent-handoff-output
-                                            // container); never duplicate it as a standalone card in
-                                            // the parent's own message.
-                                            if (
-                                              ev.type === 'tool' &&
-                                              ev.tool === SUBAGENT_HANDOFF_TOOL_ID
-                                            ) {
-                                              continue;
-                                            }
-                                            if (
-                                              channel === 'commentary' &&
-                                              ev.type === 'tool' &&
-                                              showToolCalls
-                                            ) {
-                                              const toolCall = {
-                                                tool: ev.tool,
-                                                input: ev.input,
-                                                output: ev.output,
-                                                presentation: ev.presentation,
-                                                connection: ev.connection,
-                                                mcp: ev.mcp,
-                                                status: 'complete' as const,
-                                              };
-                                              if (ev.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
-                                                result.push(
-                                                  <ToolCallDisplay
-                                                    key={`event-${evIdx}`}
-                                                    toolCall={toolCall}
-                                                    defaultExpanded={false}
-                                                    conversationId={activeConversation.id}
-                                                    workspaceId={workspaceId}
-                                                    siblingEvents={msg.events}
-                                                    messageId={msg.message_id}
-                                                    messageIndex={idx}
-                                                    eventIndex={evIdx}
-                                                    onLiveVisualizationRefreshSuccess={
-                                                      handleLiveVisualizationRefreshSuccess
-                                                    }
-                                                    onVisualizationDisplayError={toastActions.error}
-                                                    onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                                    onOpenSubagentConversation={
-                                                      openSubagentConversation
-                                                    }
-                                                    inChatSearchQuery={
-                                                      inChatSearchOpen
-                                                        ? inChatSearchTrimmedQuery
-                                                        : ''
-                                                    }
-                                                    inChatSearchOptions={activeInChatSearchOptions}
-                                                  />,
-                                                );
-                                                continue;
-                                              }
-                                              result.push(
-                                                <div
-                                                  key={`event-${evIdx}`}
-                                                  className="chat-tool-calls"
-                                                >
-                                                  <ToolCallDisplay
-                                                    toolCall={toolCall}
-                                                    defaultExpanded={false}
-                                                    conversationId={activeConversation.id}
-                                                    workspaceId={workspaceId}
-                                                    siblingEvents={msg.events}
-                                                    messageId={msg.message_id}
-                                                    messageIndex={idx}
-                                                    eventIndex={evIdx}
-                                                    onLiveVisualizationRefreshSuccess={
-                                                      handleLiveVisualizationRefreshSuccess
-                                                    }
-                                                    onVisualizationDisplayError={toastActions.error}
-                                                    onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                                    inChatSearchQuery={
-                                                      inChatSearchOpen
-                                                        ? inChatSearchTrimmedQuery
-                                                        : ''
-                                                    }
-                                                    inChatSearchOptions={activeInChatSearchOptions}
-                                                  />
-                                                </div>,
-                                              );
-                                            } else if (
-                                              channel === 'final' &&
-                                              ev.type === 'content'
-                                            ) {
-                                              result.push(
-                                                <div
-                                                  key={`event-${evIdx}`}
-                                                  className="chat-message-text markdown-content"
-                                                >
-                                                  <MemoizedMarkdown
-                                                    content={ev.content}
-                                                    conversationId={activeConversation.id}
-                                                    workspaceId={workspaceId}
-                                                    enableTableExports
-                                                  />
-                                                </div>,
-                                              );
-                                            } else if (ev.type === 'error') {
-                                              result.push(
-                                                <div
-                                                  key={`event-${evIdx}`}
-                                                  className="chat-message-generation-error"
-                                                  role="status"
-                                                >
-                                                  <AlertCircle size={14} aria-hidden="true" />
-                                                  <span>Generation failed: {ev.content}</span>
-                                                </div>,
-                                              );
-                                            }
-                                          }
-                                        }
-                                        // Flush any trailing reasoning
-                                        flushReasoning();
-
-                                        return result;
-                                      })()}
-                                    </>
-                                  ) : (
-                                    <>
-                                      {msg.role === 'user' ? (
-                                        <>
-                                          {(() => {
-                                            const { text, attachments } = parseMessageContent(
-                                              msg.content,
-                                            );
-                                            return (
-                                              <>
-                                                {attachments.length > 0 && (
-                                                  <MessageAttachments
-                                                    attachments={attachments}
-                                                    onImageClick={setModalImageUrl}
-                                                  />
-                                                )}
-                                                {text && (
-                                                  <div className="chat-message-text chat-message-user-text">
-                                                    <LinkifiedText text={text} />
-                                                  </div>
-                                                )}
-                                              </>
-                                            );
-                                          })()}
-                                        </>
-                                      ) : (
-                                        <div className="chat-message-text markdown-content">
-                                          <MemoizedMarkdown
-                                            content={parseMessageContent(msg.content).text}
-                                            conversationId={activeConversation.id}
-                                            workspaceId={workspaceId}
-                                            enableTableExports
-                                          />
-                                        </div>
-                                      )}
-                                    </>
-                                  )}
-                                  <div className="chat-message-footer">
-                                    <span className="chat-message-time">
-                                      {formatChatTimestamp(msg.timestamp)}
-                                    </span>
-                                  </div>
-                                </>
+                                <button
+                                  type="button"
+                                  className="chat-compaction-divider-label chat-compaction-divider-button"
+                                  onClick={() => openCompactionReview(marker)}
+                                  aria-label="Review chat compaction"
+                                >
+                                  Chat compacted
+                                </button>
                               )}
                             </div>
-                          </div>
-                          {/* Action bar — flat on pane background, outside the bubble */}
-                          {(() => {
-                            const isEditing = editingMessageIdx === idx;
-                            const activeBranchId = activeConversation.active_branch_id;
-                            const branchNav = hasBranches ? (
-                              <span className="chat-branch-nav-stack">
-                                {branchGroups.map((group) => {
-                                  const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
-                                  const storedLivePathBranch =
-                                    group.branches.find((b) => !b.branch_kind) ?? null;
-                                  const hasLivePathOption = !storedLivePathBranch;
-                                  const allOptions = [
-                                    ...group.branches.map((b) => ({
-                                      id: b.id,
-                                      label: b.branch_kind
-                                        ? b.created_by_username || 'Branch'
-                                        : 'Current',
-                                    })),
-                                    ...(hasLivePathOption
-                                      ? [{ id: livePathOptionId, label: 'Current' }]
-                                      : []),
-                                  ];
-                                  const newestBranch =
-                                    group.branches.length > 0
-                                      ? group.branches[group.branches.length - 1]
-                                      : null;
-                                  const inferredCurrentBranchId =
-                                    newestBranch?.parent_branch_id ?? null;
-                                  const branchIdsInGroup = new Set(group.branches.map((b) => b.id));
-                                  let lineageBranchId: string | null = null;
-                                  if (activeBranchId) {
-                                    const visited = new Set<string>();
-                                    let curr: string | null = activeBranchId;
-                                    while (curr && !visited.has(curr)) {
-                                      visited.add(curr);
-                                      if (branchIdsInGroup.has(curr)) {
-                                        lineageBranchId = curr;
-                                        break;
-                                      }
-                                      const parent = branchesById.get(curr);
-                                      curr = parent?.parent_branch_id ?? null;
-                                    }
-                                  }
-
-                                  let matchIdx = lineageBranchId
-                                    ? allOptions.findIndex((o) => o.id === lineageBranchId)
-                                    : -1;
-                                  if (matchIdx < 0 && !activeBranchId) {
-                                    if (hasLivePathOption) {
-                                      matchIdx = allOptions.findIndex(
-                                        (o) => o.id === livePathOptionId,
-                                      );
-                                    } else if (storedLivePathBranch) {
-                                      // active_branch_id=null is the authoritative live path.
-                                      // A saved branch_kind=null row can be an older stashed
-                                      // Current path, so after edit/replay branch creation the
-                                      // live UI should snap to the newest option instead of
-                                      // reselecting that older stored row.
-                                      matchIdx = allOptions.length - 1;
-                                    }
-                                  }
-                                  if (matchIdx < 0 && branchSelections[group.selectionKey]) {
-                                    matchIdx = allOptions.findIndex(
-                                      (o) => o.id === branchSelections[group.selectionKey],
-                                    );
-                                  }
-                                  if (matchIdx < 0 && inferredCurrentBranchId) {
-                                    matchIdx = allOptions.findIndex(
-                                      (o) => o.id === inferredCurrentBranchId,
-                                    );
-                                  }
-                                  const currentOptionIdx =
-                                    matchIdx >= 0 ? matchIdx : allOptions.length - 1;
-                                  const isBranchSearchAnchor =
-                                    branchSearchAnchorHint?.conversationId ===
-                                      activeConversation.id &&
-                                    branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
-
-                                  return (
-                                    <span
-                                      key={group.selectionKey}
-                                      className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
-                                      title={
-                                        isBranchSearchAnchor
-                                          ? 'Branch search match is anchored here'
-                                          : undefined
-                                      }
-                                    >
-                                      <button
-                                        className="chat-branch-nav-btn"
-                                        onClick={() => {
-                                          if (currentOptionIdx > 0 && !branchSwitching)
-                                            switchBranch(allOptions[currentOptionIdx - 1].id);
-                                        }}
-                                        disabled={currentOptionIdx <= 0 || branchSwitching}
-                                        aria-label="Previous branch"
-                                      >
-                                        <ChevronLeft size={12} />
-                                      </button>
-                                      <span className="chat-branch-nav-label">
-                                        {currentOptionIdx + 1}/{allOptions.length}
+                          );
+                        }
+                        const branchGroups = branchGroupsByIndex.get(idx) ?? [];
+                        const hasBranches = branchGroups.length > 0;
+                        const msgKey = `msg-${idx}`;
+                        const navigatorEntryKey =
+                          msg.role === 'user' ? getChatMessageNavigatorEntryKey(msg, idx) : null;
+                        return (
+                          <div
+                            key={msgKey}
+                            className={`chat-branch-wrapper chat-branch-wrapper-${msg.role}${hasBranches ? ' chat-branch-wrapper-has-branches' : ''}`}
+                            ref={
+                              navigatorEntryKey
+                                ? getUserMessageWrapperRef(navigatorEntryKey)
+                                : undefined
+                            }
+                          >
+                            <div className={`chat-message chat-message-${msg.role}`}>
+                              <div
+                                className="chat-message-content"
+                                key={editingMessageIdx === idx ? 'editing' : 'viewing'}
+                              >
+                                {editingMessageIdx === idx ? (
+                                  <>
+                                    <RichChatInput
+                                      ref={editRichInputRef}
+                                      segments={editMessageSegments}
+                                      onChange={handleEditSegmentsChange}
+                                      onSubmit={submitEditMessage}
+                                      onCancel={cancelEditMessage}
+                                      onFocus={() => {
+                                        activeComposerRef.current = 'edit';
+                                      }}
+                                      onRemoveReference={handleRemoveEditReference}
+                                      onOpenReference={onOpenContextReference}
+                                      className="chat-message-text chat-message-user-text chat-edit-input"
+                                      ariaLabel="Edit message"
+                                    />
+                                    <div className="chat-message-footer">
+                                      <span className="chat-message-time">
+                                        {formatChatTimestamp(msg.timestamp)}
                                       </span>
-                                      <button
-                                        className="chat-branch-nav-btn"
-                                        onClick={() => {
-                                          if (
-                                            currentOptionIdx < allOptions.length - 1 &&
-                                            !branchSwitching
-                                          )
-                                            switchBranch(allOptions[currentOptionIdx + 1].id);
-                                        }}
-                                        disabled={
-                                          currentOptionIdx >= allOptions.length - 1 ||
-                                          branchSwitching
-                                        }
-                                        aria-label="Next branch"
-                                      >
-                                        <ChevronRight size={12} />
-                                      </button>
-                                    </span>
-                                  );
-                                })}
-                              </span>
-                            ) : null;
-
-                            const isCopied = copiedMessageIdx === idx;
-                            // Only show the restore banner on the branch-point message for the active branch
-                            const showBanner =
-                              inputBanner &&
-                              activeBranchId &&
-                              branchGroups.some((group) =>
-                                group.branches.some((b) => b.id === activeBranchId),
-                              );
-
-                            if (msg.role === 'user') {
-                              return (
-                                <>
-                                  {isEditing && editMessageAttachments.length > 0 && (
-                                    <div className="chat-edit-preview-list">
-                                      {editMessageAttachments.map((att) => (
-                                        <div key={att.id} className="attachment-item">
-                                          {att.type === 'image' && att.preview ? (
-                                            <div className="attachment-image-preview">
-                                              <img src={att.preview} alt={att.name} />
-                                            </div>
-                                          ) : (
-                                            <div className="attachment-file-preview">
-                                              {att.filePath ? (
-                                                <Link size={20} />
-                                              ) : (
-                                                <FileText size={20} />
-                                              )}
-                                            </div>
-                                          )}
-                                          <div className="attachment-info">
-                                            <span className="attachment-name" title={att.name}>
-                                              {att.name}
-                                            </span>
-                                            <span className="attachment-size">
-                                              {formatAttachmentSize(att.size)}
-                                            </span>
-                                          </div>
-                                          <button
-                                            type="button"
-                                            className="attachment-remove"
-                                            onClick={() =>
-                                              setEditMessageAttachments(
-                                                editMessageAttachments.filter(
-                                                  (a) => a.id !== att.id,
-                                                ),
-                                              )
-                                            }
-                                          >
-                                            <X size={16} />
-                                          </button>
-                                        </div>
-                                      ))}
                                     </div>
-                                  )}
-                                  <div
-                                    className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}
-                                  >
-                                    {isEditing ? (
+                                  </>
+                                ) : (
+                                  <>
+                                    {/* Render chronological events if available */}
+                                    {msg.role === 'assistant' &&
+                                    msg.events &&
+                                    msg.events.length > 0 ? (
                                       <>
-                                        <span className="chat-message-actions-spacer" />
-                                        <button
-                                          className="chat-action-text-btn primary"
-                                          onClick={submitEditMessage}
-                                          disabled={isSubmittingEdit}
-                                        >
-                                          Send
-                                        </button>
-                                        <button
-                                          className="chat-action-text-btn"
-                                          onClick={cancelEditMessage}
-                                        >
-                                          Cancel
-                                        </button>
-                                        <div className="chat-edit-attachments-wrapper">
-                                          <FileAttachment
-                                            attachments={editMessageAttachments}
-                                            onAttachmentsChange={setEditMessageAttachments}
-                                            conversationId={activeConversation?.id}
-                                            workspaceId={workspaceId}
-                                          />
-                                        </div>
+                                        {(() => {
+                                          // Render events chronologically, merging only ADJACENT reasoning events
+                                          const result: React.ReactNode[] = [];
+                                          let pendingReasoning = '';
+                                          let pendingReasoningParts: ReasoningPart[] = [];
+                                          let pendingReasoningDurationSeconds: number | undefined;
+                                          let reasoningBlockCount = 0;
+
+                                          const flushReasoning = () => {
+                                            if (!pendingReasoning) return;
+                                            reasoningBlockCount++;
+                                            result.push(
+                                              <ReasoningDisplay
+                                                key={`reasoning-${reasoningBlockCount}`}
+                                                content={pendingReasoning}
+                                                isComplete={true}
+                                                parts={
+                                                  pendingReasoningParts.length > 0
+                                                    ? pendingReasoningParts
+                                                    : undefined
+                                                }
+                                                durationSeconds={pendingReasoningDurationSeconds}
+                                                showToolCalls={showToolCalls}
+                                                workspaceId={workspaceId}
+                                                conversationId={activeConversation.id}
+                                                onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                inChatSearchQuery={
+                                                  inChatSearchOpen ? inChatSearchTrimmedQuery : ''
+                                                }
+                                                inChatSearchOptions={activeInChatSearchOptions}
+                                              />,
+                                            );
+                                            pendingReasoning = '';
+                                            pendingReasoningParts = [];
+                                            pendingReasoningDurationSeconds = undefined;
+                                          };
+
+                                          for (let evIdx = 0; evIdx < msg.events.length; evIdx++) {
+                                            const ev = msg.events[evIdx];
+                                            const channel = getChatEventChannel(ev);
+                                            const reasoningContent = getReasoningEventContent(ev);
+                                            if (channel === 'analysis' && reasoningContent) {
+                                              // Accumulate adjacent reasoning
+                                              pendingReasoning +=
+                                                (pendingReasoning ? '\n\n' : '') + reasoningContent;
+                                              const durationSeconds =
+                                                getReasoningEventDurationSeconds(ev);
+                                              if (typeof durationSeconds === 'number') {
+                                                pendingReasoningDurationSeconds = durationSeconds;
+                                              }
+                                              const lastPart =
+                                                pendingReasoningParts[
+                                                  pendingReasoningParts.length - 1
+                                                ];
+                                              if (lastPart && lastPart.type === 'text') {
+                                                lastPart.text =
+                                                  (lastPart.text || '') +
+                                                  (lastPart.text ? '\n\n' : '') +
+                                                  reasoningContent;
+                                              } else {
+                                                pendingReasoningParts.push({
+                                                  type: 'text',
+                                                  text: reasoningContent,
+                                                });
+                                              }
+                                            } else if (
+                                              channel === 'commentary' &&
+                                              ev.type === 'tool' &&
+                                              pendingReasoning &&
+                                              ev.tool !== SUBAGENT_HANDOFF_TOOL_ID &&
+                                              ev.tool !== WORKSPACE_SUBAGENTS_TOOL_ID &&
+                                              !isVisualizationToolName(ev.tool)
+                                            ) {
+                                              pendingReasoningParts.push({
+                                                type: 'tool',
+                                                toolCall: {
+                                                  tool: ev.tool,
+                                                  input: ev.input,
+                                                  output: ev.output,
+                                                  presentation: ev.presentation,
+                                                  connection: ev.connection,
+                                                  mcp: ev.mcp,
+                                                  status: 'complete' as const,
+                                                },
+                                              });
+                                            } else {
+                                              // Final content and visualization artifacts break reasoning adjacency.
+                                              flushReasoning();
+                                              // The subagent handoff is rendered inside the
+                                              // spawn_subagents subagent card (subagent-handoff-output
+                                              // container); never duplicate it as a standalone card in
+                                              // the parent's own message.
+                                              if (
+                                                ev.type === 'tool' &&
+                                                ev.tool === SUBAGENT_HANDOFF_TOOL_ID
+                                              ) {
+                                                continue;
+                                              }
+                                              if (
+                                                channel === 'commentary' &&
+                                                ev.type === 'tool' &&
+                                                showToolCalls
+                                              ) {
+                                                const toolCall = {
+                                                  tool: ev.tool,
+                                                  input: ev.input,
+                                                  output: ev.output,
+                                                  presentation: ev.presentation,
+                                                  connection: ev.connection,
+                                                  mcp: ev.mcp,
+                                                  status: 'complete' as const,
+                                                };
+                                                if (ev.tool === WORKSPACE_SUBAGENTS_TOOL_ID) {
+                                                  result.push(
+                                                    <ToolCallDisplay
+                                                      key={`event-${evIdx}`}
+                                                      toolCall={toolCall}
+                                                      defaultExpanded={false}
+                                                      conversationId={activeConversation.id}
+                                                      workspaceId={workspaceId}
+                                                      siblingEvents={msg.events}
+                                                      messageId={msg.message_id}
+                                                      messageIndex={idx}
+                                                      eventIndex={evIdx}
+                                                      onLiveVisualizationRefreshSuccess={
+                                                        handleLiveVisualizationRefreshSuccess
+                                                      }
+                                                      onVisualizationDisplayError={
+                                                        toastActions.error
+                                                      }
+                                                      onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                      onOpenSubagentConversation={
+                                                        openSubagentConversation
+                                                      }
+                                                      inChatSearchQuery={
+                                                        inChatSearchOpen
+                                                          ? inChatSearchTrimmedQuery
+                                                          : ''
+                                                      }
+                                                      inChatSearchOptions={
+                                                        activeInChatSearchOptions
+                                                      }
+                                                    />,
+                                                  );
+                                                  continue;
+                                                }
+                                                result.push(
+                                                  <div
+                                                    key={`event-${evIdx}`}
+                                                    className="chat-tool-calls"
+                                                  >
+                                                    <ToolCallDisplay
+                                                      toolCall={toolCall}
+                                                      defaultExpanded={false}
+                                                      conversationId={activeConversation.id}
+                                                      workspaceId={workspaceId}
+                                                      siblingEvents={msg.events}
+                                                      messageId={msg.message_id}
+                                                      messageIndex={idx}
+                                                      eventIndex={evIdx}
+                                                      onLiveVisualizationRefreshSuccess={
+                                                        handleLiveVisualizationRefreshSuccess
+                                                      }
+                                                      onVisualizationDisplayError={
+                                                        toastActions.error
+                                                      }
+                                                      onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                                      inChatSearchQuery={
+                                                        inChatSearchOpen
+                                                          ? inChatSearchTrimmedQuery
+                                                          : ''
+                                                      }
+                                                      inChatSearchOptions={
+                                                        activeInChatSearchOptions
+                                                      }
+                                                    />
+                                                  </div>,
+                                                );
+                                              } else if (
+                                                channel === 'final' &&
+                                                ev.type === 'content'
+                                              ) {
+                                                result.push(
+                                                  <div
+                                                    key={`event-${evIdx}`}
+                                                    className="chat-message-text markdown-content"
+                                                  >
+                                                    <MemoizedMarkdown
+                                                      content={ev.content}
+                                                      conversationId={activeConversation.id}
+                                                      workspaceId={workspaceId}
+                                                      enableTableExports
+                                                    />
+                                                  </div>,
+                                                );
+                                              } else if (ev.type === 'error') {
+                                                result.push(
+                                                  <div
+                                                    key={`event-${evIdx}`}
+                                                    className="chat-message-generation-error"
+                                                    role="status"
+                                                  >
+                                                    <AlertCircle size={14} aria-hidden="true" />
+                                                    <span>Generation failed: {ev.content}</span>
+                                                  </div>,
+                                                );
+                                              }
+                                            }
+                                          }
+                                          // Flush any trailing reasoning
+                                          flushReasoning();
+
+                                          return result;
+                                        })()}
                                       </>
                                     ) : (
+                                      <>
+                                        {msg.role === 'user' ? (
+                                          <>
+                                            {(() => {
+                                              const { text, attachments } = parseMessageContent(
+                                                msg.content,
+                                              );
+                                              return (
+                                                <>
+                                                  {attachments.length > 0 && (
+                                                    <MessageAttachments
+                                                      attachments={attachments}
+                                                      onImageClick={setModalImageUrl}
+                                                    />
+                                                  )}
+                                                  {text && (
+                                                    <div className="chat-message-text chat-message-user-text">
+                                                      <LinkifiedText text={text} />
+                                                    </div>
+                                                  )}
+                                                </>
+                                              );
+                                            })()}
+                                          </>
+                                        ) : (
+                                          <div className="chat-message-text markdown-content">
+                                            <MemoizedMarkdown
+                                              content={parseMessageContent(msg.content).text}
+                                              conversationId={activeConversation.id}
+                                              workspaceId={workspaceId}
+                                              enableTableExports
+                                            />
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                    <div className="chat-message-footer">
+                                      <span className="chat-message-time">
+                                        {formatChatTimestamp(msg.timestamp)}
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            {/* Action bar — flat on pane background, outside the bubble */}
+                            {(() => {
+                              const isEditing = editingMessageIdx === idx;
+                              const activeBranchId = activeConversation.active_branch_id;
+                              const branchNav = hasBranches ? (
+                                <span className="chat-branch-nav-stack">
+                                  {branchGroups.map((group) => {
+                                    const livePathOptionId = `__current__:${group.sourceBranchPointIndex}`;
+                                    const storedLivePathBranch =
+                                      group.branches.find((b) => !b.branch_kind) ?? null;
+                                    const hasLivePathOption = !storedLivePathBranch;
+                                    const allOptions = [
+                                      ...group.branches.map((b) => ({
+                                        id: b.id,
+                                        label: b.branch_kind
+                                          ? b.created_by_username || 'Branch'
+                                          : 'Current',
+                                      })),
+                                      ...(hasLivePathOption
+                                        ? [{ id: livePathOptionId, label: 'Current' }]
+                                        : []),
+                                    ];
+                                    const newestBranch =
+                                      group.branches.length > 0
+                                        ? group.branches[group.branches.length - 1]
+                                        : null;
+                                    const inferredCurrentBranchId =
+                                      newestBranch?.parent_branch_id ?? null;
+                                    const branchIdsInGroup = new Set(
+                                      group.branches.map((b) => b.id),
+                                    );
+                                    let lineageBranchId: string | null = null;
+                                    if (activeBranchId) {
+                                      const visited = new Set<string>();
+                                      let curr: string | null = activeBranchId;
+                                      while (curr && !visited.has(curr)) {
+                                        visited.add(curr);
+                                        if (branchIdsInGroup.has(curr)) {
+                                          lineageBranchId = curr;
+                                          break;
+                                        }
+                                        const parent = branchesById.get(curr);
+                                        curr = parent?.parent_branch_id ?? null;
+                                      }
+                                    }
+
+                                    let matchIdx = lineageBranchId
+                                      ? allOptions.findIndex((o) => o.id === lineageBranchId)
+                                      : -1;
+                                    if (matchIdx < 0 && !activeBranchId) {
+                                      if (hasLivePathOption) {
+                                        matchIdx = allOptions.findIndex(
+                                          (o) => o.id === livePathOptionId,
+                                        );
+                                      } else if (storedLivePathBranch) {
+                                        // active_branch_id=null is the authoritative live path.
+                                        // A saved branch_kind=null row can be an older stashed
+                                        // Current path, so after edit/replay branch creation the
+                                        // live UI should snap to the newest option instead of
+                                        // reselecting that older stored row.
+                                        matchIdx = allOptions.length - 1;
+                                      }
+                                    }
+                                    if (matchIdx < 0 && branchSelections[group.selectionKey]) {
+                                      matchIdx = allOptions.findIndex(
+                                        (o) => o.id === branchSelections[group.selectionKey],
+                                      );
+                                    }
+                                    if (matchIdx < 0 && inferredCurrentBranchId) {
+                                      matchIdx = allOptions.findIndex(
+                                        (o) => o.id === inferredCurrentBranchId,
+                                      );
+                                    }
+                                    const currentOptionIdx =
+                                      matchIdx >= 0 ? matchIdx : allOptions.length - 1;
+                                    const isBranchSearchAnchor =
+                                      branchSearchAnchorHint?.conversationId ===
+                                        activeConversation.id &&
+                                      branchSearchMatchTargetsGroup(branchSearchAnchorHint, group);
+
+                                    return (
+                                      <span
+                                        key={group.selectionKey}
+                                        className={`chat-branch-nav${isBranchSearchAnchor ? ' chat-branch-nav-search-highlight' : ''}`}
+                                        title={
+                                          isBranchSearchAnchor
+                                            ? 'Branch search match is anchored here'
+                                            : undefined
+                                        }
+                                      >
+                                        <button
+                                          className="chat-branch-nav-btn"
+                                          onClick={() => {
+                                            if (currentOptionIdx > 0 && !branchSwitching)
+                                              switchBranch(allOptions[currentOptionIdx - 1].id);
+                                          }}
+                                          disabled={currentOptionIdx <= 0 || branchSwitching}
+                                          aria-label="Previous branch"
+                                        >
+                                          <ChevronLeft size={12} />
+                                        </button>
+                                        <span className="chat-branch-nav-label">
+                                          {currentOptionIdx + 1}/{allOptions.length}
+                                        </span>
+                                        <button
+                                          className="chat-branch-nav-btn"
+                                          onClick={() => {
+                                            if (
+                                              currentOptionIdx < allOptions.length - 1 &&
+                                              !branchSwitching
+                                            )
+                                              switchBranch(allOptions[currentOptionIdx + 1].id);
+                                          }}
+                                          disabled={
+                                            currentOptionIdx >= allOptions.length - 1 ||
+                                            branchSwitching
+                                          }
+                                          aria-label="Next branch"
+                                        >
+                                          <ChevronRight size={12} />
+                                        </button>
+                                      </span>
+                                    );
+                                  })}
+                                </span>
+                              ) : null;
+
+                              const isCopied = copiedMessageIdx === idx;
+                              // Only show the restore banner on the branch-point message for the active branch
+                              const showBanner =
+                                inputBanner &&
+                                activeBranchId &&
+                                branchGroups.some((group) =>
+                                  group.branches.some((b) => b.id === activeBranchId),
+                                );
+
+                              if (msg.role === 'user') {
+                                return (
+                                  <>
+                                    {isEditing && editMessageAttachments.length > 0 && (
+                                      <div className="chat-edit-preview-list">
+                                        {editMessageAttachments.map((att) => (
+                                          <div key={att.id} className="attachment-item">
+                                            {att.type === 'image' && att.preview ? (
+                                              <div className="attachment-image-preview">
+                                                <img src={att.preview} alt={att.name} />
+                                              </div>
+                                            ) : (
+                                              <div className="attachment-file-preview">
+                                                {att.filePath ? (
+                                                  <Link size={20} />
+                                                ) : (
+                                                  <FileText size={20} />
+                                                )}
+                                              </div>
+                                            )}
+                                            <div className="attachment-info">
+                                              <span className="attachment-name" title={att.name}>
+                                                {att.name}
+                                              </span>
+                                              <span className="attachment-size">
+                                                {formatAttachmentSize(att.size)}
+                                              </span>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="attachment-remove"
+                                              onClick={() =>
+                                                setEditMessageAttachments(
+                                                  editMessageAttachments.filter(
+                                                    (a) => a.id !== att.id,
+                                                  ),
+                                                )
+                                              }
+                                            >
+                                              <X size={16} />
+                                            </button>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div
+                                      className={`chat-message-actions chat-message-actions-right${isEditing ? ' visible' : ''}`}
+                                    >
+                                      {isEditing ? (
+                                        <>
+                                          <span className="chat-message-actions-spacer" />
+                                          <button
+                                            className="chat-action-text-btn primary"
+                                            onClick={submitEditMessage}
+                                            disabled={isSubmittingEdit}
+                                          >
+                                            Send
+                                          </button>
+                                          <button
+                                            className="chat-action-text-btn"
+                                            onClick={cancelEditMessage}
+                                          >
+                                            Cancel
+                                          </button>
+                                          <div className="chat-edit-attachments-wrapper">
+                                            <FileAttachment
+                                              attachments={editMessageAttachments}
+                                              onAttachmentsChange={setEditMessageAttachments}
+                                              conversationId={activeConversation?.id}
+                                              workspaceId={workspaceId}
+                                            />
+                                          </div>
+                                        </>
+                                      ) : (
+                                        <span className="chat-message-hover-actions">
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => copyMessageText(idx, msg.content)}
+                                            title={isCopied ? 'Copied!' : 'Copy message'}
+                                          >
+                                            {isCopied ? <Check size={12} /> : <Copy size={12} />}
+                                          </button>
+                                          {!isStreaming && !isReadOnly && (
+                                            <button
+                                              className="chat-action-icon-btn"
+                                              onClick={() => {
+                                                const parsed = parseMessageContent(msg.content);
+                                                startEditMessage(
+                                                  idx,
+                                                  parsed.text,
+                                                  parsed.attachments,
+                                                );
+                                              }}
+                                              title="Edit and resend"
+                                            >
+                                              <Pencil size={12} />
+                                            </button>
+                                          )}
+                                          {!isStreaming && !isReadOnly && (
+                                            <button
+                                              className="chat-action-icon-btn"
+                                              onClick={() => replayFromMessage(idx)}
+                                              title="Replay from this message"
+                                            >
+                                              <RefreshCw size={12} />
+                                            </button>
+                                          )}
+                                          {!isStreaming && !isReadOnly && (
+                                            <button
+                                              className="chat-action-icon-btn"
+                                              onClick={() =>
+                                                setPendingDeleteIdx(
+                                                  pendingDeleteIdx === idx ? null : idx,
+                                                )
+                                              }
+                                              title={
+                                                msg.snapshot_restore
+                                                  ? 'Delete message and restore workspace snapshot'
+                                                  : 'Delete message'
+                                              }
+                                            >
+                                              <Trash2 size={12} />
+                                            </button>
+                                          )}
+                                          {canShareConversation &&
+                                            !embedded &&
+                                            onShareConversationAtMessage && (
+                                              <button
+                                                className="chat-action-icon-btn"
+                                                onClick={() => onShareConversationAtMessage(idx)}
+                                                title="Share chat from this message"
+                                                aria-label="Share chat from this message"
+                                              >
+                                                <Share2 size={12} />
+                                              </button>
+                                            )}
+                                        </span>
+                                      )}
+                                      {branchNav}
+                                    </div>
+                                    {pendingDeleteIdx === idx && (
+                                      <div className="chat-message-banner-row chat-message-banner-row-right">
+                                        <div className="chat-branch-restore-banner">
+                                          <span>
+                                            {msg.snapshot_restore
+                                              ? 'Delete message and restore workspace snapshot?'
+                                              : 'Delete this message and all messages after it?'}
+                                          </span>
+                                          <button
+                                            className="chat-branch-restore-btn confirm"
+                                            onClick={() => {
+                                              setPendingDeleteIdx(null);
+                                              deleteFromMessage(idx);
+                                            }}
+                                          >
+                                            Confirm
+                                          </button>
+                                          <button
+                                            className="chat-branch-restore-btn dismiss"
+                                            onClick={() => setPendingDeleteIdx(null)}
+                                          >
+                                            Cancel
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {showBanner && (
+                                      <div className="chat-message-banner-row chat-message-banner-row-right">
+                                        {inputBanner}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              } else {
+                                return (
+                                  <>
+                                    <div className="chat-message-actions chat-message-actions-left">
+                                      {branchNav}
+                                      {branchNav && (
+                                        <span className="chat-message-actions-spacer" />
+                                      )}
                                       <span className="chat-message-hover-actions">
                                         <button
                                           className="chat-action-icon-btn"
@@ -17971,22 +18333,6 @@ export function ChatPanel({
                                         >
                                           {isCopied ? <Check size={12} /> : <Copy size={12} />}
                                         </button>
-                                        {!isStreaming && !isReadOnly && (
-                                          <button
-                                            className="chat-action-icon-btn"
-                                            onClick={() => {
-                                              const parsed = parseMessageContent(msg.content);
-                                              startEditMessage(
-                                                idx,
-                                                parsed.text,
-                                                parsed.attachments,
-                                              );
-                                            }}
-                                            title="Edit and resend"
-                                          >
-                                            <Pencil size={12} />
-                                          </button>
-                                        )}
                                         {!isStreaming && !isReadOnly && (
                                           <button
                                             className="chat-action-icon-btn"
@@ -18006,11 +18352,20 @@ export function ChatPanel({
                                             }
                                             title={
                                               msg.snapshot_restore
-                                                ? 'Delete message and restore workspace snapshot'
-                                                : 'Delete message'
+                                                ? 'Delete reply and restore workspace snapshot'
+                                                : 'Delete reply'
                                             }
                                           >
                                             <Trash2 size={12} />
+                                          </button>
+                                        )}
+                                        {showPromptDebugButton && (
+                                          <button
+                                            className="chat-action-icon-btn"
+                                            onClick={() => openPromptDebugForAssistantMessage(idx)}
+                                            title="Open prompt debug for this assistant reply"
+                                          >
+                                            <Bug size={12} />
                                           </button>
                                         )}
                                         {canShareConversation &&
@@ -18026,315 +18381,230 @@ export function ChatPanel({
                                             </button>
                                           )}
                                       </span>
-                                    )}
-                                    {branchNav}
-                                  </div>
-                                  {pendingDeleteIdx === idx && (
-                                    <div className="chat-message-banner-row chat-message-banner-row-right">
-                                      <div className="chat-branch-restore-banner">
-                                        <span>
-                                          {msg.snapshot_restore
-                                            ? 'Delete message and restore workspace snapshot?'
-                                            : 'Delete this message and all messages after it?'}
-                                        </span>
-                                        <button
-                                          className="chat-branch-restore-btn confirm"
-                                          onClick={() => {
-                                            setPendingDeleteIdx(null);
-                                            deleteFromMessage(idx);
-                                          }}
-                                        >
-                                          Confirm
-                                        </button>
-                                        <button
-                                          className="chat-branch-restore-btn dismiss"
-                                          onClick={() => setPendingDeleteIdx(null)}
-                                        >
-                                          Cancel
-                                        </button>
-                                      </div>
                                     </div>
-                                  )}
-                                  {showBanner && (
-                                    <div className="chat-message-banner-row chat-message-banner-row-right">
-                                      {inputBanner}
-                                    </div>
-                                  )}
-                                </>
-                              );
-                            } else {
-                              return (
-                                <>
-                                  <div className="chat-message-actions chat-message-actions-left">
-                                    {branchNav}
-                                    {branchNav && <span className="chat-message-actions-spacer" />}
-                                    <span className="chat-message-hover-actions">
-                                      <button
-                                        className="chat-action-icon-btn"
-                                        onClick={() => copyMessageText(idx, msg.content)}
-                                        title={isCopied ? 'Copied!' : 'Copy message'}
-                                      >
-                                        {isCopied ? <Check size={12} /> : <Copy size={12} />}
-                                      </button>
-                                      {!isStreaming && !isReadOnly && (
-                                        <button
-                                          className="chat-action-icon-btn"
-                                          onClick={() => replayFromMessage(idx)}
-                                          title="Replay from this message"
-                                        >
-                                          <RefreshCw size={12} />
-                                        </button>
-                                      )}
-                                      {!isStreaming && !isReadOnly && (
-                                        <button
-                                          className="chat-action-icon-btn"
-                                          onClick={() =>
-                                            setPendingDeleteIdx(
-                                              pendingDeleteIdx === idx ? null : idx,
-                                            )
-                                          }
-                                          title={
-                                            msg.snapshot_restore
-                                              ? 'Delete reply and restore workspace snapshot'
-                                              : 'Delete reply'
-                                          }
-                                        >
-                                          <Trash2 size={12} />
-                                        </button>
-                                      )}
-                                      {showPromptDebugButton && (
-                                        <button
-                                          className="chat-action-icon-btn"
-                                          onClick={() => openPromptDebugForAssistantMessage(idx)}
-                                          title="Open prompt debug for this assistant reply"
-                                        >
-                                          <Bug size={12} />
-                                        </button>
-                                      )}
-                                      {canShareConversation &&
-                                        !embedded &&
-                                        onShareConversationAtMessage && (
+                                    {pendingDeleteIdx === idx && (
+                                      <div className="chat-message-banner-row chat-message-banner-row-left">
+                                        <div className="chat-branch-restore-banner">
+                                          <span>
+                                            {msg.snapshot_restore
+                                              ? 'Delete reply and restore workspace snapshot?'
+                                              : 'Delete this reply and all messages after it?'}
+                                          </span>
                                           <button
-                                            className="chat-action-icon-btn"
-                                            onClick={() => onShareConversationAtMessage(idx)}
-                                            title="Share chat from this message"
-                                            aria-label="Share chat from this message"
+                                            className="chat-branch-restore-btn confirm"
+                                            onClick={() => {
+                                              setPendingDeleteIdx(null);
+                                              deleteFromMessage(idx);
+                                            }}
                                           >
-                                            <Share2 size={12} />
+                                            Confirm
                                           </button>
+                                          <button
+                                            className="chat-branch-restore-btn dismiss"
+                                            onClick={() => setPendingDeleteIdx(null)}
+                                          >
+                                            Cancel
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                    {showBanner && (
+                                      <div className="chat-message-banner-row chat-message-banner-row-left">
+                                        {inputBanner}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              }
+                            })()}
+                          </div>
+                        );
+                      })}
+
+                      {queuedCompactionMessage?.conversationId === activeConversation.id && (
+                        <>
+                          <div className="chat-compaction-divider chat-compaction-divider-pending">
+                            {queuedCompactionMessage.compactionStatus === 'compacted' ? (
+                              <button
+                                type="button"
+                                className="chat-compaction-divider-label chat-compaction-divider-button"
+                                onClick={() => openCompactionReview(latestCompactionReviewMarker)}
+                                disabled={!latestCompactionReviewMarker}
+                                aria-label="Review chat compaction"
+                              >
+                                Chat compacted
+                              </button>
+                            ) : (
+                              <span className="chat-compaction-divider-label">Chat compacting</span>
+                            )}
+                          </div>
+                          {(queuedCompactionMessage.displayContent ||
+                            queuedCompactionMessage.attachments.length > 0) && (
+                            <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
+                              <div className="chat-message chat-message-user chat-message-queued">
+                                <div className="chat-message-content">
+                                  {(() => {
+                                    const { text, attachments: queuedAttachments } =
+                                      parseMessageContent(queuedCompactionMessage.displayContent);
+                                    return (
+                                      <>
+                                        {queuedAttachments.length > 0 && (
+                                          <MessageAttachments
+                                            attachments={queuedAttachments}
+                                            onImageClick={setModalImageUrl}
+                                          />
                                         )}
+                                        {text && (
+                                          <div className="chat-message-text chat-message-user-text">
+                                            <LinkifiedText text={text} />
+                                          </div>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
+                                  <div className="chat-message-footer">
+                                    <span className="chat-message-time">
+                                      {formatChatTimestamp(queuedCompactionMessage.timestamp)}
                                     </span>
                                   </div>
-                                  {pendingDeleteIdx === idx && (
-                                    <div className="chat-message-banner-row chat-message-banner-row-left">
-                                      <div className="chat-branch-restore-banner">
-                                        <span>
-                                          {msg.snapshot_restore
-                                            ? 'Delete reply and restore workspace snapshot?'
-                                            : 'Delete this reply and all messages after it?'}
-                                        </span>
-                                        <button
-                                          className="chat-branch-restore-btn confirm"
-                                          onClick={() => {
-                                            setPendingDeleteIdx(null);
-                                            deleteFromMessage(idx);
-                                          }}
-                                        >
-                                          Confirm
-                                        </button>
-                                        <button
-                                          className="chat-branch-restore-btn dismiss"
-                                          onClick={() => setPendingDeleteIdx(null)}
-                                        >
-                                          Cancel
-                                        </button>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {showBanner && (
-                                    <div className="chat-message-banner-row chat-message-banner-row-left">
-                                      {inputBanner}
-                                    </div>
-                                  )}
-                                </>
-                              );
-                            }
-                          })()}
-                        </div>
-                      );
-                    })}
-
-                    {queuedCompactionMessage?.conversationId === activeConversation.id && (
-                      <>
-                        <div className="chat-compaction-divider chat-compaction-divider-pending">
-                          {queuedCompactionMessage.compactionStatus === 'compacted' ? (
-                            <button
-                              type="button"
-                              className="chat-compaction-divider-label chat-compaction-divider-button"
-                              onClick={() => openCompactionReview(latestCompactionReviewMarker)}
-                              disabled={!latestCompactionReviewMarker}
-                              aria-label="Review chat compaction"
-                            >
-                              Chat compacted
-                            </button>
-                          ) : (
-                            <span className="chat-compaction-divider-label">Chat compacting</span>
-                          )}
-                        </div>
-                        {(queuedCompactionMessage.displayContent ||
-                          queuedCompactionMessage.attachments.length > 0) && (
-                          <div className="chat-branch-wrapper chat-branch-wrapper-user chat-branch-wrapper-queued">
-                            <div className="chat-message chat-message-user chat-message-queued">
-                              <div className="chat-message-content">
-                                {(() => {
-                                  const { text, attachments: queuedAttachments } =
-                                    parseMessageContent(queuedCompactionMessage.displayContent);
-                                  return (
-                                    <>
-                                      {queuedAttachments.length > 0 && (
-                                        <MessageAttachments
-                                          attachments={queuedAttachments}
-                                          onImageClick={setModalImageUrl}
-                                        />
-                                      )}
-                                      {text && (
-                                        <div className="chat-message-text chat-message-user-text">
-                                          <LinkifiedText text={text} />
-                                        </div>
-                                      )}
-                                    </>
-                                  );
-                                })()}
-                                <div className="chat-message-footer">
-                                  <span className="chat-message-time">
-                                    {formatChatTimestamp(queuedCompactionMessage.timestamp)}
-                                  </span>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                        )}
-                      </>
-                    )}
+                          )}
+                        </>
+                      )}
 
-                    {/* Streaming assistant message - uses consolidated segments for performance */}
-                    {isStreamingForActiveConversation && consolidatedSegments.length > 0 && (
-                      <div className="chat-message chat-message-assistant chat-message-streaming-active">
-                        <div className="chat-message-content">
-                          {consolidatedSegments.map((segment, idx) => {
-                            if (
-                              idx === activeSubagentAnchorIndex &&
-                              segment.type === 'tool' &&
-                              segment.toolCall?.tool === WORKSPACE_SUBAGENTS_TOOL_ID
-                            ) {
-                              return (
-                                <div
-                                  key={`segment-${idx}-subagents`}
-                                  className="chat-subagent-active-runs"
-                                  aria-label="Subagents"
-                                >
-                                  {activeSubagentRuns.map((run) => (
-                                    <SubAgentStreamCard
-                                      key={run.taskId}
-                                      run={run}
-                                      workspaceId={workspaceId}
-                                      showToolCalls={showToolCalls}
-                                      onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                      onOpenSubagentConversation={openSubagentConversation}
-                                    />
-                                  ))}
-                                </div>
-                              );
-                            }
-
-                            return (
-                              <StreamingSegmentDisplay
-                                key={`segment-${idx}-${segment.type}`}
-                                segment={segment}
-                                showToolCalls={showToolCalls}
-                                workspaceId={workspaceId}
-                                conversationId={activeConversation.id}
-                                onOpenWorkspaceFile={onOpenWorkspaceFile}
-                                onOpenSubagentConversation={openSubagentConversation}
-                                inChatSearchQuery={inChatSearchOpen ? inChatSearchTrimmedQuery : ''}
-                                inChatSearchOptions={activeInChatSearchOptions}
-                              />
-                            );
-                          })}
-                          <div className="chat-message-streaming">
-                            {(() => {
-                              const runningTool = consolidatedSegments.find(
-                                (seg) => seg.type === 'tool' && seg.toolCall?.status === 'running',
-                              );
-                              if (runningTool && runningTool.type === 'tool') {
-                                const lines = runningTool.toolCall?.generating_lines;
-                                return lines
-                                  ? `Running tool... (${lines} lines)`
-                                  : 'Running tool...';
-                              }
-                              // Check for a tool that's being generated (has generating_lines but
-                              // hasn't started executing yet - no input means still generating args)
-                              const generatingTool = consolidatedSegments.find(
-                                (seg) =>
-                                  seg.type === 'tool' &&
-                                  !seg.toolCall?.input &&
-                                  seg.toolCall?.generating_lines,
-                              );
-                              if (generatingTool && generatingTool.type === 'tool') {
-                                return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
-                              }
+                      {/* Streaming assistant message - uses consolidated segments for performance */}
+                      {isStreamingForActiveConversation && consolidatedSegments.length > 0 && (
+                        <div className="chat-message chat-message-assistant chat-message-streaming-active">
+                          <div className="chat-message-content">
+                            {consolidatedSegments.map((segment, idx) => {
                               if (
-                                consolidatedSegments.some(
-                                  (seg) => seg.type === 'reasoning' && !seg.isComplete,
-                                )
+                                idx === activeSubagentAnchorIndex &&
+                                segment.type === 'tool' &&
+                                segment.toolCall?.tool === WORKSPACE_SUBAGENTS_TOOL_ID
                               ) {
-                                return 'Reasoning...';
+                                return (
+                                  <div
+                                    key={`segment-${idx}-subagents`}
+                                    className="chat-subagent-active-runs"
+                                    aria-label="Subagents"
+                                  >
+                                    {activeSubagentRuns.map((run) => (
+                                      <SubAgentStreamCard
+                                        key={run.taskId}
+                                        run={run}
+                                        workspaceId={workspaceId}
+                                        showToolCalls={showToolCalls}
+                                        onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                        onOpenSubagentConversation={openSubagentConversation}
+                                      />
+                                    ))}
+                                  </div>
+                                );
                               }
-                              return 'Generating...';
-                            })()}
+
+                              return (
+                                <StreamingSegmentDisplay
+                                  key={`segment-${idx}-${segment.type}`}
+                                  segment={segment}
+                                  showToolCalls={showToolCalls}
+                                  workspaceId={workspaceId}
+                                  conversationId={activeConversation.id}
+                                  onOpenWorkspaceFile={onOpenWorkspaceFile}
+                                  onOpenSubagentConversation={openSubagentConversation}
+                                  inChatSearchQuery={
+                                    inChatSearchOpen ? inChatSearchTrimmedQuery : ''
+                                  }
+                                  inChatSearchOptions={activeInChatSearchOptions}
+                                />
+                              );
+                            })}
+                            <div className="chat-message-streaming">
+                              {(() => {
+                                const runningTool = consolidatedSegments.find(
+                                  (seg) =>
+                                    seg.type === 'tool' && seg.toolCall?.status === 'running',
+                                );
+                                if (runningTool && runningTool.type === 'tool') {
+                                  const lines = runningTool.toolCall?.generating_lines;
+                                  return lines
+                                    ? `Running tool... (${lines} lines)`
+                                    : 'Running tool...';
+                                }
+                                // Check for a tool that's being generated (has generating_lines but
+                                // hasn't started executing yet - no input means still generating args)
+                                const generatingTool = consolidatedSegments.find(
+                                  (seg) =>
+                                    seg.type === 'tool' &&
+                                    !seg.toolCall?.input &&
+                                    seg.toolCall?.generating_lines,
+                                );
+                                if (generatingTool && generatingTool.type === 'tool') {
+                                  return `Generating... (${generatingTool.toolCall?.generating_lines} lines)`;
+                                }
+                                if (
+                                  consolidatedSegments.some(
+                                    (seg) => seg.type === 'reasoning' && !seg.isComplete,
+                                  )
+                                ) {
+                                  return 'Reasoning...';
+                                }
+                                return 'Generating...';
+                              })()}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Loading indicator - only when nothing is streaming yet */}
-                    {isStreamingForActiveConversation && consolidatedSegments.length === 0 && (
-                      <div className="chat-message chat-message-assistant">
-                        <div className="chat-message-content">
-                          <div className="chat-typing-indicator">
-                            <span></span>
-                            <span></span>
-                            <span></span>
+                      {/* Loading indicator - only when nothing is streaming yet */}
+                      {isStreamingForActiveConversation && consolidatedSegments.length === 0 && (
+                        <div className="chat-message chat-message-assistant">
+                          <div className="chat-message-content">
+                            <div className="chat-typing-indicator">
+                              <span></span>
+                              <span></span>
+                              <span></span>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
-                {!isStreaming &&
-                  activeConversation &&
-                  // Show continue when:
-                  // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
-                  // 2. OR there's an interrupted task (from server restart)
-                  ((activeConversation.messages.length > 0 &&
-                    activeConversation.messages[activeConversation.messages.length - 1].role ===
-                      'assistant' &&
-                    (hitMaxIterations || isConnectionError)) ||
-                    interruptedTask) &&
-                  !isReadOnly && (
-                    <div className="chat-continue-inline">
-                      <span className="chat-continue-text">
-                        Conversation interrupted,{' '}
-                        <button className="chat-continue-link" onClick={continueConversation}>
-                          continue?
-                        </button>
-                      </span>
-                    </div>
+                      )}
+                    </>
                   )}
 
-                <div ref={messagesEndRef} />
+                  {/* Continue prompt - shows for max iterations, connection error, or interrupted task */}
+                  {!isStreaming &&
+                    activeConversation &&
+                    // Show continue when:
+                    // 1. Last message is assistant AND (hitMaxIterations OR isConnectionError)
+                    // 2. OR there's an interrupted task (from server restart)
+                    ((activeConversation.messages.length > 0 &&
+                      activeConversation.messages[activeConversation.messages.length - 1].role ===
+                        'assistant' &&
+                      (hitMaxIterations || isConnectionError)) ||
+                      interruptedTask) &&
+                    !isReadOnly && (
+                      <div className="chat-continue-inline">
+                        <span className="chat-continue-text">
+                          Conversation interrupted,{' '}
+                          <button className="chat-continue-link" onClick={continueConversation}>
+                            continue?
+                          </button>
+                        </span>
+                      </div>
+                    )}
+
+                  <div ref={messagesEndRef} />
+                </div>
+                {!isConversationSwitchLoading &&
+                  !isCreatingFreshConversation &&
+                  persistedUserMessageEntries.length >= 2 && (
+                    <ChatMessageNavigator
+                      entries={persistedUserMessageEntries}
+                      activeKey={activeUserMessageNavigationKey}
+                      onNavigate={handleNavigateToUserMessage}
+                    />
+                  )}
               </div>
             )}
 
