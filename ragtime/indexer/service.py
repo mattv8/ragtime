@@ -971,9 +971,18 @@ class IndexerService:
         # Check if this is a re-index (existing metadata)
         existing_metadata = await repository.get_index_metadata(config.name)
 
+        existing_snapshot = getattr(existing_metadata, "configSnapshot", None) if existing_metadata else None
+        is_analyze_only_placeholder = (
+            existing_metadata is not None
+            and isinstance(existing_snapshot, dict)
+            and existing_snapshot.get("_analyze_only_git_token") is True
+            and (existing_metadata.documentCount or 0) == 0
+            and (existing_metadata.chunkCount or 0) == 0
+        )
+
         # Preserve existing description and config_snapshot on re-index
         # to avoid overwriting user customizations with defaults
-        if existing_metadata:
+        if existing_metadata and not is_analyze_only_placeholder:
             # Preserve non-empty descriptions, but allow empty ones to be regenerated
             # This ensures user-set descriptions are kept while still allowing AI generation
             existing_desc = existing_metadata.description
@@ -985,7 +994,7 @@ class IndexerService:
 
             # Always preserve existing config_snapshot to maintain user customizations
             # (e.g., git_history_depth, chunk settings, reindex_interval_hours)
-            config_snapshot = getattr(existing_metadata, "configSnapshot", None) or config.model_dump(mode="json")
+            config_snapshot = existing_snapshot or config.model_dump(mode="json")
 
             # Preserve existing document/chunk counts on re-index so that if the
             # new job fails or is cancelled, the metadata still reflects the

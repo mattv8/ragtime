@@ -1,9 +1,10 @@
 import asyncio
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
-from ragtime.indexer.models import IndexConfig, IndexJob
+from ragtime.indexer.models import IndexConfig, IndexJob, OcrMode
 from ragtime.indexer.repository import repository
 from ragtime.indexer.service import IndexerService
 
@@ -121,6 +122,82 @@ class GitIndexJobCreationTests(unittest.IsolatedAsyncioTestCase):
         create_job_mock.assert_awaited_once()
         metadata.assert_awaited_once()
         create_task.assert_called_once()
+
+    async def test_create_git_index_replaces_analyze_only_metadata_snapshot(self) -> None:
+        final_config = IndexConfig(
+            name="git-index",
+            ocr_mode=OcrMode.VISION,
+            git_history_depth=0,
+        )
+        placeholder_metadata = SimpleNamespace(
+            description="",
+            configSnapshot={
+                "ocr_mode": "disabled",
+                "git_history_depth": 1,
+                "_analyze_only_git_token": True,
+            },
+            documentCount=0,
+            chunkCount=0,
+            sizeBytes=0,
+        )
+
+        fake_task = mock.Mock(name="git-processing-task")
+
+        with (
+            mock.patch.object(repository, "get_active_job_for_index", new=mock.AsyncMock(return_value=None)),
+            mock.patch.object(repository, "get_index_metadata", new=mock.AsyncMock(return_value=placeholder_metadata)),
+            mock.patch.object(repository, "create_job", new=mock.AsyncMock()),
+            mock.patch.object(repository, "upsert_index_metadata", new=mock.AsyncMock()) as upsert_metadata,
+            mock.patch(
+                "ragtime.indexer.service.asyncio.create_task",
+                side_effect=lambda coro: self._consume_background_task(coro, fake_task),
+            ),
+        ):
+            await self.service.create_index_from_git(URL, "main", final_config)
+
+        upsert_metadata.assert_awaited_once()
+        upsert_call = upsert_metadata.await_args
+        assert upsert_call is not None
+        config_snapshot = upsert_call.kwargs["config_snapshot"]
+        self.assertEqual(config_snapshot["ocr_mode"], "vision")
+        self.assertEqual(config_snapshot["git_history_depth"], 0)
+        self.assertNotIn("_analyze_only_git_token", config_snapshot)
+
+    async def test_create_optimistic_index_metadata_preserves_real_existing_snapshot(self) -> None:
+        existing_metadata = SimpleNamespace(
+            description="Keep me",
+            configSnapshot={
+                "ocr_mode": "disabled",
+                "git_history_depth": 1,
+                "reindex_interval_hours": 24,
+            },
+            documentCount=12,
+            chunkCount=34,
+            sizeBytes=56,
+        )
+
+        with (
+            mock.patch.object(repository, "get_index_metadata", new=mock.AsyncMock(return_value=existing_metadata)),
+            mock.patch.object(repository, "upsert_index_metadata", new=mock.AsyncMock()) as upsert_metadata,
+        ):
+            await self.service._create_optimistic_index_metadata(
+                config=IndexConfig(
+                    name="git-index",
+                    ocr_mode=OcrMode.VISION,
+                    git_history_depth=0,
+                ),
+                source_type="git",
+                source=URL,
+                git_branch="main",
+            )
+
+        upsert_metadata.assert_awaited_once()
+        upsert_call = upsert_metadata.await_args
+        assert upsert_call is not None
+        self.assertEqual(
+            upsert_call.kwargs["config_snapshot"],
+            existing_metadata.configSnapshot,
+        )
 
 
 if __name__ == "__main__":
