@@ -205,11 +205,14 @@ class WorkspaceOwnerAclHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, ["tool-2"])
         filter_mock.assert_awaited_once_with(workspace, ["tool-1", "tool-2"])
         resolver.assert_awaited_once()
-        resolver_kwargs = resolver.await_args.kwargs
-        self.assertIs(resolver_kwargs["list_healthy_enabled_tool_ids"].__self__, userspace_routes.repository)
+        await_args = resolver.await_args
+        assert await_args is not None
+        resolver_kwargs = await_args.kwargs
+        healthy_loader = resolver_kwargs["list_healthy_enabled_tool_ids"]
+        self.assertIs(getattr(healthy_loader, "__self__", None), userspace_routes.repository)
         self.assertIs(
-            resolver_kwargs["list_healthy_enabled_tool_ids"].__func__,
-            userspace_routes.repository.list_healthy_enabled_tool_ids.__func__,
+            getattr(healthy_loader, "__func__", None),
+            getattr(userspace_routes.repository.list_healthy_enabled_tool_ids, "__func__", None),
         )
         self.assertIs(resolver_kwargs["list_enabled_tool_ids"], enabled_loader)
 

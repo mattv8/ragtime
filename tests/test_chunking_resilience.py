@@ -307,13 +307,19 @@ function Example(props: Props) {
         self.assertFalse(chunking._is_known_document_or_code_extension(".eps"))
 
         text = "def alpha():\n    return 1\n\nclass Beta:\n    pass\n" * 60
-        chunks, counts = chunking._chunk_document_batch_sync(
-            [(text, {"source": "src/sample.py"})],
-            chunk_size=1000,
-            chunk_overlap=100,
-            use_tokens=False,
-        )
+        with mock.patch.object(
+            chunking,
+            "_chunk_with_chonkie_code",
+            return_value=[Document(page_content=text, metadata={"chunker": "chonkie_code"})],
+        ) as code_chunker:
+            chunks, counts = chunking._chunk_document_batch_sync(
+                [(text, {"source": "src/sample.py"})],
+                chunk_size=1000,
+                chunk_overlap=100,
+                use_tokens=False,
+            )
 
+        code_chunker.assert_called_once()
         self.assertIn("chonkie_code", counts)
         self.assertNotIn("chonkie_recursive", counts)
         self.assertGreater(len(chunks), 0)

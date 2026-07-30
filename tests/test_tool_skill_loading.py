@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import unittest
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from ragtime.rag import components as rag_components
@@ -114,7 +114,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_feature_off_preserves_eager_runtime_tools_without_controls(self) -> None:
         rag = self._make_rag()
-        rag._app_settings["tool_skills_enabled"] = False
+        cast(dict[str, Any], rag._app_settings)["tool_skills_enabled"] = False
         query_tool = _make_tool("query_demo_sql")
 
         binding = await rag._resolve_request_tool_skill_bindings(
@@ -214,7 +214,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
     async def test_nonstream_stage_transition_rebuilds_executor_with_loaded_tool(self) -> None:
         rag = self._make_rag()
         binding_state = ToolSkillBindingState(requested_ids=[], effective_ids=[])
-        original_history = [HumanMessage(content="earlier")]
+        original_history: list[BaseMessage] = [HumanMessage(content="earlier")]
         user_input = "load then query"
 
         load_step = (
@@ -281,7 +281,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             output, rebuilt_executor, rebuilt_chat_history = await rag._run_nonstream_tool_skill_stage_loop(
                 executor=first_executor,
                 llm_resolution=SimpleNamespace(llm=None, provider="openai", model="gpt-test"),
-                chat_history=original_history,
+                chat_history=cast(list[BaseMessage], original_history),
                 user_content=user_input,
                 request_context={
                     "mode": "chat",
@@ -323,13 +323,15 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tool.name for tool in rebuilt_executor.tools], ["query_demo_sql"])
         self.assertIsInstance(rebuilt_chat_history[-2], AIMessage)
         self.assertIsInstance(rebuilt_chat_history[-1], ToolMessage)
-        self.assertEqual(rebuilt_chat_history[-1].tool_call_id, "call-load")
+        last_message = rebuilt_chat_history[-1]
+        assert isinstance(last_message, ToolMessage)
+        self.assertEqual(last_message.tool_call_id, "call-load")
         self.assertGreaterEqual(len(rebuilt_history), 1)
 
     async def test_nonstream_stage_loop_rebuilds_from_original_history_across_two_transitions(self) -> None:
         rag = self._make_rag()
         binding_state = ToolSkillBindingState(requested_ids=[], effective_ids=[])
-        original_history = [HumanMessage(content="earlier")]
+        original_history: list[BaseMessage] = [HumanMessage(content="earlier")]
         load_step = (
             _FakeAction("load_tool_skills", {"ids": ["tool_config:tool-1"]}, "call-load"),
             json.dumps(
@@ -397,7 +399,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             output, _rebuilt_executor, rebuilt_chat_history = await rag._run_nonstream_tool_skill_stage_loop(
                 executor=first_executor,
                 llm_resolution=SimpleNamespace(llm=None, provider="openai", model="gpt-test"),
-                chat_history=original_history,
+                chat_history=cast(list[BaseMessage], original_history),
                 user_content="refit",
                 request_context={
                     "mode": "chat",
@@ -533,7 +535,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nonstream_search_control_replays_and_continues_without_transition(self) -> None:
         rag = self._make_rag()
-        request_state = {
+        request_state: dict[str, Any] = {
             "tool_calls": [],
             "signature_counts": {"same": 2},
             "blocked_repeat_calls": 1,
@@ -767,7 +769,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_streaming_transition_preempts_internal_continue_and_replays_once(self) -> None:
         rag = self._make_rag()
-        rag.agent_executor = _FakeStreamExecutor(
+        first_executor = _FakeStreamExecutor(
             [_make_tool("search_tool_skills")],
             [
                 [
@@ -813,6 +815,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ],
         )
+        setattr(rag, "agent_executor", first_executor)
         second_executor = _FakeStreamExecutor(
             [_make_tool("query_demo_sql")],
             [
@@ -887,7 +890,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
-            mock.patch.object(rag, "_build_runtime_executor", side_effect=[rag.agent_executor, second_executor]),
+            mock.patch.object(rag, "_build_runtime_executor", side_effect=[getattr(rag, "agent_executor"), second_executor]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
@@ -900,7 +903,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_streaming_two_transitions_replay_completed_pairs_once(self) -> None:
         rag = self._make_rag()
-        rag.agent_executor = _FakeStreamExecutor(
+        first_executor = _FakeStreamExecutor(
             [_make_tool("search_tool_skills")],
             [
                 [
@@ -946,6 +949,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ],
         )
+        setattr(rag, "agent_executor", first_executor)
         second_executor = _FakeStreamExecutor(
             [_make_tool("query_demo_sql")],
             [
@@ -1028,6 +1032,10 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 "tool_skill_loaded_ids": loaded,
             }
 
+        async def _prepare_context_window(**kwargs: Any) -> tuple[Any, Any, Any]:
+            prepared_histories.append(list(kwargs["chat_history"]))
+            return SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"), kwargs["chat_history"], kwargs["turn_system_content"]
+
         with (
             mock.patch.object(
                 rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
@@ -1040,16 +1048,10 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 rag,
                 "_prepare_chat_context_window",
-                new=mock.AsyncMock(
-                    side_effect=lambda **kwargs: (
-                        prepared_histories.append(list(kwargs["chat_history"])) or SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"),
-                        kwargs["chat_history"],
-                        kwargs["turn_system_content"],
-                    )
-                ),
+                new=mock.AsyncMock(side_effect=_prepare_context_window),
             ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
-            mock.patch.object(rag, "_build_runtime_executor", side_effect=[rag.agent_executor, second_executor, third_executor]),
+            mock.patch.object(rag, "_build_runtime_executor", side_effect=[getattr(rag, "agent_executor"), second_executor, third_executor]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()),
@@ -1063,8 +1065,8 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_feature_off_streaming_debug_persists_once_with_original_user_input(self) -> None:
         rag = self._make_rag()
-        rag._app_settings["tool_skills_enabled"] = False
-        rag.agent_executor = _FakeStreamExecutor(
+        cast(dict[str, Any], rag._app_settings)["tool_skills_enabled"] = False
+        first_executor = _FakeStreamExecutor(
             [_make_tool("query_demo_sql")],
             [
                 [
@@ -1073,6 +1075,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ],
         )
+        setattr(rag, "agent_executor", first_executor)
         with (
             mock.patch.object(
                 rag, "_get_request_scoped_llm", new=mock.AsyncMock(return_value=SimpleNamespace(llm=SimpleNamespace(), provider="openai", model="gpt-test"))
@@ -1129,7 +1132,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             mock.patch.object(rag, "_seed_latest_export_context_from_chat_history", return_value=None),
-            mock.patch.object(rag, "_build_runtime_executor", side_effect=[rag.agent_executor]),
+            mock.patch.object(rag, "_build_runtime_executor", side_effect=[getattr(rag, "agent_executor")]),
             mock.patch.object(rag, "_build_turn_reminder_text", return_value=""),
             mock.patch.object(rag, "_build_context_headroom_prompt", new=mock.AsyncMock(return_value="")),
             mock.patch.object(rag, "_persist_provider_prompt_debug_record", new=mock.AsyncMock()) as persist_debug,
@@ -1137,11 +1140,13 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             _ = [event async for event in rag.process_query_stream("hello", chat_history=[])]
 
         persist_debug.assert_awaited_once()
-        self.assertEqual(persist_debug.await_args.kwargs["rendered_user_input"], "hello raw")
+        await_args = persist_debug.await_args
+        assert await_args is not None
+        self.assertEqual(await_args.kwargs["rendered_user_input"], "hello raw")
 
     async def test_enabled_nonstream_process_query_does_not_outer_retry_tool_skill_stage_loop_after_ocr_error(self) -> None:
         rag = self._make_rag()
-        rag.agent_executor = SimpleNamespace(tools=[_make_tool("search_tool_skills")])
+        setattr(rag, "agent_executor", SimpleNamespace(tools=[_make_tool("search_tool_skills")]))
         ocr_error = RuntimeError("image input not supported")
         request_context = {
             "mode": "chat",
@@ -1210,13 +1215,13 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_feature_off_nonstream_ocr_retry_preserves_debug_record_behavior(self) -> None:
         rag = self._make_rag()
-        rag._app_settings["tool_skills_enabled"] = False
+        cast(dict[str, Any], rag._app_settings)["tool_skills_enabled"] = False
         executor = _FakeExecutor(
             [_make_tool("query_demo_sql")],
             [{"output": "plain", "intermediate_steps": []}],
         )
-        rag.agent_executor = SimpleNamespace(tools=[_make_tool("query_demo_sql")])
-        executor.ainvoke = mock.AsyncMock(side_effect=[RuntimeError("image input not supported"), {"output": "plain", "intermediate_steps": []}])
+        setattr(rag, "agent_executor", SimpleNamespace(tools=[_make_tool("query_demo_sql")]))
+        setattr(executor, "ainvoke", mock.AsyncMock(side_effect=[RuntimeError("image input not supported"), {"output": "plain", "intermediate_steps": []}]))
 
         with (
             mock.patch.object(
@@ -1283,10 +1288,12 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             output = await rag.process_query("hello", chat_history=[])
 
         self.assertEqual(output, "plain")
-        self.assertEqual(executor.ainvoke.await_count, 2)
+        self.assertEqual(getattr(executor, "ainvoke").await_count, 2)
         ocr_retry.assert_awaited_once()
         persist_debug.assert_awaited_once()
-        self.assertEqual(persist_debug.await_args.kwargs["rendered_user_input"], "hello ocr")
+        await_args = persist_debug.await_args
+        assert await_args is not None
+        self.assertEqual(await_args.kwargs["rendered_user_input"], "hello ocr")
 
     def test_internal_synthesis_tool_context_includes_replay_and_final_steps_once(self) -> None:
         replay_messages = [
@@ -1305,7 +1312,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             replay_messages=replay_messages,
         )
 
-        self.assertIsNotNone(context)
+        assert context is not None
         content = str(context.content)
         self.assertIn("load_tool_skills", content)
         self.assertIn("query_demo_sql", content)
@@ -1353,7 +1360,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             replay_messages=replay_messages,
         )
 
-        self.assertIsNotNone(context)
+        assert context is not None
         content = str(context.content)
         self.assertIn("search_tool_skills", content)
         self.assertIn("load_tool_skills", content)
@@ -1378,7 +1385,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             replay_messages=replay_messages,
         )
 
-        self.assertIsNotNone(context)
+        assert context is not None
         content = str(context.content)
         self.assertIn("search_tool_skills", content)
         self.assertIn("load_tool_skills", content)
@@ -1423,7 +1430,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             max_tools=4,
         )
 
-        self.assertIsNotNone(context)
+        assert context is not None
         content = str(context.content)
         self.assertIn("search_tool_skills", content)
         self.assertIn("load_tool_skills", content)
@@ -1453,7 +1460,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_process_query_real_runtime_context_binds_only_controls_when_optional_tool_is_unloaded(self) -> None:
         rag = self._make_rag()
-        rag.agent_executor = SimpleNamespace(tools=[_make_tool("query_demo_sql")])
+        setattr(rag, "agent_executor", SimpleNamespace(tools=[_make_tool("query_demo_sql")]))
         built_tool_names: list[list[str]] = []
 
         def _build_executor(tools: list[Any], *_args: Any, **_kwargs: Any) -> _FakeExecutor:
@@ -1467,7 +1474,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(rag, "_convert_message_to_langchain_async", new=mock.AsyncMock(return_value="hello")),
             mock.patch.object(rag, "_ocr_images_if_model_lacks_support", new=mock.AsyncMock(side_effect=lambda content, *_args, **_kwargs: content)),
             mock.patch.object(
-                rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: list(rag.agent_executor.tools))
+                rag, "_apply_conversation_tool_overrides", new=mock.AsyncMock(side_effect=lambda *_args, **_kwargs: list(getattr(rag, "agent_executor").tools))
             ),
             mock.patch.object(rag, "_build_conversation_export_tool", return_value=None),
             mock.patch.object(rag, "_build_chat_diagnostic_tools", return_value=[]),
@@ -1527,7 +1534,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=False,
-                executor=SimpleNamespace(tools=[_make_tool("search_tool_skills_builtin")]),
+                executor=cast(Any, SimpleNamespace(tools=[_make_tool("search_tool_skills_builtin")])),
                 blocked_tool_names=None,
                 workspace_context=None,
                 add_chat_visualization_prompt=False,
@@ -1557,7 +1564,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=False,
-                executor=SimpleNamespace(tools=[_make_tool("builtin_optional_tool")]),
+                executor=cast(Any, SimpleNamespace(tools=[_make_tool("builtin_optional_tool")])),
                 blocked_tool_names=None,
                 workspace_context=None,
                 add_chat_visualization_prompt=False,
@@ -1674,7 +1681,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=False,
-                executor=SimpleNamespace(tools=[]),
+                executor=cast(Any, SimpleNamespace(tools=[])),
                 blocked_tool_names=None,
                 workspace_context={"workspace_id": "ws-1", "user_id": "user-1", "username": "alice", "display_name": "Alice", "accessible_workspace_modes": {}},
                 add_chat_visualization_prompt=False,
@@ -1714,7 +1721,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_nonstream_process_query_persists_one_debug_record_per_stage(self) -> None:
         rag = self._make_rag()
-        rag.agent_executor = first_executor = _FakeExecutor(
+        first_executor = _FakeExecutor(
             [_make_tool("search_tool_skills")],
             [
                 {
@@ -1736,6 +1743,7 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+        setattr(rag, "agent_executor", first_executor)
         binding_state = ToolSkillBindingState(requested_ids=[], effective_ids=[])
         second_executor = _FakeExecutor(
             [_make_tool("query_demo_sql")],

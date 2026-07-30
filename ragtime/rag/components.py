@@ -9153,7 +9153,7 @@ class RAGComponents:
         remaining_iterations = max(1, int(max_iterations))
         binding_state = current_request_context.get("tool_skill_binding_state")
         current_user_input = user_content
-        request_tool_state = current_request_context.get("request_tool_state")
+        request_tool_state = cast(dict[str, Any], current_request_context.get("request_tool_state"))
         self._seed_tool_skill_request_state(
             request_tool_state=request_tool_state,
             binding_state=binding_state,

@@ -82,6 +82,22 @@ def _run_default_workspace_component_execution(
             "ragtime.userspace.service.repository.list_healthy_enabled_tool_ids",
             AsyncMock(return_value=["tool-1"]),
         ),
+        patch(
+            "ragtime.userspace.service.repository.list_enabled_tool_ids",
+            AsyncMock(return_value=["tool-1"]),
+        ),
+        patch(
+            "ragtime.userspace.service.repository.get_tool_config",
+            AsyncMock(
+                return_value=types.SimpleNamespace(
+                    enabled=True,
+                    tool_type=types.SimpleNamespace(value="postgres"),
+                    connection_config={},
+                    allow_write=False,
+                    name="Demo SQL",
+                )
+            ),
+        ),
         patch.object(
             service,
             "filter_tool_ids_for_workspace_owner",

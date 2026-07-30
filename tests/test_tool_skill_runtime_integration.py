@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -200,11 +200,11 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(
-            set(_tool_by_name(rebound["runtime_tools"], "query_demo_sql").args_schema.model_fields),
+            set(cast(Any, _tool_by_name(rebound["runtime_tools"], "query_demo_sql").args_schema).model_fields),
             {"query", "limit"},
         )
         self.assertEqual(
-            set(_tool_by_name(rebound["runtime_tools"], "search_demo_sql_schema").args_schema.model_fields),
+            set(cast(Any, _tool_by_name(rebound["runtime_tools"], "search_demo_sql_schema").args_schema).model_fields),
             {"query"},
         )
 
@@ -348,7 +348,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             initial = await rag._build_request_runtime_context(
                 is_ui=False,
-                executor=base_executor,
+                executor=cast(Any, base_executor),
                 blocked_tool_names=None,
                 workspace_context=None,
                 add_chat_visualization_prompt=True,
@@ -512,7 +512,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_feature_off_returns_original_runtime_tools_without_controls(self) -> None:
         rag = self._make_rag()
-        rag._app_settings["tool_skills_enabled"] = False
+        cast(dict[str, Any], rag._app_settings)["tool_skills_enabled"] = False
         runtime_tools = _make_sql_bundle_tools()
 
         binding = await rag._resolve_request_tool_skill_bindings(
@@ -969,7 +969,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ],
         )
-        rag.agent_executor = first_executor
+        setattr(rag, "agent_executor", first_executor)
         second_executor = _FakeStreamExecutor(
             [_make_noop_tool("load_tool_skills")],
             [
@@ -1135,7 +1135,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             ],
         )
-        rag.agent_executor = first_executor
+        setattr(rag, "agent_executor", first_executor)
         second_executor = _FakeStreamExecutor(
             [_make_noop_tool("query_demo_sql")],
             [
@@ -1262,7 +1262,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_feature_off_ui_prompt_includes_visualization_guidance_exactly_once(self) -> None:
         rag = self._make_rag()
-        rag._app_settings["tool_skills_enabled"] = False
+        cast(dict[str, Any], rag._app_settings)["tool_skills_enabled"] = False
         prompt = rag._build_request_system_prompt(
             is_ui=True,
             mode="chat",
@@ -1290,7 +1290,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=True,
-                executor=executor,
+                executor=cast(Any, executor),
                 blocked_tool_names=None,
                 workspace_context=None,
                 add_chat_visualization_prompt=True,
@@ -1362,7 +1362,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=False,
-                executor=SimpleNamespace(tools=[]),
+                executor=cast(Any, SimpleNamespace(tools=[])),
                 blocked_tool_names=None,
                 workspace_context={"workspace_id": "ws-1", "user_id": "user-1", "username": "alice", "display_name": "Alice", "accessible_workspace_modes": {}},
                 add_chat_visualization_prompt=False,
@@ -1393,7 +1393,7 @@ class ToolSkillRuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             context = await rag._build_request_runtime_context(
                 is_ui=True,
-                executor=executor,
+                executor=cast(Any, executor),
                 blocked_tool_names=None,
                 workspace_context=None,
                 add_chat_visualization_prompt=True,
