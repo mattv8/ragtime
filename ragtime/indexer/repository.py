@@ -14,7 +14,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, List, Optional, cast
+from typing import Any, Iterable, List, Optional, cast
 
 from fastapi import HTTPException
 from prisma import Json, Prisma
@@ -77,6 +77,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
+    DEFAULT_TOOL_SKILLS_ENABLED,
     DEFAULT_TOOL_OUTPUT_MODE,
     DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
     DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
@@ -449,6 +450,33 @@ def _normalize_string_list(value: Any) -> list[str]:
             continue
         normalized.append(item)
         seen.add(item)
+    return normalized
+
+
+def _normalize_loaded_tool_skill_ids(value: Any) -> list[str]:
+    """Return unique non-empty tool skill IDs while preserving order."""
+    if value is None:
+        return []
+    json_data = getattr(value, "data", None)
+    if json_data is not None:
+        value = json_data
+    if isinstance(value, str):
+        raw_values: Iterable[Any] = [value]
+    else:
+        try:
+            iter(value)
+        except TypeError:
+            return []
+        raw_values = cast(Iterable[Any], value)
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        skill_id = str(item or "").strip()
+        if not skill_id or skill_id in seen:
+            continue
+        normalized.append(skill_id)
+        seen.add(skill_id)
     return normalized
 
 
@@ -1190,6 +1218,11 @@ class IndexerRepository:
                 "showToolCardFooterActions",
                 DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
             ),
+            tool_skills_enabled=getattr(
+                settings,
+                "toolSkillsEnabled",
+                DEFAULT_TOOL_SKILLS_ENABLED,
+            ),
             # Embedding settings
             embedding_provider=getattr(settings, "embeddingProvider", DEFAULT_EMBEDDING_PROVIDER),
             embedding_model=getattr(settings, "embeddingModel", DEFAULT_EMBEDDING_MODEL),
@@ -1549,6 +1582,7 @@ class IndexerRepository:
             "openapi_model_prefix_enabled": "openapiModelPrefixEnabled",
             "available_models_cache_enabled": "availableModelsCacheEnabled",
             "show_tool_card_footer_actions": "showToolCardFooterActions",
+            "tool_skills_enabled": "toolSkillsEnabled",
             # Embedding settings
             "embedding_provider": "embeddingProvider",
             "embedding_model": "embeddingModel",
@@ -2627,6 +2661,7 @@ class IndexerRepository:
         model: Optional[str] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        loaded_tool_skill_ids: Iterable[str] = (),
         parent_conversation_id: Optional[str] = None,
         subagent_role: Optional[str] = None,
         subagent_index: Optional[int] = None,
@@ -2645,6 +2680,7 @@ class IndexerRepository:
                 "title": title,
                 "model": resolved_model,
                 "messages": Json([]),
+                "loadedToolSkillIds": Json(_normalize_loaded_tool_skill_ids(loaded_tool_skill_ids)),
                 "totalTokens": 0,
                 "userId": user_id,
                 "workspaceId": workspace_id,
@@ -2658,6 +2694,49 @@ class IndexerRepository:
         )
 
         return self._prisma_conversation_to_model(prisma_conv)
+
+    async def get_conversation_loaded_tool_skill_ids(self, conversation_id: str) -> list[str]:
+        """Return normalized requested tool skill IDs for one conversation."""
+        db = await self._get_db()
+        prisma_conv = await db.conversation.find_unique(where={"id": conversation_id})
+        if prisma_conv is None:
+            return []
+        return _normalize_loaded_tool_skill_ids(getattr(prisma_conv, "loadedToolSkillIds", []))
+
+    async def mutate_conversation_loaded_tool_skill_ids(
+        self,
+        conversation_id: str,
+        *,
+        add_ids: Iterable[str] = (),
+        remove_ids: Iterable[str] = (),
+    ) -> list[str]:
+        """Atomically mutate requested tool skill IDs for a conversation."""
+        db = await self._get_db()
+        normalized_remove_ids = set(_normalize_loaded_tool_skill_ids(remove_ids))
+        normalized_add_ids = [skill_id for skill_id in _normalize_loaded_tool_skill_ids(add_ids) if skill_id not in normalized_remove_ids]
+
+        async with db.tx() as tx:
+            rows = await tx.query_raw(
+                f"SELECT loaded_tool_skill_ids FROM conversations WHERE id = {_sql_quote_literal(conversation_id)} FOR UPDATE"
+            )
+            if not rows:
+                return []
+
+            current_ids = _normalize_loaded_tool_skill_ids(rows[0].get("loaded_tool_skill_ids"))
+            next_ids = [skill_id for skill_id in current_ids if skill_id not in normalized_remove_ids]
+            seen = set(next_ids)
+            for skill_id in normalized_add_ids:
+                if skill_id in seen:
+                    continue
+                next_ids.append(skill_id)
+                seen.add(skill_id)
+
+            await tx.execute_raw(
+                f"UPDATE conversations "
+                f"SET loaded_tool_skill_ids = {_sql_jsonb_literal(next_ids)}, updated_at = NOW() "
+                f"WHERE id = {_sql_quote_literal(conversation_id)}"
+            )
+            return next_ids
 
     async def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
         """Get a conversation by ID."""
@@ -4827,6 +4906,7 @@ class IndexerRepository:
         except ValueError:
             tool_output_mode = ToolOutputMode.DEFAULT
         tool_selection_mode = str(getattr(prisma_conv, "toolSelectionMode", "") or "").strip()
+        loaded_tool_skill_ids = _normalize_loaded_tool_skill_ids(getattr(prisma_conv, "loadedToolSkillIds", []))
 
         created_at = getattr(prisma_conv, "createdAt", None)
         updated_at = getattr(prisma_conv, "updatedAt", None)
@@ -4851,6 +4931,7 @@ class IndexerRepository:
             subagent_role=getattr(prisma_conv, "subagentRole", None),
             subagent_index=getattr(prisma_conv, "subagentIndex", None),
             tool_selection_mode=tool_selection_mode,
+            loaded_tool_skill_ids=loaded_tool_skill_ids,
             created_at=created_at,
             updated_at=updated_at,
             active_task_id=getattr(prisma_conv, "activeTaskId", None),

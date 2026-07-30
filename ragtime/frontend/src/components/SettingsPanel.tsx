@@ -90,6 +90,7 @@ import { SearchSettingsSection } from './settings/SearchSettingsSection';
 import { SecuritySettingsSection } from './settings/SecuritySettingsSection';
 import { AppearanceSettingsSection } from './settings/AppearanceSettingsSection';
 import { ChatModelsSettingsSection } from './settings/ChatModelsSettingsSection';
+import { AgentBehaviorSettingsSection } from './settings/AgentBehaviorSettingsSection';
 import { McpSettingsSection } from './settings/McpSettingsSection';
 import { ServerBackupRestoreSettingsSection } from './settings/ServerBackupRestoreSettingsSection';
 import { getLdapGroupDisplayName, type LdapGroup } from './LdapGroupSelect';
@@ -705,6 +706,7 @@ export function SettingsPanel({
   // Section-specific saving states
   const [embeddingSaving, setEmbeddingSaving] = useState(false);
   const [llmSaving, setLlmSaving] = useState(false);
+  const [agentBehaviorSaving, setAgentBehaviorSaving] = useState(false);
 
   // Scroll to and highlight setting when highlightSetting changes
   useEffect(() => {
@@ -2092,7 +2094,10 @@ export function SettingsPanel({
           api.getAuthProviderConfig(),
           api.listAuthGroups(),
         ]);
-      const data = sanitizeOllamaDefaults(rawSettings);
+      const data = {
+        ...sanitizeOllamaDefaults(rawSettings),
+        tool_skills_enabled: rawSettings.tool_skills_enabled !== false,
+      };
       setSettings(data);
       setDefaultThemePack(resolveThemePackId(data.default_theme_pack, null));
       setUserspacePreviewSettings(previewSettings);
@@ -2143,6 +2148,7 @@ export function SettingsPanel({
         chat_compaction_threshold_percent: data.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: data.chat_auto_compaction_threshold_percent,
         // Token optimization settings
+        tool_skills_enabled: data.tool_skills_enabled !== false,
         max_tool_output_chars: data.max_tool_output_chars,
         scratchpad_window_size: data.scratchpad_window_size,
         // Search settings
@@ -2803,15 +2809,12 @@ export function SettingsPanel({
         openai_codex_base_url: formData.openai_codex_base_url,
         default_chat_model: formData.default_chat_model,
         allowed_chat_models: formData.allowed_chat_models,
-        max_iterations: formData.max_iterations,
         chat_compaction_threshold_percent: formData.chat_compaction_threshold_percent,
         chat_auto_compaction_threshold_percent: formData.chat_auto_compaction_threshold_percent,
         // OpenAPI model settings
         openapi_sync_chat_models: formData.openapi_sync_chat_models,
         available_models_cache_enabled: formData.available_models_cache_enabled,
         // Token optimization settings
-        max_tool_output_chars: formData.max_tool_output_chars,
-        scratchpad_window_size: formData.scratchpad_window_size,
         context_token_budget: formData.context_token_budget,
         // API output settings
         tool_output_mode: formData.tool_output_mode,
@@ -2884,6 +2887,38 @@ export function SettingsPanel({
       toast.error(err instanceof Error ? err.message : 'Failed to save LLM settings');
     } finally {
       setLlmSaving(false);
+    }
+  };
+
+  const handleSaveAgentBehavior = async () => {
+    setAgentBehaviorSaving(true);
+
+    try {
+      const dataToSave = {
+        tool_skills_enabled: formData.tool_skills_enabled !== false,
+        max_iterations: formData.max_iterations,
+        max_tool_output_chars: formData.max_tool_output_chars,
+        scratchpad_window_size: formData.scratchpad_window_size,
+      };
+      const updated = await api.updateSettings(dataToSave);
+      const normalizedUpdated = {
+        ...updated,
+        tool_skills_enabled: updated.tool_skills_enabled !== false,
+      };
+      setSettings(normalizedUpdated);
+      setFormData((prev) => ({
+        ...prev,
+        tool_skills_enabled: normalizedUpdated.tool_skills_enabled,
+        max_iterations: updated.max_iterations,
+        max_tool_output_chars: updated.max_tool_output_chars,
+        scratchpad_window_size: updated.scratchpad_window_size,
+      }));
+      await onSettingsSaved?.();
+      toast.success('Agent behavior settings saved');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save agent behavior settings');
+    } finally {
+      setAgentBehaviorSaving(false);
     }
   };
 
@@ -4357,6 +4392,15 @@ export function SettingsPanel({
             openOpenapiModelModal={openOpenapiModelModal}
             handleSaveLlm={handleSaveLlm}
             llmSaving={llmSaving}
+          />
+
+          <AgentBehaviorSettingsSection
+            open={(openAccordionSections as Record<string, boolean>)['agent-behavior']}
+            onToggle={handleToggleAccordionSection}
+            formData={formData}
+            setFormData={setFormData}
+            handleSaveAgentBehavior={handleSaveAgentBehavior}
+            agentBehaviorSaving={agentBehaviorSaving}
           />
 
           <McpSettingsSection
@@ -6265,35 +6309,6 @@ export function SettingsPanel({
                     })()}
                   </div>
 
-                  <div className="form-group" style={{ flex: 1 }}>
-                    <label>Max Tool Iterations</label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <input
-                        type="range"
-                        min="1"
-                        max="100"
-                        step="1"
-                        style={{ flex: 1 }}
-                        value={formData.max_iterations ?? 30}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            max_iterations: parseInt(e.target.value, 10),
-                          })
-                        }
-                      />
-                      <span
-                        style={{
-                          minWidth: '30px',
-                          textAlign: 'right',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      >
-                        {formData.max_iterations ?? 30}
-                      </span>
-                    </div>
-                    <p className="field-help">Maximum number of agent tool-calling steps.</p>
-                  </div>
                 </div>
 
                 <div className="form-row">
@@ -6518,79 +6533,9 @@ export function SettingsPanel({
                       JPEG quality.
                     </p>
                   </div>
-
-                  <div className="form-group" style={{ flex: 1 }}>
-                    <label>Max Tool Output (chars)</label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <input
-                        type="range"
-                        min="0"
-                        max="50000"
-                        step="1000"
-                        style={{ flex: 1 }}
-                        value={formData.max_tool_output_chars ?? 5000}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            max_tool_output_chars: parseInt(e.target.value, 10),
-                          })
-                        }
-                      />
-                      <span
-                        style={{
-                          minWidth: '60px',
-                          textAlign: 'right',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      >
-                        {(formData.max_tool_output_chars ?? 5000) === 0
-                          ? 'Off'
-                          : `${((formData.max_tool_output_chars ?? 5000) / 1000).toFixed(0)}K`}
-                      </span>
-                    </div>
-                    <p className="field-help">
-                      Cap on each tool response before truncation (0 = no limit). Lower values curb
-                      token growth during multi-step tool loops.
-                    </p>
-                  </div>
                 </div>
 
                 <div className="form-row">
-                  <div className="form-group" style={{ flex: 1 }}>
-                    <label>Context Window (steps)</label>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <input
-                        type="range"
-                        min="0"
-                        max="30"
-                        step="1"
-                        style={{ flex: 1 }}
-                        value={formData.scratchpad_window_size ?? 6}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            scratchpad_window_size: parseInt(e.target.value, 10),
-                          })
-                        }
-                      />
-                      <span
-                        style={{
-                          minWidth: '40px',
-                          textAlign: 'right',
-                          fontFamily: 'var(--font-mono)',
-                        }}
-                      >
-                        {(formData.scratchpad_window_size ?? 6) === 0
-                          ? 'All'
-                          : (formData.scratchpad_window_size ?? 6)}
-                      </span>
-                    </div>
-                    <p className="field-help">
-                      Number of recent tool steps kept in full detail; older steps are compressed (0
-                      = keep all). Smaller windows reduce input tokens in long conversations.
-                    </p>
-                  </div>
-
                   <div className="form-group" style={{ flex: 1 }}>
                     <label>Context Token Budget</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

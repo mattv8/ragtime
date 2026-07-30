@@ -152,6 +152,216 @@ class SubAgentServiceSpecTests(unittest.TestCase):
 
 
 class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spawn_inherits_parent_loaded_tool_skill_ids_once_for_multiple_children(self) -> None:
+        service = SubAgentService()
+        created_children = iter(
+            [
+                SimpleNamespace(id="child-conv-1"),
+                SimpleNamespace(id="child-conv-2"),
+            ]
+        )
+        created_tasks = iter(
+            [
+                SimpleNamespace(id="child-task-1"),
+                SimpleNamespace(id="child-task-2"),
+            ]
+        )
+        create_calls: list[dict[str, object]] = []
+        observed_loaded_lists: list[list[str]] = []
+        parent_loaded_tool_skill_ids = ["skill.alpha", "skill.beta"]
+        parent_read_count = 0
+
+        async def get_conversation(conversation_id: str) -> SimpleNamespace:
+            nonlocal parent_read_count
+            self.assertEqual(conversation_id, "parent-conv-1")
+            parent_read_count += 1
+            return SimpleNamespace(id=conversation_id, loaded_tool_skill_ids=parent_loaded_tool_skill_ids)
+
+        async def create_conversation(**kwargs: object) -> SimpleNamespace:
+            create_calls.append(dict(kwargs))
+            loaded_ids = kwargs.get("loaded_tool_skill_ids")
+            self.assertIsInstance(loaded_ids, list)
+            assert isinstance(loaded_ids, list)
+            observed_loaded_lists.append(loaded_ids)
+            return next(created_children)
+
+        async def add_user_message_and_create_chat_task_if_idle(*_: object) -> tuple[None, SimpleNamespace, bool]:
+            return None, next(created_tasks), True
+
+        async def get_chat_task(task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=task_id,
+                status=ChatTaskStatus.completed,
+                streaming_state=SimpleNamespace(tool_calls=[{"tool": SUBAGENT_HANDOFF_TOOL_NAME, "input": {"final_output": "done"}}]),
+            )
+
+        background = SimpleNamespace(
+            start_task=mock.Mock(),
+            register_subagent_children=mock.Mock(),
+            await_task=mock.AsyncMock(),
+        )
+        repo = SimpleNamespace(
+            get_conversation=get_conversation,
+            create_conversation=create_conversation,
+            add_user_message_and_create_chat_task_if_idle=add_user_message_and_create_chat_task_if_idle,
+            get_chat_task=get_chat_task,
+        )
+
+        with (
+            mock.patch("ragtime.userspace.subagent_service.repository", repo),
+            mock.patch("ragtime.userspace.subagent_service.task_event_bus", SimpleNamespace(publish=mock.AsyncMock())),
+            mock.patch("ragtime.indexer.background_tasks.background_task_service", background),
+        ):
+            await service.spawn_subagents(
+                parent_conversation_id="parent-conv-1",
+                parent_task_id="parent-task-1",
+                workspace_id="workspace-1",
+                user_id="user-1",
+                parent_model="openai::gpt-4.1",
+                specs=[
+                    {"name": "Child 1", "role": "worker", "instructions": "Do work 1", "file_scope": ["dashboard/a"]},
+                    {"name": "Child 2", "role": "worker", "instructions": "Do work 2", "file_scope": ["dashboard/b"]},
+                ],
+                workspace_context={"workspace_id": "workspace-1"},
+                blocked_tool_names=set(),
+            )
+
+        self.assertEqual(parent_read_count, 1)
+        self.assertEqual(len(create_calls), 2)
+        self.assertEqual(create_calls[0]["loaded_tool_skill_ids"], ["skill.alpha", "skill.beta"])
+        self.assertEqual(create_calls[1]["loaded_tool_skill_ids"], ["skill.alpha", "skill.beta"])
+        self.assertIsNot(observed_loaded_lists[0], observed_loaded_lists[1])
+        self.assertIsNot(observed_loaded_lists[0], parent_loaded_tool_skill_ids)
+        self.assertIsNot(observed_loaded_lists[1], parent_loaded_tool_skill_ids)
+        self.assertEqual(parent_loaded_tool_skill_ids, ["skill.alpha", "skill.beta"])
+
+    async def test_spawn_inherits_empty_parent_loaded_tool_skill_ids(self) -> None:
+        service = SubAgentService()
+        create_calls: list[dict[str, object]] = []
+
+        async def get_conversation(conversation_id: str) -> SimpleNamespace:
+            self.assertEqual(conversation_id, "parent-conv-1")
+            return SimpleNamespace(id=conversation_id, loaded_tool_skill_ids=[])
+
+        async def create_conversation(**kwargs: object) -> SimpleNamespace:
+            create_calls.append(dict(kwargs))
+            return SimpleNamespace(id="child-conv-1")
+
+        async def add_user_message_and_create_chat_task_if_idle(*_: object) -> tuple[None, SimpleNamespace, bool]:
+            return None, SimpleNamespace(id="child-task-1"), True
+
+        async def get_chat_task(task_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                id=task_id,
+                status=ChatTaskStatus.completed,
+                streaming_state=SimpleNamespace(tool_calls=[{"tool": SUBAGENT_HANDOFF_TOOL_NAME, "input": {"final_output": "done"}}]),
+            )
+
+        background = SimpleNamespace(
+            start_task=mock.Mock(),
+            register_subagent_children=mock.Mock(),
+            await_task=mock.AsyncMock(),
+        )
+        repo = SimpleNamespace(
+            get_conversation=get_conversation,
+            create_conversation=create_conversation,
+            add_user_message_and_create_chat_task_if_idle=add_user_message_and_create_chat_task_if_idle,
+            get_chat_task=get_chat_task,
+        )
+
+        with (
+            mock.patch("ragtime.userspace.subagent_service.repository", repo),
+            mock.patch("ragtime.userspace.subagent_service.task_event_bus", SimpleNamespace(publish=mock.AsyncMock())),
+            mock.patch("ragtime.indexer.background_tasks.background_task_service", background),
+        ):
+            await service.spawn_subagents(
+                parent_conversation_id="parent-conv-1",
+                parent_task_id="parent-task-1",
+                workspace_id="workspace-1",
+                user_id="user-1",
+                parent_model="openai::gpt-4.1",
+                specs=[{"name": "Child", "role": "worker", "instructions": "Do work", "file_scope": ["dashboard"]}],
+                workspace_context={"workspace_id": "workspace-1"},
+                blocked_tool_names=set(),
+            )
+
+        self.assertEqual(create_calls[0]["loaded_tool_skill_ids"], [])
+
+    async def test_spawn_raises_when_parent_conversation_read_fails(self) -> None:
+        service = SubAgentService()
+        background = SimpleNamespace(
+            start_task=mock.Mock(),
+            register_subagent_children=mock.Mock(),
+            await_task=mock.AsyncMock(),
+            cancel_task=mock.Mock(),
+        )
+
+        async def get_conversation(_conversation_id: str) -> SimpleNamespace:
+            raise RuntimeError("parent conversation missing")
+
+        repo = SimpleNamespace(get_conversation=get_conversation)
+
+        with (
+            mock.patch("ragtime.userspace.subagent_service.repository", repo),
+            mock.patch("ragtime.userspace.subagent_service.task_event_bus", SimpleNamespace(publish=mock.AsyncMock())),
+            mock.patch("ragtime.indexer.background_tasks.background_task_service", background),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "parent conversation missing"):
+                await service.spawn_subagents(
+                    parent_conversation_id="parent-conv-1",
+                    parent_task_id="parent-task-1",
+                    workspace_id="workspace-1",
+                    user_id="user-1",
+                    parent_model="openai::gpt-4.1",
+                    specs=[{"name": "Child", "role": "worker", "instructions": "Do work", "file_scope": ["dashboard"]}],
+                    workspace_context={"workspace_id": "workspace-1"},
+                    blocked_tool_names=set(),
+                )
+
+        background.start_task.assert_not_called()
+        background.register_subagent_children.assert_not_called()
+        background.cancel_task.assert_not_called()
+
+    async def test_spawn_raises_when_parent_conversation_missing(self) -> None:
+        service = SubAgentService()
+        background = SimpleNamespace(
+            start_task=mock.Mock(),
+            register_subagent_children=mock.Mock(),
+            await_task=mock.AsyncMock(),
+            cancel_task=mock.Mock(),
+        )
+        create_conversation = mock.AsyncMock()
+
+        async def get_conversation(_conversation_id: str) -> None:
+            return None
+
+        repo = SimpleNamespace(
+            get_conversation=get_conversation,
+            create_conversation=create_conversation,
+        )
+
+        with (
+            mock.patch("ragtime.userspace.subagent_service.repository", repo),
+            mock.patch("ragtime.userspace.subagent_service.task_event_bus", SimpleNamespace(publish=mock.AsyncMock())),
+            mock.patch("ragtime.indexer.background_tasks.background_task_service", background),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "parent conversation missing"):
+                await service.spawn_subagents(
+                    parent_conversation_id="parent-conv-1",
+                    parent_task_id="parent-task-1",
+                    workspace_id="workspace-1",
+                    user_id="user-1",
+                    parent_model="openai::gpt-4.1",
+                    specs=[{"name": "Child", "role": "worker", "instructions": "Do work", "file_scope": ["dashboard"]}],
+                    workspace_context={"workspace_id": "workspace-1"},
+                    blocked_tool_names=set(),
+                )
+
+        create_conversation.assert_not_awaited()
+        background.start_task.assert_not_called()
+        background.register_subagent_children.assert_not_called()
+        background.cancel_task.assert_not_called()
+
     async def test_spawn_registers_child_before_publish(self) -> None:
         service = SubAgentService()
         repo = SimpleNamespace()
@@ -335,6 +545,9 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
+        async def get_conversation(conversation_id: str) -> SimpleNamespace:
+            return SimpleNamespace(id=conversation_id, loaded_tool_skill_ids=[])
+
         def start_task(
             _conversation_id: str,
             user_message: str,
@@ -348,6 +561,7 @@ class SubAgentServiceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         repo.create_conversation = create_conversation
         repo.add_user_message_and_create_chat_task_if_idle = add_user_message_and_create_chat_task_if_idle
         repo.get_chat_task = get_chat_task
+        repo.get_conversation = get_conversation
         background.start_task = start_task
         background.register_subagent_children = mock.Mock()
         background.await_task = mock.AsyncMock()

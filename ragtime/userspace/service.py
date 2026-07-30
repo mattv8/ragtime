@@ -113,7 +113,7 @@ from ragtime.indexer.models import (
     FilesystemConnectionConfig,
     UpdateConversationShareAccessRequest,
 )
-from ragtime.indexer.repository import _resolve_default_conversation_model, repository
+from ragtime.indexer.repository import _normalize_loaded_tool_skill_ids, _resolve_default_conversation_model, repository
 from ragtime.indexer.tool_selection import resolve_effective_tool_ids
 from ragtime.indexer.utils import safe_tool_name
 from ragtime.rag.prompts import build_workspace_scm_setup_prompt
@@ -3037,6 +3037,7 @@ class UserSpaceService:
                     "subagent_role": (str(getattr(source_conversation, "subagentRole", "") or "") or None),
                     "subagent_index": getattr(source_conversation, "subagentIndex", None),
                     "active_branch_id": (str(getattr(source_conversation, "activeBranchId", "") or "") or None),
+                    "loaded_tool_skill_ids": _normalize_loaded_tool_skill_ids(getattr(source_conversation, "loadedToolSkillIds", [])),
                     "tool_config_ids": [str(selection.toolConfigId) for selection in source_tool_selections if getattr(selection, "toolConfigId", None)],
                     "tool_group_ids": [str(selection.toolGroupId) for selection in source_tool_group_selections if getattr(selection, "toolGroupId", None)],
                     "branches": [
@@ -3165,6 +3166,7 @@ class UserSpaceService:
                         "title": str(payload.get("title") or "Untitled Chat"),
                         "model": str(payload.get("model") or ""),
                         "messages": Json(cloned_messages),
+                        "loadedToolSkillIds": Json(_normalize_loaded_tool_skill_ids(payload.get("loaded_tool_skill_ids"))),
                         "totalTokens": int(payload.get("total_tokens") or 0),
                         "toolOutputMode": str(payload.get("tool_output_mode") or "default"),
                         "subagentsEnabled": bool(payload.get("subagents_enabled", True)),

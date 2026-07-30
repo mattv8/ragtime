@@ -975,6 +975,7 @@ export interface AppSettings {
   chat_compaction_threshold_percent: number;
   chat_auto_compaction_threshold_percent: number;
   // Token optimization settings
+  tool_skills_enabled: boolean;
   max_tool_output_chars: number;
   scratchpad_window_size: number;
   // Search Configuration
@@ -1133,6 +1134,7 @@ export interface UpdateSettingsRequest {
   chat_compaction_threshold_percent?: number;
   chat_auto_compaction_threshold_percent?: number;
   // Token optimization settings
+  tool_skills_enabled?: boolean;
   max_tool_output_chars?: number;
   scratchpad_window_size?: number;
   // Search settings

@@ -14,6 +14,7 @@ describe('settingsAccordionState', () => {
     it('lists all accordion section ids in order', () => {
       expect(SETTINGS_ACCORDION_SECTION_IDS).toEqual([
         'chat-models',
+        'agent-behavior',
         'mcp',
         'userspace',
         'llm-providers',
@@ -30,6 +31,10 @@ describe('settingsAccordionState', () => {
   describe('DEFAULT_OPEN_SETTINGS_SECTIONS', () => {
     it('defaults to chat-models, mcp, and userspace', () => {
       expect(DEFAULT_OPEN_SETTINGS_SECTIONS).toEqual(['chat-models', 'mcp', 'userspace']);
+    });
+
+    it('keeps agent-behavior closed by default', () => {
+      expect(DEFAULT_OPEN_SETTINGS_SECTIONS).not.toContain('agent-behavior');
     });
   });
 
@@ -55,6 +60,7 @@ describe('settingsAccordionState', () => {
     it('opens the requested sections while preserving the rest', () => {
       const current: SettingsAccordionState = {
         'chat-models': false,
+        'agent-behavior': false,
         mcp: true,
         userspace: false,
         'llm-providers': true,
@@ -68,6 +74,7 @@ describe('settingsAccordionState', () => {
       const next = openSettingsAccordionSections(current, ['chat-models', 'userspace']);
       expect(next).toEqual({
         'chat-models': true,
+        'agent-behavior': false,
         mcp: true,
         userspace: true,
         'llm-providers': true,
@@ -110,6 +117,7 @@ describe('settingsAccordionState', () => {
     it('returns a copy of the provided snapshot when present', () => {
       const snapshot: SettingsAccordionState = {
         'chat-models': false,
+        'agent-behavior': true,
         mcp: false,
         userspace: false,
         'llm-providers': true,

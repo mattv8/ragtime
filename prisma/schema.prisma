@@ -199,6 +199,7 @@ model AppSettings {
   openapiModelPrefixEnabled           Boolean @default(true) @map("openapi_model_prefix_enabled")
   availableModelsCacheEnabled         Boolean @default(true) @map("available_models_cache_enabled")
   showToolCardFooterActions           Boolean @default(false) @map("show_tool_card_footer_actions")
+  toolSkillsEnabled                   Boolean @default(true) @map("tool_skills_enabled")
 
   // Embedding Configuration (for FAISS indexing)
   embeddingProvider   String  @default("ollama") @map("embedding_provider") // "ollama", "openai", "llama_cpp", "lmstudio", or "omlx"
@@ -1309,6 +1310,9 @@ model Conversation {
 
   // Built-in chat diagnostic tools explicitly disabled for this conversation
   disabledBuiltinToolIds Json @default("[]") @map("disabled_builtin_tool_ids")
+
+  // Requested on-demand tool skills persisted for later runtime filtering.
+  loadedToolSkillIds Json @default("[]") @map("loaded_tool_skill_ids")
 
   // Whether this conversation can orchestrate User Space subagents.
   subagentsEnabled Boolean @default(true) @map("subagents_enabled")

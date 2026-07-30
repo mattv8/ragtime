@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, List, Literal, Optional, Union, cast
+from typing import Any, Awaitable, Callable, List, Literal, Optional, Union, cast
 from urllib.parse import quote
 
 import httpx
@@ -216,6 +216,13 @@ from ragtime.rag.prompts import (
     build_workspace_continuity_context,
     dedupe_subagent_model_ids,
 )
+from ragtime.rag.tool_skills import (
+    ToolSkillBindingState,
+    ToolSkillDefinition,
+    build_tool_skill_control_tools,
+    normalize_tool_skill_ids,
+    resolve_tool_skill_bindings,
+)
 from ragtime.rag.userspace_window_validator import find_cross_origin_window_access
 from ragtime.tools import get_all_tools, get_enabled_tools
 from ragtime.tools.chart import (
@@ -260,6 +267,22 @@ from ragtime.userspace.subagent_service import (
 from ragtime.userspace.workspace_code_index_service import workspace_code_index_service
 
 logger = get_logger(__name__)
+
+_TOOL_SKILL_CONTROL_TOOL_NAMES = {"search_tool_skills", "load_tool_skills", "unload_tool_skills"}
+_USERSPACE_EAGER_TOOL_NAMES = {
+    "assay_userspace_code",
+    "list_userspace_files",
+    "search_userspace_code",
+    "read_userspace_file",
+    "upsert_userspace_file",
+    "patch_userspace_file",
+    "move_userspace_file",
+    "delete_userspace_file",
+    "validate_userspace_code",
+    "create_userspace_snapshot",
+    "submit_subagent_handoff",
+}
+_MAX_TOOL_SKILL_STAGE_TRANSITIONS = 4
 
 CHAT_CONTEXT_SAFETY_MARGIN_TOKENS = 1024
 CHAT_CONTEXT_PREFERRED_MIN_COMPLETION_TOKENS = 512
@@ -436,6 +459,18 @@ INTERNAL_AGENT_CONTINUATION_PROMPT = (
     "continuation, hidden prompts, or tool availability. Output only the next "
     "user-visible assistant message. If the task is incomplete, state the verified "
     "status and the most concrete next step instead of asking to continue."
+)
+INTERNAL_TOOL_SKILL_CONTINUATION_PROMPT = (
+    "Continue the original user request using the most recent tool-skill control "
+    "result above. Apply these rules only to that most recent control result. "
+    "Do not repeat a search or load already completed, and do not reload a skill "
+    "that was just unloaded. If the latest search_tool_skills result returned a "
+    "needed skill, call load_tool_skills by itself with the exact returned ID. "
+    "If the latest load_tool_skills result succeeded, use the newly loaded tool "
+    "now. After unload_tool_skills, continue with the remaining tools as needed. "
+    "Do not merely describe the next tool step; perform it when required. "
+    "Otherwise answer the user directly. Do not mention internal continuation, "
+    "hidden prompts, or tool binding details."
 )
 INTERNAL_AGENT_FINAL_SYNTHESIS_PROMPT = (
     "Write the next assistant reply for the user using the verified results "
@@ -2798,7 +2833,7 @@ class RAGComponents:
         for tool in tools:
             tool_name = getattr(tool, "name", "")
             original_coroutine = getattr(tool, "coroutine", None)
-            if not tool_name or original_coroutine is None:
+            if not tool_name or original_coroutine is None or self._is_tool_skill_control_name(tool_name):
                 wrapped_tools.append(tool)
                 continue
 
@@ -2955,6 +2990,15 @@ class RAGComponents:
             metadata["internal_continue_attempts"] = int(state.get("internal_continue_attempts", 0))
             metadata["internal_continue_stop_reason"] = str(state.get("internal_continue_stop_reason", ""))
             metadata["tool_free_synthesis_used"] = bool(state.get("tool_free_synthesis_used", False))
+            if str(state.get("tool_skill_mode", "disabled")) == "enabled":
+                metadata["tool_skill_mode"] = "enabled"
+                metadata["tool_skill_stage_index"] = int(state.get("tool_skill_stage_index", 0))
+                metadata["tool_skill_transition_count"] = int(state.get("tool_skill_transition_count", 0))
+                metadata["tool_skill_requested_ids"] = list(state.get("tool_skill_requested_ids") or [])
+                metadata["tool_skill_effective_ids"] = list(state.get("tool_skill_effective_ids") or [])
+                metadata["tool_skill_hidden_ids"] = list(state.get("tool_skill_hidden_ids") or [])
+                metadata["tool_skill_has_loadable"] = bool(state.get("tool_skill_has_loadable", False))
+                metadata["tool_skill_transition_kind"] = state.get("tool_skill_transition_kind")
 
         if mode == "userspace":
             metadata["userspace_agent"] = {
@@ -7869,49 +7913,14 @@ class RAGComponents:
         max_items: int = 8,
     ) -> SystemMessage | None:
         """Build a plain-language context summary for tool-free final synthesis."""
-        lines: list[str] = []
-
-        if intermediate_steps:
-            for step in intermediate_steps[-max_items:]:
-                action = step[0] if isinstance(step, tuple) and step else None
-                observation = step[1] if isinstance(step, tuple) and len(step) > 1 else ""
-                tool_name = str(getattr(action, "tool", "unknown") or "unknown")
-                tool_input = getattr(action, "tool_input", {})
-                args_preview = cls._truncate_prompt_preview(
-                    (json.dumps(tool_input, ensure_ascii=True, default=str) if isinstance(tool_input, dict) else str(tool_input)),
-                    220,
-                )
-                output_summary = cls._summarize_tool_output_for_synthesis(observation)
-                lines.append(f"- {tool_name} args={args_preview}; result={output_summary}")
-        elif replay_messages:
-            index = 0
-            while index < len(replay_messages):
-                message = replay_messages[index]
-                if not isinstance(message, AIMessage):
-                    index += 1
-                    continue
-
-                tool_calls = getattr(message, "tool_calls", None) or []
-                if not tool_calls:
-                    index += 1
-                    continue
-
-                tool_call = tool_calls[0]
-                tool_name = str(tool_call.get("name") or "unknown")
-                tool_args = tool_call.get("args") or {}
-                args_preview = cls._truncate_prompt_preview(
-                    (json.dumps(tool_args, ensure_ascii=True, default=str) if isinstance(tool_args, dict) else str(tool_args)),
-                    220,
-                )
-                tool_output = ""
-                if index + 1 < len(replay_messages) and isinstance(replay_messages[index + 1], ToolMessage):
-                    tool_output = str(replay_messages[index + 1].content or "")
-                    index += 1
-                output_summary = cls._summarize_tool_output_for_synthesis(tool_output)
-                lines.append(f"- {tool_name} args={args_preview}; result={output_summary}")
-                if len(lines) >= max_items:
-                    break
-                index += 1
+        lines = [
+            f"- {entry['tool_name']} args={entry['args_preview']}; result={entry['output_summary']}"
+            for entry in cls._collect_synthesis_tool_activity(
+                intermediate_steps=intermediate_steps,
+                replay_messages=replay_messages,
+                max_items=max_items,
+            )
+        ]
 
         if not lines:
             return None
@@ -7939,21 +7948,15 @@ class RAGComponents:
         "I completed tool activity but did not emit a final answer" fallback.
         """
         tool_names: list[str] = []
-        if intermediate_steps:
-            for step in intermediate_steps[-max_tools:]:
-                action = step[0] if isinstance(step, tuple) and step else None
-                name = str(getattr(action, "tool", "") or "")
-                if name and name not in tool_names:
-                    tool_names.append(name)
-        elif replay_messages:
-            for msg in replay_messages:
-                if isinstance(msg, AIMessage):
-                    for tc in getattr(msg, "tool_calls", None) or []:
-                        name = str(tc.get("name") or "")
-                        if name and name not in tool_names:
-                            tool_names.append(name)
-                        if len(tool_names) >= max_tools:
-                            break
+        for entry in cls._collect_synthesis_tool_activity(
+            intermediate_steps=intermediate_steps,
+            replay_messages=replay_messages,
+        ):
+            name = str(entry["tool_name"] or "")
+            if name and name not in tool_names:
+                tool_names.append(name)
+            if len(tool_names) >= max_tools:
+                break
 
         if tool_names:
             tools_text = ", ".join(f"`{n}`" for n in tool_names)
@@ -7968,6 +7971,147 @@ class RAGComponents:
             "but the synthesis model did not produce visible text. "
             "Please send **Continue** so I can complete the response."
         )
+
+    @classmethod
+    def _collect_synthesis_tool_activity(
+        cls,
+        *,
+        intermediate_steps: list[Any],
+        replay_messages: list[BaseMessage],
+        max_items: int | None = None,
+    ) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        seen_keys: set[str] = set()
+        replay_entries: list[dict[str, str]] = []
+        intermediate_entries: list[dict[str, str]] = []
+
+        def _dedupe_key(*, tool_call_id: str, tool_name: str, tool_input: Any, tool_output: Any) -> str:
+            try:
+                input_key = json.dumps(tool_input, ensure_ascii=True, default=str)
+            except Exception:
+                input_key = str(tool_input)
+            if tool_call_id:
+                return f"id:{tool_call_id}|{tool_name}|{input_key}|{tool_output}"
+            return f"content:{tool_name}|{input_key}|{tool_output}"
+
+        def _structural_key(*, tool_name: str, tool_input: Any, tool_output: Any) -> str:
+            try:
+                input_key = json.dumps(tool_input, ensure_ascii=True, default=str)
+            except Exception:
+                input_key = str(tool_input)
+            return f"{tool_name}|{input_key}|{tool_output}"
+
+        def _build_entry(*, tool_name: str, tool_input: Any, tool_output: Any, tool_call_id: str = "") -> dict[str, str] | None:
+            key = _dedupe_key(
+                tool_call_id=str(tool_call_id or ""),
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=tool_output,
+            )
+            if key in seen_keys:
+                return None
+            seen_keys.add(key)
+            return {
+                "tool_name": tool_name,
+                "args_preview": cls._truncate_prompt_preview(
+                    (json.dumps(tool_input, ensure_ascii=True, default=str) if isinstance(tool_input, dict) else str(tool_input)),
+                    220,
+                ),
+                "output_summary": cls._summarize_tool_output_for_synthesis(tool_output),
+                "structural_key": _structural_key(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    tool_output=tool_output,
+                ),
+            }
+
+        def _add_entry(target: list[dict[str, str]], *, tool_name: str, tool_input: Any, tool_output: Any, tool_call_id: str = "") -> None:
+            entry = _build_entry(
+                tool_name=tool_name,
+                tool_input=tool_input,
+                tool_output=tool_output,
+                tool_call_id=tool_call_id,
+            )
+            if entry is not None:
+                target.append(entry)
+
+        index = 0
+        while index < len(replay_messages):
+            message = replay_messages[index]
+            if not isinstance(message, AIMessage):
+                index += 1
+                continue
+
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if not tool_calls:
+                index += 1
+                continue
+
+            next_index = index + 1
+            tool_outputs_by_id: dict[str, str] = {}
+            anonymous_tool_outputs: list[str] = []
+            while next_index < len(replay_messages) and isinstance(replay_messages[next_index], ToolMessage):
+                next_message = cast(ToolMessage, replay_messages[next_index])
+                next_call_id = str(getattr(next_message, "tool_call_id", "") or "")
+                next_output = str(next_message.content or "")
+                if next_call_id:
+                    tool_outputs_by_id[next_call_id] = next_output
+                else:
+                    anonymous_tool_outputs.append(next_output)
+                next_index += 1
+
+            for tool_call_index, tool_call in enumerate(tool_calls):
+                tool_call_id = str(tool_call.get("id") or "")
+                tool_output = tool_outputs_by_id.get(tool_call_id, "")
+                if not tool_output and tool_call_index < len(anonymous_tool_outputs):
+                    tool_output = anonymous_tool_outputs[tool_call_index]
+                _add_entry(
+                    replay_entries,
+                    tool_name=str(tool_call.get("name") or "unknown"),
+                    tool_input=tool_call.get("args") or {},
+                    tool_output=tool_output,
+                    tool_call_id=tool_call_id,
+                )
+            index = next_index
+
+        for step in intermediate_steps:
+            action = step[0] if isinstance(step, tuple) and step else None
+            observation = step[1] if isinstance(step, tuple) and len(step) > 1 else ""
+            _add_entry(
+                intermediate_entries,
+                tool_name=str(getattr(action, "tool", "unknown") or "unknown"),
+                tool_input=getattr(action, "tool_input", {}),
+                tool_output=observation,
+                tool_call_id=str(getattr(action, "tool_call_id", "") or ""),
+            )
+
+        if intermediate_entries:
+            trimmed_replay_entries = list(replay_entries)
+            replay_index = len(trimmed_replay_entries) - 1
+            intermediate_index = len(intermediate_entries) - 1
+            while replay_index >= 0 and intermediate_index >= 0:
+                if trimmed_replay_entries[replay_index]["structural_key"] != intermediate_entries[intermediate_index]["structural_key"]:
+                    break
+                replay_index -= 1
+                intermediate_index -= 1
+            if intermediate_index < len(intermediate_entries) - 1:
+                trimmed_replay_entries = trimmed_replay_entries[: replay_index + 1]
+            entries = trimmed_replay_entries + intermediate_entries
+        else:
+            entries = replay_entries
+
+        entries = [
+            {
+                "tool_name": entry["tool_name"],
+                "args_preview": entry["args_preview"],
+                "output_summary": entry["output_summary"],
+            }
+            for entry in entries
+        ]
+
+        if max_items is not None and len(entries) > max_items:
+            return entries[-max_items:]
+        return entries
 
     def _extract_text_from_message(self, message: Any) -> str:
         """
@@ -8516,6 +8660,611 @@ class RAGComponents:
             names.add(f"search_{tool_name}")
         return names
 
+    @staticmethod
+    def _is_tool_skill_control_name(tool_name: str) -> bool:
+        return tool_name in _TOOL_SKILL_CONTROL_TOOL_NAMES
+
+    def _is_eager_runtime_tool(self, tool_name: str, *, mode: str) -> bool:
+        if not tool_name or self._is_tool_skill_control_name(tool_name):
+            return False
+        if mode == "userspace":
+            return tool_name in _USERSPACE_EAGER_TOOL_NAMES
+        return False
+
+    @staticmethod
+    def _runtime_tool_names(tools: list[Any]) -> set[str]:
+        return {str(getattr(tool, "name", "") or "").strip() for tool in tools if str(getattr(tool, "name", "") or "").strip()}
+
+    def _build_tool_skill_catalog(
+        self,
+        runtime_tools: list[Any],
+        *,
+        mode: str,
+        allowed_tool_config_ids: list[str] | None,
+    ) -> tuple[list[ToolSkillDefinition], list[Any], dict[str, StructuredTool]]:
+        runtime_tools_by_name: dict[str, StructuredTool] = {}
+        for tool in runtime_tools:
+            tool_name = getattr(tool, "name", "")
+            if not tool_name or self._is_tool_skill_control_name(tool_name):
+                continue
+            runtime_tools_by_name.setdefault(tool_name, cast(StructuredTool, tool))
+
+        allowed_id_set = set(allowed_tool_config_ids or []) if allowed_tool_config_ids is not None else None
+        known_config_tool_names: set[str] = set()
+        for config in self._tool_configs or []:
+            known_config_tool_names.update(self._derive_config_tool_names(config))
+        catalog: list[ToolSkillDefinition] = []
+        eager_tools: list[Any] = []
+        optional_tools_by_name: dict[str, StructuredTool] = {}
+        config_optional_names: set[str] = set()
+
+        for config in self._tool_configs or []:
+            tool_config_id = str(config.get("id") or "").strip()
+            if not tool_config_id:
+                continue
+            if allowed_id_set is not None and tool_config_id not in allowed_id_set:
+                continue
+            derived_tool_names = sorted(
+                tool_name
+                for tool_name in self._derive_config_tool_names(config)
+                if tool_name in runtime_tools_by_name
+            )
+            if not derived_tool_names:
+                continue
+            catalog.append(
+                ToolSkillDefinition(
+                    id=f"tool_config:{tool_config_id}",
+                    label=str(config.get("name") or tool_config_id),
+                    description=str(config.get("description") or ""),
+                    tool_names=derived_tool_names,
+                    tool_config_ids=[tool_config_id],
+                    kind=str(config.get("tool_type") or "custom"),
+                )
+            )
+            for tool_name in derived_tool_names:
+                config_optional_names.add(tool_name)
+                optional_tools_by_name[tool_name] = runtime_tools_by_name[tool_name]
+
+        for tool_name, tool in runtime_tools_by_name.items():
+            if self._is_eager_runtime_tool(tool_name, mode=mode):
+                eager_tools.append(tool)
+                continue
+            if tool_name in known_config_tool_names:
+                continue
+            if tool_name in config_optional_names:
+                continue
+            optional_tools_by_name[tool_name] = tool
+            catalog.append(
+                ToolSkillDefinition(
+                    id=f"builtin:{tool_name}",
+                    label=tool_name.replace("_", " ").strip().title() or tool_name,
+                    description=str(getattr(tool, "description", "") or ""),
+                    tool_names=[tool_name],
+                    kind="builtin",
+                )
+            )
+
+        return catalog, eager_tools, optional_tools_by_name
+
+    async def _resolve_request_tool_skill_bindings(
+        self,
+        *,
+        runtime_tools: list[Any],
+        mode: str,
+        conversation_id: str | None,
+        allowed_tool_config_ids: list[str] | None = None,
+        binding_state_override: ToolSkillBindingState | None = None,
+    ) -> dict[str, Any]:
+        if not bool((self._app_settings or {}).get("tool_skills_enabled", True)):
+            return {
+                "runtime_tools": runtime_tools,
+                "tool_skill_binding_state": None,
+                "tool_skill_catalog": [],
+                "tool_skill_hidden_ids": [],
+                "tool_skill_has_loadable": False,
+                "tool_skill_mode": "disabled",
+                "tool_skill_loaded_ids": [],
+            }
+
+        catalog, eager_tools, optional_tools_by_name = self._build_tool_skill_catalog(
+            runtime_tools,
+            mode=mode,
+            allowed_tool_config_ids=allowed_tool_config_ids,
+        )
+
+        if binding_state_override is None:
+            requested_ids = []
+            if conversation_id:
+                try:
+                    requested_ids = await repository.get_conversation_loaded_tool_skill_ids(conversation_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load requested tool skills for conversation %s: %s",
+                        conversation_id,
+                        _format_exception_message(exc),
+                    )
+                    requested_ids = []
+            binding_state = ToolSkillBindingState(
+                requested_ids=normalize_tool_skill_ids(requested_ids),
+                effective_ids=[],
+            )
+        else:
+            binding_state = binding_state_override
+
+        async def _persist_requested_ids(next_ids: list[str]) -> None:
+            if not conversation_id:
+                return
+            previous_ids = normalize_tool_skill_ids(binding_state.requested_ids)
+            normalized_next_ids = normalize_tool_skill_ids(next_ids)
+            add_ids = [skill_id for skill_id in normalized_next_ids if skill_id not in previous_ids]
+            remove_ids = [skill_id for skill_id in previous_ids if skill_id not in normalized_next_ids]
+            await repository.mutate_conversation_loaded_tool_skill_ids(
+                conversation_id,
+                add_ids=add_ids,
+                remove_ids=remove_ids,
+            )
+
+        resolution = resolve_tool_skill_bindings(
+            eligible_catalog=catalog,
+            requested_ids=binding_state.requested_ids,
+            eager_tools=[cast(StructuredTool, tool) for tool in eager_tools],
+            optional_tools_by_name=optional_tools_by_name,
+        )
+        binding_state.requested_ids = list(resolution.binding_state.requested_ids)
+        binding_state.effective_ids = list(resolution.binding_state.effective_ids)
+        effective_id_set = set(binding_state.effective_ids)
+        hidden_tool_config_ids: list[str] = []
+        seen_hidden_ids: set[str] = set()
+        for definition in resolution.catalog:
+            if definition.id in effective_id_set:
+                continue
+            for tool_config_id in definition.tool_config_ids:
+                if tool_config_id and tool_config_id not in seen_hidden_ids:
+                    seen_hidden_ids.add(tool_config_id)
+                    hidden_tool_config_ids.append(tool_config_id)
+        tool_skill_has_loadable = any(definition.id not in effective_id_set for definition in resolution.catalog)
+        control_tools = build_tool_skill_control_tools(
+            eligible_catalog=resolution.catalog,
+            binding_state=binding_state,
+            persist_requested_ids=_persist_requested_ids,
+        )
+        combined_tools = [
+            *resolution.eager_tools,
+            *resolution.loaded_tools,
+            *control_tools.values(),
+        ]
+        return {
+            "runtime_tools": combined_tools,
+            "tool_skill_binding_state": binding_state,
+            "tool_skill_catalog": resolution.catalog,
+            "tool_skill_hidden_ids": hidden_tool_config_ids,
+            "tool_skill_has_loadable": tool_skill_has_loadable,
+            "tool_skill_mode": "enabled",
+            "tool_skill_loaded_ids": list(binding_state.effective_ids),
+        }
+
+    @staticmethod
+    def _parse_tool_skill_transition_payload(tool_name: str, observation: Any) -> dict[str, Any] | None:
+        if tool_name not in _TOOL_SKILL_CONTROL_TOOL_NAMES:
+            return None
+        if not isinstance(observation, str):
+            return None
+        try:
+            payload = json.loads(observation)
+        except (TypeError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if not payload.get("bindings_changed"):
+            return None
+        transition_kind = str(payload.get("transition_kind") or "").strip()
+        if transition_kind not in {"load", "unload"}:
+            return None
+        return payload
+
+    def _apply_tool_skill_transition_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        binding_state: ToolSkillBindingState | None,
+        request_tool_state: dict[str, Any] | None,
+        hidden_ids: list[str] | None = None,
+    ) -> None:
+        if binding_state is not None:
+            binding_state.requested_ids = normalize_tool_skill_ids(payload.get("requested_ids"))
+            binding_state.effective_ids = normalize_tool_skill_ids(payload.get("effective_ids"))
+            binding_state.bindings_changed = bool(payload.get("bindings_changed"))
+            transition_kind = str(payload.get("transition_kind") or "").strip() or None
+            binding_state.transition_kind = cast(Any, transition_kind)
+        if request_tool_state is None:
+            return
+        request_tool_state["tool_skill_mode"] = "enabled"
+        request_tool_state["tool_skill_requested_ids"] = list(getattr(binding_state, "requested_ids", []))
+        request_tool_state["tool_skill_effective_ids"] = list(getattr(binding_state, "effective_ids", []))
+        request_tool_state["tool_skill_hidden_ids"] = list(hidden_ids or request_tool_state.get("tool_skill_hidden_ids") or [])
+        request_tool_state["tool_skill_transition_kind"] = str(payload.get("transition_kind") or "").strip() or None
+
+    def _has_tool_skill_control_activity(self, intermediate_steps: list[Any]) -> bool:
+        for step in intermediate_steps:
+            if not isinstance(step, tuple) or not step:
+                continue
+            tool_name = str(getattr(step[0], "tool", "") or "")
+            if self._is_tool_skill_control_name(tool_name):
+                return True
+        return False
+
+    def _resolve_tool_skill_stage_budget(
+        self,
+        *,
+        intermediate_steps: list[Any],
+        control_activity: bool,
+        transition_payload: dict[str, Any] | None,
+        remaining_iterations: int,
+        transition_count: int,
+    ) -> dict[str, Any]:
+        iteration_cost = max(1, len(intermediate_steps))
+        next_remaining_iterations = max(0, remaining_iterations - iteration_cost)
+        bindings_changed = transition_payload is not None
+        next_transition_count = transition_count + (1 if bindings_changed else 0)
+        should_continue = bool(control_activity or bindings_changed)
+        stop_message: str | None = None
+        if should_continue:
+            if bindings_changed and transition_count >= _MAX_TOOL_SKILL_STAGE_TRANSITIONS:
+                stop_message = "Tool-skill binding changed too many times in one request. Stop changing bindings and continue with the currently loaded tools."
+            elif next_remaining_iterations <= 0:
+                stop_message = "This request exhausted its remaining agent iteration budget while using tool-skill controls. Continue without more control calls."
+        return {
+            "iteration_cost": iteration_cost,
+            "next_remaining_iterations": next_remaining_iterations,
+            "bindings_changed": bindings_changed,
+            "next_transition_count": next_transition_count,
+            "should_continue": should_continue,
+            "stop_message": stop_message,
+        }
+
+    def _seed_tool_skill_request_state(
+        self,
+        *,
+        request_tool_state: dict[str, Any],
+        binding_state: ToolSkillBindingState | None,
+        hidden_ids: list[str] | None,
+        tool_skill_mode: str,
+        has_loadable: bool = False,
+    ) -> None:
+        if tool_skill_mode != "enabled":
+            return
+        request_tool_state["tool_skill_mode"] = tool_skill_mode
+        request_tool_state["tool_skill_requested_ids"] = list(getattr(binding_state, "requested_ids", [])) if binding_state else []
+        request_tool_state["tool_skill_effective_ids"] = list(getattr(binding_state, "effective_ids", [])) if binding_state else []
+        request_tool_state["tool_skill_hidden_ids"] = list(hidden_ids or [])
+        request_tool_state["tool_skill_has_loadable"] = bool(has_loadable)
+        request_tool_state.setdefault("tool_skill_stage_index", 1)
+        request_tool_state.setdefault("tool_skill_transition_count", 0)
+        request_tool_state["tool_skill_transition_kind"] = getattr(binding_state, "transition_kind", None) if binding_state else None
+
+    def _extract_tool_skill_transition_from_intermediate_steps(
+        self,
+        intermediate_steps: list[Any],
+    ) -> dict[str, Any] | None:
+        for step in reversed(intermediate_steps):
+            if not isinstance(step, tuple) or len(step) < 2:
+                continue
+            action = step[0]
+            transition = self._parse_tool_skill_transition_payload(
+                str(getattr(action, "tool", "") or ""),
+                step[1],
+            )
+            if transition is not None:
+                return transition
+        return None
+
+    def _rebuild_chat_history_for_tool_skill_stage(
+        self,
+        *,
+        original_chat_history: list[BaseMessage],
+        original_user_content: Any,
+        replay_messages: list[BaseMessage],
+    ) -> list[BaseMessage]:
+        rebuilt_history = list(original_chat_history)
+        rebuilt_history.append(HumanMessage(content=original_user_content))
+        rebuilt_history.extend(replay_messages)
+        return rebuilt_history
+
+    def _format_tool_skill_stage_replay_messages(
+        self,
+        intermediate_steps: list[Any],
+    ) -> list[BaseMessage]:
+        try:
+            return self._format_intermediate_steps_for_agent(
+                intermediate_steps,
+                include_latest_screenshot_image=False,
+            )
+        except Exception:
+            replay_messages: list[BaseMessage] = []
+            for index, step in enumerate(intermediate_steps):
+                if not isinstance(step, tuple) or len(step) < 2:
+                    continue
+                action = step[0]
+                observation = step[1]
+                tool_name = str(getattr(action, "tool", "") or "")
+                tool_input = getattr(action, "tool_input", {})
+                if not isinstance(tool_input, dict):
+                    tool_input = {"input": tool_input}
+                tool_call_id = str(getattr(action, "tool_call_id", "") or "") or f"tool_skill_stage_{index}"
+                replay_messages.extend(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": tool_name,
+                                    "args": tool_input,
+                                    "id": tool_call_id,
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        ToolMessage(
+                            content=str(observation or ""),
+                            tool_call_id=tool_call_id,
+                        ),
+                    ]
+                )
+            return replay_messages
+
+    async def _rebuild_tool_skill_stage_after_control_activity(
+        self,
+        *,
+        current_request_context: dict[str, Any],
+        current_executor: Any,
+        llm_resolution: Any,
+        original_chat_history: list[BaseMessage],
+        original_user_content: Any,
+        replay_messages: list[BaseMessage],
+        blocked_tool_names: set[str] | None,
+        workspace_context: dict[str, Any] | None,
+        user_id: str | None,
+        current_user_context: dict[str, Any] | None,
+        current_time_context: dict[str, Any] | None,
+        conversation_id: str | None,
+        conversation_model: str | None,
+        chat_task_id: str | None,
+        disabled_builtin_tool_ids: set[str] | None,
+        turn_system_content: str,
+        remaining_iterations: int,
+        transition: dict[str, Any] | None,
+        next_transition_count: int,
+        next_stage_index: int,
+        add_chat_visualization_prompt: bool,
+    ) -> tuple[Any, dict[str, Any], list[BaseMessage], str, str, str, Any]:
+        request_tool_state = current_request_context.get("request_tool_state") or {}
+        binding_state = current_request_context.get("tool_skill_binding_state")
+        if transition is not None:
+            self._apply_tool_skill_transition_payload(
+                payload=transition,
+                binding_state=binding_state,
+                request_tool_state=request_tool_state,
+                hidden_ids=current_request_context.get("tool_skill_hidden_ids"),
+            )
+        rebuilt_history = self._rebuild_chat_history_for_tool_skill_stage(
+            original_chat_history=original_chat_history,
+            original_user_content=original_user_content,
+            replay_messages=replay_messages,
+        )
+        rebuilt_request_context = await self._build_request_runtime_context(
+            is_ui=current_request_context["prompt_is_ui"],
+            executor=current_executor,
+            blocked_tool_names=blocked_tool_names,
+            workspace_context=workspace_context,
+            add_chat_visualization_prompt=add_chat_visualization_prompt,
+            user_id=user_id,
+            current_user_context=current_user_context,
+            current_time_context=current_time_context,
+            conversation_id=conversation_id,
+            conversation_model=conversation_model,
+            chat_task_id=chat_task_id,
+            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+            runtime_tool_source_override=current_request_context.get("runtime_tool_source"),
+            tool_skill_binding_state_override=binding_state,
+            request_tool_state_override=request_tool_state,
+        )
+        current_request_context.clear()
+        current_request_context.update(rebuilt_request_context)
+        request_tool_state = current_request_context.get("request_tool_state") or request_tool_state
+        current_request_context["request_tool_state"] = request_tool_state
+        self._seed_tool_skill_request_state(
+            request_tool_state=request_tool_state,
+            binding_state=current_request_context.get("tool_skill_binding_state"),
+            hidden_ids=current_request_context.get("tool_skill_hidden_ids"),
+            tool_skill_mode=current_request_context.get("tool_skill_mode", "enabled"),
+            has_loadable=bool(current_request_context.get("tool_skill_has_loadable", False)),
+        )
+        request_tool_state["tool_skill_transition_count"] = int(next_transition_count)
+        request_tool_state["tool_skill_stage_index"] = int(next_stage_index)
+        request_tool_state["tool_skill_transition_kind"] = transition.get("transition_kind") if transition is not None else None
+        system_prompt = self._build_request_system_prompt(
+            is_ui=current_request_context["prompt_is_ui"],
+            mode=current_request_context["mode"],
+            allowed_tool_config_ids=current_request_context["allowed_tool_config_ids"],
+            runtime_tools=current_request_context["runtime_tools"],
+            hidden_tool_config_ids=current_request_context.get("tool_skill_hidden_ids"),
+            tool_skill_mode=current_request_context.get("tool_skill_mode", "disabled"),
+            loaded_tool_skill_ids=current_request_context.get("tool_skill_loaded_ids"),
+            tool_skill_has_loadable=bool(current_request_context.get("tool_skill_has_loadable", False)),
+        )
+        system_prompt += current_request_context["prompt_additions"]
+        tool_scope_prompt = self._build_request_tool_scope_prompt(
+            current_request_context["runtime_tools"],
+            mode=current_request_context["mode"],
+        )
+        llm_resolution, rebuilt_history, turn_system_content = await self._prepare_chat_context_window(
+            llm_resolution=llm_resolution,
+            system_prompt=system_prompt,
+            tool_scope_prompt=tool_scope_prompt,
+            turn_system_content=turn_system_content,
+            chat_history=rebuilt_history,
+            user_content=original_user_content,
+            tools=current_request_context["runtime_tools"],
+        )
+        rebuilt_executor = self._build_runtime_executor(
+            current_request_context["runtime_tools"],
+            system_prompt + tool_scope_prompt,
+            llm=llm_resolution.llm,
+            turn_system_content=turn_system_content,
+            max_iterations=max(1, remaining_iterations),
+        )
+        return (
+            rebuilt_executor,
+            current_request_context,
+            rebuilt_history,
+            system_prompt,
+            tool_scope_prompt,
+            turn_system_content,
+            llm_resolution,
+        )
+
+    async def _run_nonstream_tool_skill_stage_loop(
+        self,
+        *,
+        executor: Any,
+        llm_resolution: Any,
+        chat_history: list[BaseMessage],
+        user_content: Any,
+        request_context: dict[str, Any],
+        system_prompt: str,
+        tool_scope_prompt: str,
+        turn_system_content: str,
+        conversation_id: str | None,
+        conversation_model: str | None,
+        user_id: str | None,
+        blocked_tool_names: set[str] | None,
+        workspace_context: dict[str, Any] | None,
+        current_user_context: dict[str, Any] | None,
+        current_time_context: dict[str, Any] | None,
+        chat_task_id: str | None,
+        message_index: int | None,
+        disabled_builtin_tool_ids: set[str] | None,
+        max_iterations: int,
+        stage_debug_callback: Callable[[int, dict[str, Any], list[BaseMessage], Any, str, str, str], Awaitable[None]] | None = None,
+    ) -> tuple[str, Any, list[BaseMessage]]:
+        current_executor = executor
+        current_chat_history = list(chat_history)
+        current_request_context = request_context
+        replay_messages: list[BaseMessage] = []
+        transition_count = 0
+        remaining_iterations = max(1, int(max_iterations))
+        binding_state = current_request_context.get("tool_skill_binding_state")
+        current_user_input = user_content
+        request_tool_state = current_request_context.get("request_tool_state")
+        self._seed_tool_skill_request_state(
+            request_tool_state=request_tool_state,
+            binding_state=binding_state,
+            hidden_ids=current_request_context.get("tool_skill_hidden_ids"),
+            tool_skill_mode=current_request_context.get("tool_skill_mode", "enabled"),
+            has_loadable=bool(current_request_context.get("tool_skill_has_loadable", False)),
+        )
+        stage_index = int((request_tool_state or {}).get("tool_skill_stage_index", 1))
+        image_input_ocr_retry_attempted = False
+
+        while True:
+            try:
+                result = await current_executor.ainvoke(
+                    {
+                        "input": current_user_input,
+                        "user_input": [HumanMessage(content=current_user_input)],
+                        "chat_history": current_chat_history,
+                    }
+                )
+            except Exception as invoke_err:
+                retry_content = None
+                if not image_input_ocr_retry_attempted and self._is_no_image_support_error(invoke_err):
+                    retry_content = await self._ocr_images_after_no_image_support_error(
+                        current_user_input,
+                        getattr(llm_resolution, "model", None),
+                        context="non-streaming agent",
+                    )
+                if retry_content is None:
+                    raise
+                image_input_ocr_retry_attempted = True
+                if request_tool_state is not None:
+                    request_tool_state["image_input_ocr_retry"] = True
+                    request_tool_state["tool_skill_last_effective_user_input"] = retry_content
+                current_user_input = retry_content
+                continue
+            if stage_debug_callback is not None:
+                await stage_debug_callback(
+                    stage_index,
+                    current_request_context,
+                    current_chat_history,
+                    current_user_input,
+                    system_prompt,
+                    tool_scope_prompt,
+                    turn_system_content,
+                )
+            intermediate_steps = list(result.get("intermediate_steps") or [])
+            output = result.get("output", "I couldn't generate a response.")
+            if request_tool_state is not None:
+                request_tool_state["tool_skill_last_effective_user_input"] = current_user_input
+            transition = (
+                self._extract_tool_skill_transition_from_intermediate_steps(intermediate_steps)
+                if current_request_context.get("tool_skill_mode") == "enabled"
+                else None
+            )
+            control_activity = self._has_tool_skill_control_activity(intermediate_steps)
+            budget = self._resolve_tool_skill_stage_budget(
+                intermediate_steps=intermediate_steps,
+                control_activity=control_activity,
+                transition_payload=transition,
+                remaining_iterations=remaining_iterations,
+                transition_count=transition_count,
+            )
+            remaining_iterations = int(budget["next_remaining_iterations"])
+            if not budget["should_continue"]:
+                return str(output), current_executor, current_chat_history
+            if budget["stop_message"]:
+                return (
+                    str(budget["stop_message"]),
+                    current_executor,
+                    current_chat_history,
+                )
+            replay_messages.extend(self._format_tool_skill_stage_replay_messages(intermediate_steps))
+            (
+                current_executor,
+                current_request_context,
+                current_chat_history,
+                system_prompt,
+                tool_scope_prompt,
+                turn_system_content,
+                llm_resolution,
+            ) = await self._rebuild_tool_skill_stage_after_control_activity(
+                current_request_context=current_request_context,
+                current_executor=current_executor,
+                llm_resolution=llm_resolution,
+                original_chat_history=chat_history,
+                original_user_content=user_content,
+                replay_messages=replay_messages,
+                blocked_tool_names=blocked_tool_names,
+                workspace_context=workspace_context,
+                user_id=user_id,
+                current_user_context=current_user_context,
+                current_time_context=current_time_context,
+                conversation_id=conversation_id,
+                conversation_model=conversation_model,
+                chat_task_id=chat_task_id,
+                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                turn_system_content=turn_system_content,
+                remaining_iterations=remaining_iterations,
+                transition=transition,
+                next_transition_count=int(budget["next_transition_count"]),
+                next_stage_index=stage_index + 1,
+                add_chat_visualization_prompt=current_request_context["prompt_is_ui"],
+            )
+            request_tool_state = current_request_context.get("request_tool_state") or request_tool_state or {}
+            binding_state = current_request_context.get("tool_skill_binding_state")
+            transition_count = int(budget["next_transition_count"])
+            stage_index += 1
+            current_user_input = INTERNAL_TOOL_SKILL_CONTINUATION_PROMPT
+
     def _get_tool_connection_metadata(self, runtime_tool_name: str) -> dict[str, str] | None:
         """Resolve tool connection metadata for a runtime tool name."""
         if not self._tool_configs:
@@ -8651,7 +9400,7 @@ class RAGComponents:
         wrapped_tools: list[Any] = []
         for tool in runtime_tools:
             tool_name = getattr(tool, "name", "")
-            if not tool_name.startswith("query_"):
+            if self._is_tool_skill_control_name(tool_name) or not tool_name.startswith("query_"):
                 wrapped_tools.append(tool)
                 continue
 
@@ -12526,7 +13275,7 @@ class RAGComponents:
             discovered = global_tools + workspace_tools
 
             seen: set[tuple[str, str]] = set()
-            bound_tool_names = set(existing_names)
+            bound_tool_names = set(existing_names) | set(_TOOL_SKILL_CONTROL_TOOL_NAMES)
             for entry in discovered:
                 if not isinstance(entry, dict):
                     continue
@@ -14024,12 +14773,20 @@ class RAGComponents:
         conversation_model: Optional[str] = None,
         chat_task_id: Optional[str] = None,
         disabled_builtin_tool_ids: Optional[set[str]] = None,
+        runtime_tool_source_override: list[Any] | None = None,
+        tool_skill_binding_state_override: ToolSkillBindingState | None = None,
+        request_tool_state_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build request-scoped runtime tools, mode, and prompt additions once."""
         t0 = time.monotonic()
-        runtime_tools = list(getattr(executor, "tools", []) if executor else [])
+        runtime_tools = list(
+            runtime_tool_source_override
+            if runtime_tool_source_override is not None
+            else getattr(executor, "tools", []) if executor else []
+        )
         if blocked_tool_names:
             runtime_tools = [tool for tool in runtime_tools if getattr(tool, "name", "") not in blocked_tool_names]
+        runtime_tool_source = list(runtime_tools)
 
         mode = "chat"
         prompt_is_ui = is_ui
@@ -14039,7 +14796,7 @@ class RAGComponents:
         userspace_env_var_turn_hint = ""
         userspace_runtime_status_turn_hint = ""
         userspace_diagnostics_turn_hint = ""
-        request_tool_state: dict[str, Any] = {
+        request_tool_state: dict[str, Any] = request_tool_state_override if request_tool_state_override is not None else {
             "tool_calls": [],
             "signature_counts": {},
             "blocked_repeat_calls": 0,
@@ -14049,6 +14806,7 @@ class RAGComponents:
             "tool_free_synthesis_used": False,
         }
         export_context: dict[str, Any] = {}
+        subagent_model_ids: list[str] = []
 
         workspace_id = (workspace_context or {}).get("workspace_id", "")
         if not isinstance(workspace_id, str):
@@ -14195,9 +14953,9 @@ class RAGComponents:
             )
             userspace_env_var_turn_hint = self._build_userspace_env_var_turn_hint(env_var_summaries)
 
+            diagnostic_summary: list[Any] = []
             try:
                 diagnostic_summary = await userspace_service.list_workspace_preview_diagnostic_summary(workspace_id)
-                userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(diagnostic_summary)
             except Exception as exc:
                 logger.debug(
                     "Skipping userspace preview diagnostics prompt hint for workspace %s: %s",
@@ -14244,8 +15002,6 @@ class RAGComponents:
             )
             if spawn_tool is not None:
                 userspace_tools.append(spawn_tool)
-                prompt_additions += "\n\n" + USERSPACE_SUBAGENT_GUIDANCE_PROMPT.strip()
-                prompt_additions += build_subagent_model_guidance_prompt(subagent_model_ids)
             workspace_builtin_tools: list[StructuredTool] = []
             if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
                 workspace_builtin_tools = self._build_chat_diagnostic_tools(
@@ -14291,23 +15047,9 @@ class RAGComponents:
                 accessible_workspace_modes=accessible_workspace_modes,
             )
 
-            # Build prompt additions with userspace operating guidance first,
-            # then runtime/workspace context, then visualization details.
-            prompt_additions += build_userspace_mode_prompt_addition(
-                include_sqlite_persistence=include_sqlite_persistence,
-                has_live_data_tools=bool(allowed_tool_config_ids),
-                workspace_continuity=continuity_ctx,
-            )
             subagent_private_prompt = (workspace_context or {}).get(SUBAGENT_PRIVATE_PROMPT_CONTEXT_KEY)
             if isinstance(subagent_private_prompt, str) and subagent_private_prompt.strip():
                 prompt_additions += "\n\n" + subagent_private_prompt.strip()
-            if CHAT_DIAGNOSTICS_ENABLED and workspace_builtin_tool_ids:
-                prompt_additions += build_chat_diagnostics_prompt_addition(
-                    include_terminal=False,
-                    include_web_search=(CHAT_WEB_SEARCH_TOOL_ID in workspace_builtin_tool_ids),
-                    include_web_browse=(CHAT_WEB_BROWSE_TOOL_ID in workspace_builtin_tool_ids),
-                    include_web_read_pdf=(CHAT_WEB_READ_PDF_TOOL_ID in workspace_builtin_tool_ids),
-                )
 
             # Cache nudge fragment by entrypoint state signature.
             nudge_cache_key = (
@@ -14329,14 +15071,6 @@ class RAGComponents:
                 workspace_mounts,
             )
             prompt_additions += self._build_userspace_object_storage_prompt_fragment(object_storage_config)
-            prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
-            if conversation_export_tool is not None:
-                prompt_additions += (
-                    "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
-                    "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
-                    "pass data_connection only when overriding the default or targeting a different result. "
-                    "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
-                )
         else:
             has_workspace_payload = workspace_context is not None
             has_inline_viz_tools = any(getattr(tool, "name", "") in {"create_chart", "create_datatable"} for tool in runtime_tools)
@@ -14351,9 +15085,6 @@ class RAGComponents:
                     mode="chat",
                     require_live_visualizations=has_live_tool_connections,
                 )
-                if add_chat_visualization_prompt:
-                    prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
-
             allowed_tool_config_ids = self._map_blocked_tool_names_to_allowed_tool_config_ids(blocked_tool_names)
 
             if CHAT_DIAGNOSTICS_ENABLED:
@@ -14367,23 +15098,82 @@ class RAGComponents:
                 )
                 if chat_diag_tools:
                     runtime_tools.extend(chat_diag_tools)
-                    prompt_additions += build_chat_diagnostics_prompt_addition(
-                        include_terminal=(CHAT_DIAGNOSTIC_COMMAND_TOOL_ID in enabled_builtin_tool_ids),
-                        include_web_search=(CHAT_WEB_SEARCH_TOOL_ID in enabled_builtin_tool_ids),
-                        include_web_browse=(CHAT_WEB_BROWSE_TOOL_ID in enabled_builtin_tool_ids),
-                        include_web_read_pdf=(CHAT_WEB_READ_PDF_TOOL_ID in enabled_builtin_tool_ids),
-                    )
             if conversation_export_tool is not None:
                 runtime_tools.append(conversation_export_tool)
-                prompt_additions += (
-                    "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
-                    "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
-                    "pass data_connection only when overriding the default or targeting a different result. "
-                    "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
-                )
 
         if conversation_export_tool is not None:
             runtime_tools = self._wrap_tools_with_export_context_tracking(runtime_tools, export_context)
+
+        tool_skill_resolution = await self._resolve_request_tool_skill_bindings(
+            runtime_tools=runtime_tools,
+            mode=mode,
+            conversation_id=conversation_id,
+            allowed_tool_config_ids=allowed_tool_config_ids,
+            binding_state_override=tool_skill_binding_state_override,
+        )
+        runtime_tools = list(tool_skill_resolution["runtime_tools"])
+        self._seed_tool_skill_request_state(
+            request_tool_state=request_tool_state,
+            binding_state=tool_skill_resolution["tool_skill_binding_state"],
+            hidden_ids=tool_skill_resolution["tool_skill_hidden_ids"],
+            tool_skill_mode=str(tool_skill_resolution["tool_skill_mode"]),
+            has_loadable=bool(tool_skill_resolution.get("tool_skill_has_loadable", False)),
+        )
+        runtime_tool_names = self._runtime_tool_names(runtime_tools)
+        available_userspace_tool_names = runtime_tool_names if str(tool_skill_resolution["tool_skill_mode"]) == "enabled" else None
+        download_export_prompt = (
+            "\n\nDownload exports: when the user asks for a downloadable CSV, Excel/XLSX, PDF, DOC/DOCX, text, JSON, HTML, XML, or similar file, "
+            "use create_download_link. For the immediately previous live chart/table/query, omit source fields to reuse that live source automatically; "
+            "pass data_connection only when overriding the default or targeting a different result. "
+            "In the final answer, present the returned markdown_link exactly as a normal filename.ext link."
+        )
+        if mode == "userspace":
+            prompt_additions = build_userspace_mode_prompt_addition(
+                include_sqlite_persistence=include_sqlite_persistence,
+                has_live_data_tools=bool(allowed_tool_config_ids),
+                workspace_continuity=continuity_ctx,
+                available_tool_names=available_userspace_tool_names,
+            ) + prompt_additions
+            userspace_diagnostics_turn_hint = build_userspace_diagnostics_turn_reminder_line(
+                diagnostic_summary,
+                available_tool_names=available_userspace_tool_names,
+            )
+        if str(tool_skill_resolution["tool_skill_mode"]) == "enabled" and bool(tool_skill_resolution.get("tool_skill_has_loadable", False)):
+            prompt_additions += (
+                "\n\nOptional tool-skill workflow: search eligible skills with `search_tool_skills`, call `load_tool_skills` standalone, use the loaded tool, then optionally `unload_tool_skills` standalone when you are done."
+            )
+            if mode == "userspace" and tool_skill_resolution["tool_skill_hidden_ids"]:
+                prompt_additions += (
+                    " If User Space validation, execution-proof, or live-data feedback points to a missing eligible connection, search/load the needed tool skill before retrying instead of treating that connection as unavailable."
+                )
+        if mode == "userspace":
+            if "spawn_subagents" in runtime_tool_names:
+                prompt_additions += "\n\n" + USERSPACE_SUBAGENT_GUIDANCE_PROMPT.strip()
+                prompt_additions += build_subagent_model_guidance_prompt(
+                    subagent_model_ids
+                )
+            if {"userspace_diagnostics", "web_search", "web_browse", "web_read_pdf"}.intersection(runtime_tool_names):
+                prompt_additions += build_chat_diagnostics_prompt_addition(
+                    include_terminal=False,
+                    include_web_search=("web_search" in runtime_tool_names),
+                    include_web_browse=("web_browse" in runtime_tool_names),
+                    include_web_read_pdf=("web_read_pdf" in runtime_tool_names),
+                )
+            prompt_additions += UI_VISUALIZATION_USERSPACE_PROMPT
+            if "create_download_link" in runtime_tool_names:
+                prompt_additions += download_export_prompt
+        else:
+            if {CHAT_DIAGNOSTIC_COMMAND_TOOL_ID, "web_search", "web_browse", "web_read_pdf"}.intersection(runtime_tool_names):
+                prompt_additions += build_chat_diagnostics_prompt_addition(
+                    include_terminal=(CHAT_DIAGNOSTIC_COMMAND_TOOL_ID in runtime_tool_names),
+                    include_web_search=("web_search" in runtime_tool_names),
+                    include_web_browse=("web_browse" in runtime_tool_names),
+                    include_web_read_pdf=("web_read_pdf" in runtime_tool_names),
+                )
+            if {"create_chart", "create_datatable"}.intersection(runtime_tool_names):
+                prompt_additions += UI_VISUALIZATION_CHAT_PROMPT
+            if "create_download_link" in runtime_tool_names:
+                prompt_additions += download_export_prompt
 
         if user_identity_prompt_fragment:
             prompt_additions = user_identity_prompt_fragment + prompt_additions
@@ -14403,6 +15193,7 @@ class RAGComponents:
             "prompt_is_ui": prompt_is_ui,
             "allowed_tool_config_ids": allowed_tool_config_ids,
             "runtime_tools": runtime_tools,
+            "runtime_tool_source": runtime_tool_source,
             "prompt_additions": prompt_additions,
             "include_sqlite_persistence": include_sqlite_persistence,
             "userspace_env_var_turn_hint": userspace_env_var_turn_hint,
@@ -14413,6 +15204,12 @@ class RAGComponents:
             "request_tool_state": request_tool_state,
             "export_context": export_context,
             "workspace_id": workspace_id or None,
+            "tool_skill_binding_state": tool_skill_resolution["tool_skill_binding_state"],
+            "tool_skill_catalog": tool_skill_resolution["tool_skill_catalog"],
+            "tool_skill_hidden_ids": tool_skill_resolution["tool_skill_hidden_ids"],
+            "tool_skill_has_loadable": bool(tool_skill_resolution.get("tool_skill_has_loadable", False)),
+            "tool_skill_mode": tool_skill_resolution["tool_skill_mode"],
+            "tool_skill_loaded_ids": tool_skill_resolution["tool_skill_loaded_ids"],
         }
 
     def _build_request_system_prompt(
@@ -14422,6 +15219,10 @@ class RAGComponents:
         mode: str,
         allowed_tool_config_ids: list[str] | None,
         runtime_tools: list[Any] | None = None,
+        hidden_tool_config_ids: list[str] | None = None,
+        tool_skill_mode: str = "disabled",
+        loaded_tool_skill_ids: list[str] | None = None,
+        tool_skill_has_loadable: bool = False,
     ) -> str:
         """Build request-scoped system prompt with optional tool visibility filtering."""
         if allowed_tool_config_ids is None and runtime_tools is None:
@@ -14440,10 +15241,15 @@ class RAGComponents:
 
         unavailable_tool_configs: list[dict] = []
         filtered_tool_configs = candidate_tool_configs
+        hidden_id_set = set(hidden_tool_config_ids or [])
         if runtime_tools is not None:
             runnable_ids = self._map_runtime_tools_to_runnable_tool_config_ids(runtime_tools)
             filtered_tool_configs = [config for config in candidate_tool_configs if (config.get("id") or "") in runnable_ids]
-            unavailable_tool_configs = [config for config in candidate_tool_configs if (config.get("id") or "") not in runnable_ids]
+            unavailable_tool_configs = [
+                config
+                for config in candidate_tool_configs
+                if (config.get("id") or "") not in runnable_ids and (config.get("id") or "") not in hidden_id_set
+            ]
 
         cache_key = (
             "request_system_prompt",
@@ -14451,6 +15257,10 @@ class RAGComponents:
             mode,
             tuple(sorted((config.get("id") or "") for config in filtered_tool_configs)),
             tuple(sorted((config.get("id") or "") for config in unavailable_tool_configs)),
+            tuple(sorted(hidden_id_set)),
+            tool_skill_mode,
+            tuple(sorted(loaded_tool_skill_ids or [])),
+            bool(tool_skill_has_loadable),
             bool(self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto"),
             bool(tool_configs and allowed_tool_config_ids is not None and len(allowed_tool_config_ids) == 0),
         )
@@ -14463,12 +15273,19 @@ class RAGComponents:
             filtered_tool_configs,
             unavailable_tool_configs=unavailable_tool_configs,
             no_tools_selected=(bool(tool_configs) and allowed_tool_config_ids is not None and len(allowed_tool_config_ids) == 0),
+            tool_skill_mode=tool_skill_mode,
+            has_loadable_tool_skills=bool(tool_skill_has_loadable),
         )
 
         base_prompt = BASE_USERSPACE_SYSTEM_PROMPT if mode == "userspace" else BASE_CHAT_SYSTEM_PROMPT
         prompt = base_prompt + index_prompt_section + tool_prompt_section
         if is_ui:
-            prompt += UI_VISUALIZATION_COMMON_PROMPT
+            has_loaded_visualization_tools = any(
+                getattr(tool, "name", "") in {"create_chart", "create_datatable"}
+                for tool in (runtime_tools or [])
+            )
+            if tool_skill_mode != "enabled" or has_loaded_visualization_tools:
+                prompt += UI_VISUALIZATION_COMMON_PROMPT
             if self._app_settings and self._app_settings.get("tool_output_mode", "default") == "auto":
                 prompt += TOOL_OUTPUT_VISIBILITY_PROMPT
         self._request_prompt_cache[cache_key] = prompt
@@ -14480,6 +15297,7 @@ class RAGComponents:
         system_prompt: str,
         llm: Optional[Any] = None,
         turn_system_content: Optional[str] = None,
+        max_iterations: int | None = None,
     ) -> Optional[AgentExecutor]:
         """Build a lightweight executor for request-scoped tool filtering."""
         runtime_llm = llm or self.llm
@@ -14513,19 +15331,19 @@ class RAGComponents:
             message_formatter=self._format_intermediate_steps_for_agent,
         )
 
-        max_iterations = 15
-        if self._app_settings:
+        resolved_max_iterations = max_iterations if max_iterations is not None else 15
+        if max_iterations is None and self._app_settings:
             try:
-                max_iterations = int(self._app_settings.get("max_iterations", 15))
+                resolved_max_iterations = int(self._app_settings.get("max_iterations", 15))
             except (TypeError, ValueError):
-                max_iterations = 15
+                resolved_max_iterations = 15
 
         return AgentExecutor(
             agent=agent,
             tools=tools,
             verbose=False,
             handle_parsing_errors=True,
-            max_iterations=max(1, max_iterations),
+            max_iterations=max(1, int(resolved_max_iterations)),
             return_intermediate_steps=True,
         )
 
@@ -15799,6 +16617,11 @@ class RAGComponents:
             llm_resolution = await self._get_request_scoped_llm(conversation_model)
             request_llm = llm_resolution.llm
             request_model_id = llm_resolution.model
+            try:
+                max_iterations = int((self._app_settings or {}).get("max_iterations", DEFAULT_MAX_ITERATIONS))
+            except (TypeError, ValueError):
+                max_iterations = DEFAULT_MAX_ITERATIONS
+            max_iterations = max(1, max_iterations)
 
             langchain_content = await self._ocr_images_if_model_lacks_support(
                 langchain_content,
@@ -15826,6 +16649,10 @@ class RAGComponents:
                 mode=request_context["mode"],
                 allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
                 runtime_tools=request_context["runtime_tools"],
+                hidden_tool_config_ids=request_context.get("tool_skill_hidden_ids"),
+                tool_skill_mode=request_context.get("tool_skill_mode", "disabled"),
+                loaded_tool_skill_ids=request_context.get("tool_skill_loaded_ids"),
+                tool_skill_has_loadable=bool(request_context.get("tool_skill_has_loadable", False)),
             )
             system_prompt += request_context["prompt_additions"]
             runtime_tools = request_context["runtime_tools"]
@@ -15924,15 +16751,80 @@ class RAGComponents:
                 provider_name = llm_resolution.provider or str((self._app_settings or {}).get("llm_provider", "openai")).lower()
                 effective_model = request_model_id
                 agent_content = langchain_content
-                try:
-                    result = await executor.ainvoke(
-                        {
-                            "input": agent_content,
-                            "user_input": [HumanMessage(content=agent_content)],
-                            "chat_history": chat_history,
-                        }
+
+                async def _persist_nonstream_stage_debug(
+                    stage_index: int,
+                    stage_request_context: dict[str, Any],
+                    stage_chat_history: list[BaseMessage],
+                    stage_input: Any,
+                    stage_system_prompt: str,
+                    stage_tool_scope_prompt: str,
+                    stage_turn_system_content: str,
+                ) -> None:
+                    await self._persist_provider_prompt_debug_record(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        chat_task_id=chat_task_id,
+                        provider=provider_name,
+                        model=effective_model,
+                        mode=stage_request_context["mode"],
+                        request_kind="agent_executor",
+                        system_prompt=stage_system_prompt,
+                        rendered_user_input=stage_input,
+                        chat_history=stage_chat_history,
+                        provider_messages=[
+                            {"role": "system", "content": self._serialize_prompt_content(stage_system_prompt + stage_tool_scope_prompt)},
+                            *[self._serialize_base_message(message) for message in stage_chat_history],
+                            {"role": "assistant", "content": stage_turn_system_content},
+                            {"role": "user", "content": self._serialize_prompt_content(stage_input)},
+                        ],
+                        tool_scope_prompt=stage_tool_scope_prompt,
+                        prompt_additions=stage_request_context["prompt_additions"],
+                        turn_reminders=stage_turn_system_content,
+                        debug_metadata=self._build_request_debug_metadata(
+                            mode=stage_request_context["mode"],
+                            request_tool_state=stage_request_context["request_tool_state"],
+                            workspace_id=stage_request_context.get("workspace_id"),
+                        ),
+                        message_index=message_index,
                     )
+
+                try:
+                    if request_context.get("tool_skill_mode") == "enabled":
+                        output, executor, chat_history = await self._run_nonstream_tool_skill_stage_loop(
+                            executor=executor,
+                            llm_resolution=llm_resolution,
+                            chat_history=chat_history,
+                            user_content=agent_content,
+                            request_context=request_context,
+                            system_prompt=system_prompt,
+                            tool_scope_prompt=tool_scope_prompt,
+                            turn_system_content=turn_system_content,
+                            conversation_id=conversation_id,
+                            conversation_model=conversation_model,
+                            user_id=user_id,
+                            blocked_tool_names=blocked_tool_names,
+                            workspace_context=workspace_context,
+                            current_user_context=current_user_context,
+                            current_time_context=current_time_context,
+                            chat_task_id=chat_task_id,
+                            message_index=message_index,
+                            disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                            max_iterations=max_iterations,
+                            stage_debug_callback=_persist_nonstream_stage_debug,
+                        )
+                        result = {"output": output}
+                    else:
+                        result = await executor.ainvoke(
+                            {
+                                "input": agent_content,
+                                "user_input": [HumanMessage(content=agent_content)],
+                                "chat_history": chat_history,
+                            }
+                        )
                 except Exception as invoke_err:
+                    if request_context.get("tool_skill_mode") == "enabled":
+                        raise
                     retry_content = None
                     if self._is_no_image_support_error(invoke_err):
                         retry_content = await self._ocr_images_after_no_image_support_error(
@@ -15971,24 +16863,25 @@ class RAGComponents:
                     request_tool_state=request_tool_state,
                     workspace_id=request_context.get("workspace_id"),
                 )
-                await self._persist_provider_prompt_debug_record(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    chat_task_id=chat_task_id,
-                    provider=provider_name,
-                    model=effective_model,
-                    mode=request_context["mode"],
-                    request_kind="agent_executor",
-                    system_prompt=system_prompt,
-                    rendered_user_input=agent_content,
-                    chat_history=chat_history,
-                    provider_messages=provider_messages,
-                    tool_scope_prompt=tool_scope_prompt,
-                    prompt_additions=request_context["prompt_additions"],
-                    turn_reminders=turn_system_content,
-                    debug_metadata=debug_metadata,
-                    message_index=message_index,
-                )
+                if request_context.get("tool_skill_mode") != "enabled":
+                    await self._persist_provider_prompt_debug_record(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        chat_task_id=chat_task_id,
+                        provider=provider_name,
+                        model=effective_model,
+                        mode=request_context["mode"],
+                        request_kind="agent_executor",
+                        system_prompt=system_prompt,
+                        rendered_user_input=agent_content,
+                        chat_history=chat_history,
+                        provider_messages=provider_messages,
+                        tool_scope_prompt=tool_scope_prompt,
+                        prompt_additions=request_context["prompt_additions"],
+                        turn_reminders=turn_system_content,
+                        debug_metadata=debug_metadata,
+                        message_index=message_index,
+                    )
                 return output
             else:
                 # Direct LLM call without tools - use multimodal content
@@ -16105,6 +16998,11 @@ class RAGComponents:
         llm_resolution = await self._get_request_scoped_llm(conversation_model)
         request_llm = llm_resolution.llm
         request_model_id = llm_resolution.model
+        try:
+            max_iterations = int((self._app_settings or {}).get("max_iterations", DEFAULT_MAX_ITERATIONS))
+        except (TypeError, ValueError):
+            max_iterations = DEFAULT_MAX_ITERATIONS
+        max_iterations = max(1, max_iterations)
 
         langchain_content = await self._ocr_images_if_model_lacks_support(
             langchain_content,
@@ -16137,6 +17035,10 @@ class RAGComponents:
             mode=request_context["mode"],
             allowed_tool_config_ids=request_context["allowed_tool_config_ids"],
             runtime_tools=request_context["runtime_tools"],
+            hidden_tool_config_ids=request_context.get("tool_skill_hidden_ids"),
+            tool_skill_mode=request_context.get("tool_skill_mode", "disabled"),
+            loaded_tool_skill_ids=request_context.get("tool_skill_loaded_ids"),
+            tool_skill_has_loadable=bool(request_context.get("tool_skill_has_loadable", False)),
         )
         system_prompt += request_context["prompt_additions"]
         runtime_tools = request_context["runtime_tools"]
@@ -16250,13 +17152,67 @@ class RAGComponents:
                     }
                 )
 
+                persisted_stage_indexes: set[int] = set()
+
+                async def _persist_stream_stage_debug(
+                    stage_index: int,
+                    stage_chat_history: list[BaseMessage],
+                    stage_input: Any,
+                    stage_system_prompt: str,
+                    stage_tool_scope_prompt: str,
+                    stage_turn_system_content: str,
+                ) -> None:
+                    if request_context.get("tool_skill_mode") != "enabled" or stage_index in persisted_stage_indexes:
+                        return
+                    persisted_stage_indexes.add(stage_index)
+                    request_tool_state["tool_skill_stage_index"] = stage_index
+                    await self._persist_provider_prompt_debug_record(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        chat_task_id=chat_task_id,
+                        provider=provider_name,
+                        model=effective_model,
+                        mode=request_context["mode"],
+                        request_kind="agent_executor",
+                        system_prompt=stage_system_prompt,
+                        rendered_user_input=stage_input,
+                        chat_history=stage_chat_history,
+                        provider_messages=[
+                            {"role": "system", "content": self._serialize_prompt_content(stage_system_prompt + stage_tool_scope_prompt)},
+                            *[self._serialize_base_message(message) for message in stage_chat_history],
+                            {"role": "assistant", "content": stage_turn_system_content},
+                            {"role": "user", "content": self._serialize_prompt_content(stage_input)},
+                        ],
+                        tool_scope_prompt=stage_tool_scope_prompt,
+                        prompt_additions=request_context["prompt_additions"],
+                        turn_reminders=stage_turn_system_content,
+                        debug_metadata=self._build_request_debug_metadata(
+                            mode=request_context["mode"],
+                            request_tool_state=request_tool_state,
+                            workspace_id=request_context.get("workspace_id"),
+                        ),
+                        message_index=message_index,
+                    )
+
                 # Track tool runs to avoid duplicates from nested events
+                self._seed_tool_skill_request_state(
+                    request_tool_state=request_tool_state,
+                    binding_state=request_context.get("tool_skill_binding_state"),
+                    hidden_ids=request_context.get("tool_skill_hidden_ids"),
+                    tool_skill_mode=request_context.get("tool_skill_mode", "enabled"),
+                    has_loadable=bool(request_context.get("tool_skill_has_loadable", False)),
+                )
                 request_tool_state["internal_continue_attempts"] = 0
                 attempt_chat_history = list(chat_history)
+                original_attempt_chat_history = list(chat_history)
                 attempt_original_input = agent_input
                 attempt_history_has_original_input = False
                 attempt_input = agent_input
                 attempt_number = 0
+                transition_count = 0
+                stage_index = int(request_tool_state.get("tool_skill_stage_index", 1))
+                remaining_iterations = max(1, max_iterations)
+                cumulative_replayed_tool_messages: list[BaseMessage] = []
                 any_tool_activity = False
                 image_input_ocr_retry_attempted = False
 
@@ -16288,25 +17244,25 @@ class RAGComponents:
                             tool_args = start_payload.get("input") if start_payload else {}
                             if not isinstance(tool_args, dict):
                                 tool_args = {"input": tool_args}
-                            tool_call_id = failed_run_id or f"stream_tool_{len(attempt_replayed_tool_messages)}"
-                            attempt_replayed_tool_messages.extend(
-                                [
-                                    AIMessage(
-                                        content="",
-                                        tool_calls=[
-                                            {
-                                                "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
-                                                "args": tool_args,
-                                                "id": tool_call_id,
-                                            }
-                                        ],
-                                    ),
-                                    ToolMessage(
-                                        content=failure_output,
-                                        tool_call_id=tool_call_id,
-                                    ),
-                                ]
-                            )
+                            tool_call_id = failed_run_id or f"stream_tool_{len(cumulative_replayed_tool_messages)}"
+                            replay_pair = [
+                                AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
+                                            "args": tool_args,
+                                            "id": tool_call_id,
+                                        }
+                                    ],
+                                ),
+                                ToolMessage(
+                                    content=failure_output,
+                                    tool_call_id=tool_call_id,
+                                ),
+                            ]
+                            attempt_replayed_tool_messages.extend(replay_pair)
+                            cumulative_replayed_tool_messages.extend(replay_pair)
                             tool_event = {
                                 "type": "tool_end",
                                 "tool": tool_name,
@@ -16570,25 +17526,25 @@ class RAGComponents:
                                 tool_args = start_payload.get("input") if start_payload else {}
                                 if not isinstance(tool_args, dict):
                                     tool_args = {"input": tool_args}
-                                tool_call_id = run_id or f"stream_tool_{len(attempt_replayed_tool_messages)}"
-                                attempt_replayed_tool_messages.extend(
-                                    [
-                                        AIMessage(
-                                            content="",
-                                            tool_calls=[
-                                                {
-                                                    "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
-                                                    "args": tool_args,
-                                                    "id": tool_call_id,
-                                                }
-                                            ],
-                                        ),
-                                        ToolMessage(
-                                            content=str(tool_output or ""),
-                                            tool_call_id=tool_call_id,
-                                        ),
-                                    ]
-                                )
+                                tool_call_id = run_id or f"stream_tool_{len(cumulative_replayed_tool_messages)}"
+                                replay_pair = [
+                                    AIMessage(
+                                        content="",
+                                        tool_calls=[
+                                            {
+                                                "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
+                                                "args": tool_args,
+                                                "id": tool_call_id,
+                                            }
+                                        ],
+                                    ),
+                                    ToolMessage(
+                                        content=str(tool_output or ""),
+                                        tool_call_id=tool_call_id,
+                                    ),
+                                ]
+                                attempt_replayed_tool_messages.extend(replay_pair)
+                                cumulative_replayed_tool_messages.extend(replay_pair)
                                 tool_event = {
                                     "type": "tool_end",
                                     "tool": tool_name,
@@ -16626,25 +17582,25 @@ class RAGComponents:
                                 tool_args = start_payload.get("input") if start_payload else {}
                                 if not isinstance(tool_args, dict):
                                     tool_args = {"input": tool_args}
-                                tool_call_id = run_id or f"stream_tool_{len(attempt_replayed_tool_messages)}"
-                                attempt_replayed_tool_messages.extend(
-                                    [
-                                        AIMessage(
-                                            content="",
-                                            tool_calls=[
-                                                {
-                                                    "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
-                                                    "args": tool_args,
-                                                    "id": tool_call_id,
-                                                }
-                                            ],
-                                        ),
-                                        ToolMessage(
-                                            content=f"Error: {error_output}",
-                                            tool_call_id=tool_call_id,
-                                        ),
-                                    ]
-                                )
+                                tool_call_id = run_id or f"stream_tool_{len(cumulative_replayed_tool_messages)}"
+                                replay_pair = [
+                                    AIMessage(
+                                        content="",
+                                        tool_calls=[
+                                            {
+                                                "name": (start_payload.get("tool", tool_name) if start_payload else tool_name),
+                                                "args": tool_args,
+                                                "id": tool_call_id,
+                                            }
+                                        ],
+                                    ),
+                                    ToolMessage(
+                                        content=f"Error: {error_output}",
+                                        tool_call_id=tool_call_id,
+                                    ),
+                                ]
+                                attempt_replayed_tool_messages.extend(replay_pair)
+                                cumulative_replayed_tool_messages.extend(replay_pair)
 
                                 tool_event = {
                                     "type": "tool_end",
@@ -16763,6 +17719,74 @@ class RAGComponents:
                             logger.info("Retrying agent stream with OCR text after image-input rejection")
                             continue
 
+                        transition = (
+                            self._extract_tool_skill_transition_from_intermediate_steps(attempt_intermediate_steps)
+                            if request_context.get("tool_skill_mode") == "enabled"
+                            else None
+                        )
+                        control_activity = self._has_tool_skill_control_activity(attempt_intermediate_steps)
+                        budget = self._resolve_tool_skill_stage_budget(
+                            intermediate_steps=attempt_intermediate_steps,
+                            control_activity=control_activity,
+                            transition_payload=transition,
+                            remaining_iterations=remaining_iterations,
+                            transition_count=transition_count,
+                        )
+                        if budget["should_continue"]:
+                            if budget["stop_message"]:
+                                request_tool_state["internal_continue_stop_reason"] = "tool_skill_transition_limit_reached"
+                                attempt_emitted_content = True
+                                yield str(budget["stop_message"])
+                                break
+                            await _persist_stream_stage_debug(
+                                stage_index,
+                                attempt_chat_history,
+                                attempt_input,
+                                system_prompt,
+                                tool_scope_prompt,
+                                turn_system_content,
+                            )
+                            remaining_iterations = int(budget["next_remaining_iterations"])
+                            (
+                                executor,
+                                request_context,
+                                rebuilt_history,
+                                system_prompt,
+                                tool_scope_prompt,
+                                turn_system_content,
+                                llm_resolution,
+                            ) = await self._rebuild_tool_skill_stage_after_control_activity(
+                                current_request_context=request_context,
+                                current_executor=executor,
+                                llm_resolution=llm_resolution,
+                                original_chat_history=original_attempt_chat_history,
+                                original_user_content=attempt_original_input,
+                                replay_messages=cumulative_replayed_tool_messages,
+                                blocked_tool_names=blocked_tool_names,
+                                workspace_context=workspace_context,
+                                user_id=user_id,
+                                current_user_context=current_user_context,
+                                current_time_context=current_time_context,
+                                conversation_id=conversation_id,
+                                conversation_model=conversation_model,
+                                chat_task_id=chat_task_id,
+                                disabled_builtin_tool_ids=disabled_builtin_tool_ids,
+                                turn_system_content=turn_system_content,
+                                remaining_iterations=remaining_iterations,
+                                transition=transition,
+                                next_transition_count=int(budget["next_transition_count"]),
+                                next_stage_index=stage_index + 1,
+                                add_chat_visualization_prompt=is_ui,
+                            )
+                            request_tool_state = request_context["request_tool_state"]
+                            request_llm = llm_resolution.llm
+                            attempt_chat_history = rebuilt_history
+                            attempt_history_has_original_input = True
+                            attempt_input = INTERNAL_TOOL_SKILL_CONTINUATION_PROMPT
+                            transition_count = int(budget["next_transition_count"])
+                            stage_index += 1
+                            continue
+
                         should_internal_continue = (
                             not request_tool_state.get("max_iterations_reached", False)
                             and not attempt_emitted_content
@@ -16849,9 +17873,10 @@ class RAGComponents:
                             SystemMessage(content=system_prompt),
                         ]
                         synthesis_messages.extend(synthesis_chat_history)
+                        synthesis_replay_messages = cumulative_replayed_tool_messages or attempt_replayed_tool_messages
                         synthesis_tool_context = self._build_internal_synthesis_tool_context(
                             intermediate_steps=attempt_intermediate_steps,
-                            replay_messages=attempt_replayed_tool_messages,
+                            replay_messages=synthesis_replay_messages,
                         )
                         if synthesis_tool_context is not None:
                             synthesis_messages.append(synthesis_tool_context)
@@ -16947,7 +17972,7 @@ class RAGComponents:
                                 )
                                 fallback_summary = self._build_synthesis_reasoning_only_fallback(
                                     intermediate_steps=attempt_intermediate_steps,
-                                    replay_messages=attempt_replayed_tool_messages,
+                                    replay_messages=synthesis_replay_messages,
                                 )
                                 if fallback_summary:
                                     attempt_emitted_content = True
@@ -16981,6 +18006,14 @@ class RAGComponents:
                                 message_index=message_index,
                             )
                 finally:
+                    await _persist_stream_stage_debug(
+                        stage_index,
+                        attempt_chat_history,
+                        attempt_input,
+                        system_prompt,
+                        tool_scope_prompt,
+                        turn_system_content,
+                    )
                     if request_tool_state.get("max_iterations_reached") and request_context.get("workspace_id"):
                         self._record_userspace_failure(
                             request_context["workspace_id"],
@@ -16993,24 +18026,25 @@ class RAGComponents:
                         request_tool_state=request_tool_state,
                         workspace_id=request_context.get("workspace_id"),
                     )
-                    await self._persist_provider_prompt_debug_record(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        chat_task_id=chat_task_id,
-                        provider=provider_name,
-                        model=effective_model,
-                        mode=request_context["mode"],
-                        request_kind="agent_executor",
-                        system_prompt=system_prompt,
-                        rendered_user_input=agent_input,
-                        chat_history=chat_history,
-                        provider_messages=stream_provider_messages,
-                        tool_scope_prompt=tool_scope_prompt,
-                        prompt_additions=request_context["prompt_additions"],
-                        turn_reminders=turn_system_content,
-                        debug_metadata=debug_metadata,
-                        message_index=message_index,
-                    )
+                    if not persisted_stage_indexes:
+                        await self._persist_provider_prompt_debug_record(
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            chat_task_id=chat_task_id,
+                            provider=provider_name,
+                            model=effective_model,
+                            mode=request_context["mode"],
+                            request_kind="agent_executor",
+                            system_prompt=system_prompt,
+                            rendered_user_input=agent_input,
+                            chat_history=chat_history,
+                            provider_messages=stream_provider_messages,
+                            tool_scope_prompt=tool_scope_prompt,
+                            prompt_additions=request_context["prompt_additions"],
+                            turn_reminders=turn_system_content,
+                            debug_metadata=debug_metadata,
+                            message_index=message_index,
+                        )
             else:
                 # Direct LLM streaming without tools - use multimodal content
                 if request_llm is None:

@@ -1,20 +1,30 @@
 import { useEffect } from 'react';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChatModelsSettingsSectionProps } from './settings/ChatModelsSettingsSection';
 
 const modalRenderSpy = vi.hoisted(() => vi.fn());
 const searchFilterBarSpy = vi.hoisted(() => vi.fn());
+const toastSuccessSpy = vi.hoisted(() => vi.fn());
+const toastErrorSpy = vi.hoisted(() => vi.fn());
 const modalState = vi.hoisted(() => ({
   latestAllowedChatModelsProps: null as null | {
     title?: string;
     allModels?: Array<Record<string, unknown>>;
   },
 }));
+const chatModelsSectionState = vi.hoisted(() => ({
+  latestProps: null as null | ChatModelsSettingsSectionProps,
+}));
 const serverBackupSectionSpy = vi.hoisted(() => vi.fn());
 const mcpSectionState = vi.hoisted(() => ({
   latestProps: null as null | Record<string, unknown>,
   run: null as null | ((props: Record<string, unknown>) => void),
 }));
+const agentBehaviorSectionState = vi.hoisted(() => ({
+  latestProps: null as null | Record<string, unknown>,
+}));
+const sectionRenderOrder = vi.hoisted(() => [] as string[]);
 
 const apiMock = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -40,12 +50,21 @@ vi.mock('@/contexts/AvailableModelsContext', () => ({
 }));
 
 vi.mock('./settings/ChatModelsSettingsSection', () => ({
-  ChatModelsSettingsSection: ({ openModelFilterModal }: { openModelFilterModal: () => void }) => {
+  ChatModelsSettingsSection: (props: ChatModelsSettingsSectionProps) => {
+    chatModelsSectionState.latestProps = props;
+    sectionRenderOrder.push('chat-models');
+    const { openModelFilterModal } = props;
+
     useEffect(() => {
       void openModelFilterModal();
     }, [openModelFilterModal]);
 
-    return <button type="button">Open chat models</button>;
+    return (
+      <section data-settings-accordion-section="chat-models">
+        <span className="settings-accordion-title">Chat Models</span>
+        <button type="button">Open chat models</button>
+      </section>
+    );
   },
 }));
 
@@ -83,7 +102,101 @@ vi.mock('./ModelFilterModal', () => ({
 
 vi.mock('./shared/Toast', () => ({
   ToastContainer: () => null,
-  useToast: () => [[], { success: vi.fn(), error: vi.fn(), clear: vi.fn() }] as const,
+  useToast: () =>
+    [[], { success: toastSuccessSpy, error: toastErrorSpy, clear: vi.fn(), dismiss: vi.fn() }] as const,
+}));
+
+vi.mock('./settings/AgentBehaviorSettingsSection', () => ({
+  AgentBehaviorSettingsSection: (props: Record<string, unknown>) => {
+    agentBehaviorSectionState.latestProps = props;
+    sectionRenderOrder.push('agent-behavior');
+    const formData = (props.formData as Record<string, unknown>) || {};
+    const setFormData = props.setFormData as (value: unknown) => void;
+
+    return (
+      <section data-settings-accordion-section="agent-behavior">
+        <button type="button" aria-expanded={Boolean(props.open)}>
+          Agent Behavior
+        </button>
+        <fieldset>
+          <legend>Agent Behavior</legend>
+          <div className="form-group" id="setting-tool_skills_enabled">
+            <label htmlFor="agent-behavior-tool-skills-enabled">Load tools on demand</label>
+            <input
+              id="agent-behavior-tool-skills-enabled"
+              type="checkbox"
+              checked={formData.tool_skills_enabled !== false}
+              onChange={(event) =>
+                setFormData((prev: Record<string, unknown>) => ({
+                  ...prev,
+                  tool_skills_enabled: event.target.checked,
+                }))
+              }
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="agent-behavior-max-iterations">Max Tool Iterations</label>
+            <input
+              id="agent-behavior-max-iterations"
+              type="range"
+              aria-label="Max Tool Iterations"
+              min="1"
+              max="100"
+              value={Number(formData.max_iterations ?? 30)}
+              onChange={(event) =>
+                setFormData((prev: Record<string, unknown>) => ({
+                  ...prev,
+                  max_iterations: parseInt(event.target.value, 10),
+                }))
+              }
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="agent-behavior-max-tool-output">Max Tool Output (chars)</label>
+            <input
+              id="agent-behavior-max-tool-output"
+              type="range"
+              aria-label="Max Tool Output (chars)"
+              min="0"
+              max="50000"
+              value={Number(formData.max_tool_output_chars ?? 5000)}
+              onChange={(event) =>
+                setFormData((prev: Record<string, unknown>) => ({
+                  ...prev,
+                  max_tool_output_chars: parseInt(event.target.value, 10),
+                }))
+              }
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="agent-behavior-context-window">Context Window (steps)</label>
+            <input
+              id="agent-behavior-context-window"
+              type="range"
+              aria-label="Context Window (steps)"
+              min="0"
+              max="30"
+              value={Number(formData.scratchpad_window_size ?? 6)}
+              onChange={(event) =>
+                setFormData((prev: Record<string, unknown>) => ({
+                  ...prev,
+                  scratchpad_window_size: parseInt(event.target.value, 10),
+                }))
+              }
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              void (props.handleSaveAgentBehavior as (() => void | Promise<void>) | undefined)?.()
+            }
+          >
+            Save Agent Behavior
+          </button>
+        </fieldset>
+      </section>
+    );
+  },
 }));
 
 vi.mock('./settings/SearchSettingsSection', () => ({
@@ -125,11 +238,16 @@ vi.mock('./settings/SecuritySettingsSection', () => ({
 vi.mock('./settings/McpSettingsSection', () => ({
   McpSettingsSection: (props: Record<string, unknown>) => {
     mcpSectionState.latestProps = props;
+    sectionRenderOrder.push('mcp');
     useEffect(() => {
       mcpSectionState.run?.(props);
     }, [props]);
 
-    return null;
+    return (
+      <section data-settings-accordion-section="mcp">
+        <span className="settings-accordion-title">MCP Configuration</span>
+      </section>
+    );
   },
 }));
 vi.mock('./shared/SearchFilterBar', () => ({
@@ -143,33 +261,51 @@ vi.mock('./shared/SearchFilterBar', () => ({
 }));
 vi.mock('./shared/AuthAdminModals', () => ({ AuthAdminModalHost: () => null }));
 
+function buildSettingsResponse(
+  overrides: Record<string, unknown> = {},
+  options: { omitToolSkillsEnabled?: boolean } = {},
+): { settings: Record<string, unknown> } {
+  const settings: Record<string, unknown> = {
+    llm_provider: 'openai',
+    default_theme_pack: 'default',
+    has_openai_codex_auth: true,
+    has_claude_code_auth: true,
+    authenticated_webgl_background_enabled: true,
+    tool_skills_enabled: true,
+    openapi_model_prefix_enabled: true,
+    show_tool_card_footer_actions: false,
+    mcp_enabled: true,
+    mcp_default_route_auth: true,
+    mcp_default_route_auth_method: 'oauth2',
+    mcp_default_route_allowed_group: null,
+    mcp_default_route_client_id: '',
+    has_mcp_default_password: true,
+    mcp_default_route_password: '',
+    updated_at: null,
+    ...overrides,
+  };
+
+  if (options.omitToolSkillsEnabled) {
+    delete settings.tool_skills_enabled;
+  }
+
+  return { settings };
+}
+
 beforeEach(() => {
   modalRenderSpy.mockClear();
   searchFilterBarSpy.mockClear();
   serverBackupSectionSpy.mockClear();
   modalState.latestAllowedChatModelsProps = null;
+  chatModelsSectionState.latestProps = null;
   mcpSectionState.latestProps = null;
   mcpSectionState.run = null;
+  agentBehaviorSectionState.latestProps = null;
+  sectionRenderOrder.length = 0;
+  toastSuccessSpy.mockClear();
+  toastErrorSpy.mockClear();
 
-  apiMock.getSettings.mockResolvedValue({
-    settings: {
-      llm_provider: 'openai',
-      default_theme_pack: 'default',
-      has_openai_codex_auth: true,
-      has_claude_code_auth: true,
-      authenticated_webgl_background_enabled: true,
-      openapi_model_prefix_enabled: true,
-      show_tool_card_footer_actions: false,
-      mcp_enabled: true,
-      mcp_default_route_auth: true,
-      mcp_default_route_auth_method: 'oauth2',
-      mcp_default_route_allowed_group: null,
-      mcp_default_route_client_id: '',
-      has_mcp_default_password: true,
-      mcp_default_route_password: '',
-      updated_at: null,
-    },
-  });
+  apiMock.getSettings.mockResolvedValue(buildSettingsResponse());
   apiMock.getUserSpacePreviewSettings.mockResolvedValue({});
   apiMock.getAuthProviderConfig.mockResolvedValue({ provider: 'local_managed' });
   apiMock.listAuthGroups.mockResolvedValue([]);
@@ -215,6 +351,14 @@ beforeEach(() => {
     server_name: 'Ragtime',
     default_theme_pack: 'default',
     authenticated_webgl_background_enabled: true,
+    tool_skills_enabled:
+      typeof payload.tool_skills_enabled === 'boolean' ? payload.tool_skills_enabled : true,
+    max_iterations:
+      typeof payload.max_iterations === 'number' ? payload.max_iterations : 30,
+    max_tool_output_chars:
+      typeof payload.max_tool_output_chars === 'number' ? payload.max_tool_output_chars : 5000,
+    scratchpad_window_size:
+      typeof payload.scratchpad_window_size === 'number' ? payload.scratchpad_window_size : 6,
     openapi_model_prefix_enabled: true,
     show_tool_card_footer_actions: false,
     llm_provider: 'openai',
@@ -606,5 +750,163 @@ describe('SettingsPanel', () => {
       expect(screen.getByTitle('OAuth2 + Password protected')).toBeTruthy();
       expect(screen.queryByTitle('OAuth2 (LDAP)')).toBeNull();
     });
+  });
+
+  it('defaults the load-tools-on-demand toggle to checked when the API omits the value', async () => {
+    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({}, { omitToolSkillsEnabled: true }));
+
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('renders the load-tools-on-demand toggle as unchecked when the API returns false', async () => {
+    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ tool_skills_enabled: false }));
+
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    await screen.findByRole('button', { name: 'Open chat models' });
+    const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('updates the load-tools-on-demand toggle state when clicked', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('renders the load-tools-on-demand toggle in its own row with one clear label association', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    const checkbox = (await screen.findByLabelText('Load tools on demand')) as HTMLInputElement;
+    const section = checkbox.closest('#setting-tool_skills_enabled');
+    const formGroup = checkbox.closest('.form-group');
+
+    expect(section).toBeTruthy();
+    expect(section?.textContent).not.toContain('Image Max Bytes');
+    expect(section?.textContent).not.toContain('Max Tool Output (chars)');
+    expect(checkbox.id).toBe('agent-behavior-tool-skills-enabled');
+    expect(formGroup?.querySelector('label[for="agent-behavior-tool-skills-enabled"]')).toBeTruthy();
+  });
+
+  it('renders Agent Behavior after Chat Models and before MCP, closed by default, with the expected wiring', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(chatModelsSectionState.latestProps).toBeTruthy();
+      expect(mcpSectionState.latestProps).toBeTruthy();
+      expect(agentBehaviorSectionState.latestProps).toBeTruthy();
+    });
+
+    const agentBehaviorHeader = await screen.findByRole('button', { name: 'Agent Behavior' });
+
+    expect(sectionRenderOrder.slice(0, 3)).toEqual(['chat-models', 'agent-behavior', 'mcp']);
+    expect(agentBehaviorHeader.getAttribute('aria-expanded')).toBe('false');
+    expect(agentBehaviorSectionState.latestProps).toEqual(
+      expect.objectContaining({
+        open: false,
+        agentBehaviorSaving: false,
+      }),
+    );
+  });
+
+  it('saves Agent Behavior with exactly the isolated four-field payload and success feedback', async () => {
+    apiMock.getSettings.mockResolvedValue(buildSettingsResponse({ tool_skills_enabled: false }));
+
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(agentBehaviorSectionState.latestProps).toBeTruthy();
+    });
+
+    apiMock.updateSettings.mockClear();
+
+    const setFormData = agentBehaviorSectionState.latestProps?.setFormData as
+      | ((value: unknown) => void)
+      | undefined;
+
+    setFormData?.((prev: Record<string, unknown>) => ({
+      ...prev,
+      tool_skills_enabled: true,
+      max_iterations: 44,
+      max_tool_output_chars: 12000,
+      scratchpad_window_size: 9,
+    }));
+    await waitFor(() => {
+      expect(agentBehaviorSectionState.latestProps?.formData).toEqual(
+        expect.objectContaining({
+          tool_skills_enabled: true,
+          max_iterations: 44,
+          max_tool_output_chars: 12000,
+          scratchpad_window_size: 9,
+        }),
+      );
+    });
+    await (
+      agentBehaviorSectionState.latestProps?.handleSaveAgentBehavior as
+        | (() => Promise<void>)
+        | undefined
+    )?.();
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+    });
+
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual({
+      tool_skills_enabled: true,
+      max_iterations: 44,
+      max_tool_output_chars: 12000,
+      scratchpad_window_size: 9,
+    });
+    expect(toastSuccessSpy).toHaveBeenCalledWith('Agent behavior settings saved');
+  });
+
+  it('does not include agent behavior fields in the LLM save payload', async () => {
+    apiMock.getSettings.mockResolvedValue(
+      buildSettingsResponse({
+        tool_skills_enabled: false,
+        max_iterations: 17,
+        max_tool_output_chars: 7777,
+        scratchpad_window_size: 4,
+      }),
+    );
+
+    const { SettingsPanel } = await import('./SettingsPanel');
+
+    render(<SettingsPanel />);
+
+    await screen.findByRole('button', { name: 'Open chat models' });
+    await (chatModelsSectionState.latestProps?.handleSaveLlm as (() => Promise<void>) | undefined)?.();
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    const latestPayload = apiMock.updateSettings.mock.calls[apiMock.updateSettings.mock.calls.length - 1]?.[0];
+    expect(latestPayload).not.toHaveProperty('tool_skills_enabled');
+    expect(latestPayload).not.toHaveProperty('max_iterations');
+    expect(latestPayload).not.toHaveProperty('max_tool_output_chars');
+    expect(latestPayload).not.toHaveProperty('scratchpad_window_size');
   });
 });

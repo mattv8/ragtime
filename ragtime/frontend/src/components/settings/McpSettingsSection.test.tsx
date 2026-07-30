@@ -81,6 +81,7 @@ function buildSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     max_iterations: 10,
     chat_compaction_threshold_percent: 80,
     chat_auto_compaction_threshold_percent: 50,
+    tool_skills_enabled: true,
     max_tool_output_chars: 10000,
     scratchpad_window_size: 20,
     search_results_k: 5,

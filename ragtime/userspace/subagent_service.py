@@ -183,6 +183,10 @@ class SubAgentService:
     ) -> str:
         normalized_specs = self._normalize_specs(specs)
         child_task_ids: list[str] = []
+        parent_conversation = await repository.get_conversation(parent_conversation_id)
+        if parent_conversation is None:
+            raise RuntimeError(f"parent conversation missing: {parent_conversation_id}")
+        parent_loaded_tool_skill_ids = list(getattr(parent_conversation, "loaded_tool_skill_ids", []) or [])
 
         from ragtime.indexer.background_tasks import background_task_service
 
@@ -202,6 +206,7 @@ class SubAgentService:
                 model=spec.model or parent_model,
                 user_id=user_id,
                 workspace_id=workspace_id,
+                loaded_tool_skill_ids=list(parent_loaded_tool_skill_ids),
                 parent_conversation_id=parent_conversation_id,
                 subagent_role=spec.role,
                 subagent_index=index,

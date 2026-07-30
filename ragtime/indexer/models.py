@@ -63,6 +63,7 @@ from ragtime.core.app_setting_defaults import (
     DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     DEFAULT_SNAPSHOT_STALE_BRANCH_THRESHOLD,
+    DEFAULT_TOOL_SKILLS_ENABLED,
     DEFAULT_USERSPACE_CODE_INDEX_DEBOUNCE_SECONDS,
     DEFAULT_USERSPACE_CODE_INDEX_ENABLED,
     DEFAULT_USERSPACE_CODE_INDEX_MAX_ATTEMPTS,
@@ -590,6 +591,10 @@ class AppSettings(BaseModel):
     show_tool_card_footer_actions: bool = Field(
         default=DEFAULT_SHOW_TOOL_CARD_FOOTER_ACTIONS,
         description="If True, show action buttons on tool cards instead of only in the right-click menu.",
+    )
+    tool_skills_enabled: bool = Field(
+        default=DEFAULT_TOOL_SKILLS_ENABLED,
+        description="If True, allow conversations to persist requested on-demand tool skills.",
     )
 
     # Embedding Configuration (for FAISS indexing)
@@ -1344,6 +1349,7 @@ class UpdateSettingsRequest(BaseModel):
     openapi_model_prefix_enabled: Optional[bool] = None
     available_models_cache_enabled: Optional[bool] = None
     show_tool_card_footer_actions: Optional[bool] = None
+    tool_skills_enabled: Optional[bool] = None
     # Embedding settings
     embedding_provider: Optional[str] = None
     embedding_model: Optional[str] = None
@@ -2722,6 +2728,11 @@ class Conversation(BaseModel):
     subagent_index: Optional[int] = Field(default=None, description="Stable display order among sibling subagents")
     subagent_conversation_ids: List[str] = Field(default_factory=list, description="Child subagent conversation IDs")
     tool_selection_mode: str = Field(default="custom")
+    loaded_tool_skill_ids: List[str] = Field(
+        default_factory=list,
+        exclude=True,
+        description="Requested on-demand tool skill IDs persisted for this conversation.",
+    )
     tool_output_mode: ToolOutputMode = Field(
         default=ToolOutputMode.DEFAULT,
         description="Per-conversation tool output preference: default (use global), show (always), hide (always), auto (AI decides)",

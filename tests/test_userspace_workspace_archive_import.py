@@ -593,6 +593,42 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(child_payload["subagent_index"], 2)
         self.assertFalse(child_payload["subagents_enabled"])
 
+    async def test_serialize_workspace_chat_payloads_includes_loaded_tool_skill_ids(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace(
+            conversation=_FindManyTable(
+                [
+                    SimpleNamespace(
+                        id="chat-1",
+                        title="Parent",
+                        model="gpt-4.1",
+                        messages=[],
+                        totalTokens=0,
+                        toolOutputMode="default",
+                        activeBranchId=None,
+                        subagentsEnabled=True,
+                        parentConversationId=None,
+                        subagentRole=None,
+                        subagentIndex=None,
+                        loadedToolSkillIds=["skill.alpha", "skill.beta"],
+                    )
+                ]
+            ),
+            conversationtoolselection=_FindManyTable([]),
+            conversationtoolgroupselection=_FindManyTable([]),
+            conversationbranch=_FindManyTable([]),
+        )
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            payloads = await service._serialize_workspace_chat_payloads("workspace-1")
+
+        self.assertEqual(payloads[0]["loaded_tool_skill_ids"], ["skill.alpha", "skill.beta"])
+
     async def test_import_workspace_chat_payloads_remaps_subagent_parent_linkage(
         self,
     ) -> None:
@@ -719,6 +755,42 @@ class WorkspaceArchiveImportTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(imported_count, 1)
         self.assertIsNone(fake_db.conversation.created[0]["subagentIndex"])
+
+    async def test_import_workspace_chat_payloads_persists_loaded_tool_skill_ids(
+        self,
+    ) -> None:
+        service = UserSpaceService()
+        fake_db = SimpleNamespace(
+            conversation=_CaptureTable(),
+            conversationtoolselection=_CaptureTable(),
+            conversationtoolgroupselection=_CaptureTable(),
+            conversationbranch=_CaptureTable(),
+        )
+        chat_payloads = [
+            {
+                "id": "source-chat",
+                "title": "Worker",
+                "messages": [],
+                "loaded_tool_skill_ids": [" skill.alpha ", "", "skill.alpha", "skill.beta"],
+                "branches": [],
+            }
+        ]
+
+        async def _fake_get_db() -> SimpleNamespace:
+            return fake_db
+
+        with patch("ragtime.userspace.service.get_db", new=_fake_get_db):
+            imported_count = await service._import_workspace_chat_payloads(
+                "workspace-1",
+                "user-1",
+                chat_payloads,
+            )
+
+        self.assertEqual(imported_count, 1)
+        self.assertEqual(
+            fake_db.conversation.created[0]["loadedToolSkillIds"].data,
+            ["skill.alpha", "skill.beta"],
+        )
 
     async def test_build_workspace_snapshot_archive_payload_bundles_dirty_worktree(
         self,

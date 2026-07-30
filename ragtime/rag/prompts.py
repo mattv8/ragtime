@@ -303,7 +303,59 @@ def _format_diagnostic_item(item: object) -> str:
     return " ".join(parts)
 
 
-def build_userspace_diagnostics_turn_reminder_line(diagnostics: Sequence[object] | None) -> str:
+_USERSPACE_PRIMITIVES_NAMED_GUIDANCE = "Use `discover_userspace_primitives` for compact primitive discovery."
+_USERSPACE_PRIMITIVES_GENERIC_GUIDANCE = "Use the available primitives-discovery guidance for compact primitive discovery."
+_USERSPACE_TERMINAL_HEADER = "#### Terminal tool (`run_terminal_command`)"
+_USERSPACE_TERMINAL_HEADER_GENERIC = "#### Terminal tool"
+_USERSPACE_TERMINAL_NAMED_GUIDANCE = "- Use `run_terminal_command` for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging."
+_USERSPACE_TERMINAL_GENERIC_GUIDANCE = "- Use terminal access for shell tasks such as installs, migrations, process checks, logs, file inspection, and build/runtime debugging."
+_USERSPACE_ENV_VAR_NAMED_GUIDANCE = "- If required keys are missing, call `upsert_userspace_env_var` with `value` omitted to create placeholders, then direct the user to fill them in via the Environment Variables dialog."
+_USERSPACE_ENV_VAR_GENERIC_GUIDANCE = "- If required keys are missing, create placeholder env vars, then direct the user to fill them in via the Environment Variables dialog."
+_USERSPACE_DIAGNOSTICS_NAMED_GUIDANCE = "Use the userspace_diagnostics tool for full execution times and errors."
+_USERSPACE_DIAGNOSTICS_GENERIC_GUIDANCE = "Use available diagnostics tooling for full execution times and errors."
+
+
+def _userspace_tool_name_visible(available_tool_names: set[str] | None, tool_name: str) -> bool:
+    return available_tool_names is None or tool_name in available_tool_names
+
+
+def _build_userspace_mode_prompt_template(available_tool_names: set[str] | None) -> str:
+    if available_tool_names is None:
+        return _USERSPACE_MODE_PROMPT_TEMPLATE
+
+    prompt_template = _USERSPACE_MODE_PROMPT_TEMPLATE
+    prompt_template = prompt_template.replace(
+        _USERSPACE_PRIMITIVES_NAMED_GUIDANCE,
+        _USERSPACE_PRIMITIVES_NAMED_GUIDANCE
+        if _userspace_tool_name_visible(available_tool_names, "discover_userspace_primitives")
+        else _USERSPACE_PRIMITIVES_GENERIC_GUIDANCE,
+    )
+    prompt_template = prompt_template.replace(
+        _USERSPACE_TERMINAL_HEADER,
+        _USERSPACE_TERMINAL_HEADER
+        if _userspace_tool_name_visible(available_tool_names, "run_terminal_command")
+        else _USERSPACE_TERMINAL_HEADER_GENERIC,
+    )
+    prompt_template = prompt_template.replace(
+        _USERSPACE_TERMINAL_NAMED_GUIDANCE,
+        _USERSPACE_TERMINAL_NAMED_GUIDANCE
+        if _userspace_tool_name_visible(available_tool_names, "run_terminal_command")
+        else _USERSPACE_TERMINAL_GENERIC_GUIDANCE,
+    )
+    prompt_template = prompt_template.replace(
+        _USERSPACE_ENV_VAR_NAMED_GUIDANCE,
+        _USERSPACE_ENV_VAR_NAMED_GUIDANCE
+        if _userspace_tool_name_visible(available_tool_names, "upsert_userspace_env_var")
+        else _USERSPACE_ENV_VAR_GENERIC_GUIDANCE,
+    )
+    return prompt_template
+
+
+def build_userspace_diagnostics_turn_reminder_line(
+    diagnostics: Sequence[object] | None,
+    *,
+    available_tool_names: set[str] | None = None,
+) -> str:
     """Build a minimal advisory reminder from recent aggregate preview diagnostics."""
 
     items = list(diagnostics or [])
@@ -318,11 +370,16 @@ def build_userspace_diagnostics_turn_reminder_line(diagnostics: Sequence[object]
     if error_count:
         plural = "target" if error_count == 1 else "targets"
         error_text = f"; {error_count} {plural} with recent errors"
+    diagnostics_guidance = (
+        _USERSPACE_DIAGNOSTICS_NAMED_GUIDANCE
+        if _userspace_tool_name_visible(available_tool_names, "userspace_diagnostics")
+        else _USERSPACE_DIAGNOSTICS_GENERIC_GUIDANCE
+    )
     return (
         "- Preview diagnostics are advisory aggregates from recent preview runs; confirm with tools/code before changing logic. Longest target: "
         + _format_diagnostic_item(longest)
         + error_text
-        + ". Use the userspace_diagnostics tool for full execution times and errors.\n"
+        + f". {diagnostics_guidance}\n"
     )
 
 
@@ -914,6 +971,7 @@ def build_userspace_mode_prompt_addition(
     include_sqlite_persistence: bool,
     has_live_data_tools: bool = True,
     workspace_continuity: str = "",
+    available_tool_names: set[str] | None = None,
 ) -> str:
     """Build userspace prompt additions with optional SQLite guidance and workspace continuity.
 
@@ -932,7 +990,7 @@ def build_userspace_mode_prompt_addition(
     else:
         data_wiring_block = ""
 
-    return _USERSPACE_MODE_PROMPT_TEMPLATE.format(
+    return _build_userspace_mode_prompt_template(available_tool_names).format(
         sqlite_persistence_block=(_USERSPACE_SQLITE_PERSISTENCE_BLOCK if include_sqlite_persistence else ""),
         data_wiring_block=data_wiring_block,
         workspace_continuity=workspace_continuity,
@@ -1283,6 +1341,8 @@ def build_tool_system_prompt(
     tool_configs: List[dict],
     unavailable_tool_configs: Optional[List[dict]] = None,
     no_tools_selected: bool = False,
+    tool_skill_mode: str = "disabled",
+    has_loadable_tool_skills: bool = False,
 ) -> str:
     """Build system prompt section describing available system tools.
 
@@ -1295,7 +1355,14 @@ def build_tool_system_prompt(
         System prompt section with tool descriptions.
     """
     if not tool_configs:
-        if no_tools_selected:
+        if tool_skill_mode == "enabled" and has_loadable_tool_skills:
+            prompt = """
+
+## SYSTEM TOOLS
+
+No optional system tools are currently loaded for this request. Do not claim live system access or attempt optional system-tool calls until you first use `search_tool_skills`, then `load_tool_skills`, then the loaded tool, and optionally `unload_tool_skills` when done.
+"""
+        elif no_tools_selected:
             prompt = """
 
 ## SYSTEM TOOLS
@@ -1352,6 +1419,12 @@ No tools configured. Answer from indexed knowledge sources only (code, documenta
 
 Each tool connects to a different system. Read the description to choose the correct one.
 """
+    if tool_skill_mode == "enabled" and has_loadable_tool_skills:
+        prompt += (
+            "\nAdditional optional system tools may be available but are not loaded for this request. "
+            "If needed, use `search_tool_skills`, then call `load_tool_skills` by itself, then use the loaded tool, "
+            "and optionally `unload_tool_skills` when finished."
+        )
     if unavailable_tool_configs:
         unavailable_lines = []
         for config in unavailable_tool_configs[:8]:
