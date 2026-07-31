@@ -2154,6 +2154,7 @@ export function SettingsPanel({
         // Search settings
         search_results_k: data.search_results_k,
         aggregate_search: data.aggregate_search,
+        faiss_search_concurrency_mode: data.faiss_search_concurrency_mode,
         // Advanced search settings
         search_use_mmr: data.search_use_mmr,
         search_mmr_lambda: data.search_mmr_lambda,
@@ -2931,6 +2932,7 @@ export function SettingsPanel({
       const dataToSave = {
         search_results_k: formData.search_results_k,
         aggregate_search: formData.aggregate_search,
+        faiss_search_concurrency_mode: formData.faiss_search_concurrency_mode,
         // Advanced settings
         search_use_mmr: formData.search_use_mmr,
         search_mmr_lambda: formData.search_mmr_lambda,
@@ -2944,12 +2946,13 @@ export function SettingsPanel({
       setSettings(updated);
       setFormData((prev) => ({
         ...prev,
+        faiss_search_concurrency_mode: updated.faiss_search_concurrency_mode,
         archive_max_total_size_bytes: updated.archive_max_total_size_bytes,
         archive_max_file_count: updated.archive_max_file_count,
       }));
       await onSettingsSaved?.();
       toast.success(
-        'Search configuration saved. Restart the server to apply changes to search tools.',
+        'Search configuration saved. New searches will use the updated settings.',
         5000,
       );
     } catch (err) {

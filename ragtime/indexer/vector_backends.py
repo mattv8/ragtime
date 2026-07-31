@@ -20,6 +20,7 @@ from langchain_community.vectorstores import FAISS
 from ragtime.config import settings
 from ragtime.core.app_settings import get_app_settings
 from ragtime.core.database import get_db
+from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
 from ragtime.core.logging import get_logger
 from ragtime.indexer.models import VectorStoreType
 from ragtime.indexer.vector_utils import (
@@ -456,8 +457,8 @@ class FaissBackend(VectorStoreBackend):
 
         for idx_name, faiss_db in indexes_to_search.items():
             try:
-                # Use similarity_search_with_score for FAISS
-                docs_with_scores = await asyncio.to_thread(
+                docs_with_scores = await faiss_search_coordinator.run(
+                    idx_name,
                     faiss_db.similarity_search_with_score_by_vector,
                     query_embedding,
                     k=max_results,
@@ -479,6 +480,8 @@ class FaissBackend(VectorStoreBackend):
                             "similarity": similarity,
                         }
                     )
+            except FaissSearchBusyError as e:
+                logger.warning(f"FAISS search busy for index {idx_name}: {e}")
             except Exception as e:
                 logger.warning(f"Error searching FAISS index {idx_name}: {e}")
 

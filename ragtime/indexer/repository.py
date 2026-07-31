@@ -146,6 +146,7 @@ from ragtime.indexer.models import (
     ConversationBranchKind,
     ConversationBranchSummary,
     ConversationSummaryResponse,
+    FaissSearchConcurrencyMode,
     IndexConfig,
     IndexJob,
     IndexJobPhase,
@@ -586,6 +587,25 @@ def _from_prisma_vector_store_type(
 def _to_prisma_task_status(status: ChatTaskStatus) -> PrismaChatTaskStatus:
     """Convert model ChatTaskStatus to Prisma ChatTaskStatus."""
     return PrismaChatTaskStatus(status.value)
+
+
+def _to_prisma_faiss_search_concurrency_mode(
+    mode: FaissSearchConcurrencyMode | str,
+) -> str:
+    """Convert model FAISS search concurrency mode to persisted string value."""
+    normalized = mode if isinstance(mode, FaissSearchConcurrencyMode) else FaissSearchConcurrencyMode(mode)
+    return "global_mode" if normalized is FaissSearchConcurrencyMode.GLOBAL else normalized.value
+
+
+def _normalize_faiss_search_concurrency_mode_value(
+    value: FaissSearchConcurrencyMode | str | None,
+) -> FaissSearchConcurrencyMode:
+    """Normalize Prisma/client/raw stored values to wire-mode enum values."""
+    candidate = getattr(value, "value", value)
+    normalized = str(candidate or FaissSearchConcurrencyMode.PER_INDEX.value).strip().lower()
+    if normalized in {"global", "global_mode"}:
+        return FaissSearchConcurrencyMode.GLOBAL
+    return FaissSearchConcurrencyMode.PER_INDEX
 
 
 class IndexerRepository:
@@ -1416,6 +1436,9 @@ class IndexerRepository:
             # Search configuration
             search_results_k=getattr(settings, "searchResultsK", DEFAULT_SEARCH_RESULTS_K),
             aggregate_search=getattr(settings, "aggregateSearch", DEFAULT_AGGREGATE_SEARCH),
+            faiss_search_concurrency_mode=_normalize_faiss_search_concurrency_mode_value(
+                getattr(settings, "faissSearchConcurrencyMode", FaissSearchConcurrencyMode.PER_INDEX.value)
+            ),
             # Retrieval optimization
             search_use_mmr=getattr(settings, "searchUseMmr", DEFAULT_SEARCH_USE_MMR),
             search_mmr_lambda=getattr(
@@ -1677,6 +1700,7 @@ class IndexerRepository:
             # Search configuration
             "search_results_k": "searchResultsK",
             "aggregate_search": "aggregateSearch",
+            "faiss_search_concurrency_mode": "faissSearchConcurrencyMode",
             # Retrieval optimization
             "search_use_mmr": "searchUseMmr",
             "search_mmr_lambda": "searchMmrLambda",
@@ -1784,6 +1808,11 @@ class IndexerRepository:
                 update_data["mcpDefaultRouteAllowedGroup"] = None
             elif group_value is not None:
                 update_data["mcpDefaultRouteAllowedGroup"] = group_value
+
+        if "faiss_search_concurrency_mode" in updates and updates["faiss_search_concurrency_mode"] is not None:
+            update_data["faissSearchConcurrencyMode"] = _to_prisma_faiss_search_concurrency_mode(
+                cast(FaissSearchConcurrencyMode | str, updates["faiss_search_concurrency_mode"])
+            )
 
         # Optional manual default chat model override:
         # - None or empty string clears override (automatic selection)

@@ -61,6 +61,11 @@ enum OcrMode {
   ollama // Legacy semantic OCR mode for Ollama vision models
 }
 
+enum FaissSearchConcurrencyMode {
+  per_index
+  global_mode @map("global")
+}
+
 /// Configuration for creating an index (stored as part of job)
 model IndexConfig {
   id              String   @id @default(uuid())
@@ -297,12 +302,13 @@ model AppSettings {
   scratchpadWindowSize Int @default(6) @map("scratchpad_window_size") // Keep last N tool calls in full detail; older ones are summarized (0=keep all)
 
   // Search Configuration
-  searchResultsK     Int     @default(5) @map("search_results_k") // Number of results per vector search (k)
-  aggregateSearch    Boolean @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
-  searchUseMmr       Boolean @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
-  searchMmrLambda    Float   @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
-  contextTokenBudget Int     @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
-  chunkingUseTokens  Boolean @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
+  searchResultsK              Int                        @default(5) @map("search_results_k") // Number of results per vector search (k)
+  aggregateSearch             Boolean                    @default(true) @map("aggregate_search") // If true, use single search_knowledge; if false, create per-index tools
+  searchUseMmr                Boolean                    @default(false) @map("search_use_mmr") // Use Max Marginal Relevance for result diversification
+  searchMmrLambda             Float                      @default(0.5) @map("search_mmr_lambda") // MMR diversity/relevance tradeoff (0=max diversity, 1=max relevance)
+  contextTokenBudget          Int                        @default(4000) @map("context_token_budget") // Max tokens for retrieved context (0=unlimited)
+  chunkingUseTokens           Boolean                    @default(true) @map("chunking_use_tokens") // Use token-based chunking instead of character-based
+  faissSearchConcurrencyMode  FaissSearchConcurrencyMode @default(per_index) @map("faiss_search_concurrency_mode")
 
   // pgvector Index Configuration
   ivfflatLists Int @default(100) @map("ivfflat_lists") // IVFFlat index lists parameter (higher=slower build, faster query)

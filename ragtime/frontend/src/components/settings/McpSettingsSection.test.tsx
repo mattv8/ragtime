@@ -86,6 +86,7 @@ function buildSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     scratchpad_window_size: 20,
     search_results_k: 5,
     aggregate_search: true,
+    faiss_search_concurrency_mode: 'per_index',
     search_use_mmr: false,
     search_mmr_lambda: 0.5,
     context_token_budget: 10000,

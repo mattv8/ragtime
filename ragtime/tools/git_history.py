@@ -20,6 +20,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ragtime.config.settings import settings
+from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
 from ragtime.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -315,7 +316,8 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
 
         try:
             if index_name in rag.faiss_dbs:
-                docs_with_scores = await asyncio.to_thread(
+                docs_with_scores = await faiss_search_coordinator.run(
+                    index_name,
                     rag.faiss_dbs[index_name].similarity_search_with_score,
                     query,
                     k=search_limit,
@@ -337,6 +339,8 @@ async def _search_commits_semantic(index_name: Optional[str], query: str, k: int
                         max_results=search_limit,
                     )
                     raw_results.extend(faiss_results)
+        except FaissSearchBusyError:
+            logger.debug("FAISS git commit semantic search busy for index '%s'", index_name)
         except Exception as e:
             logger.debug(f"FAISS git commit semantic search skipped: {e}")
 

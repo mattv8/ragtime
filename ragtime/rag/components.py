@@ -87,6 +87,7 @@ from ragtime.core.database import get_db
 from ragtime.core.datetimes import coerce_utc_datetime, utc_now
 from ragtime.core.docker_ssh import docker_ssh_config_from_dict, execute_docker_command_on_remote_host
 from ragtime.core.entrypoint_status import FRAMEWORK_REQUIRED_PACKAGES
+from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
 from ragtime.core.file_constants import (
     USERSPACE_MODULE_SOURCE_EXTENSIONS,
     USERSPACE_STRICT_FRONTEND_EXTENSIONS,
@@ -701,6 +702,63 @@ def build_http_api_catalog_search_payload(
         "total_results": len(results),
         "results": results,
     }
+
+
+def run_async_tool_sync(coroutine_factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Run an async tool implementation from sync LangChain paths.
+
+    This preserves backward-compatible ``StructuredTool.invoke()/run()`` support
+    for sync callers while refusing to block when already inside an active event
+    loop. Async server paths should call the coroutine directly.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine_factory())
+    raise RuntimeError("Synchronous tool invocation is unavailable inside an active event loop; use the async coroutine path instead.")
+
+
+class _CoordinatorBackedFaissRetriever:
+    def __init__(
+        self,
+        *,
+        index_name: str,
+        db: FAISS,
+        search_k: int,
+        use_mmr: bool,
+        mmr_lambda: float,
+    ) -> None:
+        self._index_name = index_name
+        self._db = db
+        self._search_k = search_k
+        self._use_mmr = use_mmr
+        self._mmr_lambda = mmr_lambda
+
+    async def ainvoke(self, query: str) -> list[Any]:
+        if self._use_mmr:
+            fetch_k = max(self._search_k * MMR_FETCH_K_MULTIPLIER, MMR_MIN_FETCH_K)
+            return await faiss_search_coordinator.run(
+                self._index_name,
+                self._db.max_marginal_relevance_search,
+                query,
+                k=self._search_k,
+                fetch_k=fetch_k,
+                lambda_mult=self._mmr_lambda,
+            )
+
+        return await faiss_search_coordinator.run(
+            self._index_name,
+            self._db.similarity_search,
+            query,
+            k=self._search_k,
+        )
+
+    def invoke(self, query: str) -> list[Any]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.ainvoke(query))
+        raise RuntimeError("Synchronous FAISS retriever invoke is unavailable inside an active event loop; await ainvoke() instead.")
 
 
 # =============================================================================
@@ -4070,27 +4128,21 @@ class RAGComponents:
         mmr_lambda = self._app_settings.get("search_mmr_lambda", 0.5)
 
         if use_mmr:
-            # MMR retriever: fetch_k gets more candidates, then MMR selects k diverse ones
-            # fetch_k should be larger than k to give MMR choices to diversify from
             fetch_k = max(
                 search_k * MMR_FETCH_K_MULTIPLIER,
                 MMR_MIN_FETCH_K,
             )
-            retriever = db.as_retriever(
-                search_type="mmr",
-                search_kwargs={
-                    "k": search_k,
-                    "fetch_k": fetch_k,
-                    "lambda_mult": mmr_lambda,  # 0=max diversity, 1=max relevance
-                },
-            )
             logger.debug(f"Created MMR retriever for {index_name} (k={search_k}, fetch_k={fetch_k}, lambda={mmr_lambda})")
         else:
-            # Standard similarity retriever
-            retriever = db.as_retriever(search_kwargs={"k": search_k})
             logger.debug(f"Created similarity retriever for {index_name} (k={search_k})")
 
-        return retriever
+        return _CoordinatorBackedFaissRetriever(
+            index_name=index_name,
+            db=db,
+            search_k=search_k,
+            use_mmr=use_mmr,
+            mmr_lambda=mmr_lambda,
+        )
 
     @staticmethod
     def _add_timeout_field_to_schema(
@@ -4123,7 +4175,7 @@ class RAGComponents:
         derived_schema.model_rebuild()
         return derived_schema
 
-    def _search_faiss_databases(
+    async def _search_faiss_databases(
         self,
         *,
         query: str,
@@ -4150,17 +4202,23 @@ class RAGComponents:
 
         for name, db in dbs_to_search.items():
             try:
-                logger.debug(f"Searching index '{name}' with query: {query[:50]}..., k={k}")
                 if use_mmr:
                     fetch_k = max(k * MMR_FETCH_K_MULTIPLIER, MMR_MIN_FETCH_K)
-                    docs = db.max_marginal_relevance_search(
+                    docs = await faiss_search_coordinator.run(
+                        name,
+                        db.max_marginal_relevance_search,
                         query,
                         k=k,
                         fetch_k=fetch_k,
                         lambda_mult=mmr_lambda,
                     )
                 else:
-                    docs = db.similarity_search(query, k=k)
+                    docs = await faiss_search_coordinator.run(
+                        name,
+                        db.similarity_search,
+                        query,
+                        k=k,
+                    )
 
                 logger.debug(f"Index '{name}' returned {len(docs)} documents")
                 for doc in docs:
@@ -4177,6 +4235,12 @@ class RAGComponents:
                         "truncated": truncated,
                     }
                     results.append(entry)
+            except FaissSearchBusyError:
+                message = "Search error: Knowledge search is busy. Please retry in a moment."
+                if include_index_name_in_errors:
+                    errors.append({"index_name": name, "message": message})
+                else:
+                    errors.append({"index_name": "", "message": message})
             except Exception as e:
                 error_msg = str(e)
                 logger.warning(f"Error searching {name}: {e}", exc_info=True)
@@ -5167,7 +5231,7 @@ class RAGComponents:
                 description="Maximum characters per result (default: 500). Use 0 for full content when you need the complete chunk text. Increase when results are truncated.",
             )
 
-        def search_knowledge(
+        async def search_knowledge(
             query: str,
             index_name: str = "",
             k: int = default_k,
@@ -5223,7 +5287,7 @@ class RAGComponents:
                 return serialize_knowledge_search_payload(payload)
 
             started_at = time.monotonic()
-            results, errors = self._search_faiss_databases(
+            results, errors = await self._search_faiss_databases(
                 query=query,
                 dbs_to_search=dbs_to_search,
                 k=k,
@@ -5309,10 +5373,18 @@ class RAGComponents:
             k: int = default_k,
             max_chars_per_result: int = 500,
         ) -> str:
-            return await asyncio.to_thread(search_knowledge, query, index_name, k, max_chars_per_result)
+            return await search_knowledge(query, index_name, k, max_chars_per_result)
 
-        return StructuredTool.from_function(
-            func=search_knowledge,
+        def _search_knowledge_sync(
+            query: str,
+            index_name: str = "",
+            k: int = default_k,
+            max_chars_per_result: int = 500,
+        ) -> str:
+            return run_async_tool_sync(lambda: search_knowledge(query, index_name, k, max_chars_per_result))
+
+        return StructuredTool(
+            func=_search_knowledge_sync,
             coroutine=_search_knowledge_async,
             name="search_knowledge",
             description=description,
@@ -5613,7 +5685,7 @@ class RAGComponents:
                 mmr_lambda_: float,
                 default_k_: int,
             ):
-                def search_index(
+                async def search_index(
                     query: str,
                     k: int = default_k_,
                     max_chars_per_result: int = 500,
@@ -5627,7 +5699,7 @@ class RAGComponents:
                     logger.debug(f"search_{idx_name} called with query='{query[:50]}...', k={k}, max_chars={max_chars_per_result}")
 
                     started_at = time.monotonic()
-                    results, errors = self._search_faiss_databases(
+                    results, errors = await self._search_faiss_databases(
                         query=query,
                         dbs_to_search={idx_name: idx_db},
                         k=k,
@@ -5735,10 +5807,18 @@ class RAGComponents:
                 max_chars_per_result: int = 500,
                 _fn=_sync_func,
             ) -> str:
-                return await asyncio.to_thread(_fn, query, k, max_chars_per_result)
+                return await _fn(query, k, max_chars_per_result)
 
-            tool = StructuredTool.from_function(
-                func=_sync_func,
+            def _sync_search_index(
+                query: str,
+                k: int = default_k,
+                max_chars_per_result: int = 500,
+                _fn=_sync_func,
+            ) -> str:
+                return run_async_tool_sync(lambda: _fn(query, k, max_chars_per_result))
+
+            tool = StructuredTool(
+                func=_sync_search_index,
                 coroutine=_async_search_index,
                 name=tool_name,
                 description=tool_description,
@@ -6739,7 +6819,7 @@ class RAGComponents:
             args_schema=PdmSearchInput,
         )
 
-    def get_context_from_retrievers(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:
+    async def _get_context_from_retrievers_async(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:
         """
         Retrieve relevant context from all FAISS indexes.
 
@@ -6757,7 +6837,7 @@ class RAGComponents:
         sources = []
         for name, retriever in self.retrievers.items():
             try:
-                docs = retriever.invoke(query)
+                docs = await retriever.ainvoke(query)
                 for doc in docs[:max_docs]:
                     source = doc.metadata.get("source", "unknown")
                     all_docs.append(f"[{name}:{source}]\n{doc.page_content}")
@@ -6785,6 +6865,15 @@ class RAGComponents:
             context = "\n\n---\n\n".join(all_docs)
 
         return context, sources
+
+    def get_context_from_retrievers(self, query: str, max_docs: int = 5) -> tuple[str, list[dict]]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._get_context_from_retrievers_async(query, max_docs=max_docs))
+        raise RuntimeError(
+            "Synchronous retriever context access is unavailable inside an active event loop; await _get_context_from_retrievers_async() instead."
+        )
 
     def _prepend_reminder_to_content(self, content: Any, mode: str = "chat") -> Any:
         """Prepend tool usage reminder to content (string or multimodal list).

@@ -60,6 +60,7 @@ from ragtime.core.auth import (
     validate_session_and_fetch_user,
 )
 from ragtime.core.database import connect_db, disconnect_db, get_db
+from ragtime.core.faiss_concurrency import faiss_search_coordinator
 from ragtime.core.logging import get_logger, redact_agent_access_path, setup_logging
 from ragtime.core.maintenance import MaintenanceModeMiddleware, ProcessMaintenanceState
 from ragtime.core.mfa import (
@@ -302,6 +303,8 @@ async def lifespan(app: FastAPI):
 
     # Stop document indexing tasks before tearing down their chunking pools.
     await indexer.shutdown()
+
+    faiss_search_coordinator.shutdown()
 
     # Shutdown chunking process pool without waiting on CPU-bound workers; hot
     # reload/shutdown must not leave the API socket open but unserved.

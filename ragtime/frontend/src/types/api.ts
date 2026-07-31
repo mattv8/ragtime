@@ -981,6 +981,7 @@ export interface AppSettings {
   // Search Configuration
   search_results_k: number;
   aggregate_search: boolean;
+  faiss_search_concurrency_mode: 'per_index' | 'global';
   // Advanced Search Settings
   search_use_mmr: boolean;
   search_mmr_lambda: number;
@@ -1140,6 +1141,7 @@ export interface UpdateSettingsRequest {
   // Search settings
   search_results_k?: number;
   aggregate_search?: boolean;
+  faiss_search_concurrency_mode?: 'per_index' | 'global';
   // Advanced Search Settings
   search_use_mmr?: boolean;
   search_mmr_lambda?: number;

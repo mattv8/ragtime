@@ -24,6 +24,10 @@ const mcpSectionState = vi.hoisted(() => ({
 const agentBehaviorSectionState = vi.hoisted(() => ({
   latestProps: null as null | Record<string, unknown>,
 }));
+const searchSectionState = vi.hoisted(() => ({
+  latestProps: null as null | Record<string, unknown>,
+  run: null as null | ((props: Record<string, unknown>) => void),
+}));
 const sectionRenderOrder = vi.hoisted(() => [] as string[]);
 
 const apiMock = vi.hoisted(() => ({
@@ -203,20 +207,58 @@ vi.mock('./settings/AgentBehaviorSettingsSection', () => ({
 }));
 
 vi.mock('./settings/SearchSettingsSection', () => ({
-  SearchSettingsSection: () => (
-    <fieldset>
-      <legend>Search Configuration</legend>
-      <div className="form-group">
-        <label>Results per Search (k)</label>
-      </div>
-      <details>
-        <summary>Advanced Settings</summary>
-        <div className="form-group">
-          <label>Archive Max Size</label>
+  SearchSettingsSection: (props: Record<string, unknown>) => {
+    searchSectionState.latestProps = props;
+    sectionRenderOrder.push('search');
+    useEffect(() => {
+      searchSectionState.run?.(props);
+    }, [props]);
+
+    const formData = (props.formData as Record<string, unknown>) || {};
+    const settings = (props.settings as Record<string, unknown> | null) || null;
+
+    return (
+      <fieldset>
+        <legend>Search Configuration</legend>
+        <div className="form-group" id="setting-faiss_search_concurrency_mode">
+          <label htmlFor="search-faiss-concurrency-mode">Global FAISS search gate</label>
+          <input
+            id="search-faiss-concurrency-mode"
+            type="checkbox"
+            aria-label="Global FAISS search gate"
+            checked={
+              (formData.faiss_search_concurrency_mode ??
+                settings?.faiss_search_concurrency_mode ??
+                'per_index') === 'global'
+            }
+            onChange={(event) =>
+              (props.setFormData as (value: unknown) => void)((prev: Record<string, unknown>) => ({
+                ...prev,
+                faiss_search_concurrency_mode: event.target.checked ? 'global' : 'per_index',
+              }))
+            }
+          />
         </div>
-      </details>
-    </fieldset>
-  ),
+        <button
+          type="button"
+          onClick={() =>
+            void (props.handleSaveSearch as (() => void | Promise<void>) | undefined)?.()
+          }
+        >
+          Save Search Configuration
+        </button>
+        <details>
+          <summary>Advanced Settings</summary>
+          <div className="form-group">
+            <label>Results per Search (k)</label>
+          </div>
+          <div className="form-group">
+            <label>Archive Max Size</label>
+          </div>
+        </details>
+      </fieldset>
+    );
+  },
 }));
 vi.mock('./settings/AppearanceSettingsSection', () => ({
   AppearanceSettingsSection: () => (
@@ -284,6 +326,7 @@ function buildSettingsResponse(
     mcp_default_route_client_id: '',
     has_mcp_default_password: true,
     mcp_default_route_password: '',
+    faiss_search_concurrency_mode: 'per_index',
     updated_at: null,
     ...overrides,
   };
@@ -304,6 +347,8 @@ beforeEach(() => {
   mcpSectionState.latestProps = null;
   mcpSectionState.run = null;
   agentBehaviorSectionState.latestProps = null;
+  searchSectionState.latestProps = null;
+  searchSectionState.run = null;
   sectionRenderOrder.length = 0;
   toastSuccessSpy.mockClear();
   toastErrorSpy.mockClear();
@@ -374,6 +419,8 @@ beforeEach(() => {
       typeof payload.mcp_default_route_password === 'string'
         ? payload.mcp_default_route_password
         : '',
+    faiss_search_concurrency_mode:
+      payload.faiss_search_concurrency_mode === 'global' ? 'global' : 'per_index',
     updated_at: null,
   }));
 });
@@ -692,6 +739,50 @@ describe('SettingsPanel', () => {
         mcp_default_route_auth_method: 'oauth2',
         mcp_default_route_password: '',
       }),
+    );
+  });
+
+  it('hydrates and saves the FAISS concurrency mode through the search configuration flow', async () => {
+    const { SettingsPanel } = await import('./SettingsPanel');
+    let stage: 'wait-settings' | 'toggle' | 'save' | 'done' = 'wait-settings';
+
+    searchSectionState.run = (props) => {
+      if (!props.settings || stage === 'done') {
+        return;
+      }
+      const formData = (props.formData as Record<string, unknown>) || {};
+      if (stage === 'wait-settings') {
+        expect(props.settings).toEqual(
+          expect.objectContaining({ faiss_search_concurrency_mode: 'per_index' }),
+        );
+        expect(formData.faiss_search_concurrency_mode).toBe('per_index');
+        stage = 'toggle';
+        setTimeout(() => {
+          (props.setFormData as (value: unknown) => void)((prev: Record<string, unknown>) => ({
+            ...prev,
+            faiss_search_concurrency_mode: 'global',
+          }));
+        }, 0);
+        return;
+      }
+      if (stage === 'toggle' && formData.faiss_search_concurrency_mode === 'global') {
+        stage = 'save';
+        void (props.handleSaveSearch as () => Promise<void>)();
+        return;
+      }
+      if (stage === 'save') {
+        stage = 'done';
+      }
+    };
+
+    render(<SettingsPanel />);
+
+    await waitFor(() => {
+      expect(apiMock.updateSettings).toHaveBeenCalledTimes(1);
+    });
+
+    expect(apiMock.updateSettings.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ faiss_search_concurrency_mode: 'global' }),
     );
   });
 

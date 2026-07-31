@@ -16,6 +16,11 @@ interface SearchSettingsSectionProps {
 
 export function SearchSettingsSection(props: SearchSettingsSectionProps): JSX.Element {
   const { open, onToggle, formData, settings, setFormData, handleSaveSearch, searchSaving } = props;
+  const faissSearchConcurrencyMode =
+    formData.faiss_search_concurrency_mode ??
+    settings?.faiss_search_concurrency_mode ??
+    'per_index';
+  const faissGlobalGateEnabled = faissSearchConcurrencyMode === 'global';
 
   return (
     <SettingsAccordionSection
@@ -54,6 +59,45 @@ export function SearchSettingsSection(props: SearchSettingsSectionProps): JSX.El
         {/* Advanced Search Settings */}
         <details style={{ marginBottom: '16px' }} id="setting-search_advanced">
           <summary className="settings-advanced-summary">Advanced Settings</summary>
+
+          <div
+            className="form-group agent-behavior-settings-switch-card search-settings-switch-card"
+            id="setting-faiss_search_concurrency_mode"
+          >
+            <div className="agent-behavior-settings-switch-copy">
+              <label
+                htmlFor="search-faiss-concurrency-mode"
+                className="agent-behavior-settings-switch-title"
+              >
+                Global FAISS search gate
+              </label>
+              <p className="field-help">
+                {faissGlobalGateEnabled
+                  ? 'Serialize all FAISS searches through one process-wide gate for maximum server isolation.'
+                  : 'Serialize searches per index while allowing different indexes to search concurrently (default).'}
+              </p>
+              <p className="field-help">
+                Use global mode when concurrent vector searches affect server responsiveness.
+                Changes apply to new searches after saving.
+              </p>
+            </div>
+
+            <label className="toggle-switch agent-behavior-settings-switch-toggle">
+              <input
+                id="search-faiss-concurrency-mode"
+                type="checkbox"
+                aria-label="Global FAISS search gate"
+                checked={faissGlobalGateEnabled}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    faiss_search_concurrency_mode: e.target.checked ? 'global' : 'per_index',
+                  })
+                }
+              />
+              <span className="toggle-slider"></span>
+            </label>
+          </div>
 
           <div className="form-group">
             <label>Results per Search (k)</label>

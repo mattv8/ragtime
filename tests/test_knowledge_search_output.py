@@ -2,9 +2,11 @@ import json
 import unittest
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock, patch
 
 from langchain_core.tools import StructuredTool
 
+from ragtime.core.faiss_concurrency import FaissSearchBusyError
 from ragtime.rag.components import (
     FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
     KNOWLEDGE_SEARCH_TOOL_ID,
@@ -159,6 +161,40 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Search error", payload["error_details"][0]["message"])
         self.assertEqual(payload["indexes_searched"][0]["ok"], False)
 
+    async def test_search_knowledge_routes_faiss_calls_through_coordinator(self):
+        tool = await self._search_tool({"docs": FakeFaissDb([FakeDoc("body", "src.py")])})
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        async def _run(index_name, operation, *args, **kwargs):
+            self.assertEqual(index_name, "docs")
+            return operation(*args, **kwargs)
+
+        with patch(
+            "ragtime.rag.components.faiss_search_coordinator.run",
+            new=AsyncMock(side_effect=_run),
+        ) as coordinator_run:
+            output = await coroutine(query="anything", k=5)
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "completed")
+        coordinator_run.assert_awaited_once()
+
+    async def test_search_knowledge_busy_error_returns_existing_error_payload(self):
+        tool = await self._search_tool({"docs": FakeFaissDb([FakeDoc("body", "src.py")])})
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        with patch(
+            "ragtime.rag.components.faiss_search_coordinator.run",
+            new=AsyncMock(side_effect=FaissSearchBusyError("busy")),
+        ):
+            output = await coroutine(query="anything", k=5)
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("Search error", payload["error_details"][0]["message"])
+
     async def test_search_knowledge_per_index_search_emits_json(self):
         rag = RAGComponents()
         rag._app_settings = {"search_results_k": 5, "search_use_mmr": False, "search_mmr_lambda": 0.5}
@@ -181,6 +217,36 @@ class KnowledgeSearchToolOutputTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["results"][0]["source"], "src.py")
         self.assertEqual(payload["results"][0]["index_name"], "docs")
         self.assertFalse(payload["results"][0]["truncated"])
+
+    async def test_per_index_search_routes_faiss_calls_through_coordinator(self):
+        rag = RAGComponents()
+        rag._app_settings = {"search_results_k": 5, "search_use_mmr": False, "search_mmr_lambda": 0.5}
+        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
+        rag.retrievers = {"docs": SimpleNamespace()}
+        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
+        tool = rag._create_per_index_search_tools()[0]
+        coroutine = tool.coroutine
+        assert coroutine is not None
+
+        async def _run(index_name, operation, *args, **kwargs):
+            self.assertEqual(index_name, "docs")
+            return operation(*args, **kwargs)
+
+        with patch(
+            "ragtime.rag.components.faiss_search_coordinator.run",
+            new=AsyncMock(side_effect=_run),
+        ) as coordinator_run:
+            output = await coroutine(query="anything", k=5)
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "completed")
+        coordinator_run.assert_awaited_once()
+
+    async def test_search_knowledge_sync_invoke_raises_clear_error_inside_event_loop(self):
+        tool = await self._search_tool({"docs": FakeFaissDb([FakeDoc("body", "src.py")])})
+
+        with self.assertRaisesRegex(RuntimeError, "active event loop"):
+            tool.invoke({"query": "anything", "k": 5})
 
 
 class KnowledgeSearchFrontendIntegrityTests(unittest.TestCase):
@@ -206,6 +272,56 @@ class KnowledgeSearchFrontendIntegrityTests(unittest.TestCase):
             preserve_output_tool_names=FRONTEND_JSON_DISPLAY_INTEGRITY_TOOL_NAMES,
         )
         self.assertIs(wrapped, stub)
+
+
+class KnowledgeSearchSyncToolInvocationTests(unittest.TestCase):
+    def _build_rag(self) -> RAGComponents:
+        rag = RAGComponents()
+        rag._app_settings = {
+            "search_results_k": 5,
+            "search_use_mmr": False,
+            "search_mmr_lambda": 0.5,
+        }
+        rag.faiss_dbs = {"docs": FakeFaissDb([FakeDoc("body", "src.py")])}
+        rag.retrievers = {"docs": SimpleNamespace()}
+        rag._index_metadata = [{"name": "docs", "description": "Docs index", "enabled": True}]
+        return rag
+
+    def test_search_knowledge_sync_invoke_routes_through_coordinator(self):
+        tool = self._build_rag()._create_knowledge_search_tool()
+
+        async def _run(index_name, operation, *args, **kwargs):
+            self.assertEqual(index_name, "docs")
+            return operation(*args, **kwargs)
+
+        with patch(
+            "ragtime.rag.components.faiss_search_coordinator.run",
+            new=AsyncMock(side_effect=_run),
+        ) as coordinator_run:
+            output = tool.invoke({"query": "anything", "k": 5})
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["results"][0]["source"], "src.py")
+        coordinator_run.assert_awaited_once()
+
+    def test_per_index_search_sync_run_routes_through_coordinator(self):
+        tool = self._build_rag()._create_per_index_search_tools()[0]
+
+        async def _run(index_name, operation, *args, **kwargs):
+            self.assertEqual(index_name, "docs")
+            return operation(*args, **kwargs)
+
+        with patch(
+            "ragtime.rag.components.faiss_search_coordinator.run",
+            new=AsyncMock(side_effect=_run),
+        ) as coordinator_run:
+            output = tool.run({"query": "anything", "k": 5})
+
+        payload = json.loads(output)
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["results"][0]["index_name"], "docs")
+        coordinator_run.assert_awaited_once()
 
 
 class KnowledgeSearchPayloadHelpersTests(unittest.TestCase):
