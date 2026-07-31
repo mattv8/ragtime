@@ -99,6 +99,13 @@ from ragtime.http_api.secrets import decrypt_http_api_nested_secrets
 logger = get_logger(__name__)
 
 
+def _normalize_faiss_search_concurrency_mode(value: object) -> str:
+    normalized = str(getattr(value, "value", value) or "per_index").strip().lower()
+    if normalized in {"global", "global_mode"}:
+        return "global"
+    return "per_index"
+
+
 def _normalize_default_ocr_mode(value: str | None) -> str:
     mode = str(value or "").strip().lower()
     if mode == "ollama":
@@ -391,6 +398,7 @@ class SettingsCache:
                     "aggregateSearch",
                     DEFAULT_AGGREGATE_SEARCH,
                 ),
+                "faiss_search_concurrency_mode": _normalize_faiss_search_concurrency_mode(getattr(prisma_settings, "faissSearchConcurrencyMode", "per_index")),
                 "search_use_mmr": getattr(
                     prisma_settings,
                     "searchUseMmr",
@@ -642,6 +650,7 @@ class SettingsCache:
                 # Search configuration
                 "search_results_k": DEFAULT_SEARCH_RESULTS_K,
                 "aggregate_search": DEFAULT_AGGREGATE_SEARCH,
+                "faiss_search_concurrency_mode": "per_index",
                 "search_use_mmr": DEFAULT_SEARCH_USE_MMR,
                 "search_mmr_lambda": DEFAULT_SEARCH_MMR_LAMBDA,
                 "context_token_budget": DEFAULT_CONTEXT_TOKEN_BUDGET,

@@ -179,6 +179,13 @@ class VectorStoreType(str, Enum):
     FAISS = "faiss"  # FAISS - in-memory, loaded at startup
 
 
+class FaissSearchConcurrencyMode(str, Enum):
+    """Admission mode for concurrent FAISS searches."""
+
+    PER_INDEX = "per_index"
+    GLOBAL = "global"
+
+
 class IndexConfig(BaseModel):
     """Configuration for creating an index."""
 
@@ -869,6 +876,10 @@ class AppSettings(BaseModel):
         default=DEFAULT_AGGREGATE_SEARCH,
         description="If True, provide a single search_knowledge tool that searches all indexes. If False, create separate search_<index_name> tools for granular control.",
     )
+    faiss_search_concurrency_mode: FaissSearchConcurrencyMode = Field(
+        default=FaissSearchConcurrencyMode.PER_INDEX,
+        description="FAISS search admission mode: 'per_index' serializes per stable index name, 'global' serializes all FAISS searches process-wide.",
+    )
     search_use_mmr: bool = Field(
         default=DEFAULT_SEARCH_USE_MMR,
         description="Use Max Marginal Relevance for result diversification. Reduces near-duplicate results by balancing relevance with diversity.",
@@ -1490,6 +1501,10 @@ class UpdateSettingsRequest(BaseModel):
     # Search configuration
     search_results_k: Optional[int] = Field(default=None, ge=1, le=100)
     aggregate_search: Optional[bool] = None
+    faiss_search_concurrency_mode: Optional[FaissSearchConcurrencyMode] = Field(
+        default=None,
+        description="FAISS search admission mode: 'per_index' or 'global'.",
+    )
     # Retrieval optimization
     search_use_mmr: Optional[bool] = Field(
         default=None,

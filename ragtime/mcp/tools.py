@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 
 from ragtime.config.settings import settings
 from ragtime.core.app_settings import get_app_settings, get_enabled_tool_configs, get_tool_configs
+from ragtime.core.faiss_concurrency import FaissSearchBusyError, faiss_search_coordinator
 from ragtime.core.logging import get_logger
 from ragtime.core.tool_timeouts import resolve_effective_tool_timeout
 from ragtime.http_api.guidance import build_http_api_headers_description, build_http_api_request_guidance
@@ -44,6 +45,18 @@ from ragtime.tools.git_history import search_git_history
 logger = get_logger(__name__)
 
 MCP_TOOL_TIMEOUT_GRACE_SECONDS = 10.0
+
+
+async def _run_mcp_faiss_search(
+    stable_index_name: str,
+    operation: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        return await faiss_search_coordinator.run(stable_index_name, operation, *args, **kwargs)
+    except FaissSearchBusyError as exc:
+        raise RuntimeError("FAISS search is busy. Please retry shortly.") from exc
 
 
 # Tool input schemas for MCP (JSON Schema format)
@@ -1263,12 +1276,10 @@ class MCPToolAdapter:
                 try:
                     logger.debug(f"MCP searching index '{name}' with query: {query[:50] if query else ''}..., k={k}")
                     # Use MMR or similarity search based on settings
-                    # FAISS search embeds the query then scans the index --
-                    # both are blocking, so offload to a thread to keep the
-                    # event loop (and MCP) responsive.
                     if use_mmr:
                         fetch_k = max(k * 4, 20)  # Get more candidates for diversity
-                        docs = await asyncio.to_thread(
+                        docs = await _run_mcp_faiss_search(
+                            name,
                             db.max_marginal_relevance_search,
                             query,
                             k=k,
@@ -1276,7 +1287,8 @@ class MCPToolAdapter:
                             lambda_mult=mmr_lambda,
                         )
                     else:
-                        docs = await asyncio.to_thread(
+                        docs = await _run_mcp_faiss_search(
+                            name,
                             db.similarity_search,
                             query,
                             k=k,
@@ -1519,10 +1531,10 @@ class MCPToolAdapter:
                     started_at = time.monotonic()
                     try:
                         # Use MMR or similarity search based on settings
-                        # Offload blocking FAISS search to a thread.
                         if use_mmr_:
                             fetch_k = max(k * 4, 20)
-                            docs = await asyncio.to_thread(
+                            docs = await _run_mcp_faiss_search(
+                                idx_name,
                                 idx_db.max_marginal_relevance_search,
                                 query,
                                 k=k,
@@ -1530,7 +1542,8 @@ class MCPToolAdapter:
                                 lambda_mult=mmr_lambda_,
                             )
                         else:
-                            docs = await asyncio.to_thread(
+                            docs = await _run_mcp_faiss_search(
+                                idx_name,
                                 idx_db.similarity_search,
                                 query,
                                 k=k,

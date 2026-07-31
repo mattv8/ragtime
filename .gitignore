@@ -105,3 +105,4 @@ ragtime/indexer/static/dist/
 .omo/
 .ruff_cache/
 .superpowers/
+**/superpowers/

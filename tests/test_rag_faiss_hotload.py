@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
+from langchain_core.documents import Document
+
 from ragtime.indexer.models import IndexJobPhase, IndexStatus
 from ragtime.indexer.service import IndexerService
 from ragtime.rag.components import RAGComponents
@@ -22,6 +24,12 @@ class FakeFaissIndex:
 
     def as_retriever(self, *args, **kwargs):
         return {"args": args, "kwargs": kwargs}
+
+    def similarity_search(self, query: str, k: int):
+        return [Document(page_content=f"match for {query}", metadata={"source": "src.py"})][:k]
+
+    def max_marginal_relevance_search(self, query: str, k: int, fetch_k: int, lambda_mult: float):
+        return self.similarity_search(query, k)
 
 
 class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
@@ -83,6 +91,28 @@ class RagFaissHotLoadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rag._index_details["hot-index"]["status"], "loaded")
             load_local.assert_called_once()
             rag._create_agent.assert_awaited_once()
+
+    async def test_hot_loaded_retriever_invokes_faiss_search_coordinator(self):
+        rag = RAGComponents()
+        rag._app_settings = {
+            "search_results_k": 2,
+            "search_use_mmr": False,
+            "search_mmr_lambda": 0.5,
+        }
+        retriever = rag._create_retriever_from_faiss(FakeFaissIndex(), "hot-index")
+
+        async def _run(index_name, operation, *args, **kwargs):
+            self.assertEqual(index_name, "hot-index")
+            return operation(*args, **kwargs)
+
+        with patch(
+            "ragtime.rag.components.faiss_search_coordinator.run",
+            new=AsyncMock(side_effect=_run),
+        ) as coordinator_run:
+            docs = await retriever.ainvoke("needle")
+
+        self.assertEqual(docs[0].metadata["source"], "src.py")
+        coordinator_run.assert_awaited_once()
 
     async def test_completed_index_job_hot_loads_specific_index(self):
         with tempfile.TemporaryDirectory() as directory:

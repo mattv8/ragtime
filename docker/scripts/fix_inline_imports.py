@@ -36,6 +36,7 @@ class ModuleIndex:
 
 
 _DUPLICATE_TAIL_LINE_RE = re.compile(r"(?P<line>[^\n]*\S[^\n]*)(?:\n(?P=line)){1,2}\n?\Z")
+_INLINE_IMPORT_KEEP_MARKER = "# inline-import: keep"
 
 
 def main() -> None:
@@ -200,6 +201,9 @@ def process_file(
                 continue
 
             inline_found_count += 1
+            if has_inline_import_keep_marker(node, lines):
+                inline_kept_count += 1
+                continue
             if not should_promote_inline(
                 node,
                 parent_map,
@@ -284,6 +288,15 @@ def should_promote_inline(
                 return False
 
     return True
+
+
+def has_inline_import_keep_marker(node: ast.AST, lines: Sequence[str]) -> bool:
+    start = getattr(node, "lineno", None)
+    end = getattr(node, "end_lineno", None)
+    if start is None:
+        return False
+    end = end if end is not None else start
+    return any(_INLINE_IMPORT_KEEP_MARKER in line for line in lines[start - 1 : end])
 
 
 def build_module_index(root: Path, python_files: list[Path]) -> ModuleIndex:

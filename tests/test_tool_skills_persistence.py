@@ -3,25 +3,36 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
+from pydantic import ValidationError
+
 from ragtime.core.app_settings import SettingsCache
-from ragtime.indexer.models import UpdateSettingsRequest
+from ragtime.indexer.models import FaissSearchConcurrencyMode, UpdateSettingsRequest
 from ragtime.indexer.repository import IndexerRepository, _sql_quote_literal
 
 
 def _settings_row(**overrides: Any) -> SimpleNamespace:
-    values = {
+    values: dict[str, Any] = {
         "id": "default",
         "serverName": "Ragtime",
         "defaultThemePack": "default",
+        "faissSearchConcurrencyMode": "per_index",
         "openaiApiKey": "",
         "anthropicApiKey": "",
+        "mcpDefaultRoutePassword": None,
+        "mcpDefaultRouteAllowedGroup": None,
+        "odooContainer": "odoo-server",
+        "postgresContainer": "odoo-postgres",
         "ollamaProtocol": "http",
         "ollamaHost": "localhost",
         "ollamaPort": 11434,
         "ollamaBaseUrl": "http://localhost:11434",
+        "embeddingProvider": "ollama",
+        "embeddingModel": "nomic-embed-text",
+        "embeddingDimensions": None,
         "allowedChatModels": [],
         "enabledTools": [],
         "postgresHost": "",
+        "postgresPort": 5432,
         "postgresUser": "",
         "postgresPassword": "",
         "postgresDb": "",
@@ -143,6 +154,62 @@ class ToolSkillsPersistenceTests(unittest.IsolatedAsyncioTestCase):
             await repository.update_settings({"tool_skills_enabled": False})
 
         self.assertEqual(fake_db.appsettings.last_update_data, {"toolSkillsEnabled": False})
+
+    async def test_settings_cache_defaults_faiss_search_concurrency_mode_to_per_index(self) -> None:
+        cache = SettingsCache()
+
+        with mock.patch("ragtime.core.app_settings.get_db", mock.AsyncMock(side_effect=RuntimeError("db down"))):
+            settings = await cache.get_settings()
+
+        self.assertEqual(settings["faiss_search_concurrency_mode"], "per_index")
+
+    async def test_settings_cache_reads_faiss_search_concurrency_mode(self) -> None:
+        cache = SettingsCache()
+        fake_db = _FakeDb(_settings_row(faissSearchConcurrencyMode="global_mode"))
+
+        with mock.patch("ragtime.core.app_settings.get_db", mock.AsyncMock(return_value=fake_db)):
+            settings = await cache.get_settings()
+
+        self.assertEqual(settings["faiss_search_concurrency_mode"], "global")
+
+    async def test_repository_get_settings_maps_faiss_search_concurrency_mode(self) -> None:
+        repository = IndexerRepository()
+        fake_db = _FakeDb(_settings_row(faissSearchConcurrencyMode="global_mode"))
+
+        with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=fake_db)):
+            settings = await repository.get_settings()
+
+        self.assertEqual(settings.faiss_search_concurrency_mode, "global")
+
+    async def test_repository_update_settings_maps_faiss_search_concurrency_mode(self) -> None:
+        repository = IndexerRepository()
+        fake_db = _FakeDb(_settings_row())
+
+        with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=fake_db)):
+            await repository.update_settings({"faiss_search_concurrency_mode": "global"})
+
+        self.assertEqual(fake_db.appsettings.last_update_data, {"faissSearchConcurrencyMode": "global_mode"})
+
+    async def test_repository_get_settings_normalizes_raw_global_label(self) -> None:
+        repository = IndexerRepository()
+        fake_db = _FakeDb(_settings_row(faissSearchConcurrencyMode="global"))
+
+        with mock.patch.object(repository, "_get_db", mock.AsyncMock(return_value=fake_db)):
+            settings = await repository.get_settings()
+
+        self.assertEqual(settings.faiss_search_concurrency_mode, "global")
+
+    def test_update_settings_request_rejects_invalid_faiss_search_concurrency_mode(self) -> None:
+        with self.assertRaises(ValidationError):
+            UpdateSettingsRequest.model_validate({"faiss_search_concurrency_mode": "parallel"})
+
+    def test_update_settings_request_preserves_faiss_search_concurrency_mode(self) -> None:
+        request = UpdateSettingsRequest(faiss_search_concurrency_mode=FaissSearchConcurrencyMode.GLOBAL)
+
+        self.assertEqual(
+            request.model_dump(mode="json", exclude_unset=True),
+            {"faiss_search_concurrency_mode": "global"},
+        )
 
     def test_update_settings_request_preserves_tool_skills_enabled_toggle(self) -> None:
         request = UpdateSettingsRequest(tool_skills_enabled=False)
