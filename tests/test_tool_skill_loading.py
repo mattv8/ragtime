@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.tools import StructuredTool
 
 from ragtime.rag import components as rag_components
-from ragtime.rag.tool_skills import ToolSkillBindingState
+from ragtime.rag.tool_skills import ToolSkillBindingState, ToolSkillDefinition, build_tool_skill_control_tools
 
 
 def _make_tool(name: str, *, description: str | None = None) -> StructuredTool:
@@ -644,6 +644,36 @@ class ToolSkillLoadingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request_state["signature_counts"]["same"], 2)
         self.assertEqual(sum(isinstance(message, ToolMessage) and message.tool_call_id == "call-search" for message in rebuilt_history), 1)
         self.assertGreaterEqual(len(rebuilt_histories), 1)
+
+    async def test_search_control_tool_returns_ukg_skill_for_production_query(self) -> None:
+        tools = build_tool_skill_control_tools(
+            eligible_catalog=[
+                ToolSkillDefinition(
+                    id="tool_config:ukg-id",
+                    label="UKG API",
+                    description="Configured HTTP API tool.",
+                    tool_names=["request_ukg_api"],
+                    tool_config_ids=["ukg-id"],
+                    kind="http_api",
+                ),
+                ToolSkillDefinition(
+                    id="tool_config:unrelated-id",
+                    label="Unrelated ERP Query",
+                    description="Configured Odoo query tool.",
+                    tool_names=["query_odoo"],
+                    tool_config_ids=["unrelated-id"],
+                    kind="odoo",
+                ),
+            ],
+            binding_state=ToolSkillBindingState(requested_ids=[], effective_ids=[]),
+            persist_requested_ids=mock.AsyncMock(),
+        )
+
+        payload = json.loads(await tools["search_tool_skills"].ainvoke({"query": "UKG employees pay-info cost-centers cost-center-jobs API GET"}))
+
+        result_ids = [result["id"] for result in payload["results"]]
+        self.assertEqual(result_ids, ["tool_config:ukg-id"])
+        self.assertNotIn("tool_config:unrelated-id", result_ids)
 
     async def test_nonstream_mixed_control_and_real_steps_preserve_pairs_once_and_continue(self) -> None:
         rag = self._make_rag()

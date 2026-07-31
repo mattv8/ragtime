@@ -21,7 +21,156 @@ def _make_tool(name: str) -> StructuredTool:
     return StructuredTool.from_function(_tool, name=name, description=f"Tool {name}")
 
 
+def _make_tool_skill_definition(
+    *,
+    id: str,
+    label: str,
+    description: str,
+    tool_names: list[str],
+    tool_config_ids: list[str] | None = None,
+    kind: str = "custom",
+) -> ToolSkillDefinition:
+    return ToolSkillDefinition(
+        id=id,
+        label=label,
+        description=description,
+        tool_names=tool_names,
+        tool_config_ids=tool_config_ids or [],
+        kind=kind,
+    )
+
+
 class ToolSkillHelpersTests(unittest.TestCase):
+    def test_search_tool_skill_catalog_prefers_name_first_fuzzy_matches_for_ukg_query(self) -> None:
+        catalog = [
+            _make_tool_skill_definition(
+                id="tool_config:ukg-id",
+                label="UKG API",
+                description="Accesses UKG employee, payroll, and cost center data.",
+                tool_names=["request_ukg_api"],
+                tool_config_ids=["ukg-id"],
+                kind="http_api",
+            ),
+            _make_tool_skill_definition(
+                id="tool_config:desc-only",
+                label="Aardvark Connector",
+                description="UKG API GET pay-info cost-centers cost-center-jobs exports for audits.",
+                tool_names=["generic_http"],
+                tool_config_ids=["desc-only"],
+                kind="http_api",
+            ),
+        ]
+
+        query = "UKG employees pay-info cost-centers cost-center-jobs API GET"
+        results = search_tool_skill_catalog(catalog, query=query, limit=1)
+
+        self.assertEqual(results, search_tool_skill_catalog(catalog, query=query, limit=1))
+        self.assertEqual([item["id"] for item in results], ["tool_config:ukg-id"])
+        self.assertEqual(results[0]["label"], "UKG API")
+        self.assertEqual(results[0]["kind"], "http_api")
+        self.assertEqual(results[0]["tool_names"], ["request_ukg_api"])
+        self.assertNotIn("tool_config_ids", results[0])
+        self.assertLessEqual(len(results), 1)
+
+    def test_search_tool_skill_catalog_handles_ukg_typos_and_unrelated_queries(self) -> None:
+        catalog = [
+            _make_tool_skill_definition(
+                id="tool_config:ukg-id",
+                label="UKG API",
+                description="Accesses UKG employee, payroll, and cost center data.",
+                tool_names=["request_ukg_api"],
+                tool_config_ids=["ukg-id"],
+                kind="http_api",
+            ),
+            _make_tool_skill_definition(
+                id="tool_config:pdm-id",
+                label="SolidWorks PDM Database",
+                description="Searches drawing and component metadata.",
+                tool_names=["search_solidworks_pdm_database"],
+                tool_config_ids=["pdm-id"],
+                kind="database",
+            ),
+        ]
+
+        typo_results = search_tool_skill_catalog(catalog, query="UKGG API", limit=8)
+        self.assertEqual([item["id"] for item in typo_results], ["tool_config:ukg-id"])
+
+        unrelated_results = search_tool_skill_catalog(catalog, query="lathe coolant spindle overload", limit=8)
+        self.assertEqual(unrelated_results, [])
+
+    def test_search_tool_skill_catalog_repeated_query_tokens_do_not_change_ordering(self) -> None:
+        catalog = [
+            _make_tool_skill_definition(
+                id="tool_config:ukg-id",
+                label="UKG API",
+                description="Accesses UKG employee, payroll, and cost center data.",
+                tool_names=["request_ukg_api"],
+                tool_config_ids=["ukg-id"],
+                kind="http_api",
+            ),
+            _make_tool_skill_definition(
+                id="tool_config:weather-id",
+                label="Weather Service",
+                description="Gets current weather and forecast via API.",
+                tool_names=["fetch_weather"],
+                tool_config_ids=["weather-id"],
+                kind="http_api",
+            ),
+        ]
+
+        distinct_results = search_tool_skill_catalog(catalog, query="UKG API forecast", limit=8)
+        repeated_results = search_tool_skill_catalog(catalog, query="UKG UKG UKG API API forecast forecast", limit=8)
+
+        self.assertEqual([item["id"] for item in repeated_results], [item["id"] for item in distinct_results])
+
+    def test_search_tool_skill_catalog_excludes_generic_http_api_weather_match_for_ukg_query(self) -> None:
+        catalog = [
+            _make_tool_skill_definition(
+                id="tool_config:ukg-id",
+                label="UKG API",
+                description="Accesses UKG employee, payroll, and cost center data.",
+                tool_names=["request_ukg_api"],
+                tool_config_ids=["ukg-id"],
+                kind="http_api",
+            ),
+            _make_tool_skill_definition(
+                id="tool_config:weather-id",
+                label="Weather Service",
+                description="Gets current weather and forecast via API.",
+                tool_names=["fetch_weather"],
+                tool_config_ids=["weather-id"],
+                kind="http_api",
+            ),
+        ]
+
+        results = search_tool_skill_catalog(catalog, query="UKG employees pay-info cost-centers cost-center-jobs API GET", limit=8)
+
+        self.assertEqual([item["id"] for item in results], ["tool_config:ukg-id"])
+
+    def test_search_tool_skill_catalog_keeps_distinctive_description_searches(self) -> None:
+        catalog = [
+            _make_tool_skill_definition(
+                id="tool_config:weather-id",
+                label="Weather Service",
+                description="Gets current weather and forecast via API.",
+                tool_names=["fetch_weather"],
+                tool_config_ids=["weather-id"],
+                kind="http_api",
+            ),
+            _make_tool_skill_definition(
+                id="tool_config:ukg-id",
+                label="UKG API",
+                description="Accesses UKG employee, payroll, and cost center data.",
+                tool_names=["request_ukg_api"],
+                tool_config_ids=["ukg-id"],
+                kind="http_api",
+            ),
+        ]
+
+        results = search_tool_skill_catalog(catalog, query="forecast", limit=8)
+
+        self.assertEqual([item["id"] for item in results], ["tool_config:weather-id"])
+
     def test_normalize_tool_skill_ids_strips_empties_and_deduplicates(self) -> None:
         self.assertEqual(
             normalize_tool_skill_ids([" alpha ", "", None, "alpha", "beta", " beta "]),
