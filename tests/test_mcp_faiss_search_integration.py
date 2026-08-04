@@ -75,8 +75,11 @@ class McpFaissSearchIntegrationTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(result)
         self.assertEqual(payload["status"], "completed")
         coordinator_run.assert_awaited_once()
-        self.assertEqual(coordinator_run.await_args.args[:2], ("docs", db.similarity_search))
-        self.assertEqual(coordinator_run.await_args.kwargs, {"k": 1})
+        await_args = coordinator_run.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertEqual(await_args.args[:2], ("docs", db.similarity_search))
+        self.assertEqual(await_args.kwargs, {"k": 1})
 
     async def test_per_index_knowledge_search_busy_error_stays_structured(self) -> None:
         db = _FakeFaissDb([_FakeDoc("first body line", "docs/one.txt")])

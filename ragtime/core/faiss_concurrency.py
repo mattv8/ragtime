@@ -23,7 +23,7 @@ _DEFAULT_ACQUIRE_TIMEOUT_SECONDS = 30.0
 
 
 async def get_app_settings() -> dict[str, Any]:
-    from ragtime.core.app_settings import get_app_settings as _get_app_settings
+    from ragtime.core.app_settings import get_app_settings as _get_app_settings  # inline-import: keep
 
     return await _get_app_settings()
 

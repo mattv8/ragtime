@@ -6,12 +6,12 @@ from unittest import mock
 from pydantic import ValidationError
 
 from ragtime.core.app_settings import SettingsCache
-from ragtime.indexer.models import UpdateSettingsRequest
+from ragtime.indexer.models import FaissSearchConcurrencyMode, UpdateSettingsRequest
 from ragtime.indexer.repository import IndexerRepository, _sql_quote_literal
 
 
 def _settings_row(**overrides: Any) -> SimpleNamespace:
-    values = {
+    values: dict[str, Any] = {
         "id": "default",
         "serverName": "Ragtime",
         "defaultThemePack": "default",
@@ -201,10 +201,10 @@ class ToolSkillsPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_update_settings_request_rejects_invalid_faiss_search_concurrency_mode(self) -> None:
         with self.assertRaises(ValidationError):
-            UpdateSettingsRequest(faiss_search_concurrency_mode="parallel")
+            UpdateSettingsRequest.model_validate({"faiss_search_concurrency_mode": "parallel"})
 
     def test_update_settings_request_preserves_faiss_search_concurrency_mode(self) -> None:
-        request = UpdateSettingsRequest(faiss_search_concurrency_mode="global")
+        request = UpdateSettingsRequest(faiss_search_concurrency_mode=FaissSearchConcurrencyMode.GLOBAL)
 
         self.assertEqual(
             request.model_dump(mode="json", exclude_unset=True),

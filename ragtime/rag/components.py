@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Awaitable, Callable, List, Literal, Optional, Union, cast
+from typing import Any, Awaitable, Callable, Coroutine, List, Literal, Optional, Protocol, Union, cast
 from urllib.parse import quote
 
 import httpx
@@ -704,7 +704,7 @@ def build_http_api_catalog_search_payload(
     }
 
 
-def run_async_tool_sync(coroutine_factory: Callable[[], Awaitable[Any]]) -> Any:
+def run_async_tool_sync(coroutine_factory: Callable[[], Coroutine[Any, Any, Any]]) -> Any:
     """Run an async tool implementation from sync LangChain paths.
 
     This preserves backward-compatible ``StructuredTool.invoke()/run()`` support
@@ -718,12 +718,24 @@ def run_async_tool_sync(coroutine_factory: Callable[[], Awaitable[Any]]) -> Any:
     raise RuntimeError("Synchronous tool invocation is unavailable inside an active event loop; use the async coroutine path instead.")
 
 
+class _FaissSearchIndex(Protocol):
+    def similarity_search(self, query: str, k: int) -> list[Any]: ...
+
+    def max_marginal_relevance_search(
+        self,
+        query: str,
+        k: int,
+        fetch_k: int,
+        lambda_mult: float,
+    ) -> list[Any]: ...
+
+
 class _CoordinatorBackedFaissRetriever:
     def __init__(
         self,
         *,
         index_name: str,
-        db: FAISS,
+        db: _FaissSearchIndex,
         search_k: int,
         use_mmr: bool,
         mmr_lambda: float,
@@ -4109,7 +4121,7 @@ class RAGComponents:
         else:
             raise ValueError(f"Unknown embedding provider: {provider}")
 
-    def _create_retriever_from_faiss(self, db: FAISS, index_name: str) -> Any:
+    def _create_retriever_from_faiss(self, db: _FaissSearchIndex, index_name: str) -> Any:
         """Create a retriever from a FAISS vectorstore with appropriate settings.
 
         Supports MMR (Max Marginal Relevance) for result diversification when enabled.

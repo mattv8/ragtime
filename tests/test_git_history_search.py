@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from shutil import which
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from ragtime.core.faiss_concurrency import FaissSearchBusyError
 from ragtime.tools.git_history import _search_commits, _search_commits_semantic
@@ -93,14 +93,14 @@ class GitHistorySearchTests(unittest.IsolatedAsyncioTestCase):
                 "date": "2026-01-02",
             },
         )
-        coordinator_run = unittest.mock.AsyncMock(return_value=[(fake_doc, 0.2)])
-        fake_embeddings = SimpleNamespace(aembed_query=unittest.mock.AsyncMock(return_value=[0.1, 0.2]))
+        coordinator_run = AsyncMock(return_value=[(fake_doc, 0.2)])
+        fake_embeddings = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2]))
         fake_rag = SimpleNamespace(faiss_dbs={"infoscan": SimpleNamespace(similarity_search_with_score=object())})
 
         with (
-            patch("ragtime.core.app_settings.get_app_settings", unittest.mock.AsyncMock(return_value={})),
-            patch("ragtime.indexer.vector_utils.get_embeddings_model", unittest.mock.AsyncMock(return_value=fake_embeddings)),
-            patch("ragtime.indexer.vector_utils.search_pgvector_embeddings", unittest.mock.AsyncMock(return_value=[])),
+            patch("ragtime.core.app_settings.get_app_settings", AsyncMock(return_value={})),
+            patch("ragtime.indexer.vector_utils.get_embeddings_model", AsyncMock(return_value=fake_embeddings)),
+            patch("ragtime.indexer.vector_utils.search_pgvector_embeddings", AsyncMock(return_value=[])),
             patch("ragtime.rag.components.rag", fake_rag),
             patch("ragtime.tools.git_history.faiss_search_coordinator", SimpleNamespace(run=coordinator_run), create=True),
         ):
@@ -109,8 +109,11 @@ class GitHistorySearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["subject"], "Add semantic search")
         coordinator_run.assert_awaited_once()
-        self.assertEqual(coordinator_run.await_args.args[:2], ("infoscan", fake_rag.faiss_dbs["infoscan"].similarity_search_with_score))
-        self.assertEqual(coordinator_run.await_args.kwargs, {"k": 100})
+        await_args = coordinator_run.await_args
+        self.assertIsNotNone(await_args)
+        assert await_args is not None
+        self.assertEqual(await_args.args[:2], ("infoscan", fake_rag.faiss_dbs["infoscan"].similarity_search_with_score))
+        self.assertEqual(await_args.kwargs, {"k": 100})
 
     async def test_busy_semantic_faiss_search_falls_back_to_fuzzy_results(self):
         import tempfile
@@ -120,17 +123,20 @@ class GitHistorySearchTests(unittest.IsolatedAsyncioTestCase):
             _commit_file(repo, "README.md", "initial\n", "Initial commit")
             _commit_file(repo, "src/search.ts", "semantic search\n", "Add semantic search")
 
-            fake_embeddings = SimpleNamespace(aembed_query=unittest.mock.AsyncMock(return_value=[0.1, 0.2]))
+            fake_embeddings = SimpleNamespace(aembed_query=AsyncMock(return_value=[0.1, 0.2]))
             fake_rag = SimpleNamespace(faiss_dbs={"infoscan": SimpleNamespace(similarity_search_with_score=object())})
 
             with (
-                patch("ragtime.core.app_settings.get_app_settings", unittest.mock.AsyncMock(return_value={})),
-                patch("ragtime.indexer.vector_utils.get_embeddings_model", unittest.mock.AsyncMock(return_value=fake_embeddings)),
-                patch("ragtime.indexer.vector_utils.search_pgvector_embeddings", unittest.mock.AsyncMock(return_value=[])),
+                patch("ragtime.core.app_settings.get_app_settings", AsyncMock(return_value={})),
+                patch("ragtime.indexer.vector_utils.get_embeddings_model", AsyncMock(return_value=fake_embeddings)),
+                patch(
+                    "ragtime.indexer.vector_utils.search_pgvector_embeddings",
+                    AsyncMock(return_value=[]),
+                ),
                 patch("ragtime.rag.components.rag", fake_rag),
                 patch(
                     "ragtime.tools.git_history.faiss_search_coordinator",
-                    SimpleNamespace(run=unittest.mock.AsyncMock(side_effect=FaissSearchBusyError("busy"))),
+                    SimpleNamespace(run=AsyncMock(side_effect=FaissSearchBusyError("busy"))),
                     create=True,
                 ),
             ):

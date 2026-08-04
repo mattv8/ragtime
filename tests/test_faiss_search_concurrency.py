@@ -336,9 +336,13 @@ class FaissSearchCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         fake_faiss = SimpleNamespace(omp_set_num_threads=lambda value: calls.append(f"omp:{value}"))
         self.coordinator = FaissSearchCoordinator(faiss_module=fake_faiss)
 
+        def operation() -> str:
+            calls.append("operation")
+            return "ok"
+
         result = await self.coordinator.run(
             "shared-index",
-            lambda: calls.append("operation") or "ok",
+            operation,
             mode=FaissSearchConcurrencyMode.PER_INDEX,
         )
 
