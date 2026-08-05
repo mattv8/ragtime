@@ -64,6 +64,7 @@ from ragtime.userspace.models import (
     UserSpacePreviewLaunchRequest,
     UserSpacePreviewLaunchResponse,
     UserSpaceRuntimeActionResponse,
+    UserSpaceRuntimeBridgeStatus,
     UserSpaceRuntimeSessionResponse,
     UserSpaceRuntimeStatusResponse,
     UserSpaceWorkspaceTabStateResponse,
@@ -2218,6 +2219,28 @@ async def workspace_events_sse(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get(
+    "/runtime/workspaces/{workspace_id}/bridge-credentials/status",
+    response_model=UserSpaceRuntimeBridgeStatus,
+)
+async def get_runtime_bridge_status(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _runtime_service().get_runtime_bridge_status(workspace_id, user.id)
+
+
+@router.post(
+    "/runtime/workspaces/{workspace_id}/bridge-credentials/refresh",
+    response_model=UserSpaceRuntimeBridgeStatus,
+)
+async def refresh_runtime_bridge_credentials(
+    workspace_id: str,
+    user: Any = Depends(get_current_user),
+):
+    return await _runtime_service().refresh_runtime_bridge_credentials(workspace_id, user.id)
 
 
 @router.get(

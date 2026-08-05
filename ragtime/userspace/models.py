@@ -1160,6 +1160,25 @@ class UserSpaceRuntimeSessionResponse(BaseModel):
     session: UserSpaceRuntimeSession | None = None
 
 
+class UserSpaceRuntimeBridgeStatus(BaseModel):
+    state: Literal[
+        "healthy",
+        "not_running",
+        "missing",
+        "expired",
+        "invalid",
+        "session_mismatch",
+        "unavailable",
+    ]
+    bridge_url: str | None = None
+    token_session_id: str | None = None
+    current_session_id: str | None = None
+    issued_at: datetime | None = None
+    expires_at: datetime | None = None
+    last_success_at: datetime | None = None
+    detail: str | None = None
+
+
 class UserSpaceRuntimeStatusResponse(BaseModel):
     workspace_id: str
     session_state: RuntimeSessionState
@@ -1174,6 +1193,7 @@ class UserSpaceRuntimeStatusResponse(BaseModel):
     preview_url: str | None = None
     last_error: str | None = None
     live_data_warning: str | None = None
+    bridge_status: UserSpaceRuntimeBridgeStatus | None = None
     runtime_operation_id: str | None = None
     runtime_operation_phase: RuntimeOperationPhase | None = None
     runtime_operation_started_at: datetime | None = None

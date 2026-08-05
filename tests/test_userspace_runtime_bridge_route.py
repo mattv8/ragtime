@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest import mock
@@ -19,9 +20,12 @@ from ragtime.userspace.models import (
     RuntimeBridgeSqliteMutationResponse,
     RuntimeBridgeSqliteQueryRequest,
     RuntimeBridgeSqliteQueryResponse,
+    UserSpaceRuntimeBridgeStatus,
 )
 
 runtime_bridge_execute_component = _RUNTIME_ROUTES.runtime_bridge_execute_component
+get_runtime_bridge_status = _RUNTIME_ROUTES.get_runtime_bridge_status
+refresh_runtime_bridge_credentials = _RUNTIME_ROUTES.refresh_runtime_bridge_credentials
 
 
 def _build_request(path: str, authorization: str | None = None) -> Request:
@@ -360,6 +364,39 @@ class RuntimeBridgeRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 500)
         self.assertEqual(ctx.exception.detail, "Runtime bridge SQLite request failed.")
         logger_exception.assert_called_once()
+
+    async def test_bridge_status_route_returns_service_status(self) -> None:
+        expected = UserSpaceRuntimeBridgeStatus(
+            state="healthy",
+            bridge_url="https://ragtime.example/indexes/userspace/runtime-bridge",
+            token_session_id="sess-1",
+            current_session_id="sess-1",
+            last_success_at=datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc),
+        )
+        runtime_service = SimpleNamespace(get_runtime_bridge_status=mock.AsyncMock(return_value=expected))
+        user = SimpleNamespace(id="user-1")
+
+        with mock.patch.object(_RUNTIME_ROUTES, "_runtime_service", return_value=runtime_service):
+            response = await get_runtime_bridge_status("ws-1", user)
+
+        self.assertIs(response, expected)
+        runtime_service.get_runtime_bridge_status.assert_awaited_once_with("ws-1", "user-1")
+
+    async def test_bridge_refresh_route_returns_refreshed_status(self) -> None:
+        expected = UserSpaceRuntimeBridgeStatus(
+            state="healthy",
+            bridge_url="https://ragtime.example/indexes/userspace/runtime-bridge",
+            token_session_id="sess-1",
+            current_session_id="sess-1",
+        )
+        runtime_service = SimpleNamespace(refresh_runtime_bridge_credentials=mock.AsyncMock(return_value=expected))
+        user = SimpleNamespace(id="user-1")
+
+        with mock.patch.object(_RUNTIME_ROUTES, "_runtime_service", return_value=runtime_service):
+            response = await refresh_runtime_bridge_credentials("ws-1", user)
+
+        self.assertIs(response, expected)
+        runtime_service.refresh_runtime_bridge_credentials.assert_awaited_once_with("ws-1", "user-1")
 
 
 if __name__ == "__main__":
