@@ -106,6 +106,7 @@ class SessionManager:
             runtime_operation_phase=session.runtime_operation_phase,
             runtime_operation_started_at=session.runtime_operation_started_at,
             runtime_operation_updated_at=session.runtime_operation_updated_at,
+            bridge_credential=session.bridge_credential,
             updated_at=session.updated_at,
         )
 
@@ -217,6 +218,7 @@ class SessionManager:
         session.runtime_operation_phase = worker_data.runtime_operation_phase
         session.runtime_operation_started_at = worker_data.runtime_operation_started_at
         session.runtime_operation_updated_at = worker_data.runtime_operation_updated_at
+        session.bridge_credential = worker_data.bridge_credential
 
     def _create_session(
         self,
@@ -246,6 +248,7 @@ class SessionManager:
             runtime_operation_phase=worker_data.runtime_operation_phase,
             runtime_operation_started_at=worker_data.runtime_operation_started_at,
             runtime_operation_updated_at=worker_data.runtime_operation_updated_at,
+            bridge_credential=worker_data.bridge_credential,
             updated_at=now,
             lease_expires_at=now + timedelta(seconds=self._lease_ttl_seconds),
         )
@@ -368,24 +371,50 @@ class SessionManager:
                         pty_access_token = uuid4().hex
 
             if existing_provider_id:
-                session = await self._sync_session_from_worker_by_provider_id(existing_provider_id)
-                if session is None:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Runtime session not found",
+                async with self._provider_lock(existing_provider_id):
+                    async with self._lock:
+                        session = self._sessions.get(existing_provider_id)
+                        if not session:
+                            raise HTTPException(
+                                status_code=404,
+                                detail="Runtime session not found",
+                            )
+                        if session.workspace_id != request.workspace_id:
+                            raise HTTPException(
+                                status_code=409,
+                                detail="Runtime session workspace does not match requested workspace",
+                            )
+                        worker_session_id = session.worker_session_id
+                        pty_access_token = session.pty_access_token
+
+                    worker_data = await asyncio.wait_for(
+                        self._worker_service.start_session(
+                            WorkerStartSessionRequest(
+                                workspace_id=request.workspace_id,
+                                provider_session_id=existing_provider_id,
+                                pty_access_token=pty_access_token,
+                                workspace_env=request.workspace_env,
+                                workspace_env_visibility=request.workspace_env_visibility,
+                                workspace_mounts=request.workspace_mounts,
+                            )
+                        ),
+                        timeout=self._worker_call_timeout,
                     )
-                async with self._lock:
-                    session = self._sessions.get(existing_provider_id)
-                    if not session:
-                        raise HTTPException(
-                            status_code=404,
-                            detail="Runtime session not found",
-                        )
-                    now = utc_now()
-                    session.leased_by_user_id = request.leased_by_user_id
-                    session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
-                    session.updated_at = now
-                    return self._as_response(session)
+
+                    async with self._lock:
+                        session = self._sessions.get(existing_provider_id)
+                        if not session or session.worker_session_id != worker_session_id:
+                            raise HTTPException(
+                                status_code=404,
+                                detail="Runtime session not found",
+                            )
+                        session.worker_session_id = worker_data.worker_session_id
+                        self._apply_worker_state(session, worker_data)
+                        now = utc_now()
+                        session.leased_by_user_id = request.leased_by_user_id
+                        session.lease_expires_at = now + timedelta(seconds=self._lease_ttl_seconds)
+                        session.updated_at = now
+                        return self._as_response(session)
 
             if not provider_session_id or pty_access_token is None:
                 raise HTTPException(status_code=500, detail="Runtime session start failed")

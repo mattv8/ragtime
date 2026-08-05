@@ -29,6 +29,7 @@ class ManagerSession:
     runtime_operation_phase: str | None
     runtime_operation_started_at: datetime | None
     runtime_operation_updated_at: datetime | None
+    bridge_credential: RuntimeBridgeCredentialMetadata | None
     updated_at: datetime
     lease_expires_at: datetime
 
@@ -57,6 +58,15 @@ class StartSessionRequest(BaseModel):
             "source_type, mount_backend, read_only, and optional runtime_mount_mode."
         ),
     )
+
+
+class RuntimeBridgeCredentialMetadata(BaseModel):
+    bridge_url: str = Field(description="Runtime bridge URL")
+    token_kind: str = Field(description="Decoded bridge token kind")
+    workspace_id: str = Field(description="Workspace ID bound to the bridge token")
+    session_id: str = Field(description="Workspace session ID bound to the bridge token")
+    issued_at: datetime = Field(description="Token issued-at timestamp")
+    expires_at: datetime = Field(description="Token expiration timestamp")
 
 
 class _BaseSessionFields(BaseModel):
@@ -102,6 +112,10 @@ class _BaseSessionFields(BaseModel):
     runtime_operation_updated_at: datetime | None = Field(
         default=None,
         description="Timestamp when current runtime operation phase was last updated",
+    )
+    bridge_credential: RuntimeBridgeCredentialMetadata | None = Field(
+        default=None,
+        description="Safe runtime bridge credential metadata derived from workspace env",
     )
     updated_at: datetime = Field(description="Session update time")
 
